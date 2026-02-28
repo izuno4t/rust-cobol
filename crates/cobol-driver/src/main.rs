@@ -127,10 +127,7 @@ fn main() {
 
         // Report diagnostics
         for diag in diagnostics.diagnostics() {
-            eprintln!(
-                "{:?}: [{}] {}",
-                diag.severity, diag.code, diag.message
-            );
+            eprintln!("{:?}: [{}] {}", diag.severity, diag.code, diag.message);
         }
 
         if result.has_errors {
@@ -201,7 +198,10 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("error: compilation failed: {}", e);
-                eprintln!("hint: the generated C code has been left at '{}'", c_path.display());
+                eprintln!(
+                    "hint: the generated C code has been left at '{}'",
+                    c_path.display()
+                );
                 process::exit(1);
             }
         }
@@ -238,11 +238,7 @@ fn find_runtime_lib() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    let candidates = [
-        "target/debug",
-        "target/release",
-        ".",
-    ];
+    let candidates = ["target/debug", "target/release", "."];
 
     for dir in &candidates {
         let p = PathBuf::from(dir);

@@ -5,8 +5,8 @@
 // the runtime's static library to produce a native executable.
 
 use cobol_hir::{
-    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirLiteral, HirPerformKind,
-    HirProgram, HirStatement, HirType, HirUnaryOp,
+    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirLiteral, HirOpenMode,
+    HirPerformKind, HirProgram, HirStatement, HirType, HirUnaryOp,
 };
 
 /// Generates C source code from a HIR program.
@@ -67,80 +67,122 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
     }
     out.push_str("/* Data items */\n");
     for item in items {
-        let c_name = sanitize_name(&item.name);
-        match &item.data_type {
-            HirType::Alphanumeric { size } => {
-                out.push_str(&format!("static char {}[{}];\n", c_name, size + 1));
-            }
-            HirType::Numeric { .. } => {
-                out.push_str(&format!("static int64_t {};\n", c_name));
-            }
-            HirType::Index => {
-                out.push_str(&format!("static int64_t {};\n", c_name));
-            }
-            HirType::Pointer => {
-                out.push_str(&format!("static void* {};\n", c_name));
-            }
-        }
+        emit_single_data_item(out, item);
     }
     out.push('\n');
 }
 
+fn emit_single_data_item(out: &mut String, item: &HirDataItem) {
+    let c_name = sanitize_name(&item.name);
+    match &item.data_type {
+        HirType::Alphanumeric { size } => {
+            out.push_str(&format!("static char {}[{}];\n", c_name, size + 1));
+        }
+        HirType::Numeric { .. } => {
+            out.push_str(&format!("static int64_t {};\n", c_name));
+        }
+        HirType::Group { members, .. } => {
+            // Emit each member as a separate global variable (flattened)
+            out.push_str(&format!("/* Group: {} */\n", c_name));
+            for member in members {
+                emit_single_data_item(out, member);
+            }
+        }
+        HirType::Comp3 { .. } => {
+            // Packed decimal stored as int64_t (simplified)
+            out.push_str(&format!("static int64_t {};\n", c_name));
+        }
+        HirType::Binary { .. } => {
+            out.push_str(&format!("static int64_t {};\n", c_name));
+        }
+        HirType::Index => {
+            out.push_str(&format!("static int64_t {};\n", c_name));
+        }
+        HirType::Pointer => {
+            out.push_str(&format!("static void* {};\n", c_name));
+        }
+    }
+}
+
 fn emit_data_init(out: &mut String, items: &[HirDataItem]) {
     for item in items {
-        let c_name = sanitize_name(&item.name);
-        if let Some(init) = &item.initial_value {
-            match (&item.data_type, init) {
-                (HirType::Alphanumeric { size }, HirLiteral::String(s)) => {
-                    let escaped = escape_c_string(s);
-                    out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    strncpy({c_name}, \"{escaped}\", {size});\n    {c_name}[{size}] = '\\0';\n"
-                    ));
-                }
-                (HirType::Alphanumeric { size }, HirLiteral::Space) => {
-                    out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    {c_name}[{size}] = '\\0';\n"
-                    ));
-                }
-                (HirType::Alphanumeric { size }, HirLiteral::Zero) => {
-                    out.push_str(&format!(
-                        "    memset({c_name}, '0', {size});\n    {c_name}[{size}] = '\\0';\n"
-                    ));
-                }
-                (HirType::Numeric { .. } | HirType::Index, HirLiteral::Integer(n)) => {
-                    out.push_str(&format!("    {c_name} = {n};\n"));
-                }
-                (HirType::Numeric { .. } | HirType::Index, HirLiteral::Zero) => {
-                    out.push_str(&format!("    {c_name} = 0;\n"));
-                }
-                _ => {
-                    // Default initialization
-                    match &item.data_type {
-                        HirType::Alphanumeric { size } => {
-                            out.push_str(&format!(
-                                "    memset({c_name}, ' ', {size});\n    {c_name}[{size}] = '\\0';\n"
-                            ));
-                        }
-                        _ => {
-                            out.push_str(&format!("    {c_name} = 0;\n"));
-                        }
-                    }
-                }
+        emit_single_data_init(out, item);
+    }
+}
+
+fn emit_single_data_init(out: &mut String, item: &HirDataItem) {
+    let c_name = sanitize_name(&item.name);
+    if let HirType::Group { members, .. } = &item.data_type {
+        // Initialize group members recursively
+        for member in members {
+            emit_single_data_init(out, member);
+        }
+        return;
+    }
+    if let Some(init) = &item.initial_value {
+        match (&item.data_type, init) {
+            (HirType::Alphanumeric { size }, HirLiteral::String(s)) => {
+                let escaped = escape_c_string(s);
+                out.push_str(&format!(
+                    "    memset({c_name}, ' ', {size});\n    strncpy({c_name}, \"{escaped}\", {size});\n    {c_name}[{size}] = '\\0';\n"
+                ));
             }
-        } else {
-            // Default initialization for items without VALUE clause
-            match &item.data_type {
-                HirType::Alphanumeric { size } => {
-                    out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    {c_name}[{size}] = '\\0';\n"
-                    ));
-                }
-                HirType::Numeric { .. } | HirType::Index => {
-                    out.push_str(&format!("    {c_name} = 0;\n"));
-                }
-                HirType::Pointer => {
-                    out.push_str(&format!("    {c_name} = NULL;\n"));
-                }
+            (HirType::Alphanumeric { size }, HirLiteral::Space) => {
+                out.push_str(&format!(
+                    "    memset({c_name}, ' ', {size});\n    {c_name}[{size}] = '\\0';\n"
+                ));
+            }
+            (HirType::Alphanumeric { size }, HirLiteral::Zero) => {
+                out.push_str(&format!(
+                    "    memset({c_name}, '0', {size});\n    {c_name}[{size}] = '\\0';\n"
+                ));
+            }
+            (
+                HirType::Numeric { .. }
+                | HirType::Index
+                | HirType::Comp3 { .. }
+                | HirType::Binary { .. },
+                HirLiteral::Integer(n),
+            ) => {
+                out.push_str(&format!("    {c_name} = {n};\n"));
+            }
+            (
+                HirType::Numeric { .. }
+                | HirType::Index
+                | HirType::Comp3 { .. }
+                | HirType::Binary { .. },
+                HirLiteral::Zero,
+            ) => {
+                out.push_str(&format!("    {c_name} = 0;\n"));
+            }
+            _ => {
+                emit_default_init(out, &item.data_type, &c_name);
+            }
+        }
+    } else {
+        emit_default_init(out, &item.data_type, &c_name);
+    }
+}
+
+fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &str) {
+    match data_type {
+        HirType::Alphanumeric { size } => {
+            out.push_str(&format!(
+                "    memset({c_name}, ' ', {size});\n    {c_name}[{size}] = '\\0';\n"
+            ));
+        }
+        HirType::Numeric { .. }
+        | HirType::Index
+        | HirType::Comp3 { .. }
+        | HirType::Binary { .. } => {
+            out.push_str(&format!("    {c_name} = 0;\n"));
+        }
+        HirType::Pointer => {
+            out.push_str(&format!("    {c_name} = NULL;\n"));
+        }
+        HirType::Group { members, .. } => {
+            for member in members {
+                emit_single_data_init(out, member);
             }
         }
     }
@@ -187,9 +229,7 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
                 out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
             }
         }
-        HirStatement::Subtract {
-            operands, from, ..
-        } => {
+        HirStatement::Subtract { operands, from, .. } => {
             for target in from {
                 let c_target = sanitize_name(target);
                 let sum: Vec<_> = operands.iter().map(emit_expr).collect();
@@ -219,8 +259,135 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
         HirStatement::Perform { kind, .. } => {
             emit_perform(out, kind, indent);
         }
-        HirStatement::Call { program, params: _, .. } => {
-            out.push_str(&format!("{pad}/* CALL {} -- not yet implemented */\n", emit_expr(program)));
+        HirStatement::Multiply { operand, by, .. } => {
+            for target in by {
+                let c_target = sanitize_name(target);
+                let c_operand = emit_expr(operand);
+                out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+            }
+        }
+        HirStatement::Divide {
+            operand,
+            into,
+            remainder,
+            ..
+        } => {
+            let c_operand = emit_expr(operand);
+            for target in into {
+                let c_target = sanitize_name(target);
+                if let Some(rem) = remainder {
+                    let c_rem = sanitize_name(rem);
+                    out.push_str(&format!("{pad}{c_rem} = {c_target} %% {c_operand};\n"));
+                }
+                out.push_str(&format!("{pad}{c_target} /= {c_operand};\n"));
+            }
+        }
+        HirStatement::Call {
+            program, params, ..
+        } => {
+            let prog = emit_expr(program);
+            let args: Vec<_> = params.iter().map(emit_expr).collect();
+            out.push_str(&format!("{pad}/* CALL {prog}({}) */\n", args.join(", ")));
+        }
+        HirStatement::Open { entries, .. } => {
+            for entry in entries {
+                let c_name = sanitize_name(&entry.file_name);
+                let mode_str = match entry.mode {
+                    HirOpenMode::Input => "INPUT",
+                    HirOpenMode::Output => "OUTPUT",
+                    HirOpenMode::IoMode => "I-O",
+                    HirOpenMode::Extend => "EXTEND",
+                };
+                out.push_str(&format!("{pad}/* OPEN {mode_str} {c_name} */\n"));
+            }
+        }
+        HirStatement::Close { files, .. } => {
+            for file in files {
+                let c_name = sanitize_name(file);
+                out.push_str(&format!("{pad}/* CLOSE {c_name} */\n"));
+            }
+        }
+        HirStatement::Read {
+            file_name,
+            at_end,
+            not_at_end,
+            ..
+        } => {
+            let c_name = sanitize_name(file_name);
+            out.push_str(&format!("{pad}/* READ {c_name} */\n"));
+            if !at_end.is_empty() {
+                out.push_str(&format!("{pad}/* AT END */\n"));
+                for s in at_end {
+                    emit_statement(out, s, indent + 1);
+                }
+            }
+            if !not_at_end.is_empty() {
+                out.push_str(&format!("{pad}/* NOT AT END */\n"));
+                for s in not_at_end {
+                    emit_statement(out, s, indent + 1);
+                }
+            }
+        }
+        HirStatement::Write { record_name, .. } => {
+            let c_name = sanitize_name(record_name);
+            out.push_str(&format!("{pad}/* WRITE {c_name} */\n"));
+        }
+        HirStatement::Rewrite { record_name, .. } => {
+            let c_name = sanitize_name(record_name);
+            out.push_str(&format!("{pad}/* REWRITE {c_name} */\n"));
+        }
+        HirStatement::Delete { file_name, .. } => {
+            let c_name = sanitize_name(file_name);
+            out.push_str(&format!("{pad}/* DELETE {c_name} */\n"));
+        }
+        HirStatement::GoTo {
+            targets,
+            depending_on,
+            ..
+        } => {
+            if let Some(dep) = depending_on {
+                let c_dep = sanitize_name(dep);
+                out.push_str(&format!("{pad}/* GO TO DEPENDING ON {c_dep} */\n"));
+            } else if let Some(target) = targets.first() {
+                let c_target = sanitize_name(target);
+                out.push_str(&format!("{pad}goto label_{c_target};\n"));
+            }
+        }
+        HirStatement::Initialize { targets, .. } => {
+            for target in targets {
+                let c_target = sanitize_name(target);
+                out.push_str(&format!("{pad}{c_target} = 0; /* INITIALIZE */\n"));
+            }
+        }
+        HirStatement::Set { targets, value, .. } => {
+            let c_value = emit_expr(value);
+            for target in targets {
+                let c_target = sanitize_name(target);
+                out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
+            }
+        }
+        HirStatement::StringStmt { into, sources, .. } => {
+            let c_into = sanitize_name(into);
+            out.push_str(&format!("{pad}/* STRING INTO {c_into} */\n"));
+            for src in sources {
+                let _c_src = emit_expr(src);
+            }
+        }
+        HirStatement::UnstringStmt { source, into, .. } => {
+            let c_source = sanitize_name(source);
+            let targets: Vec<_> = into.iter().map(|s| sanitize_name(s)).collect();
+            out.push_str(&format!(
+                "{pad}/* UNSTRING {c_source} INTO {} */\n",
+                targets.join(", ")
+            ));
+        }
+        HirStatement::Accept { target, .. } => {
+            let c_target = sanitize_name(target);
+            out.push_str(&format!("{pad}/* ACCEPT {c_target} */\n"));
+        }
+        HirStatement::Sort { file_name, .. } => {
+            let c_name = sanitize_name(file_name);
+            out.push_str(&format!("{pad}/* SORT {c_name} */\n"));
         }
         HirStatement::StopRun { .. } => {
             out.push_str(&format!("{pad}cobol_stop_run();\n"));
@@ -480,8 +647,7 @@ pub fn compile_c_to_executable(
     } else {
         Err(format!(
             "C compiler '{}' exited with status: {}",
-            compiler,
-            status
+            compiler, status
         ))
     }
 }

@@ -27,7 +27,7 @@ pub struct HirParagraph {
 }
 
 /// A data item declaration extracted from the DATA DIVISION.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HirDataItem {
     pub name: SmolStr,
     pub data_type: HirType,
@@ -38,14 +38,34 @@ pub struct HirDataItem {
 /// HIR-level type representation, simplified from PICTURE/USAGE.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirType {
-    Alphanumeric { size: u32 },
-    Numeric { size: u32, decimal_places: u32, is_signed: bool },
+    Alphanumeric {
+        size: u32,
+    },
+    Numeric {
+        size: u32,
+        decimal_places: u32,
+        is_signed: bool,
+    },
+    /// Group item containing subordinate data items.
+    Group {
+        members: Vec<HirDataItem>,
+        size: u32,
+    },
+    /// Packed decimal (COMP-3 / PACKED-DECIMAL).
+    Comp3 {
+        size: u32,
+        decimal_places: u32,
+    },
+    /// Binary integer (COMP / COMP-4 / COMP-5 / BINARY).
+    Binary {
+        size: u32,
+    },
     Index,
     Pointer,
 }
 
 /// A literal value in the HIR.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HirLiteral {
     Integer(i64),
     Decimal(String),
@@ -82,6 +102,17 @@ pub enum HirStatement {
         from: Vec<SmolStr>,
         span: Span,
     },
+    Multiply {
+        operand: HirExpr,
+        by: Vec<SmolStr>,
+        span: Span,
+    },
+    Divide {
+        operand: HirExpr,
+        into: Vec<SmolStr>,
+        remainder: Option<SmolStr>,
+        span: Span,
+    },
     If {
         condition: HirCondition,
         then_body: Vec<HirStatement>,
@@ -104,6 +135,80 @@ pub enum HirStatement {
         span: Span,
     },
     Continue {
+        span: Span,
+    },
+    /// OPEN statement.
+    Open {
+        entries: Vec<HirOpenEntry>,
+        span: Span,
+    },
+    /// CLOSE statement.
+    Close {
+        files: Vec<SmolStr>,
+        span: Span,
+    },
+    /// READ statement.
+    Read {
+        file_name: SmolStr,
+        into: Option<SmolStr>,
+        at_end: Vec<HirStatement>,
+        not_at_end: Vec<HirStatement>,
+        span: Span,
+    },
+    /// WRITE statement.
+    Write {
+        record_name: SmolStr,
+        from: Option<HirExpr>,
+        span: Span,
+    },
+    /// REWRITE statement.
+    Rewrite {
+        record_name: SmolStr,
+        from: Option<HirExpr>,
+        span: Span,
+    },
+    /// DELETE statement.
+    Delete {
+        file_name: SmolStr,
+        span: Span,
+    },
+    /// GO TO statement.
+    GoTo {
+        targets: Vec<SmolStr>,
+        depending_on: Option<SmolStr>,
+        span: Span,
+    },
+    /// INITIALIZE statement.
+    Initialize {
+        targets: Vec<SmolStr>,
+        span: Span,
+    },
+    /// SET statement (simplified to assignment).
+    Set {
+        targets: Vec<SmolStr>,
+        value: HirExpr,
+        span: Span,
+    },
+    /// STRING statement.
+    StringStmt {
+        into: SmolStr,
+        sources: Vec<HirExpr>,
+        span: Span,
+    },
+    /// UNSTRING statement.
+    UnstringStmt {
+        source: SmolStr,
+        into: Vec<SmolStr>,
+        span: Span,
+    },
+    /// ACCEPT statement.
+    Accept {
+        target: SmolStr,
+        span: Span,
+    },
+    /// SORT statement.
+    Sort {
+        file_name: SmolStr,
         span: Span,
     },
 }
@@ -191,13 +296,33 @@ pub enum HirPerformKind {
     ProcedureName { name: SmolStr },
 }
 
+/// A file open entry.
+#[derive(Debug, Clone)]
+pub struct HirOpenEntry {
+    pub mode: HirOpenMode,
+    pub file_name: SmolStr,
+}
+
+/// File open modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirOpenMode {
+    Input,
+    Output,
+    IoMode,
+    Extend,
+}
+
 impl std::fmt::Display for HirProgram {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "HIR Program: {}", self.name)?;
         if !self.data_items.is_empty() {
             writeln!(f, "  Data Items:")?;
             for item in &self.data_items {
-                writeln!(f, "    {} {:?} = {:?}", item.name, item.data_type, item.initial_value)?;
+                writeln!(
+                    f,
+                    "    {} {:?} = {:?}",
+                    item.name, item.data_type, item.initial_value
+                )?;
             }
         }
         if !self.body.is_empty() {
@@ -226,7 +351,11 @@ fn write_stmt(
 ) -> std::fmt::Result {
     let pad = " ".repeat(indent);
     match stmt {
-        HirStatement::Display { operands, no_advancing, .. } => {
+        HirStatement::Display {
+            operands,
+            no_advancing,
+            ..
+        } => {
             write!(f, "{pad}DISPLAY")?;
             for op in operands {
                 write!(f, " {}", format_expr(op))?;
@@ -248,9 +377,34 @@ fn write_stmt(
         }
         HirStatement::Subtract { operands, from, .. } => {
             let ops: Vec<_> = operands.iter().map(format_expr).collect();
-            writeln!(f, "{pad}SUBTRACT {} FROM {}", ops.join(" "), from.join(", "))
+            writeln!(
+                f,
+                "{pad}SUBTRACT {} FROM {}",
+                ops.join(" "),
+                from.join(", ")
+            )
         }
-        HirStatement::If { then_body, else_body, .. } => {
+        HirStatement::Multiply { operand, by, .. } => {
+            writeln!(
+                f,
+                "{pad}MULTIPLY {} BY {}",
+                format_expr(operand),
+                by.join(", ")
+            )
+        }
+        HirStatement::Divide { operand, into, .. } => {
+            writeln!(
+                f,
+                "{pad}DIVIDE {} INTO {}",
+                format_expr(operand),
+                into.join(", ")
+            )
+        }
+        HirStatement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
             writeln!(f, "{pad}IF ...")?;
             for s in then_body {
                 write_stmt(f, s, indent + 2)?;
@@ -272,6 +426,63 @@ fn write_stmt(
         HirStatement::StopRun { .. } => writeln!(f, "{pad}STOP RUN"),
         HirStatement::Goback { .. } => writeln!(f, "{pad}GOBACK"),
         HirStatement::Continue { .. } => writeln!(f, "{pad}CONTINUE"),
+        HirStatement::Open { entries, .. } => {
+            let names: Vec<_> = entries.iter().map(|e| e.file_name.to_string()).collect();
+            writeln!(f, "{pad}OPEN {}", names.join(", "))
+        }
+        HirStatement::Close { files, .. } => {
+            writeln!(
+                f,
+                "{pad}CLOSE {}",
+                files
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        HirStatement::Read { file_name, .. } => writeln!(f, "{pad}READ {file_name}"),
+        HirStatement::Write { record_name, .. } => writeln!(f, "{pad}WRITE {record_name}"),
+        HirStatement::Rewrite { record_name, .. } => writeln!(f, "{pad}REWRITE {record_name}"),
+        HirStatement::Delete { file_name, .. } => writeln!(f, "{pad}DELETE {file_name}"),
+        HirStatement::GoTo { targets, .. } => {
+            writeln!(
+                f,
+                "{pad}GO TO {}",
+                targets
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        HirStatement::Initialize { targets, .. } => {
+            writeln!(
+                f,
+                "{pad}INITIALIZE {}",
+                targets
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        HirStatement::Set { targets, value, .. } => {
+            writeln!(
+                f,
+                "{pad}SET {} TO {}",
+                targets
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                format_expr(value)
+            )
+        }
+        HirStatement::StringStmt { into, .. } => writeln!(f, "{pad}STRING INTO {into}"),
+        HirStatement::UnstringStmt { source, .. } => writeln!(f, "{pad}UNSTRING {source}"),
+        HirStatement::Accept { target, .. } => writeln!(f, "{pad}ACCEPT {target}"),
+        HirStatement::Sort { file_name, .. } => writeln!(f, "{pad}SORT {file_name}"),
     }
 }
 

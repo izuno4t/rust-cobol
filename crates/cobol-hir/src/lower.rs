@@ -6,20 +6,22 @@
 // - Desugars EVALUATE into nested IF
 
 use cobol_ast::{
-    CobolProgram, DataDivision, DataItem, Expr, Literal, Statement,
     data_div::ValueClause,
     expr::{ArithOp, CompareOp, Condition, FigurativeConstant, UnaryArithOp},
     proc_div::{Paragraph, ProcedureDivision},
     statement::{
-        AddStatement, ComputeStatement, DisplayStatement, EvaluateStatement, IfStatement,
-        MoveStatement, PerformKind, PerformStatement, SubtractStatement, CallStatement,
+        AcceptStatement, AddStatement, CallStatement, ComputeStatement, DisplayStatement,
+        DivideStatement, EvaluateStatement, GoToStatement, IfStatement, InitializeStatement,
+        MoveStatement, MultiplyStatement, PerformKind, PerformStatement, SetStatement,
+        SubtractStatement,
     },
+    CobolProgram, DataDivision, DataItem, Expr, Literal, Statement, Usage,
 };
 use cobol_common::Span;
 
 use crate::hir::{
-    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirLiteral, HirParagraph,
-    HirPerformKind, HirProgram, HirStatement, HirType, HirUnaryOp,
+    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirLiteral, HirOpenEntry,
+    HirOpenMode, HirParagraph, HirPerformKind, HirProgram, HirStatement, HirType, HirUnaryOp,
 };
 
 /// Lowers a COBOL AST program into the HIR.
@@ -93,9 +95,25 @@ fn determine_hir_type(item: &DataItem) -> HirType {
     // Check USAGE first for special types
     if let Some(usage) = &item.usage {
         match usage {
-            cobol_ast::Usage::Index => return HirType::Index,
-            cobol_ast::Usage::Pointer | cobol_ast::Usage::FunctionPointer => {
-                return HirType::Pointer
+            Usage::Index => return HirType::Index,
+            Usage::Pointer | Usage::FunctionPointer => return HirType::Pointer,
+            Usage::Comp3 | Usage::PackedDecimal => {
+                if let Some(pic) = &item.picture {
+                    return HirType::Comp3 {
+                        size: pic.size,
+                        decimal_places: pic.decimal_positions,
+                    };
+                }
+                return HirType::Comp3 {
+                    size: 1,
+                    decimal_places: 0,
+                };
+            }
+            Usage::Comp | Usage::Comp4 | Usage::Comp5 | Usage::Binary | Usage::Computational => {
+                if let Some(pic) = &item.picture {
+                    return HirType::Binary { size: pic.size };
+                }
+                return HirType::Binary { size: 4 };
             }
             _ => {}
         }
@@ -114,13 +132,45 @@ fn determine_hir_type(item: &DataItem) -> HirType {
             _ => HirType::Alphanumeric { size: pic.size },
         }
     } else if !item.children.is_empty() {
-        // Group item: treated as alphanumeric with the sum of child sizes
-        let total: u32 = item
-            .children
+        // Group item: build members list and compute total size
+        let mut members = Vec::new();
+        for child in &item.children {
+            if child.level == 88 {
+                continue;
+            }
+            if let Some(name) = &child.name {
+                let data_type = determine_hir_type(child);
+                let initial_value = child.value.as_ref().map(lower_value_clause);
+                members.push(HirDataItem {
+                    name: name.clone(),
+                    data_type,
+                    initial_value,
+                    span: child.span,
+                });
+            }
+        }
+        let total: u32 = members
             .iter()
-            .map(|c| c.picture.as_ref().map(|p| p.size).unwrap_or(0))
+            .map(|m| match &m.data_type {
+                HirType::Alphanumeric { size } => *size,
+                HirType::Numeric { size, .. } => *size,
+                HirType::Group { size, .. } => *size,
+                HirType::Comp3 { size, .. } => (*size + 2) / 2, // packed decimal byte size
+                HirType::Binary { size } => {
+                    if *size <= 4 {
+                        2
+                    } else if *size <= 9 {
+                        4
+                    } else {
+                        8
+                    }
+                }
+                HirType::Index => 4,
+                HirType::Pointer => 8,
+            })
             .sum();
-        HirType::Alphanumeric {
+        HirType::Group {
+            members,
             size: if total == 0 { 1 } else { total },
         }
     } else {
@@ -151,9 +201,7 @@ fn lower_literal(lit: &Literal) -> HirLiteral {
 // Procedure Division lowering
 // ---------------------------------------------------------------------------
 
-fn lower_procedure_division(
-    proc: &ProcedureDivision,
-) -> (Vec<HirStatement>, Vec<HirParagraph>) {
+fn lower_procedure_division(proc: &ProcedureDivision) -> (Vec<HirStatement>, Vec<HirParagraph>) {
     let mut body = Vec::new();
     let mut paragraphs = Vec::new();
 
@@ -211,18 +259,44 @@ fn lower_paragraph(para: &Paragraph) -> Vec<HirStatement> {
 fn lower_statement(stmt: &Statement) -> Option<HirStatement> {
     match stmt {
         Statement::Display(display) => Some(lower_display(display)),
+        Statement::Accept(accept) => Some(lower_accept(accept)),
         Statement::Move(mv) => Some(lower_move(mv)),
         Statement::Compute(compute) => lower_compute(compute),
         Statement::Add(add) => Some(lower_add(add)),
         Statement::Subtract(sub) => Some(lower_subtract(sub)),
+        Statement::Multiply(mul) => Some(lower_multiply(mul)),
+        Statement::Divide(div) => Some(lower_divide(div)),
         Statement::If(if_stmt) => Some(lower_if(if_stmt)),
         Statement::Evaluate(eval) => Some(lower_evaluate(eval)),
         Statement::Perform(perform) => Some(lower_perform(perform)),
         Statement::Call(call) => Some(lower_call(call)),
-        Statement::StopRun => Some(HirStatement::StopRun { span: Span::dummy() }),
-        Statement::Goback => Some(HirStatement::Goback { span: Span::dummy() }),
-        Statement::Continue => Some(HirStatement::Continue { span: Span::dummy() }),
-        Statement::ExitProgram => Some(HirStatement::StopRun { span: Span::dummy() }),
+        Statement::GoTo(goto) => Some(lower_goto(goto)),
+        Statement::Open(open) => Some(lower_open(open)),
+        Statement::Close(close) => Some(lower_close(close)),
+        Statement::Read(read) => Some(lower_read(read)),
+        Statement::Write(write) => Some(lower_write(write)),
+        Statement::Rewrite(rewrite) => Some(lower_rewrite(rewrite)),
+        Statement::Delete(delete) => Some(lower_delete(delete)),
+        Statement::Initialize(init) => Some(lower_initialize(init)),
+        Statement::Set(set) => Some(lower_set(set)),
+        Statement::String(string_stmt) => Some(lower_string_stmt(string_stmt)),
+        Statement::Unstring(unstring_stmt) => Some(lower_unstring_stmt(unstring_stmt)),
+        Statement::Sort(sort) => Some(lower_sort(sort)),
+        Statement::StopRun => Some(HirStatement::StopRun {
+            span: Span::dummy(),
+        }),
+        Statement::Goback => Some(HirStatement::Goback {
+            span: Span::dummy(),
+        }),
+        Statement::Continue => Some(HirStatement::Continue {
+            span: Span::dummy(),
+        }),
+        Statement::ExitProgram => Some(HirStatement::StopRun {
+            span: Span::dummy(),
+        }),
+        Statement::ExitParagraph | Statement::ExitSection => Some(HirStatement::Continue {
+            span: Span::dummy(),
+        }),
         // Statements not yet lowered are silently skipped
         _ => None,
     }
@@ -304,16 +378,12 @@ fn lower_if(if_stmt: &IfStatement) -> HirStatement {
 /// Desugar EVALUATE into nested IF statements.
 fn lower_evaluate(eval: &EvaluateStatement) -> HirStatement {
     // Build nested IF chain from the WHEN clauses
-    let mut else_body: Vec<HirStatement> = eval
-        .when_other
-        .iter()
-        .filter_map(lower_statement)
-        .collect();
+    let mut else_body: Vec<HirStatement> =
+        eval.when_other.iter().filter_map(lower_statement).collect();
 
     // Process WHEN clauses in reverse to build the else chain
     for when in eval.when_clauses.iter().rev() {
-        let then_body: Vec<HirStatement> =
-            when.body.iter().filter_map(lower_statement).collect();
+        let then_body: Vec<HirStatement> = when.body.iter().filter_map(lower_statement).collect();
 
         // Build condition from the WHEN objects and subjects
         let condition = build_evaluate_condition(&eval.subjects, &when.objects);
@@ -401,10 +471,7 @@ fn build_evaluate_condition(
                 }
                 WhenObject::Not(inner) => {
                     // Recursively handle NOT
-                    let inner_cond = build_evaluate_condition(
-                        subjects,
-                        &[vec![*inner.clone()]],
-                    );
+                    let inner_cond = build_evaluate_condition(subjects, &[vec![*inner.clone()]]);
                     conditions.push(HirCondition::Not(Box::new(inner_cond)));
                 }
             }
@@ -432,11 +499,9 @@ fn lower_perform(perform: &PerformStatement) -> HirStatement {
             let hir_body: Vec<_> = body.iter().filter_map(lower_statement).collect();
             HirPerformKind::Inline { body: hir_body }
         }
-        PerformKind::ProcedureName { procedure, .. } => {
-            HirPerformKind::ProcedureName {
-                name: procedure.clone(),
-            }
-        }
+        PerformKind::ProcedureName { procedure, .. } => HirPerformKind::ProcedureName {
+            name: procedure.clone(),
+        },
         PerformKind::Times { times, body } => {
             let count = lower_expr(times);
             let hir_body: Vec<_> = body.iter().filter_map(lower_statement).collect();
@@ -445,7 +510,9 @@ fn lower_perform(perform: &PerformStatement) -> HirStatement {
                 body: hir_body,
             }
         }
-        PerformKind::Until { condition, body, .. } => {
+        PerformKind::Until {
+            condition, body, ..
+        } => {
             let hir_cond = lower_condition(condition);
             let hir_body: Vec<_> = body.iter().filter_map(lower_statement).collect();
             HirPerformKind::Until {
@@ -486,6 +553,213 @@ fn lower_call(call: &CallStatement) -> HirStatement {
         program,
         params,
         span: call.span,
+    }
+}
+
+fn lower_multiply(mul: &MultiplyStatement) -> HirStatement {
+    let operand = lower_expr(&mul.operand);
+    let by = mul.by.iter().map(|t| t.target.name.clone()).collect();
+    HirStatement::Multiply {
+        operand,
+        by,
+        span: mul.span,
+    }
+}
+
+fn lower_divide(div: &DivideStatement) -> HirStatement {
+    let operand = lower_expr(&div.operand);
+    let into = div.into.iter().map(|t| t.target.name.clone()).collect();
+    let remainder = div.remainder.as_ref().map(|r| r.name.clone());
+    HirStatement::Divide {
+        operand,
+        into,
+        remainder,
+        span: div.span,
+    }
+}
+
+fn lower_accept(accept: &AcceptStatement) -> HirStatement {
+    HirStatement::Accept {
+        target: accept.target.name.clone(),
+        span: accept.span,
+    }
+}
+
+fn lower_goto(goto: &GoToStatement) -> HirStatement {
+    let targets = goto.targets.clone();
+    let depending_on = goto.depending_on.as_ref().map(|q| q.name.clone());
+    HirStatement::GoTo {
+        targets,
+        depending_on,
+        span: goto.span,
+    }
+}
+
+fn lower_open(open: &cobol_ast::statement::OpenStatement) -> HirStatement {
+    let entries = open
+        .entries
+        .iter()
+        .map(|e| {
+            let mode = match e.mode {
+                cobol_ast::statement::OpenMode::Input => HirOpenMode::Input,
+                cobol_ast::statement::OpenMode::Output => HirOpenMode::Output,
+                cobol_ast::statement::OpenMode::IoMode => HirOpenMode::IoMode,
+                cobol_ast::statement::OpenMode::Extend => HirOpenMode::Extend,
+            };
+            HirOpenEntry {
+                mode,
+                file_name: e.file_name.clone(),
+            }
+        })
+        .collect();
+    HirStatement::Open {
+        entries,
+        span: open.span,
+    }
+}
+
+fn lower_close(close: &cobol_ast::statement::CloseStatement) -> HirStatement {
+    let files = close.files.iter().map(|e| e.file_name.clone()).collect();
+    HirStatement::Close {
+        files,
+        span: close.span,
+    }
+}
+
+fn lower_read(read: &cobol_ast::statement::ReadStatement) -> HirStatement {
+    let into = read.into.as_ref().map(|q| q.name.clone());
+    let at_end: Vec<_> = read.at_end.iter().filter_map(lower_statement).collect();
+    let not_at_end: Vec<_> = read.not_at_end.iter().filter_map(lower_statement).collect();
+    HirStatement::Read {
+        file_name: read.file_name.clone(),
+        into,
+        at_end,
+        not_at_end,
+        span: read.span,
+    }
+}
+
+fn lower_write(write: &cobol_ast::statement::WriteStatement) -> HirStatement {
+    let from = write.from.as_ref().map(lower_expr);
+    HirStatement::Write {
+        record_name: write.record_name.name.clone(),
+        from,
+        span: write.span,
+    }
+}
+
+fn lower_rewrite(rewrite: &cobol_ast::statement::RewriteStatement) -> HirStatement {
+    let from = rewrite.from.as_ref().map(lower_expr);
+    HirStatement::Rewrite {
+        record_name: rewrite.record_name.name.clone(),
+        from,
+        span: rewrite.span,
+    }
+}
+
+fn lower_delete(delete: &cobol_ast::statement::DeleteStatement) -> HirStatement {
+    HirStatement::Delete {
+        file_name: delete.file_name.clone(),
+        span: delete.span,
+    }
+}
+
+fn lower_initialize(init: &InitializeStatement) -> HirStatement {
+    let targets = init.targets.iter().map(|q| q.name.clone()).collect();
+    HirStatement::Initialize {
+        targets,
+        span: init.span,
+    }
+}
+
+fn lower_set(set: &SetStatement) -> HirStatement {
+    use cobol_ast::statement::SetKind;
+    match &set.kind {
+        SetKind::To { targets, value } => {
+            let target_names = targets.iter().map(|q| q.name.clone()).collect();
+            let hir_value = lower_expr(value);
+            HirStatement::Set {
+                targets: target_names,
+                value: hir_value,
+                span: set.span,
+            }
+        }
+        SetKind::UpDown {
+            targets,
+            direction,
+            value,
+        } => {
+            // Desugar SET UP/DOWN BY to an arithmetic operation
+            let target_names: Vec<_> = targets.iter().map(|q| q.name.clone()).collect();
+            let hir_value = lower_expr(value);
+            match direction {
+                cobol_ast::statement::SetDirection::Up => HirStatement::Add {
+                    operands: vec![hir_value],
+                    to: target_names,
+                    span: set.span,
+                },
+                cobol_ast::statement::SetDirection::Down => HirStatement::Subtract {
+                    operands: vec![hir_value],
+                    from: target_names,
+                    span: set.span,
+                },
+            }
+        }
+        SetKind::ConditionTrue { conditions, value } => {
+            // SET condition-name TO TRUE/FALSE
+            let target_names = conditions.iter().map(|q| q.name.clone()).collect();
+            let hir_value = if *value {
+                HirExpr::Literal(HirLiteral::Integer(1))
+            } else {
+                HirExpr::Literal(HirLiteral::Integer(0))
+            };
+            HirStatement::Set {
+                targets: target_names,
+                value: hir_value,
+                span: set.span,
+            }
+        }
+        SetKind::Address { target, source } => {
+            // SET pointer TO ADDRESS OF source -- simplified
+            HirStatement::Set {
+                targets: vec![target.name.clone()],
+                value: HirExpr::Variable(source.name.clone()),
+                span: set.span,
+            }
+        }
+    }
+}
+
+fn lower_string_stmt(string_stmt: &cobol_ast::statement::StringStatement) -> HirStatement {
+    let sources = string_stmt
+        .sources
+        .iter()
+        .flat_map(|s| s.items.iter().map(lower_expr))
+        .collect();
+    HirStatement::StringStmt {
+        into: string_stmt.into.name.clone(),
+        sources,
+        span: string_stmt.span,
+    }
+}
+
+fn lower_unstring_stmt(unstring_stmt: &cobol_ast::statement::UnstringStatement) -> HirStatement {
+    let into = unstring_stmt
+        .into
+        .iter()
+        .map(|t| t.target.name.clone())
+        .collect();
+    HirStatement::UnstringStmt {
+        source: unstring_stmt.source.name.clone(),
+        into,
+        span: unstring_stmt.span,
+    }
+}
+
+fn lower_sort(sort: &cobol_ast::statement::SortStatement) -> HirStatement {
+    HirStatement::Sort {
+        file_name: sort.file_name.clone(),
+        span: sort.span,
     }
 }
 
@@ -548,14 +822,12 @@ fn lower_condition(cond: &Condition) -> HirCondition {
                 right: lower_expr(right),
             }
         }
-        Condition::And(a, b) => HirCondition::And(
-            Box::new(lower_condition(a)),
-            Box::new(lower_condition(b)),
-        ),
-        Condition::Or(a, b) => HirCondition::Or(
-            Box::new(lower_condition(a)),
-            Box::new(lower_condition(b)),
-        ),
+        Condition::And(a, b) => {
+            HirCondition::And(Box::new(lower_condition(a)), Box::new(lower_condition(b)))
+        }
+        Condition::Or(a, b) => {
+            HirCondition::Or(Box::new(lower_condition(a)), Box::new(lower_condition(b)))
+        }
         Condition::Not(inner) => HirCondition::Not(Box::new(lower_condition(inner))),
         Condition::Paren(inner) => lower_condition(inner),
         // Class and sign conditions are simplified to a comparison for now
