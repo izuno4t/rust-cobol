@@ -4,9 +4,12 @@
 // The generated C code is then compiled with clang/cc and linked against
 // the runtime's static library to produce a native executable.
 
+use std::collections::BTreeSet;
+
 use cobol_hir::{
-    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirLiteral, HirOpenMode,
-    HirPerformKind, HirProgram, HirStatement, HirType, HirUnaryOp,
+    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirLiteral, HirMoveTarget,
+    HirOpenMode, HirParagraph, HirPerformKind, HirProgram, HirStartRelation, HirStatement, HirType,
+    HirUnaryOp,
 };
 
 /// Generates C source code from a HIR program.
@@ -34,6 +37,29 @@ pub fn generate_c(program: &HirProgram) -> String {
     // COBOL 2023+: Emit interface definitions
     emit_interfaces(&mut out, &program.interfaces);
 
+    // Collect file names used in the program and emit file handle globals
+    let file_names = collect_file_names(program);
+    if !file_names.is_empty() {
+        out.push_str("/* File handles (each COBOL file gets a unique compile-time ID) */\n");
+        for (id, name) in file_names.iter().enumerate() {
+            let c_name = sanitize_name(name);
+            out.push_str(&format!(
+                "static const uint32_t FILE_ID_{c_name} = {};\n",
+                id + 1
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Forward-declare paragraph functions
+    for para in &program.paragraphs {
+        let c_name = sanitize_name(&para.name);
+        out.push_str(&format!("static void para_{c_name}(void);\n"));
+    }
+    if !program.paragraphs.is_empty() {
+        out.push('\n');
+    }
+
     // Main function
     out.push_str("int main(int argc, char** argv) {\n");
 
@@ -42,12 +68,22 @@ pub fn generate_c(program: &HirProgram) -> String {
 
     // Emit body statements
     for stmt in &program.body {
-        emit_statement(&mut out, stmt, 1);
+        emit_statement(&mut out, stmt, &program.data_items, &program.paragraphs, 1);
     }
 
     // Fallthrough return
     out.push_str("    return 0;\n");
     out.push_str("}\n");
+
+    // Emit paragraph function definitions
+    for para in &program.paragraphs {
+        let c_name = sanitize_name(&para.name);
+        out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+        for stmt in &para.body {
+            emit_statement(&mut out, stmt, &program.data_items, &program.paragraphs, 1);
+        }
+        out.push_str("}\n");
+    }
 
     out
 }
@@ -59,6 +95,7 @@ fn emit_header(out: &mut String) {
     out.push_str("#include <string.h>\n");
     out.push_str("#include <stdint.h>\n");
     out.push_str("#include <setjmp.h>\n");
+    out.push_str("#include <math.h>\n");
     out.push('\n');
 }
 
@@ -71,6 +108,73 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str("extern void cobol_display_flush(void);\n");
     out.push_str("extern void cobol_stop_run(void) __attribute__((noreturn));\n");
     out.push_str("extern void cobol_goback(void) __attribute__((noreturn));\n");
+    // File I/O runtime declarations
+    out.push_str("/* File I/O runtime declarations */\n");
+    out.push_str(
+        "extern uint32_t cobol_file_open(uint32_t file_id, const uint8_t* path_ptr, uint32_t path_len, uint32_t org, uint32_t access, uint32_t mode, uint32_t record_len);\n",
+    );
+    out.push_str("extern uint32_t cobol_file_close(uint32_t file_id);\n");
+    out.push_str(
+        "extern uint32_t cobol_file_read_next(uint32_t file_id, uint8_t* record_ptr, uint32_t record_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_file_write(uint32_t file_id, const uint8_t* record_ptr, uint32_t record_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_file_rewrite(uint32_t file_id, const uint8_t* record_ptr, uint32_t record_len);\n",
+    );
+    out.push_str("extern uint32_t cobol_file_delete(uint32_t file_id);\n");
+    out.push_str(
+        "extern uint32_t cobol_file_start(uint32_t file_id, const uint8_t* key_ptr, uint32_t key_len, uint32_t mode);\n",
+    );
+    // String/INSPECT runtime declarations
+    out.push_str("/* String operations runtime declarations */\n");
+    out.push_str(
+        "extern void cobol_move_string(const uint8_t* src, uint32_t src_len, uint8_t* dst, uint32_t dst_len);\n",
+    );
+    out.push_str(
+        "extern void cobol_move_numeric_to_display(int64_t value, int32_t scale, uint8_t* dst, uint32_t dst_len);\n",
+    );
+    out.push_str(
+        "extern int32_t cobol_string_concat(const void* sources, uint32_t source_count, uint8_t* dst, uint32_t dst_len, uint32_t* pointer);\n",
+    );
+    out.push_str(
+        "extern int32_t cobol_unstring(const uint8_t* src, uint32_t src_len, const uint8_t* delim, uint32_t delim_len, void* targets, uint32_t target_count, uint32_t* pointer, uint32_t* tallying);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_inspect_tallying(const uint8_t* src, uint32_t src_len, const uint8_t* search, uint32_t search_len, uint32_t mode);\n",
+    );
+    out.push_str(
+        "extern void cobol_inspect_replacing(uint8_t* src, uint32_t src_len, const uint8_t* search, uint32_t search_len, const uint8_t* replace, uint32_t replace_len, uint32_t mode);\n",
+    );
+    out.push_str(
+        "extern void cobol_inspect_converting(uint8_t* src, uint32_t src_len, const uint8_t* from, uint32_t from_len, const uint8_t* to, uint32_t to_len);\n",
+    );
+    // Sort/Merge runtime declarations
+    out.push_str("/* Sort/Merge runtime declarations */\n");
+    out.push_str(
+        "extern void cobol_sort(uint8_t* records, uint32_t count, uint32_t rec_len, const void* keys, uint32_t key_count);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_merge(const uint32_t* inputs, uint32_t input_count, uint32_t output, const void* keys, uint32_t key_count, uint32_t rec_len);\n",
+    );
+    // Intrinsic function runtime declarations
+    out.push_str("/* Intrinsic function runtime declarations */\n");
+    out.push_str("extern uint32_t cobol_func_current_date(uint8_t* buf, uint32_t buf_len);\n");
+    out.push_str("extern uint32_t cobol_func_length(const uint8_t* ptr, uint32_t len);\n");
+    out.push_str(
+        "extern uint32_t cobol_func_trim(const uint8_t* src, uint32_t src_len, uint8_t* dst, uint32_t dst_len, uint32_t mode);\n",
+    );
+    out.push_str("extern void cobol_func_upper_case(uint8_t* ptr, uint32_t len);\n");
+    out.push_str("extern void cobol_func_lower_case(uint8_t* ptr, uint32_t len);\n");
+    out.push_str("extern void cobol_func_reverse(uint8_t* ptr, uint32_t len);\n");
+    out.push_str("extern int64_t cobol_func_numval(const uint8_t* ptr, uint32_t len);\n");
+    out.push_str("extern int64_t cobol_func_max_int(int64_t a, int64_t b);\n");
+    out.push_str("extern int64_t cobol_func_min_int(int64_t a, int64_t b);\n");
+    out.push_str("extern int64_t cobol_func_mod(int64_t a, int64_t b);\n");
+    out.push_str("extern int64_t cobol_func_integer(int64_t value, int32_t scale);\n");
+    out.push_str("extern uint32_t cobol_func_ord(uint8_t c);\n");
+    out.push_str("extern uint8_t cobol_func_char(uint32_t ord);\n");
     out.push_str("/* COBOL 2002+ runtime declarations */\n");
     out.push_str(
         "extern void cobol_raise(const char* exception_name) __attribute__((noreturn));\n",
@@ -260,7 +364,13 @@ fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &str) {
     }
 }
 
-fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
+fn emit_statement(
+    out: &mut String,
+    stmt: &HirStatement,
+    data_items: &[HirDataItem],
+    paragraphs: &[HirParagraph],
+    indent: usize,
+) {
     let pad = "    ".repeat(indent);
     match stmt {
         HirStatement::Display {
@@ -273,7 +383,7 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
                     // COBOL DISPLAY separates operands with a space by default
                     // (some implementations don't; we follow the common convention)
                 }
-                emit_display_operand(out, op, &pad);
+                emit_display_operand(out, op, data_items, &pad);
             }
             if !no_advancing {
                 out.push_str(&format!("{pad}cobol_display_newline();\n"));
@@ -282,32 +392,86 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
             }
         }
         HirStatement::Move { from, to, .. } => {
-            // Simplified: generate assignment for each target
             for target in to {
-                let c_target = sanitize_name(target);
-                emit_move_to(out, from, &c_target, &pad);
+                match target {
+                    HirMoveTarget::Variable(name) => {
+                        let c_target = sanitize_name(name);
+                        emit_move_to(out, from, &c_target, &pad);
+                    }
+                    HirMoveTarget::ReferenceModification {
+                        variable,
+                        start,
+                        length,
+                    } => {
+                        emit_move_to_refmod(out, from, variable, start, length, data_items, &pad);
+                    }
+                }
             }
         }
-        HirStatement::Compute { target, expr, .. } => {
-            let c_target = sanitize_name(target);
+        HirStatement::Compute {
+            targets,
+            expr,
+            on_size_error,
+            not_on_size_error,
+            ..
+        } => {
             let c_expr = emit_expr(expr);
-            out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
+            for target in targets {
+                let c_target = sanitize_name(target);
+                out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
+            }
+            emit_on_size_error(
+                out,
+                on_size_error,
+                not_on_size_error,
+                data_items,
+                paragraphs,
+                indent,
+            );
         }
-        HirStatement::Add { operands, to, .. } => {
+        HirStatement::Add {
+            operands,
+            to,
+            on_size_error,
+            not_on_size_error,
+            ..
+        } => {
             for target in to {
                 let c_target = sanitize_name(target);
                 let sum: Vec<_> = operands.iter().map(emit_expr).collect();
                 let sum_expr = sum.join(" + ");
                 out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
             }
+            emit_on_size_error(
+                out,
+                on_size_error,
+                not_on_size_error,
+                data_items,
+                paragraphs,
+                indent,
+            );
         }
-        HirStatement::Subtract { operands, from, .. } => {
+        HirStatement::Subtract {
+            operands,
+            from,
+            on_size_error,
+            not_on_size_error,
+            ..
+        } => {
             for target in from {
                 let c_target = sanitize_name(target);
                 let sum: Vec<_> = operands.iter().map(emit_expr).collect();
                 let sum_expr = sum.join(" + ");
                 out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
             }
+            emit_on_size_error(
+                out,
+                on_size_error,
+                not_on_size_error,
+                data_items,
+                paragraphs,
+                indent,
+            );
         }
         HirStatement::If {
             condition,
@@ -318,30 +482,46 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
             let cond = emit_condition(condition);
             out.push_str(&format!("{pad}if ({cond}) {{\n"));
             for s in then_body {
-                emit_statement(out, s, indent + 1);
+                emit_statement(out, s, data_items, paragraphs, indent + 1);
             }
             if !else_body.is_empty() {
                 out.push_str(&format!("{pad}}} else {{\n"));
                 for s in else_body {
-                    emit_statement(out, s, indent + 1);
+                    emit_statement(out, s, data_items, paragraphs, indent + 1);
                 }
             }
             out.push_str(&format!("{pad}}}\n"));
         }
         HirStatement::Perform { kind, .. } => {
-            emit_perform(out, kind, indent);
+            emit_perform(out, kind, data_items, paragraphs, indent);
         }
-        HirStatement::Multiply { operand, by, .. } => {
+        HirStatement::Multiply {
+            operand,
+            by,
+            on_size_error,
+            not_on_size_error,
+            ..
+        } => {
             for target in by {
                 let c_target = sanitize_name(target);
                 let c_operand = emit_expr(operand);
                 out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
             }
+            emit_on_size_error(
+                out,
+                on_size_error,
+                not_on_size_error,
+                data_items,
+                paragraphs,
+                indent,
+            );
         }
         HirStatement::Divide {
             operand,
             into,
             remainder,
+            on_size_error,
+            not_on_size_error,
             ..
         } => {
             let c_operand = emit_expr(operand);
@@ -349,68 +529,173 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
                 let c_target = sanitize_name(target);
                 if let Some(rem) = remainder {
                     let c_rem = sanitize_name(rem);
+                    // In format!, %% is the escape sequence to produce a literal '%' character.
                     out.push_str(&format!("{pad}{c_rem} = {c_target} %% {c_operand};\n"));
                 }
                 out.push_str(&format!("{pad}{c_target} /= {c_operand};\n"));
             }
+            emit_on_size_error(
+                out,
+                on_size_error,
+                not_on_size_error,
+                data_items,
+                paragraphs,
+                indent,
+            );
         }
         HirStatement::Call {
-            program, params, ..
+            program,
+            params,
+            on_exception,
+            not_on_exception,
+            ..
         } => {
-            let prog = emit_expr(program);
+            // Extract the program name from the expression.
+            let prog_name = match program {
+                HirExpr::Literal(HirLiteral::String(s)) => sanitize_name(s),
+                HirExpr::Variable(name) => sanitize_name(name),
+                _ => emit_expr(program),
+            };
             let args: Vec<_> = params.iter().map(emit_expr).collect();
-            out.push_str(&format!("{pad}/* CALL {prog}({}) */\n", args.join(", ")));
+            out.push_str(&format!("{pad}/* CALL {prog_name} */\n"));
+            if args.is_empty() {
+                // No parameters: declare and call a void function.
+                out.push_str(&format!(
+                    "{pad}{{ extern void {prog_name}(void); {prog_name}(); }}\n"
+                ));
+            } else {
+                // With USING parameters: pass by reference (pointers).
+                let param_types: Vec<_> = args.iter().map(|_| "void*").collect();
+                let param_addrs: Vec<_> = args.iter().map(|a| format!("&{a}")).collect();
+                out.push_str(&format!(
+                    "{pad}{{ extern void {prog_name}({}); {prog_name}({}); }}\n",
+                    param_types.join(", "),
+                    param_addrs.join(", ")
+                ));
+            }
+            emit_on_exception(
+                out,
+                on_exception,
+                not_on_exception,
+                data_items,
+                paragraphs,
+                indent,
+            );
         }
         HirStatement::Open { entries, .. } => {
             for entry in entries {
                 let c_name = sanitize_name(&entry.file_name);
-                let mode_str = match entry.mode {
+                let mode_val = match entry.mode {
+                    HirOpenMode::Input => 0,
+                    HirOpenMode::Output => 1,
+                    HirOpenMode::IoMode => 2,
+                    HirOpenMode::Extend => 3,
+                };
+                let mode_comment = match entry.mode {
                     HirOpenMode::Input => "INPUT",
                     HirOpenMode::Output => "OUTPUT",
                     HirOpenMode::IoMode => "I-O",
                     HirOpenMode::Extend => "EXTEND",
                 };
-                out.push_str(&format!("{pad}/* OPEN {mode_str} {c_name} */\n"));
+                // Determine record length from data items (default 80)
+                let rec_len = find_record_len(&c_name, data_items);
+                let file_name_str = entry.file_name.as_str();
+                let escaped_name = escape_c_string(file_name_str);
+                let name_len = file_name_str.len();
+                out.push_str(&format!("{pad}/* OPEN {mode_comment} {c_name} */\n"));
+                // org=1 (LineSequential) by default; access=0 (Sequential)
+                out.push_str(&format!(
+                    "{pad}cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, 1, 0, {mode_val}, {rec_len});\n"
+                ));
             }
         }
         HirStatement::Close { files, .. } => {
             for file in files {
                 let c_name = sanitize_name(file);
                 out.push_str(&format!("{pad}/* CLOSE {c_name} */\n"));
+                out.push_str(&format!("{pad}cobol_file_close(FILE_ID_{c_name});\n"));
             }
         }
         HirStatement::Read {
             file_name,
+            into,
             at_end,
             not_at_end,
             ..
         } => {
             let c_name = sanitize_name(file_name);
+            let rec_len = find_record_len(&c_name, data_items);
+            // Determine the target buffer: INTO variable if specified, else
+            // use the file name as the record variable.
+            let target = if let Some(into_var) = into {
+                sanitize_name(into_var)
+            } else {
+                c_name.clone()
+            };
             out.push_str(&format!("{pad}/* READ {c_name} */\n"));
-            if !at_end.is_empty() {
-                out.push_str(&format!("{pad}/* AT END */\n"));
+            out.push_str(&format!(
+                "{pad}{{\n{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*){target}, {rec_len});\n"
+            ));
+            if !at_end.is_empty() || !not_at_end.is_empty() {
+                out.push_str(&format!("{pad}    if (_fs == 10) {{\n"));
+                out.push_str(&format!("{pad}        /* AT END */\n"));
                 for s in at_end {
-                    emit_statement(out, s, indent + 1);
+                    emit_statement(out, s, data_items, paragraphs, indent + 2);
                 }
-            }
-            if !not_at_end.is_empty() {
-                out.push_str(&format!("{pad}/* NOT AT END */\n"));
-                for s in not_at_end {
-                    emit_statement(out, s, indent + 1);
+                if !not_at_end.is_empty() {
+                    out.push_str(&format!("{pad}    }} else {{\n"));
+                    out.push_str(&format!("{pad}        /* NOT AT END */\n"));
+                    for s in not_at_end {
+                        emit_statement(out, s, data_items, paragraphs, indent + 2);
+                    }
                 }
+                out.push_str(&format!("{pad}    }}\n"));
             }
+            out.push_str(&format!("{pad}}}\n"));
         }
-        HirStatement::Write { record_name, .. } => {
+        HirStatement::Write {
+            record_name,
+            from,
+            invalid_key,
+            ..
+        } => {
             let c_name = sanitize_name(record_name);
+            let rec_len = find_record_len(&c_name, data_items);
+            let source = if let Some(from_expr) = from {
+                emit_expr(from_expr)
+            } else {
+                c_name.clone()
+            };
             out.push_str(&format!("{pad}/* WRITE {c_name} */\n"));
+            out.push_str(&format!(
+                "{pad}cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+            ));
+            if !invalid_key.is_empty() {
+                out.push_str(&format!("{pad}/* TODO: INVALID KEY check for WRITE */\n"));
+                for s in invalid_key {
+                    emit_statement(out, s, data_items, paragraphs, indent);
+                }
+            }
         }
-        HirStatement::Rewrite { record_name, .. } => {
+        HirStatement::Rewrite {
+            record_name, from, ..
+        } => {
             let c_name = sanitize_name(record_name);
+            let rec_len = find_record_len(&c_name, data_items);
+            let source = if let Some(from_expr) = from {
+                emit_expr(from_expr)
+            } else {
+                c_name.clone()
+            };
             out.push_str(&format!("{pad}/* REWRITE {c_name} */\n"));
+            out.push_str(&format!(
+                "{pad}cobol_file_rewrite(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+            ));
         }
         HirStatement::Delete { file_name, .. } => {
             let c_name = sanitize_name(file_name);
             out.push_str(&format!("{pad}/* DELETE {c_name} */\n"));
+            out.push_str(&format!("{pad}cobol_file_delete(FILE_ID_{c_name});\n"));
         }
         HirStatement::GoTo {
             targets,
@@ -438,34 +723,211 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
                 out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
             }
         }
-        HirStatement::StringStmt { into, sources, .. } => {
+        HirStatement::StringStmt {
+            into,
+            sources,
+            on_overflow,
+            ..
+        } => {
             let c_into = sanitize_name(into);
+            let into_size = find_data_item_size(&c_into, data_items);
             out.push_str(&format!("{pad}/* STRING INTO {c_into} */\n"));
-            for src in sources {
-                let _c_src = emit_expr(src);
+            out.push_str(&format!("{pad}{{\n"));
+            // Build source descriptors on the stack. Each source has
+            // (ptr, len, delim_ptr, delim_len). For simplicity we treat
+            // each source expression as DELIMITED BY SIZE.
+            let src_count = sources.len();
+            for (i, src) in sources.iter().enumerate() {
+                match src {
+                    HirExpr::Literal(HirLiteral::String(s)) => {
+                        let escaped = escape_c_string(s);
+                        let len = s.len();
+                        out.push_str(&format!(
+                            "{pad}    static const uint8_t _str_src_{i}[] = \"{escaped}\";\n"
+                        ));
+                        out.push_str(&format!(
+                            "{pad}    const void* _src_ptr_{i} = _str_src_{i}; uint32_t _src_len_{i} = {len};\n"
+                        ));
+                    }
+                    HirExpr::Variable(name) => {
+                        let c_var = sanitize_name(name);
+                        let var_size = find_data_item_size(&c_var, data_items);
+                        out.push_str(&format!(
+                            "{pad}    const void* _src_ptr_{i} = {c_var}; uint32_t _src_len_{i} = {var_size};\n"
+                        ));
+                    }
+                    _ => {
+                        let e = emit_expr(src);
+                        out.push_str(&format!("{pad}    int64_t _src_tmp_{i} = {e};\n"));
+                        out.push_str(&format!(
+                            "{pad}    const void* _src_ptr_{i} = &_src_tmp_{i}; uint32_t _src_len_{i} = sizeof(int64_t);\n"
+                        ));
+                    }
+                }
+            }
+            // Build the CobolStringSource array: { ptr, len, delim_ptr=NULL, delim_len=0 }
+            out.push_str(&format!(
+                "{pad}    struct {{ const uint8_t* ptr; uint32_t len; const uint8_t* delim_ptr; uint32_t delim_len; }} _sources[{src_count}];\n"
+            ));
+            for i in 0..src_count {
+                out.push_str(&format!(
+                    "{pad}    _sources[{i}].ptr = (const uint8_t*)_src_ptr_{i}; _sources[{i}].len = _src_len_{i}; _sources[{i}].delim_ptr = NULL; _sources[{i}].delim_len = 0;\n"
+                ));
+            }
+            out.push_str(&format!("{pad}    uint32_t _pointer = 1;\n"));
+            out.push_str(&format!(
+                "{pad}    cobol_string_concat(_sources, {src_count}, (uint8_t*){c_into}, {into_size}, &_pointer);\n"
+            ));
+            out.push_str(&format!("{pad}}}\n"));
+            if !on_overflow.is_empty() {
+                out.push_str(&format!("{pad}/* TODO: ON OVERFLOW check for STRING */\n"));
+                for s in on_overflow {
+                    emit_statement(out, s, data_items, paragraphs, indent);
+                }
             }
         }
-        HirStatement::UnstringStmt { source, into, .. } => {
+        HirStatement::UnstringStmt {
+            source,
+            into,
+            on_overflow,
+            ..
+        } => {
             let c_source = sanitize_name(source);
+            let src_size = find_data_item_size(&c_source, data_items);
             let targets: Vec<_> = into.iter().map(|s| sanitize_name(s)).collect();
+            let tgt_count = targets.len();
             out.push_str(&format!(
                 "{pad}/* UNSTRING {c_source} INTO {} */\n",
                 targets.join(", ")
             ));
+            out.push_str(&format!("{pad}{{\n"));
+            // Build target descriptors. Each target: { ptr, len, delim_ptr=NULL, delim_len=0, count_ptr=NULL }
+            out.push_str(&format!(
+                "{pad}    struct {{ uint8_t* ptr; uint32_t len; uint8_t* delimiter_ptr; uint32_t delimiter_len; uint32_t* count_ptr; }} _targets[{tgt_count}];\n"
+            ));
+            for (i, tgt) in targets.iter().enumerate() {
+                let tgt_size = find_data_item_size(tgt, data_items);
+                out.push_str(&format!(
+                    "{pad}    _targets[{i}].ptr = (uint8_t*){tgt}; _targets[{i}].len = {tgt_size}; _targets[{i}].delimiter_ptr = NULL; _targets[{i}].delimiter_len = 0; _targets[{i}].count_ptr = NULL;\n"
+                ));
+            }
+            out.push_str(&format!(
+                "{pad}    uint32_t _pointer = 1; uint32_t _tallying = 0;\n"
+            ));
+            // Default: split on spaces (delim = " ", len = 1)
+            out.push_str(&format!(
+                "{pad}    cobol_unstring((const uint8_t*){c_source}, {src_size}, (const uint8_t*)\" \", 1, _targets, {tgt_count}, &_pointer, &_tallying);\n"
+            ));
+            out.push_str(&format!("{pad}}}\n"));
+            if !on_overflow.is_empty() {
+                out.push_str(&format!(
+                    "{pad}/* TODO: ON OVERFLOW check for UNSTRING */\n"
+                ));
+                for s in on_overflow {
+                    emit_statement(out, s, data_items, paragraphs, indent);
+                }
+            }
         }
         HirStatement::Accept { target, .. } => {
             let c_target = sanitize_name(target);
+            let size = find_data_item_size(&c_target, data_items);
             out.push_str(&format!("{pad}/* ACCEPT {c_target} */\n"));
+            out.push_str(&format!("{pad}fgets({c_target}, {size}, stdin);\n"));
+            // Remove trailing newline if present
+            out.push_str(&format!(
+                "{pad}{c_target}[strcspn({c_target}, \"\\n\")] = '\\0';\n"
+            ));
         }
-        HirStatement::Sort { file_name, .. } => {
+        HirStatement::Sort {
+            file_name,
+            keys,
+            using,
+            giving,
+            ..
+        } => {
             let c_name = sanitize_name(file_name);
+            let rec_len = find_record_len(&c_name, data_items);
             out.push_str(&format!("{pad}/* SORT {c_name} */\n"));
+            if !using.is_empty() {
+                let using_names: Vec<_> = using.iter().map(|f| f.as_str()).collect();
+                out.push_str(&format!("{pad}/* USING {} */\n", using_names.join(", ")));
+            }
+            if !giving.is_empty() {
+                let giving_names: Vec<_> = giving.iter().map(|f| f.as_str()).collect();
+                out.push_str(&format!("{pad}/* GIVING {} */\n", giving_names.join(", ")));
+            }
+            let key_count = if keys.is_empty() { 1 } else { keys.len() };
+            out.push_str(&format!("{pad}{{\n"));
+            out.push_str(&format!(
+                "{pad}    struct {{ uint32_t offset; uint32_t length; uint8_t ascending; }} _sort_keys[{key_count}];\n"
+            ));
+            if keys.is_empty() {
+                // Default: ascending on entire record
+                out.push_str(&format!(
+                    "{pad}    _sort_keys[0].offset = 0; _sort_keys[0].length = {rec_len}; _sort_keys[0].ascending = 1;\n"
+                ));
+            } else {
+                for (i, key) in keys.iter().enumerate() {
+                    let ascending = matches!(key.order, cobol_hir::HirSortOrder::Ascending);
+                    let asc_val: u8 = if ascending { 1 } else { 0 };
+                    let field_names: Vec<_> = key.fields.iter().map(|f| f.as_str()).collect();
+                    out.push_str(&format!(
+                        "{pad}    _sort_keys[{i}].offset = 0; _sort_keys[{i}].length = {rec_len}; _sort_keys[{i}].ascending = {asc_val}; /* key: {} */\n",
+                        field_names.join(", ")
+                    ));
+                }
+            }
+            out.push_str(&format!(
+                "{pad}    /* TODO: record_count must be determined at runtime */\n"
+            ));
+            out.push_str(&format!(
+                "{pad}    cobol_sort((uint8_t*){c_name}, 0, {rec_len}, _sort_keys, {key_count});\n"
+            ));
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        HirStatement::Inspect { target, kind, .. } => {
+            let c_target = sanitize_name(target);
+            let target_size = find_data_item_size(&c_target, data_items);
+            out.push_str(&format!("{pad}/* INSPECT {c_target} */\n"));
+            match kind {
+                cobol_hir::HirInspectKind::Tallying => {
+                    // INSPECT TALLYING: count all characters by default.
+                    out.push_str(&format!(
+                        "{pad}cobol_inspect_tallying((const uint8_t*){c_target}, {target_size}, NULL, 0, 0);\n"
+                    ));
+                }
+                cobol_hir::HirInspectKind::Replacing => {
+                    // INSPECT REPLACING: placeholder -- replace all
+                    // characters with space (mode=0 CHARACTERS).
+                    out.push_str(&format!(
+                        "{pad}cobol_inspect_replacing((uint8_t*){c_target}, {target_size}, NULL, 0, (const uint8_t*)\" \", 1, 0);\n"
+                    ));
+                }
+                cobol_hir::HirInspectKind::TallyingReplacing => {
+                    out.push_str(&format!(
+                        "{pad}/* INSPECT TALLYING AND REPLACING: combined mode */\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}cobol_inspect_tallying((const uint8_t*){c_target}, {target_size}, NULL, 0, 0);\n"
+                    ));
+                }
+                cobol_hir::HirInspectKind::Converting => {
+                    // INSPECT CONVERTING requires from/to strings which
+                    // are not in the simplified HIR. Emit a no-op comment.
+                    out.push_str(&format!(
+                        "{pad}/* INSPECT CONVERTING: from/to strings not available in HIR */\n"
+                    ));
+                }
+            }
         }
         HirStatement::StopRun { .. } => {
             out.push_str(&format!("{pad}cobol_stop_run();\n"));
         }
         HirStatement::Goback { .. } => {
             out.push_str(&format!("{pad}cobol_goback();\n"));
+        }
+        HirStatement::ExitProgram { .. } => {
+            out.push_str(&format!("{pad}return; /* EXIT PROGRAM */\n"));
         }
         HirStatement::Continue { .. } => {
             out.push_str(&format!("{pad}/* CONTINUE */\n"));
@@ -566,10 +1028,171 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
                 "{pad}/* XML PARSE {c_source} PROCESSING PROCEDURE {c_proc} */\n"
             ));
         }
+        // --- File I/O: additional statements ---
+        HirStatement::Start {
+            file_name,
+            key,
+            op,
+            invalid_key,
+            not_invalid_key,
+            ..
+        } => {
+            let c_name = sanitize_name(file_name);
+            let mode_val = match op {
+                HirStartRelation::Equal => 0,
+                HirStartRelation::GreaterThan => 1,
+                HirStartRelation::GreaterEqual | HirStartRelation::NotLessThan => 2,
+            };
+            out.push_str(&format!("{pad}/* START {c_name} */\n"));
+            if let Some(key_name) = key {
+                let c_key = sanitize_name(key_name);
+                let key_size = find_data_item_size(&c_key, data_items);
+                out.push_str(&format!(
+                    "{pad}cobol_file_start(FILE_ID_{c_name}, (const uint8_t*){c_key}, {key_size}, {mode_val});\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{pad}cobol_file_start(FILE_ID_{c_name}, NULL, 0, {mode_val});\n"
+                ));
+            }
+            if !invalid_key.is_empty() {
+                out.push_str(&format!("{pad}/* TODO: INVALID KEY check for START */\n"));
+                for s in invalid_key {
+                    emit_statement(out, s, data_items, paragraphs, indent);
+                }
+            }
+            if !not_invalid_key.is_empty() {
+                out.push_str(&format!(
+                    "{pad}/* TODO: NOT INVALID KEY check for START */\n"
+                ));
+                for s in not_invalid_key {
+                    emit_statement(out, s, data_items, paragraphs, indent);
+                }
+            }
+        }
+        HirStatement::Return {
+            file_name,
+            into,
+            at_end,
+            not_at_end,
+            ..
+        } => {
+            let c_name = sanitize_name(file_name);
+            let rec_len = find_record_len(&c_name, data_items);
+            let target = if let Some(into_var) = into {
+                sanitize_name(into_var)
+            } else {
+                c_name.clone()
+            };
+            out.push_str(&format!("{pad}/* RETURN {c_name} */\n"));
+            out.push_str(&format!(
+                "{pad}{{\n{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*){target}, {rec_len});\n"
+            ));
+            if !at_end.is_empty() || !not_at_end.is_empty() {
+                out.push_str(&format!("{pad}    if (_fs == 10) {{\n"));
+                out.push_str(&format!("{pad}        /* AT END */\n"));
+                for s in at_end {
+                    emit_statement(out, s, data_items, paragraphs, indent + 2);
+                }
+                if !not_at_end.is_empty() {
+                    out.push_str(&format!("{pad}    }} else {{\n"));
+                    out.push_str(&format!("{pad}        /* NOT AT END */\n"));
+                    for s in not_at_end {
+                        emit_statement(out, s, data_items, paragraphs, indent + 2);
+                    }
+                }
+                out.push_str(&format!("{pad}    }}\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        HirStatement::Cancel { programs, .. } => {
+            for prog in programs {
+                let prog_name = match prog {
+                    HirExpr::Literal(HirLiteral::String(s)) => sanitize_name(s),
+                    HirExpr::Variable(name) => sanitize_name(name),
+                    _ => emit_expr(prog),
+                };
+                out.push_str(&format!(
+                    "{pad}/* CANCEL {prog_name} -- releases loaded program resources */\n"
+                ));
+            }
+        }
+        HirStatement::Merge {
+            file_name,
+            keys,
+            using,
+            giving,
+            ..
+        } => {
+            let c_name = sanitize_name(file_name);
+            let rec_len = find_record_len(&c_name, data_items);
+            out.push_str(&format!("{pad}/* MERGE {c_name} */\n"));
+            if !using.is_empty() {
+                let using_names: Vec<_> = using.iter().map(|f| f.as_str()).collect();
+                out.push_str(&format!("{pad}/* USING {} */\n", using_names.join(", ")));
+            }
+            if !giving.is_empty() {
+                let giving_names: Vec<_> = giving.iter().map(|f| f.as_str()).collect();
+                out.push_str(&format!("{pad}/* GIVING {} */\n", giving_names.join(", ")));
+            }
+            let key_count = if keys.is_empty() { 1 } else { keys.len() };
+            let input_count = using.len();
+            out.push_str(&format!("{pad}{{\n"));
+            out.push_str(&format!(
+                "{pad}    uint32_t _merge_inputs[{input_count}];\n"
+            ));
+            for (i, input_file) in using.iter().enumerate() {
+                let c_input = sanitize_name(input_file);
+                out.push_str(&format!(
+                    "{pad}    _merge_inputs[{i}] = FILE_ID_{c_input};\n"
+                ));
+            }
+            out.push_str(&format!(
+                "{pad}    struct {{ uint32_t offset; uint32_t length; uint8_t ascending; }} _merge_keys[{key_count}];\n"
+            ));
+            if keys.is_empty() {
+                out.push_str(&format!(
+                    "{pad}    _merge_keys[0].offset = 0; _merge_keys[0].length = {rec_len}; _merge_keys[0].ascending = 1;\n"
+                ));
+            } else {
+                for (i, key) in keys.iter().enumerate() {
+                    let ascending = matches!(key.order, cobol_hir::HirSortOrder::Ascending);
+                    let asc_val: u8 = if ascending { 1 } else { 0 };
+                    out.push_str(&format!(
+                        "{pad}    _merge_keys[{i}].offset = 0; _merge_keys[{i}].length = {rec_len}; _merge_keys[{i}].ascending = {asc_val};\n"
+                    ));
+                }
+            }
+            let output_file_id = if let Some(first_giving) = giving.first() {
+                let c_giving = sanitize_name(first_giving);
+                format!("FILE_ID_{c_giving}")
+            } else {
+                format!("FILE_ID_{c_name}")
+            };
+            out.push_str(&format!(
+                "{pad}    cobol_merge(_merge_inputs, {input_count}, {output_file_id}, _merge_keys, {key_count}, {rec_len});\n"
+            ));
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        HirStatement::Release {
+            record_name, from, ..
+        } => {
+            let c_name = sanitize_name(record_name);
+            let rec_len = find_record_len(&c_name, data_items);
+            let source = if let Some(from_expr) = from {
+                emit_expr(from_expr)
+            } else {
+                c_name.clone()
+            };
+            out.push_str(&format!("{pad}/* RELEASE {c_name} */\n"));
+            out.push_str(&format!(
+                "{pad}cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+            ));
+        }
     }
 }
 
-fn emit_display_operand(out: &mut String, expr: &HirExpr, pad: &str) {
+fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataItem], pad: &str) {
     match expr {
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
@@ -596,14 +1219,50 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, pad: &str) {
         }
         HirExpr::Variable(name) => {
             let c_name = sanitize_name(name);
-            // We don't know the type at this point, so generate a generic display.
-            // For simplicity, display as integer. A full implementation would
-            // look up the type.
-            out.push_str(&format!("{pad}cobol_display_int({c_name});\n"));
+            // Look up the variable's type in data_items to choose the correct
+            // display function. If not found, default to integer display.
+            let is_alphanumeric = data_items.iter().any(|item| {
+                item.name.as_str() == name.as_str()
+                    && matches!(item.data_type, HirType::Alphanumeric { .. })
+            });
+            if is_alphanumeric {
+                // Look up the size for alphanumeric variables
+                let size = data_items
+                    .iter()
+                    .find(|item| item.name.as_str() == name.as_str())
+                    .and_then(|item| match &item.data_type {
+                        HirType::Alphanumeric { size } => Some(*size),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                out.push_str(&format!(
+                    "{pad}cobol_display_string((const uint8_t*){c_name}, {size});\n"
+                ));
+            } else {
+                out.push_str(&format!("{pad}cobol_display_int({c_name});\n"));
+            }
         }
-        HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. } => {
+        HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. } | HirExpr::FunctionCall { .. } => {
             let e = emit_expr(expr);
             out.push_str(&format!("{pad}cobol_display_int({e});\n"));
+        }
+        HirExpr::ReferenceModification {
+            variable,
+            start,
+            length,
+        } => {
+            let c_var = sanitize_name(variable);
+            let c_start = emit_expr(start);
+            let var_size = find_data_item_size(&c_var, data_items);
+            let c_len = if let Some(len) = length {
+                emit_expr(len)
+            } else {
+                format!("({var_size} - ({c_start} - 1))")
+            };
+            out.push_str(&format!(
+                "{pad}cobol_display_string(\
+                 (const uint8_t*){c_var} + ({c_start} - 1), {c_len});\n"
+            ));
         }
     }
 }
@@ -641,13 +1300,99 @@ fn emit_move_to(out: &mut String, from: &HirExpr, c_target: &str, pad: &str) {
     }
 }
 
-fn emit_perform(out: &mut String, kind: &HirPerformKind, indent: usize) {
+/// Emit a MOVE into a reference-modified target: `MOVE src TO VAR(start:length)`.
+///
+/// Generated C uses `memcpy` with pointer arithmetic.
+fn emit_move_to_refmod(
+    out: &mut String,
+    from: &HirExpr,
+    variable: &smol_str::SmolStr,
+    start: &HirExpr,
+    length: &Option<HirExpr>,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let c_var = sanitize_name(variable);
+    let c_start = emit_expr(start);
+    let var_size = find_data_item_size(&c_var, data_items);
+    let c_len = if let Some(len) = length {
+        emit_expr(len)
+    } else {
+        // No length: remaining bytes from start
+        format!("({var_size} - ({c_start} - 1))")
+    };
+
+    match from {
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            let src_len = s.len();
+            out.push_str(&format!(
+                "{pad}memcpy({c_var} + ({c_start} - 1), \"{escaped}\", \
+                 ({src_len} < (size_t)({c_len}) ? {src_len} : (size_t)({c_len})));\n"
+            ));
+        }
+        HirExpr::Literal(HirLiteral::Space) => {
+            out.push_str(&format!(
+                "{pad}memset({c_var} + ({c_start} - 1), ' ', {c_len});\n"
+            ));
+        }
+        HirExpr::Literal(HirLiteral::Zero) => {
+            out.push_str(&format!(
+                "{pad}memset({c_var} + ({c_start} - 1), '0', {c_len});\n"
+            ));
+        }
+        HirExpr::Variable(src_name) => {
+            let c_src = sanitize_name(src_name);
+            let src_size = find_data_item_size(&c_src, data_items);
+            out.push_str(&format!(
+                "{pad}memcpy({c_var} + ({c_start} - 1), {c_src}, \
+                 ({src_size} < (uint32_t)({c_len}) ? {src_size} : (uint32_t)({c_len})));\n"
+            ));
+        }
+        HirExpr::ReferenceModification {
+            variable: src_var,
+            start: src_start,
+            length: src_length,
+        } => {
+            let c_src_var = sanitize_name(src_var);
+            let c_src_start = emit_expr(src_start);
+            let src_size = find_data_item_size(&c_src_var, data_items);
+            let c_src_len = if let Some(sl) = src_length {
+                emit_expr(sl)
+            } else {
+                format!("({src_size} - ({c_src_start} - 1))")
+            };
+            out.push_str(&format!(
+                "{pad}memcpy({c_var} + ({c_start} - 1), \
+                 {c_src_var} + ({c_src_start} - 1), \
+                 ({c_src_len} < ({c_len}) ? ({c_src_len}) : ({c_len})));\n"
+            ));
+        }
+        _ => {
+            // Fallback: evaluate expression, store temporarily, then memcpy
+            let e = emit_expr(from);
+            out.push_str(&format!(
+                "{pad}{{ int64_t _tmp = {e}; \
+                 memcpy({c_var} + ({c_start} - 1), &_tmp, \
+                 (sizeof(_tmp) < (size_t)({c_len}) ? sizeof(_tmp) : (size_t)({c_len}))); }}\n"
+            ));
+        }
+    }
+}
+
+fn emit_perform(
+    out: &mut String,
+    kind: &HirPerformKind,
+    data_items: &[HirDataItem],
+    paragraphs: &[HirParagraph],
+    indent: usize,
+) {
     let pad = "    ".repeat(indent);
     match kind {
         HirPerformKind::Inline { body } => {
             out.push_str(&format!("{pad}{{\n"));
             for s in body {
-                emit_statement(out, s, indent + 1);
+                emit_statement(out, s, data_items, paragraphs, indent + 1);
             }
             out.push_str(&format!("{pad}}}\n"));
         }
@@ -657,7 +1402,7 @@ fn emit_perform(out: &mut String, kind: &HirPerformKind, indent: usize) {
                 "{pad}for (int64_t _cobol_i = 0; _cobol_i < ({c_count}); _cobol_i++) {{\n"
             ));
             for s in body {
-                emit_statement(out, s, indent + 1);
+                emit_statement(out, s, data_items, paragraphs, indent + 1);
             }
             out.push_str(&format!("{pad}}}\n"));
         }
@@ -665,7 +1410,7 @@ fn emit_perform(out: &mut String, kind: &HirPerformKind, indent: usize) {
             let cond = emit_condition(condition);
             out.push_str(&format!("{pad}while (!({cond})) {{\n"));
             for s in body {
-                emit_statement(out, s, indent + 1);
+                emit_statement(out, s, data_items, paragraphs, indent + 1);
             }
             out.push_str(&format!("{pad}}}\n"));
         }
@@ -684,24 +1429,128 @@ fn emit_perform(out: &mut String, kind: &HirPerformKind, indent: usize) {
                 "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
             ));
             for s in body {
-                emit_statement(out, s, indent + 1);
+                emit_statement(out, s, data_items, paragraphs, indent + 1);
             }
             out.push_str(&format!("{pad}    {c_var} += {c_by};\n"));
             out.push_str(&format!("{pad}}}\n"));
         }
-        HirPerformKind::ProcedureName { name } => {
+        HirPerformKind::ProcedureName { name, through } => {
             let c_name = sanitize_name(name);
-            out.push_str(&format!(
-                "{pad}/* PERFORM {c_name} -- procedure calls not yet implemented */\n"
-            ));
+            if let Some(thru) = through {
+                // PERFORM name THRU through: call all paragraphs from name to through
+                let c_thru = sanitize_name(thru);
+                out.push_str(&format!("{pad}/* PERFORM {c_name} THRU {c_thru} */\n"));
+                let start_idx = paragraphs
+                    .iter()
+                    .position(|p| sanitize_name(&p.name) == c_name);
+                let end_idx = paragraphs
+                    .iter()
+                    .position(|p| sanitize_name(&p.name) == c_thru);
+                if let (Some(si), Some(ei)) = (start_idx, end_idx) {
+                    let (lo, hi) = if si <= ei { (si, ei) } else { (ei, si) };
+                    for p in &paragraphs[lo..=hi] {
+                        let pn = sanitize_name(&p.name);
+                        out.push_str(&format!("{pad}para_{pn}();\n"));
+                    }
+                } else {
+                    // Fallback: just call the named paragraph
+                    out.push_str(&format!("{pad}para_{c_name}();\n"));
+                }
+            } else {
+                out.push_str(&format!("{pad}para_{c_name}();\n"));
+            }
         }
+    }
+}
+
+/// Emit ON SIZE ERROR / NOT ON SIZE ERROR handlers.
+///
+/// Uses a simplified approach: the arithmetic is already emitted, so we
+/// emit the NOT ON SIZE ERROR body unconditionally and add a TODO comment
+/// for actual overflow detection.
+fn emit_on_size_error(
+    out: &mut String,
+    on_size_error: &[HirStatement],
+    not_on_size_error: &[HirStatement],
+    data_items: &[HirDataItem],
+    paragraphs: &[HirParagraph],
+    indent: usize,
+) {
+    if on_size_error.is_empty() && not_on_size_error.is_empty() {
+        return;
+    }
+    let pad = "    ".repeat(indent);
+    out.push_str(&format!(
+        "{pad}/* TODO: overflow detection for ON SIZE ERROR */\n"
+    ));
+    if !not_on_size_error.is_empty() {
+        out.push_str(&format!("{pad}/* NOT ON SIZE ERROR */\n"));
+        for s in not_on_size_error {
+            emit_statement(out, s, data_items, paragraphs, indent);
+        }
+    }
+    if !on_size_error.is_empty() {
+        out.push_str(&format!(
+            "{pad}/* ON SIZE ERROR (requires runtime overflow flag) */\n"
+        ));
+        // Emit as dead code behind a false branch until overflow
+        // detection is implemented.
+        out.push_str(&format!("{pad}if (0) {{\n"));
+        for s in on_size_error {
+            emit_statement(out, s, data_items, paragraphs, indent + 1);
+        }
+        out.push_str(&format!("{pad}}}\n"));
+    }
+}
+
+/// Emit ON EXCEPTION / NOT ON EXCEPTION handlers for CALL.
+fn emit_on_exception(
+    out: &mut String,
+    on_exception: &[HirStatement],
+    not_on_exception: &[HirStatement],
+    data_items: &[HirDataItem],
+    paragraphs: &[HirParagraph],
+    indent: usize,
+) {
+    if on_exception.is_empty() && not_on_exception.is_empty() {
+        return;
+    }
+    let pad = "    ".repeat(indent);
+    out.push_str(&format!(
+        "{pad}/* TODO: exception detection for ON EXCEPTION */\n"
+    ));
+    if !not_on_exception.is_empty() {
+        out.push_str(&format!("{pad}/* NOT ON EXCEPTION */\n"));
+        for s in not_on_exception {
+            emit_statement(out, s, data_items, paragraphs, indent);
+        }
+    }
+    if !on_exception.is_empty() {
+        out.push_str(&format!(
+            "{pad}/* ON EXCEPTION (dead until exception detection) */\n"
+        ));
+        out.push_str(&format!("{pad}if (0) {{\n"));
+        for s in on_exception {
+            emit_statement(out, s, data_items, paragraphs, indent + 1);
+        }
+        out.push_str(&format!("{pad}}}\n"));
     }
 }
 
 fn emit_expr(expr: &HirExpr) -> String {
     match expr {
         HirExpr::Literal(HirLiteral::Integer(n)) => format!("((int64_t){n})"),
-        HirExpr::Literal(HirLiteral::Decimal(d)) => d.to_string(),
+        HirExpr::Literal(HirLiteral::Decimal(d)) => {
+            // Validate that the decimal literal contains only safe characters
+            // to prevent injection into the generated C source.
+            if d.chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')
+            {
+                d.to_string()
+            } else {
+                "0 /* invalid decimal */".to_string()
+            }
+        }
         HirExpr::Literal(HirLiteral::String(s)) => {
             // Strings in expression context are unusual; use 0
             format!("0 /* string literal: {} */", escape_c_string(s))
@@ -717,7 +1566,7 @@ fn emit_expr(expr: &HirExpr) -> String {
                 HirBinOp::Sub => "-",
                 HirBinOp::Mul => "*",
                 HirBinOp::Div => "/",
-                HirBinOp::Pow => return format!("/* pow */ (int64_t)1 /* {l} ** {r} */"),
+                HirBinOp::Pow => return format!("((int64_t)pow((double){l}, (double){r}))"),
             };
             format!("({l} {op_str} {r})")
         }
@@ -726,6 +1575,88 @@ fn emit_expr(expr: &HirExpr) -> String {
             match op {
                 HirUnaryOp::Neg => format!("(-{o})"),
             }
+        }
+        HirExpr::FunctionCall { name, args } => {
+            let upper_name = name.to_uppercase();
+            let c_args: Vec<_> = args.iter().map(emit_expr).collect();
+            // Map COBOL intrinsic function names to runtime function calls.
+            match upper_name.as_str() {
+                "LENGTH" => {
+                    // FUNCTION LENGTH(var) -- returns the byte length.
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_length((const uint8_t*){arg}, sizeof({arg}))")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "NUMVAL" | "NUMVAL-C" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_numval((const uint8_t*){arg}, sizeof({arg}))")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "MAX" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_max_int({}, {})", c_args[0], c_args[1])
+                    } else {
+                        c_args.first().cloned().unwrap_or_else(|| "0".to_string())
+                    }
+                }
+                "MIN" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_min_int({}, {})", c_args[0], c_args[1])
+                    } else {
+                        c_args.first().cloned().unwrap_or_else(|| "0".to_string())
+                    }
+                }
+                "MOD" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_mod({}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "INTEGER" | "INTEGER-PART" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_integer({arg}, 0)")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "ORD" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_ord((uint8_t){arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "CHAR" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_char((uint32_t){arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                _ => {
+                    // User-defined function: use cobol_func_ prefix convention.
+                    let c_name = sanitize_name(name);
+                    format!("cobol_func_{c_name}({})", c_args.join(", "))
+                }
+            }
+        }
+        HirExpr::ReferenceModification {
+            variable,
+            start,
+            length: _,
+        } => {
+            // In numeric expression context, reference modification returns
+            // a pointer expression. This is unusual but we emit it for
+            // completeness. Callers like emit_display_operand handle the
+            // display case directly.
+            let c_var = sanitize_name(variable);
+            let c_start = emit_expr(start);
+            format!("({c_var} + ({c_start} - 1))")
         }
     }
 }
@@ -762,12 +1693,216 @@ fn emit_condition(cond: &HirCondition) -> String {
     }
 }
 
+/// Collect all file names referenced in file I/O statements across
+/// the program body,  and nested constructs. Returns a
+/// sorted, deduplicated list of file names.
+fn collect_file_names(program: &HirProgram) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    for stmt in &program.body {
+        collect_file_names_stmt(stmt, &mut names);
+    }
+    for para in &program.paragraphs {
+        for stmt in &para.body {
+            collect_file_names_stmt(stmt, &mut names);
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn collect_file_names_stmt(stmt: &HirStatement, names: &mut BTreeSet<String>) {
+    match stmt {
+        HirStatement::Open { entries, .. } => {
+            for entry in entries {
+                names.insert(entry.file_name.to_string());
+            }
+        }
+        HirStatement::Close { files, .. } => {
+            for f in files {
+                names.insert(f.to_string());
+            }
+        }
+        HirStatement::Read {
+            file_name,
+            at_end,
+            not_at_end,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for s in at_end {
+                collect_file_names_stmt(s, names);
+            }
+            for s in not_at_end {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Write { record_name, .. } => {
+            names.insert(record_name.to_string());
+        }
+        HirStatement::Rewrite { record_name, .. } => {
+            names.insert(record_name.to_string());
+        }
+        HirStatement::Delete { file_name, .. } => {
+            names.insert(file_name.to_string());
+        }
+        HirStatement::Sort { file_name, .. } => {
+            names.insert(file_name.to_string());
+        }
+        HirStatement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                collect_file_names_stmt(s, names);
+            }
+            for s in else_body {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Perform { kind, .. } => {
+            let body = match kind {
+                HirPerformKind::Inline { body } => body.as_slice(),
+                HirPerformKind::Times { body, .. } => body.as_slice(),
+                HirPerformKind::Until { body, .. } => body.as_slice(),
+                HirPerformKind::Varying { body, .. } => body.as_slice(),
+                HirPerformKind::ProcedureName { .. } => &[],
+            };
+            for s in body {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Start {
+            file_name,
+            invalid_key,
+            not_invalid_key,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for s in invalid_key {
+                collect_file_names_stmt(s, names);
+            }
+            for s in not_invalid_key {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Return {
+            file_name,
+            at_end,
+            not_at_end,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for s in at_end {
+                collect_file_names_stmt(s, names);
+            }
+            for s in not_at_end {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Merge {
+            file_name,
+            using,
+            giving,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for f in using {
+                names.insert(f.to_string());
+            }
+            for f in giving {
+                names.insert(f.to_string());
+            }
+        }
+        HirStatement::Release { record_name, .. } => {
+            names.insert(record_name.to_string());
+        }
+        _ => {}
+    }
+}
+
+/// Find the record length for a file/record name by looking up
+/// the data item with a matching (sanitized) name. Returns the
+/// size in bytes (default 80 if not found).
+fn find_record_len(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    find_data_item_size(c_name, data_items)
+}
+
+/// Find the byte size of a data item by its sanitized C name.
+/// Returns a reasonable default (80) if the item is not found.
+fn find_data_item_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    for item in data_items {
+        let item_c_name = sanitize_name(&item.name);
+        if item_c_name == c_name {
+            return data_item_byte_size(&item.data_type);
+        }
+        // Also search in group members
+        if let HirType::Group { members, .. } = &item.data_type {
+            let found = find_data_item_size_in(c_name, members);
+            if found > 0 {
+                return found;
+            }
+        }
+    }
+    80 // Default record length
+}
+
+fn find_data_item_size_in(c_name: &str, items: &[HirDataItem]) -> u32 {
+    for item in items {
+        let item_c_name = sanitize_name(&item.name);
+        if item_c_name == c_name {
+            return data_item_byte_size(&item.data_type);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            let found = find_data_item_size_in(c_name, members);
+            if found > 0 {
+                return found;
+            }
+        }
+    }
+    0
+}
+
+/// Compute the byte size of an HIR type.
+fn data_item_byte_size(data_type: &HirType) -> u32 {
+    match data_type {
+        HirType::Alphanumeric { size } => *size,
+        HirType::Numeric { size, .. } => *size,
+        HirType::Group { size, .. } => *size,
+        HirType::Comp3 { size, .. } => *size,
+        HirType::Binary { size } => *size,
+        HirType::Index => 8,
+        HirType::Pointer => 8,
+        HirType::Boolean => 1,
+        HirType::FloatShort => 4,
+        HirType::FloatLong => 8,
+        HirType::FloatExtended => 16,
+    }
+}
+
 /// Convert a COBOL data name to a valid C identifier.
 ///
 /// COBOL names use hyphens which are not valid in C, so we replace
-/// them with underscores.
+/// them with underscores. Additionally, names starting with a digit
+/// are prefixed with `cob_`, and C reserved words are prefixed to
+/// avoid collisions.
 fn sanitize_name(name: &str) -> String {
-    name.replace('-', "_")
+    let mut result = name.replace('-', "_");
+    // C identifiers cannot start with a digit
+    if result.starts_with(|c: char| c.is_ascii_digit()) {
+        result.insert_str(0, "cob_");
+    }
+    // Avoid C reserved words
+    match result.as_str() {
+        "auto" | "break" | "case" | "char" | "const" | "continue" | "default" | "do" | "double"
+        | "else" | "enum" | "extern" | "float" | "for" | "goto" | "if" | "int" | "long"
+        | "register" | "return" | "short" | "signed" | "sizeof" | "static" | "struct"
+        | "switch" | "typedef" | "union" | "unsigned" | "void" | "volatile" | "while"
+        | "inline" | "restrict" | "_Bool" | "_Complex" | "_Imaginary" | "main" => {
+            result.insert_str(0, "cob_");
+        }
+        _ => {}
+    }
+    result
 }
 
 /// Escape special characters for use in a C string literal.
@@ -826,7 +1961,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
                 out.push_str(&format!("    {c_type} {local_name};\n"));
             }
             for stmt in &method.body {
-                emit_statement(out, stmt, 1);
+                emit_statement(out, stmt, &[], &[], 1);
             }
             out.push_str("    return 0;\n");
             out.push_str("}\n\n");
@@ -839,7 +1974,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
                 "int64_t {c_name}_factory_{method_name}(void) {{\n"
             ));
             for stmt in &method.body {
-                emit_statement(out, stmt, 1);
+                emit_statement(out, stmt, &[], &[], 1);
             }
             out.push_str("    return 0;\n");
             out.push_str("}\n\n");
@@ -901,7 +2036,7 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
 
         // Body
         for stmt in &func.body {
-            emit_statement(out, stmt, 1);
+            emit_statement(out, stmt, &[], &[], 1);
         }
 
         out.push_str(&format!("    return ({ret_type})0;\n"));
@@ -1062,6 +2197,12 @@ PROCEDURE DIVISION.
         assert_eq!(sanitize_name("WS-NAME"), "WS_NAME");
         assert_eq!(sanitize_name("HELLO-WORLD"), "HELLO_WORLD");
         assert_eq!(sanitize_name("SIMPLE"), "SIMPLE");
+        // C reserved words are prefixed with cob_
+        assert_eq!(sanitize_name("int"), "cob_int");
+        assert_eq!(sanitize_name("main"), "cob_main");
+        assert_eq!(sanitize_name("return"), "cob_return");
+        // Names starting with a digit are prefixed with cob_
+        assert_eq!(sanitize_name("1ST-FIELD"), "cob_1ST_FIELD");
     }
 
     #[test]

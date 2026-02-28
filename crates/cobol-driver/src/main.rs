@@ -4,14 +4,15 @@
 //   Source -> Lexer -> Parser -> Sema -> HIR -> C codegen -> Executable
 
 use std::path::{Path, PathBuf};
-use std::process;
 
 use clap::Parser as ClapParser;
 use cobol_codegen::{compile_c_to_executable, generate_c};
 use cobol_common::{FileId, SourceFormat};
+use cobol_diagnostics::render_diagnostics_to_stderr;
 use cobol_hir::lower_to_hir;
 use cobol_lexer::Lexer;
 use cobol_parser::Parser;
+use cobol_preprocessor::{preprocess, PreprocessorConfig};
 use cobol_sema::SemanticAnalyzer;
 
 #[derive(ClapParser)]
@@ -49,12 +50,22 @@ struct Cli {
     #[arg(long)]
     c_only: bool,
 
+    /// Additional directories to search for COPY copybooks
+    #[arg(long = "copy-path", value_name = "DIR")]
+    copy_paths: Vec<String>,
+
     /// Verbose output
     #[arg(short = 'v', long)]
     verbose: bool,
 }
 
 fn main() {
+    if let Err(code) = run() {
+        std::process::exit(code);
+    }
+}
+
+fn run() -> Result<(), i32> {
     let cli = Cli::parse();
 
     let source_format = match cli.source_format.as_str() {
@@ -63,8 +74,17 @@ fn main() {
         "variable" => SourceFormat::Variable,
         other => {
             eprintln!("error: unknown source format '{}'", other);
-            process::exit(1);
+            return Err(1);
         }
+    };
+
+    // Build preprocessor configuration from CLI options.
+    let pp_config = {
+        let mut config = PreprocessorConfig::default();
+        for extra_path in &cli.copy_paths {
+            config.copy_paths.push(PathBuf::from(extra_path));
+        }
+        config
     };
 
     for (file_idx, file_path) in cli.files.iter().enumerate() {
@@ -76,11 +96,27 @@ fn main() {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("error: cannot read '{}': {}", file_path, e);
-                process::exit(1);
+                return Err(1);
             }
         };
 
         let file_id = FileId(file_idx as u32);
+
+        // ---------------------------------------------------------------
+        // Phase 0: Preprocessing (COPY expansion, REPLACE)
+        // ---------------------------------------------------------------
+        let preprocessed = preprocess(&source, Path::new(file_path), &pp_config);
+
+        // Report preprocessor diagnostics.
+        for diag in &preprocessed.diagnostics {
+            eprintln!("{:?}: [{}] {}", diag.severity, diag.code, diag.message);
+        }
+        if preprocessed.diagnostics.iter().any(|d| d.is_error()) {
+            eprintln!("error: preprocessing failed for '{}'", file_path);
+            return Err(1);
+        }
+
+        let source = preprocessed.source;
 
         // ---------------------------------------------------------------
         // Phase 1: Lexing
@@ -106,7 +142,7 @@ fn main() {
             Ok(p) => p,
             Err(_) => {
                 eprintln!("error: parsing failed for '{}'", file_path);
-                process::exit(1);
+                return Err(1);
             }
         };
 
@@ -125,14 +161,12 @@ fn main() {
         let result = analyzer.analyze(&program);
         let diagnostics = analyzer.take_diagnostics();
 
-        // Report diagnostics
-        for diag in diagnostics.diagnostics() {
-            eprintln!("{:?}: [{}] {}", diag.severity, diag.code, diag.message);
-        }
+        // Report diagnostics with source-annotated colored output
+        render_diagnostics_to_stderr(diagnostics.diagnostics(), file_path, &source);
 
         if result.has_errors {
             eprintln!("error: semantic analysis failed for '{}'", file_path);
-            process::exit(1);
+            return Err(1);
         }
 
         // ---------------------------------------------------------------
@@ -161,7 +195,7 @@ fn main() {
                 let c_path = output_c_path(file_path, &cli.output);
                 if let Err(e) = std::fs::write(&c_path, &c_code) {
                     eprintln!("error: cannot write '{}': {}", c_path.display(), e);
-                    process::exit(1);
+                    return Err(1);
                 }
                 if cli.verbose {
                     eprintln!("wrote: {}", c_path.display());
@@ -176,7 +210,7 @@ fn main() {
         let c_path = output_c_path(file_path, &None);
         if let Err(e) = std::fs::write(&c_path, &c_code) {
             eprintln!("error: cannot write '{}': {}", c_path.display(), e);
-            process::exit(1);
+            return Err(1);
         }
 
         let exe_path = output_exe_path(file_path, &cli.output);
@@ -202,10 +236,12 @@ fn main() {
                     "hint: the generated C code has been left at '{}'",
                     c_path.display()
                 );
-                process::exit(1);
+                return Err(1);
             }
         }
     }
+
+    Ok(())
 }
 
 fn output_c_path(source_path: &str, explicit: &Option<String>) -> PathBuf {
@@ -230,12 +266,29 @@ fn output_exe_path(source_path: &str, explicit: &Option<String>) -> PathBuf {
 ///
 /// Search order:
 /// 1. COBOL_RUNTIME_LIB environment variable
-/// 2. ./target/debug (development builds)
-/// 3. ./target/release (release builds)
-/// 4. Current directory
+/// 2. Relative to the compiler executable (same dir, then ../lib/)
+/// 3. ./target/debug (development builds)
+/// 4. ./target/release (release builds)
+/// 5. Current directory
 fn find_runtime_lib() -> PathBuf {
     if let Ok(path) = std::env::var("COBOL_RUNTIME_LIB") {
         return PathBuf::from(path);
+    }
+
+    // Search relative to the compiler executable location
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let candidate = exe_dir.join("libcobol_runtime.a");
+            if candidate.exists() {
+                return exe_dir.to_path_buf();
+            }
+            // Also check ../lib/ relative to exe
+            let lib_candidate = exe_dir.join("../lib/libcobol_runtime.a");
+            if lib_candidate.exists() {
+                let lib_dir = exe_dir.join("../lib");
+                return lib_dir.canonicalize().unwrap_or(lib_dir);
+            }
+        }
     }
 
     let candidates = ["target/debug", "target/release", "."];

@@ -160,6 +160,19 @@ pub enum HirLiteral {
     Space,
 }
 
+/// A MOVE target, which may be a plain variable or a reference-modified variable.
+#[derive(Debug, Clone)]
+pub enum HirMoveTarget {
+    /// A simple variable name (e.g., `WS-NAME`).
+    Variable(SmolStr),
+    /// A reference-modified variable (e.g., `WS-NAME(3:5)`).
+    ReferenceModification {
+        variable: SmolStr,
+        start: HirExpr,
+        length: Option<HirExpr>,
+    },
+}
+
 /// An executable statement in the HIR.
 #[derive(Debug, Clone)]
 pub enum HirStatement {
@@ -170,33 +183,43 @@ pub enum HirStatement {
     },
     Move {
         from: HirExpr,
-        to: Vec<SmolStr>,
+        to: Vec<HirMoveTarget>,
         span: Span,
     },
     Compute {
-        target: SmolStr,
+        targets: Vec<SmolStr>,
         expr: HirExpr,
+        on_size_error: Vec<HirStatement>,
+        not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     Add {
         operands: Vec<HirExpr>,
         to: Vec<SmolStr>,
+        on_size_error: Vec<HirStatement>,
+        not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     Subtract {
         operands: Vec<HirExpr>,
         from: Vec<SmolStr>,
+        on_size_error: Vec<HirStatement>,
+        not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     Multiply {
         operand: HirExpr,
         by: Vec<SmolStr>,
+        on_size_error: Vec<HirStatement>,
+        not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     Divide {
         operand: HirExpr,
         into: Vec<SmolStr>,
         remainder: Option<SmolStr>,
+        on_size_error: Vec<HirStatement>,
+        not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     If {
@@ -212,9 +235,15 @@ pub enum HirStatement {
     Call {
         program: HirExpr,
         params: Vec<HirExpr>,
+        on_exception: Vec<HirStatement>,
+        not_on_exception: Vec<HirStatement>,
         span: Span,
     },
     StopRun {
+        span: Span,
+    },
+    /// EXIT PROGRAM statement (returns from called program, unlike STOP RUN which terminates).
+    ExitProgram {
         span: Span,
     },
     Goback {
@@ -245,6 +274,7 @@ pub enum HirStatement {
     Write {
         record_name: SmolStr,
         from: Option<HirExpr>,
+        invalid_key: Vec<HirStatement>,
         span: Span,
     },
     /// REWRITE statement.
@@ -279,12 +309,15 @@ pub enum HirStatement {
     StringStmt {
         into: SmolStr,
         sources: Vec<HirExpr>,
+        on_overflow: Vec<HirStatement>,
         span: Span,
     },
     /// UNSTRING statement.
     UnstringStmt {
         source: SmolStr,
+        delimiters: Vec<HirUnstringDelimiter>,
         into: Vec<SmolStr>,
+        on_overflow: Vec<HirStatement>,
         span: Span,
     },
     /// ACCEPT statement.
@@ -295,6 +328,15 @@ pub enum HirStatement {
     /// SORT statement.
     Sort {
         file_name: SmolStr,
+        keys: Vec<HirSortKey>,
+        using: Vec<SmolStr>,
+        giving: Vec<SmolStr>,
+        span: Span,
+    },
+    /// INSPECT statement.
+    Inspect {
+        target: SmolStr,
+        kind: HirInspectKind,
         span: Span,
     },
     // --- COBOL 2002+ statements ---
@@ -357,10 +399,47 @@ pub enum HirStatement {
         processing_procedure: SmolStr,
         span: Span,
     },
+    // --- File I/O: additional statements ---
+    /// START statement: positions within an indexed or relative file.
+    Start {
+        file_name: SmolStr,
+        key: Option<SmolStr>,
+        op: HirStartRelation,
+        invalid_key: Vec<HirStatement>,
+        not_invalid_key: Vec<HirStatement>,
+        span: Span,
+    },
+    /// RETURN statement: retrieves records from a sort/merge file.
+    Return {
+        file_name: SmolStr,
+        into: Option<SmolStr>,
+        at_end: Vec<HirStatement>,
+        not_at_end: Vec<HirStatement>,
+        span: Span,
+    },
+    /// CANCEL statement: releases resources for a called program.
+    Cancel {
+        programs: Vec<HirExpr>,
+        span: Span,
+    },
+    /// MERGE statement: merges sorted files.
+    Merge {
+        file_name: SmolStr,
+        keys: Vec<HirSortKey>,
+        using: Vec<SmolStr>,
+        giving: Vec<SmolStr>,
+        span: Span,
+    },
+    /// RELEASE statement: sends a record to the sort file.
+    Release {
+        record_name: SmolStr,
+        from: Option<HirExpr>,
+        span: Span,
+    },
 }
 
 /// An expression in the HIR.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HirExpr {
     Literal(HirLiteral),
     Variable(SmolStr),
@@ -373,10 +452,24 @@ pub enum HirExpr {
         op: HirUnaryOp,
         operand: Box<HirExpr>,
     },
+    /// A function call expression (e.g., FUNCTION LENGTH, FUNCTION UPPER-CASE).
+    FunctionCall {
+        name: SmolStr,
+        args: Vec<HirExpr>,
+    },
+    /// Reference modification: `VAR(start:length)`.
+    ///
+    /// Extracts a substring from an alphanumeric variable.
+    /// `start` is 1-based. `length` is optional (defaults to remaining bytes).
+    ReferenceModification {
+        variable: SmolStr,
+        start: Box<HirExpr>,
+        length: Option<Box<HirExpr>>,
+    },
 }
 
 /// Binary arithmetic operators.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirBinOp {
     Add,
     Sub,
@@ -386,13 +479,13 @@ pub enum HirBinOp {
 }
 
 /// Unary arithmetic operators.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirUnaryOp {
     Neg,
 }
 
 /// A conditional expression in the HIR.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HirCondition {
     Compare {
         left: HirExpr,
@@ -405,7 +498,7 @@ pub enum HirCondition {
 }
 
 /// Comparison operators.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirCompareOp {
     Eq,
     Ne,
@@ -438,8 +531,11 @@ pub enum HirPerformKind {
         until: HirCondition,
         body: Vec<HirStatement>,
     },
-    /// PERFORM procedure-name.
-    ProcedureName { name: SmolStr },
+    /// PERFORM procedure-name [THRU procedure-name].
+    ProcedureName {
+        name: SmolStr,
+        through: Option<SmolStr>,
+    },
 }
 
 /// A file open entry.
@@ -456,6 +552,49 @@ pub enum HirOpenMode {
     Output,
     IoMode,
     Extend,
+}
+
+/// A sort key specification.
+#[derive(Debug, Clone)]
+pub struct HirSortKey {
+    pub order: HirSortOrder,
+    pub fields: Vec<SmolStr>,
+}
+
+/// Sort order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirSortOrder {
+    Ascending,
+    Descending,
+}
+
+/// A delimiter specification for UNSTRING.
+#[derive(Debug, Clone)]
+pub struct HirUnstringDelimiter {
+    pub all: bool,
+    pub value: HirExpr,
+}
+
+/// Relational operator for START key comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirStartRelation {
+    Equal,
+    GreaterThan,
+    GreaterEqual,
+    NotLessThan,
+}
+
+/// The kind of INSPECT operation (simplified).
+#[derive(Debug, Clone)]
+pub enum HirInspectKind {
+    /// INSPECT TALLYING -- count occurrences.
+    Tallying,
+    /// INSPECT REPLACING -- replace characters.
+    Replacing,
+    /// INSPECT TALLYING AND REPLACING.
+    TallyingReplacing,
+    /// INSPECT CONVERTING.
+    Converting,
 }
 
 impl std::fmt::Display for HirProgram {
@@ -539,10 +678,21 @@ fn write_stmt(
             writeln!(f)
         }
         HirStatement::Move { from, to, .. } => {
-            writeln!(f, "{pad}MOVE {} TO {}", format_expr(from), to.join(", "))
+            let targets: Vec<_> = to.iter().map(format_move_target).collect();
+            writeln!(
+                f,
+                "{pad}MOVE {} TO {}",
+                format_expr(from),
+                targets.join(", ")
+            )
         }
-        HirStatement::Compute { target, expr, .. } => {
-            writeln!(f, "{pad}COMPUTE {} = {}", target, format_expr(expr))
+        HirStatement::Compute { targets, expr, .. } => {
+            writeln!(
+                f,
+                "{pad}COMPUTE {} = {}",
+                targets.join(", "),
+                format_expr(expr)
+            )
         }
         HirStatement::Add { operands, to, .. } => {
             let ops: Vec<_> = operands.iter().map(format_expr).collect();
@@ -597,6 +747,7 @@ fn write_stmt(
             writeln!(f, "{pad}CALL {}", format_expr(program))
         }
         HirStatement::StopRun { .. } => writeln!(f, "{pad}STOP RUN"),
+        HirStatement::ExitProgram { .. } => writeln!(f, "{pad}EXIT PROGRAM"),
         HirStatement::Goback { .. } => writeln!(f, "{pad}GOBACK"),
         HirStatement::Continue { .. } => writeln!(f, "{pad}CONTINUE"),
         HirStatement::Open { entries, .. } => {
@@ -656,6 +807,7 @@ fn write_stmt(
         HirStatement::UnstringStmt { source, .. } => writeln!(f, "{pad}UNSTRING {source}"),
         HirStatement::Accept { target, .. } => writeln!(f, "{pad}ACCEPT {target}"),
         HirStatement::Sort { file_name, .. } => writeln!(f, "{pad}SORT {file_name}"),
+        HirStatement::Inspect { target, .. } => writeln!(f, "{pad}INSPECT {target}"),
         HirStatement::Invoke { object, method, .. } => {
             writeln!(f, "{pad}INVOKE {} \"{}\"", format_expr(object), method)
         }
@@ -699,6 +851,16 @@ fn write_stmt(
                 "{pad}XML PARSE {source} PROCESSING PROCEDURE {processing_procedure}"
             )
         }
+        HirStatement::Start { file_name, .. } => writeln!(f, "{pad}START {file_name}"),
+        HirStatement::Return { file_name, .. } => writeln!(f, "{pad}RETURN {file_name}"),
+        HirStatement::Cancel { programs, .. } => {
+            let names: Vec<_> = programs.iter().map(format_expr).collect();
+            writeln!(f, "{pad}CANCEL {}", names.join(", "))
+        }
+        HirStatement::Merge { file_name, .. } => writeln!(f, "{pad}MERGE {file_name}"),
+        HirStatement::Release { record_name, .. } => {
+            writeln!(f, "{pad}RELEASE {record_name}")
+        }
     }
 }
 
@@ -727,6 +889,38 @@ fn format_expr(expr: &HirExpr) -> String {
                 HirUnaryOp::Neg => "-",
             };
             format!("({}{})", op_str, format_expr(operand))
+        }
+        HirExpr::FunctionCall { name, args } => {
+            let arg_strs: Vec<_> = args.iter().map(format_expr).collect();
+            format!("FUNCTION {}({})", name, arg_strs.join(", "))
+        }
+        HirExpr::ReferenceModification {
+            variable,
+            start,
+            length,
+        } => {
+            if let Some(len) = length {
+                format!("{}({}:{})", variable, format_expr(start), format_expr(len))
+            } else {
+                format!("{}({}:)", variable, format_expr(start))
+            }
+        }
+    }
+}
+
+fn format_move_target(target: &HirMoveTarget) -> String {
+    match target {
+        HirMoveTarget::Variable(name) => name.to_string(),
+        HirMoveTarget::ReferenceModification {
+            variable,
+            start,
+            length,
+        } => {
+            if let Some(len) = length {
+                format!("{}({}:{})", variable, format_expr(start), format_expr(len))
+            } else {
+                format!("{}({}:)", variable, format_expr(start))
+            }
         }
     }
 }

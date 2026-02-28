@@ -1,5 +1,6 @@
 // COBOL Parser - PROCEDURE DIVISION parsing
 
+use cobol_ast::expr::Expr;
 use cobol_ast::proc_div::*;
 use cobol_ast::statement::*;
 use cobol_common::Span;
@@ -306,6 +307,14 @@ impl Parser {
             TokenKind::String => self.parse_string_statement(),
             TokenKind::Unstring => self.parse_unstring_statement(),
             TokenKind::Inspect => self.parse_inspect_statement(),
+            TokenKind::Sort => self.parse_sort_statement(),
+            TokenKind::Merge => self.parse_merge_statement(),
+            TokenKind::Release => self.parse_release_statement(),
+            TokenKind::Cancel => self.parse_cancel_statement(),
+            TokenKind::Rewrite => self.parse_rewrite_statement(),
+            TokenKind::Delete => self.parse_delete_statement(),
+            TokenKind::Start => self.parse_start_statement(),
+            TokenKind::Return => self.parse_return_statement(),
             // --- COBOL 2002+ statements ---
             TokenKind::Raise => self.parse_raise_statement(),
             TokenKind::Resume => self.parse_resume_statement(),
@@ -331,8 +340,23 @@ impl Parser {
 
         let mut to = Vec::new();
         loop {
+            let target_start = self.span();
             let qn = self.parse_qualified_name()?;
-            to.push(qn);
+            // Check for reference modification on the target
+            let target_expr =
+                if self.check(TokenKind::LeftParen) && self.is_reference_modification_ahead() {
+                    let (ref_start, ref_length) = self.parse_reference_modification()?;
+                    let target_end = self.span();
+                    Expr::ReferenceModification {
+                        variable: qn,
+                        start: Box::new(ref_start),
+                        length: ref_length.map(Box::new),
+                        span: target_start.merge(&target_end),
+                    }
+                } else {
+                    Expr::Identifier(qn)
+                };
+            to.push(target_expr);
             if !self.check(TokenKind::Identifier) || self.at_statement_terminator() {
                 break;
             }
@@ -365,12 +389,15 @@ impl Parser {
         self.expect(TokenKind::Equals)?;
         let expr = self.parse_expr()?;
 
+        let (on_size_error, not_on_size_error) =
+            self.parse_size_error_phrases(TokenKind::EndCompute)?;
+
         let end_span = self.span();
         Ok(Statement::Compute(Box::new(ComputeStatement {
             targets,
             expr,
-            on_size_error: Vec::new(),
-            not_on_size_error: Vec::new(),
+            on_size_error,
+            not_on_size_error,
             span: start_span.merge(&end_span),
         })))
     }
@@ -395,7 +422,14 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 to.push(RoundedTarget { target, rounded });
-                if self.at_statement_terminator() || self.check(TokenKind::Giving) {
+                if self.at_statement_terminator()
+                    || self.at_statement_start()
+                    || self.check(TokenKind::Giving)
+                    || self.check(TokenKind::OnKw)
+                    || self.check(TokenKind::SizeKw)
+                    || self.check(TokenKind::Not)
+                    || self.check(TokenKind::EndAdd)
+                {
                     break;
                 }
             }
@@ -406,11 +440,20 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 giving.push(RoundedTarget { target, rounded });
-                if self.at_statement_terminator() {
+                if self.at_statement_terminator()
+                    || self.at_statement_start()
+                    || self.check(TokenKind::OnKw)
+                    || self.check(TokenKind::SizeKw)
+                    || self.check(TokenKind::Not)
+                    || self.check(TokenKind::EndAdd)
+                {
                     break;
                 }
             }
         }
+
+        let (on_size_error, not_on_size_error) =
+            self.parse_size_error_phrases(TokenKind::EndAdd)?;
 
         let end_span = self.span();
         Ok(Statement::Add(Box::new(AddStatement {
@@ -418,8 +461,8 @@ impl Parser {
             to,
             giving,
             corresponding,
-            on_size_error: Vec::new(),
-            not_on_size_error: Vec::new(),
+            on_size_error,
+            not_on_size_error,
             span: start_span.merge(&end_span),
         })))
     }
@@ -445,7 +488,14 @@ impl Parser {
             let target = self.parse_qualified_name()?;
             let rounded = self.eat(TokenKind::Rounded).is_some();
             from.push(RoundedTarget { target, rounded });
-            if self.at_statement_terminator() || self.check(TokenKind::Giving) {
+            if self.at_statement_terminator()
+                || self.at_statement_start()
+                || self.check(TokenKind::Giving)
+                || self.check(TokenKind::OnKw)
+                || self.check(TokenKind::SizeKw)
+                || self.check(TokenKind::Not)
+                || self.check(TokenKind::EndSubtract)
+            {
                 break;
             }
         }
@@ -455,11 +505,20 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 giving.push(RoundedTarget { target, rounded });
-                if self.at_statement_terminator() {
+                if self.at_statement_terminator()
+                    || self.at_statement_start()
+                    || self.check(TokenKind::OnKw)
+                    || self.check(TokenKind::SizeKw)
+                    || self.check(TokenKind::Not)
+                    || self.check(TokenKind::EndSubtract)
+                {
                     break;
                 }
             }
         }
+
+        let (on_size_error, not_on_size_error) =
+            self.parse_size_error_phrases(TokenKind::EndSubtract)?;
 
         let end_span = self.span();
         Ok(Statement::Subtract(Box::new(SubtractStatement {
@@ -467,8 +526,8 @@ impl Parser {
             from,
             giving,
             corresponding,
-            on_size_error: Vec::new(),
-            not_on_size_error: Vec::new(),
+            on_size_error,
+            not_on_size_error,
             span: start_span.merge(&end_span),
         })))
     }
@@ -488,7 +547,14 @@ impl Parser {
             let target = self.parse_qualified_name()?;
             let rounded = self.eat(TokenKind::Rounded).is_some();
             by.push(RoundedTarget { target, rounded });
-            if self.at_statement_terminator() || self.check(TokenKind::Giving) {
+            if self.at_statement_terminator()
+                || self.at_statement_start()
+                || self.check(TokenKind::Giving)
+                || self.check(TokenKind::OnKw)
+                || self.check(TokenKind::SizeKw)
+                || self.check(TokenKind::Not)
+                || self.check(TokenKind::EndMultiply)
+            {
                 break;
             }
         }
@@ -498,19 +564,28 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 giving.push(RoundedTarget { target, rounded });
-                if self.at_statement_terminator() {
+                if self.at_statement_terminator()
+                    || self.at_statement_start()
+                    || self.check(TokenKind::OnKw)
+                    || self.check(TokenKind::SizeKw)
+                    || self.check(TokenKind::Not)
+                    || self.check(TokenKind::EndMultiply)
+                {
                     break;
                 }
             }
         }
+
+        let (on_size_error, not_on_size_error) =
+            self.parse_size_error_phrases(TokenKind::EndMultiply)?;
 
         let end_span = self.span();
         Ok(Statement::Multiply(Box::new(MultiplyStatement {
             operand,
             by,
             giving,
-            on_size_error: Vec::new(),
-            not_on_size_error: Vec::new(),
+            on_size_error,
+            not_on_size_error,
             span: start_span.merge(&end_span),
         })))
     }
@@ -532,8 +607,13 @@ impl Parser {
             let rounded = self.eat(TokenKind::Rounded).is_some();
             into.push(RoundedTarget { target, rounded });
             if self.at_statement_terminator()
+                || self.at_statement_start()
                 || self.check(TokenKind::Giving)
                 || self.check(TokenKind::Remainder)
+                || self.check(TokenKind::OnKw)
+                || self.check(TokenKind::SizeKw)
+                || self.check(TokenKind::Not)
+                || self.check(TokenKind::EndDivide)
             {
                 break;
             }
@@ -544,7 +624,14 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 giving.push(RoundedTarget { target, rounded });
-                if self.at_statement_terminator() || self.check(TokenKind::Remainder) {
+                if self.at_statement_terminator()
+                    || self.at_statement_start()
+                    || self.check(TokenKind::Remainder)
+                    || self.check(TokenKind::OnKw)
+                    || self.check(TokenKind::SizeKw)
+                    || self.check(TokenKind::Not)
+                    || self.check(TokenKind::EndDivide)
+                {
                     break;
                 }
             }
@@ -554,14 +641,17 @@ impl Parser {
             remainder = Some(self.parse_qualified_name()?);
         }
 
+        let (on_size_error, not_on_size_error) =
+            self.parse_size_error_phrases(TokenKind::EndDivide)?;
+
         let end_span = self.span();
         Ok(Statement::Divide(Box::new(DivideStatement {
             operand,
             into,
             giving,
             remainder,
-            on_size_error: Vec::new(),
-            not_on_size_error: Vec::new(),
+            on_size_error,
+            not_on_size_error,
             span: start_span.merge(&end_span),
         })))
     }
@@ -575,7 +665,7 @@ impl Parser {
         let mut upon = None;
         let mut with_no_advancing = false;
 
-        while !self.at_statement_terminator() && !self.at_eof() {
+        while !self.at_statement_terminator() && !self.at_statement_start() && !self.at_eof() {
             if self.check_identifier("UPON") {
                 self.advance();
                 upon = Some(self.expect_identifier()?);
@@ -592,6 +682,10 @@ impl Parser {
             }
             if self.check(TokenKind::EndDisplay) {
                 self.advance();
+                break;
+            }
+            // Stop at WHEN keyword (used inside EVALUATE blocks)
+            if self.check(TokenKind::When) || self.check(TokenKind::Other) {
                 break;
             }
 
@@ -789,14 +883,17 @@ impl Parser {
         let start_span = self.span();
         self.expect(TokenKind::Perform)?;
 
+        // Parse optional WITH TEST BEFORE/AFTER before VARYING/UNTIL
+        let test = self.parse_perform_test();
+
         // PERFORM VARYING
         if self.check(TokenKind::Varying) {
-            return self.parse_perform_varying(start_span);
+            return self.parse_perform_varying(start_span, test);
         }
 
         // PERFORM UNTIL
         if self.check(TokenKind::Until) {
-            return self.parse_perform_until(start_span);
+            return self.parse_perform_until(start_span, test);
         }
 
         // PERFORM n TIMES
@@ -861,7 +958,30 @@ impl Parser {
         })))
     }
 
-    fn parse_perform_varying(&mut self, start_span: Span) -> Result<Statement, ()> {
+    /// Parse optional WITH TEST BEFORE/AFTER clause, returning the test type.
+    fn parse_perform_test(&mut self) -> PerformTest {
+        if self.check(TokenKind::With) || self.check_identifier("WITH") {
+            self.advance();
+            if self.check_identifier("TEST") {
+                self.advance();
+                if self.check_identifier("AFTER") {
+                    self.advance();
+                    return PerformTest::After;
+                }
+                // BEFORE is the default; consume it if present
+                if self.check_identifier("BEFORE") {
+                    self.advance();
+                }
+            }
+        }
+        PerformTest::Before
+    }
+
+    fn parse_perform_varying(
+        &mut self,
+        start_span: Span,
+        test: PerformTest,
+    ) -> Result<Statement, ()> {
         self.expect(TokenKind::Varying)?;
 
         let mut varying = Vec::new();
@@ -907,7 +1027,7 @@ impl Parser {
         let end_span = self.span();
         Ok(Statement::Perform(Box::new(PerformStatement {
             kind: PerformKind::Varying {
-                test: PerformTest::Before,
+                test,
                 varying,
                 body,
             },
@@ -915,7 +1035,11 @@ impl Parser {
         })))
     }
 
-    fn parse_perform_until(&mut self, start_span: Span) -> Result<Statement, ()> {
+    fn parse_perform_until(
+        &mut self,
+        start_span: Span,
+        test: PerformTest,
+    ) -> Result<Statement, ()> {
         self.expect(TokenKind::Until)?;
 
         let condition = self.parse_condition()?;
@@ -930,7 +1054,7 @@ impl Parser {
         let end_span = self.span();
         Ok(Statement::Perform(Box::new(PerformStatement {
             kind: PerformKind::Until {
-                test: PerformTest::Before,
+                test,
                 condition,
                 body,
             },
@@ -1020,6 +1144,66 @@ impl Parser {
             returning = Some(self.parse_qualified_name()?);
         }
 
+        let mut on_overflow = Vec::new();
+        let mut on_exception = Vec::new();
+        let mut not_on_exception = Vec::new();
+
+        // ON OVERFLOW
+        if self.check(TokenKind::OnKw) && self.peek(1).kind == TokenKind::Overflow {
+            self.advance(); // ON
+            self.advance(); // OVERFLOW
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(TokenKind::EndCall)
+                && !self.check(TokenKind::Period)
+            {
+                on_overflow.push(self.parse_statement()?);
+            }
+        }
+        // ON EXCEPTION
+        else if self.check(TokenKind::OnKw) && self.peek(1).kind == TokenKind::ExceptionKw {
+            self.advance(); // ON
+            self.advance(); // EXCEPTION
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(TokenKind::EndCall)
+                && !self.check(TokenKind::Period)
+            {
+                on_exception.push(self.parse_statement()?);
+            }
+        } else if self.check(TokenKind::ExceptionKw) {
+            self.advance();
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(TokenKind::EndCall)
+                && !self.check(TokenKind::Period)
+            {
+                on_exception.push(self.parse_statement()?);
+            }
+        } else if self.check(TokenKind::Overflow) {
+            self.advance();
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(TokenKind::EndCall)
+                && !self.check(TokenKind::Period)
+            {
+                on_overflow.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT ON EXCEPTION
+        if self.check(TokenKind::Not) {
+            self.advance();
+            self.eat(TokenKind::OnKw);
+            self.eat(TokenKind::ExceptionKw);
+            while !self.at_eof()
+                && !self.check(TokenKind::EndCall)
+                && !self.check(TokenKind::Period)
+            {
+                not_on_exception.push(self.parse_statement()?);
+            }
+        }
+
         self.eat(TokenKind::EndCall);
 
         let end_span = self.span();
@@ -1027,9 +1211,9 @@ impl Parser {
             program,
             using,
             returning,
-            on_overflow: Vec::new(),
-            on_exception: Vec::new(),
-            not_on_exception: Vec::new(),
+            on_overflow,
+            on_exception,
+            not_on_exception,
             span: start_span.merge(&end_span),
         })))
     }
@@ -1055,6 +1239,7 @@ impl Parser {
             self.advance();
             Ok(Statement::ExitSection)
         } else {
+            // TODO: Add Statement::Exit variant for proper EXIT semantics
             Ok(Statement::Continue)
         }
     }
@@ -1136,17 +1321,84 @@ impl Parser {
             None
         };
 
+        let key = if self.check(TokenKind::Key) {
+            self.advance();
+            self.eat_is();
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        let mut at_end = Vec::new();
+        let mut not_at_end = Vec::new();
+        let mut invalid_key = Vec::new();
+        let mut not_invalid_key = Vec::new();
+
+        // AT END
+        if self.check(TokenKind::At) {
+            self.advance();
+            self.eat(TokenKind::End);
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(TokenKind::InvalidKey)
+                && !self.check(TokenKind::EndRead)
+                && !self.check(TokenKind::Period)
+            {
+                at_end.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT AT END
+        if self.check(TokenKind::Not) && self.peek(1).kind == TokenKind::At {
+            self.advance(); // NOT
+            self.eat(TokenKind::At);
+            self.eat(TokenKind::End);
+            while !self.at_eof()
+                && !self.check(TokenKind::InvalidKey)
+                && !self.check(TokenKind::EndRead)
+                && !self.check(TokenKind::Period)
+            {
+                not_at_end.push(self.parse_statement()?);
+            }
+        }
+
+        // INVALID KEY
+        if self.check(TokenKind::InvalidKey) {
+            self.advance();
+            self.eat(TokenKind::Key);
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(TokenKind::EndRead)
+                && !self.check(TokenKind::Period)
+            {
+                invalid_key.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT INVALID KEY
+        if self.check(TokenKind::Not) {
+            self.advance();
+            self.eat(TokenKind::InvalidKey);
+            self.eat(TokenKind::Key);
+            while !self.at_eof()
+                && !self.check(TokenKind::EndRead)
+                && !self.check(TokenKind::Period)
+            {
+                not_invalid_key.push(self.parse_statement()?);
+            }
+        }
+
         self.eat(TokenKind::EndRead);
 
         let end_span = self.span();
         Ok(Statement::Read(Box::new(ReadStatement {
             file_name,
             into,
-            key: None,
-            at_end: Vec::new(),
-            not_at_end: Vec::new(),
-            invalid_key: Vec::new(),
-            not_invalid_key: Vec::new(),
+            key,
+            at_end,
+            not_at_end,
+            invalid_key,
+            not_invalid_key,
             span: start_span.merge(&end_span),
         })))
     }
@@ -1165,17 +1417,108 @@ impl Parser {
             None
         };
 
+        // BEFORE/AFTER ADVANCING
+        let advancing = if self.check(TokenKind::Before) || self.check(TokenKind::After) {
+            self.advance();
+            self.eat(TokenKind::Advancing);
+            if self.check(TokenKind::Page) {
+                self.advance();
+                Some(WriteAdvancing::Page)
+            } else {
+                let expr = self.parse_expr()?;
+                self.eat(TokenKind::Line);
+                self.eat(TokenKind::Lines);
+                Some(WriteAdvancing::Lines(expr))
+            }
+        } else if self.check(TokenKind::Advancing) {
+            self.advance();
+            if self.check(TokenKind::Page) {
+                self.advance();
+                Some(WriteAdvancing::Page)
+            } else {
+                let expr = self.parse_expr()?;
+                self.eat(TokenKind::Line);
+                self.eat(TokenKind::Lines);
+                Some(WriteAdvancing::Lines(expr))
+            }
+        } else {
+            None
+        };
+
+        let mut invalid_key = Vec::new();
+        let mut not_invalid_key = Vec::new();
+        let mut at_eop = Vec::new();
+        let mut not_at_eop = Vec::new();
+
+        // AT END-OF-PAGE / EOP
+        if (self.check(TokenKind::At) && self.peek(1).kind == TokenKind::Eop)
+            || self.check(TokenKind::Eop)
+        {
+            self.eat(TokenKind::At);
+            self.eat(TokenKind::Eop);
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(TokenKind::InvalidKey)
+                && !self.check(TokenKind::EndWrite)
+                && !self.check(TokenKind::Period)
+            {
+                at_eop.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT AT END-OF-PAGE / EOP
+        if self.check(TokenKind::Not)
+            && (self.peek(1).kind == TokenKind::At || self.peek(1).kind == TokenKind::Eop)
+        {
+            self.advance(); // NOT
+            self.eat(TokenKind::At);
+            self.eat(TokenKind::Eop);
+            while !self.at_eof()
+                && !self.check(TokenKind::InvalidKey)
+                && !self.check(TokenKind::EndWrite)
+                && !self.check(TokenKind::Period)
+            {
+                not_at_eop.push(self.parse_statement()?);
+            }
+        }
+
+        // INVALID KEY
+        if self.check(TokenKind::InvalidKey) {
+            self.advance();
+            self.eat(TokenKind::Key);
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(TokenKind::EndWrite)
+                && !self.check(TokenKind::Period)
+            {
+                invalid_key.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT INVALID KEY
+        if self.check(TokenKind::Not) {
+            self.advance();
+            self.eat(TokenKind::InvalidKey);
+            self.eat(TokenKind::Key);
+            while !self.at_eof()
+                && !self.check(TokenKind::EndWrite)
+                && !self.check(TokenKind::Period)
+            {
+                not_invalid_key.push(self.parse_statement()?);
+            }
+        }
+
         self.eat(TokenKind::EndWrite);
 
         let end_span = self.span();
         Ok(Statement::Write(Box::new(WriteStatement {
             record_name,
             from,
-            advancing: None,
-            invalid_key: Vec::new(),
-            not_invalid_key: Vec::new(),
-            at_eop: Vec::new(),
-            not_at_eop: Vec::new(),
+            advancing,
+            invalid_key,
+            not_invalid_key,
+            at_eop,
+            not_at_eop,
             span: start_span.merge(&end_span),
         })))
     }
@@ -1269,7 +1612,7 @@ impl Parser {
             if self.check(TokenKind::Delimited) {
                 self.advance();
                 self.eat(TokenKind::By);
-                if self.check_identifier("SIZE") {
+                if self.check(TokenKind::SizeKw) || self.check_identifier("SIZE") {
                     self.advance();
                     delimited_by = StringDelimiter::Size;
                 } else {
@@ -1302,15 +1645,15 @@ impl Parser {
             None
         };
 
-        self.eat(TokenKind::EndString);
+        let (on_overflow, not_on_overflow) = self.parse_overflow_phrases(TokenKind::EndString)?;
 
         let end_span = self.span();
         Ok(Statement::String(Box::new(StringStatement {
             sources,
             into,
             pointer,
-            on_overflow: Vec::new(),
-            not_on_overflow: Vec::new(),
+            on_overflow,
+            not_on_overflow,
             span: start_span.merge(&end_span),
         })))
     }
@@ -1322,8 +1665,22 @@ impl Parser {
 
         let source = self.parse_qualified_name()?;
 
-        while !self.check(TokenKind::Into) && !self.at_statement_terminator() && !self.at_eof() {
+        // DELIMITED BY
+        let mut delimiters = Vec::new();
+        if self.check(TokenKind::Delimited) {
             self.advance();
+            self.eat(TokenKind::By);
+            // Parse first delimiter
+            let all = self.eat(TokenKind::All).is_some();
+            let value = self.parse_expr()?;
+            delimiters.push(UnstringDelimiter { all, value });
+            // OR delimiter2 OR delimiter3 ...
+            while self.check(TokenKind::Or) {
+                self.advance();
+                let all = self.eat(TokenKind::All).is_some();
+                let value = self.parse_expr()?;
+                delimiters.push(UnstringDelimiter { all, value });
+            }
         }
 
         let mut into_targets = Vec::new();
@@ -1331,28 +1688,65 @@ impl Parser {
             while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
                 && !self.at_statement_terminator()
                 && !self.check(TokenKind::EndUnstring)
+                && !self.check(TokenKind::Pointer)
+                && !self.check(TokenKind::Tallying)
+                && !self.check(TokenKind::OnKw)
+                && !self.check(TokenKind::Overflow)
+                && !self.check(TokenKind::Not)
                 && !self.at_eof()
             {
+                if self.check_identifier("POINTER") || self.check_identifier("TALLYING") {
+                    break;
+                }
                 let target = self.parse_qualified_name()?;
+                let delimiter_in = if self.check(TokenKind::Delimiter) {
+                    self.advance();
+                    self.eat(TokenKind::In);
+                    Some(self.parse_qualified_name()?)
+                } else {
+                    None
+                };
+                let count_in = if self.check(TokenKind::Count) {
+                    self.advance();
+                    self.eat(TokenKind::In);
+                    Some(self.parse_qualified_name()?)
+                } else {
+                    None
+                };
                 into_targets.push(UnstringTarget {
                     target,
-                    delimiter_in: None,
-                    count_in: None,
+                    delimiter_in,
+                    count_in,
                 });
             }
         }
 
-        self.eat(TokenKind::EndUnstring);
+        let pointer = if self.check(TokenKind::Pointer) || self.check_identifier("POINTER") {
+            self.advance();
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        let tallying = if self.check(TokenKind::Tallying) || self.check_identifier("TALLYING") {
+            self.eat(TokenKind::Tallying);
+            self.eat(TokenKind::In);
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        let (on_overflow, not_on_overflow) = self.parse_overflow_phrases(TokenKind::EndUnstring)?;
 
         let end_span = self.span();
         Ok(Statement::Unstring(Box::new(UnstringStatement {
             source,
-            delimiters: Vec::new(),
+            delimiters,
             into: into_targets,
-            pointer: None,
-            tallying: None,
-            on_overflow: Vec::new(),
-            not_on_overflow: Vec::new(),
+            pointer,
+            tallying,
+            on_overflow,
+            not_on_overflow,
             span: start_span.merge(&end_span),
         })))
     }
@@ -1366,36 +1760,37 @@ impl Parser {
 
         let kind = if self.check(TokenKind::Tallying) {
             self.advance();
-            InspectKind::Tallying {
-                tallying: Vec::new(),
+            let tallying = self.parse_inspect_tallying_items()?;
+            // Check for TALLYING ... REPLACING
+            if self.check(TokenKind::Replacing) {
+                self.advance();
+                let replacing = self.parse_inspect_replacing_items()?;
+                InspectKind::TallyingReplacing {
+                    tallying,
+                    replacing,
+                }
+            } else {
+                InspectKind::Tallying { tallying }
             }
         } else if self.check(TokenKind::Replacing) {
             self.advance();
-            InspectKind::Replacing {
-                replacing: Vec::new(),
-            }
+            let replacing = self.parse_inspect_replacing_items()?;
+            InspectKind::Replacing { replacing }
         } else if self.check(TokenKind::Converting) {
             self.advance();
             let from = self.parse_expr()?;
             self.expect(TokenKind::To)?;
             let to = self.parse_expr()?;
+            let before_after = self.parse_before_after_clauses()?;
             InspectKind::Converting {
-                from,
-                to,
-                before_after: Vec::new(),
+                from: Box::new(from),
+                to: Box::new(to),
+                before_after,
             }
         } else {
-            InspectKind::Tallying {
-                tallying: Vec::new(),
-            }
+            self.error("expected TALLYING, REPLACING, or CONVERTING");
+            return Err(());
         };
-
-        while !self.at_statement_terminator() && !self.at_eof() {
-            if self.at_statement_start() {
-                break;
-            }
-            self.advance();
-        }
 
         let end_span = self.span();
         Ok(Statement::Inspect(Box::new(InspectStatement {
@@ -1403,6 +1798,493 @@ impl Parser {
             kind,
             span: start_span.merge(&end_span),
         })))
+    }
+
+    /// Parse tallying items: counter FOR (CHARACTERS | ALL/LEADING literal)
+    fn parse_inspect_tallying_items(&mut self) -> Result<Vec<InspectTallying>, ()> {
+        let mut items = Vec::new();
+        while !self.at_statement_terminator()
+            && !self.at_eof()
+            && !self.check(TokenKind::Replacing)
+            && !self.at_statement_start()
+        {
+            // counter identifier
+            let counter = self.parse_qualified_name()?;
+            self.expect(TokenKind::ForKw)?;
+
+            if self.check(TokenKind::Characters) {
+                self.advance();
+                let before_after = self.parse_before_after_clauses()?;
+                items.push(InspectTallying {
+                    counter,
+                    kind: TallyingKind::Characters,
+                    before_after,
+                });
+            } else if self.check(TokenKind::All) {
+                self.advance();
+                let value = self.parse_expr()?;
+                let before_after = self.parse_before_after_clauses()?;
+                items.push(InspectTallying {
+                    counter,
+                    kind: TallyingKind::All(value),
+                    before_after,
+                });
+            } else if self.check(TokenKind::Leading) {
+                self.advance();
+                let value = self.parse_expr()?;
+                let before_after = self.parse_before_after_clauses()?;
+                items.push(InspectTallying {
+                    counter,
+                    kind: TallyingKind::Leading(value),
+                    before_after,
+                });
+            } else {
+                // Unexpected token, break out
+                break;
+            }
+        }
+        Ok(items)
+    }
+
+    /// Parse replacing items: (ALL|LEADING|TRAILING|FIRST|CHARACTERS) source BY target
+    fn parse_inspect_replacing_items(&mut self) -> Result<Vec<InspectReplacing>, ()> {
+        let mut items = Vec::new();
+        while !self.at_statement_terminator() && !self.at_eof() && !self.at_statement_start() {
+            if self.check(TokenKind::Characters) {
+                self.advance();
+                self.expect(TokenKind::By)?;
+                let to = self.parse_expr()?;
+                let before_after = self.parse_before_after_clauses()?;
+                items.push(InspectReplacing {
+                    kind: ReplacingKind::Characters(to),
+                    before_after,
+                });
+            } else if self.check(TokenKind::All) {
+                self.advance();
+                let from = self.parse_expr()?;
+                self.expect(TokenKind::By)?;
+                let to = self.parse_expr()?;
+                let before_after = self.parse_before_after_clauses()?;
+                items.push(InspectReplacing {
+                    kind: ReplacingKind::All { from, to },
+                    before_after,
+                });
+            } else if self.check(TokenKind::Leading) {
+                self.advance();
+                let from = self.parse_expr()?;
+                self.expect(TokenKind::By)?;
+                let to = self.parse_expr()?;
+                let before_after = self.parse_before_after_clauses()?;
+                items.push(InspectReplacing {
+                    kind: ReplacingKind::Leading { from, to },
+                    before_after,
+                });
+            } else if self.check(TokenKind::FirstKw) {
+                self.advance();
+                let from = self.parse_expr()?;
+                self.expect(TokenKind::By)?;
+                let to = self.parse_expr()?;
+                let before_after = self.parse_before_after_clauses()?;
+                items.push(InspectReplacing {
+                    kind: ReplacingKind::First { from, to },
+                    before_after,
+                });
+            } else if self.check(TokenKind::Trailing) {
+                // Trailing is handled in INSPECT REPLACING but not in the
+                // ReplacingKind enum. Use Leading variant as closest match.
+                // NOTE: Trailing should ideally have its own enum variant.
+                self.advance();
+                let from = self.parse_expr()?;
+                self.expect(TokenKind::By)?;
+                let to = self.parse_expr()?;
+                let before_after = self.parse_before_after_clauses()?;
+                items.push(InspectReplacing {
+                    kind: ReplacingKind::Leading { from, to },
+                    before_after,
+                });
+            } else {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
+    // --- REWRITE ---
+    fn parse_rewrite_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Rewrite)?;
+
+        let record_name = self.parse_qualified_name()?;
+
+        let from = if self.check(TokenKind::From) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let (invalid_key, not_invalid_key) =
+            self.parse_invalid_key_phrases(TokenKind::EndRewrite)?;
+
+        let end_span = self.span();
+        Ok(Statement::Rewrite(Box::new(RewriteStatement {
+            record_name,
+            from,
+            invalid_key,
+            not_invalid_key,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- DELETE ---
+    fn parse_delete_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Delete)?;
+
+        let file_name = self.expect_identifier()?;
+        self.eat(TokenKind::Record);
+
+        let (invalid_key, not_invalid_key) =
+            self.parse_invalid_key_phrases(TokenKind::EndDelete)?;
+
+        let end_span = self.span();
+        Ok(Statement::Delete(Box::new(DeleteStatement {
+            file_name,
+            invalid_key,
+            not_invalid_key,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- START ---
+    fn parse_start_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Start)?;
+
+        let file_name = self.expect_identifier()?;
+
+        let key_condition = if self.check(TokenKind::Key) {
+            self.advance();
+            self.eat_is();
+            let op = if self.check(TokenKind::Equals) || self.check(TokenKind::Equal) {
+                self.advance();
+                self.eat(TokenKind::To);
+                StartRelation::Equal
+            } else if self.check(TokenKind::GreaterThan) {
+                self.advance();
+                StartRelation::GreaterThan
+            } else if self.check(TokenKind::GreaterEqual) {
+                self.advance();
+                StartRelation::GreaterEqual
+            } else if self.check(TokenKind::Greater) {
+                self.advance();
+                self.eat(TokenKind::Than);
+                if self.check(TokenKind::Or) {
+                    self.advance();
+                    self.eat(TokenKind::Equal);
+                    self.eat(TokenKind::To);
+                    StartRelation::GreaterEqual
+                } else {
+                    StartRelation::GreaterThan
+                }
+            } else if self.check(TokenKind::Not) {
+                self.advance();
+                self.eat(TokenKind::Less);
+                self.eat(TokenKind::Than);
+                StartRelation::NotLessThan
+            } else {
+                StartRelation::Equal
+            };
+            let key = self.parse_qualified_name()?;
+            Some(StartKeyCondition { key, op })
+        } else {
+            None
+        };
+
+        let (invalid_key, not_invalid_key) = self.parse_invalid_key_phrases(TokenKind::EndStart)?;
+
+        let end_span = self.span();
+        Ok(Statement::Start(Box::new(StartStatement {
+            file_name,
+            key_condition,
+            invalid_key,
+            not_invalid_key,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- RETURN ---
+    fn parse_return_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Return)?;
+
+        let file_name = self.expect_identifier()?;
+        self.eat(TokenKind::Record);
+
+        let into = if self.check(TokenKind::Into) {
+            self.advance();
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        let (at_end, not_at_end) = self.parse_at_end_phrases(TokenKind::EndReturn)?;
+
+        let end_span = self.span();
+        Ok(Statement::Return(Box::new(ReturnStatement {
+            file_name,
+            into,
+            at_end,
+            not_at_end,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- SORT ---
+    fn parse_sort_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Sort)?;
+
+        let file_name = self.expect_identifier()?;
+
+        // Parse key clauses
+        let mut keys = Vec::new();
+        while self.check(TokenKind::OnKw)
+            || self.check(TokenKind::Ascending)
+            || self.check(TokenKind::Descending)
+        {
+            self.eat(TokenKind::OnKw);
+            let order = if self.check(TokenKind::Ascending) {
+                self.advance();
+                SortOrder::Ascending
+            } else if self.check(TokenKind::Descending) {
+                self.advance();
+                SortOrder::Descending
+            } else {
+                break;
+            };
+            self.eat(TokenKind::Key);
+            let mut fields = Vec::new();
+            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_terminator()
+                && !self.check(TokenKind::OnKw)
+                && !self.check(TokenKind::Ascending)
+                && !self.check(TokenKind::Descending)
+                && !self.check(TokenKind::Using)
+                && !self.check(TokenKind::Input)
+                && !self.check(TokenKind::Giving)
+                && !self.check(TokenKind::Output)
+                && !self.check(TokenKind::Duplicates)
+                && !self.check(TokenKind::With)
+                && !self.at_eof()
+            {
+                fields.push(self.parse_qualified_name()?);
+            }
+            keys.push(SortKey { order, fields });
+        }
+
+        // DUPLICATES (WITH DUPLICATES IN ORDER)
+        let duplicates = if self.check(TokenKind::With) || self.check(TokenKind::Duplicates) {
+            self.eat(TokenKind::With);
+            self.eat(TokenKind::Duplicates);
+            self.eat(TokenKind::In);
+            self.eat_identifier("ORDER");
+            true
+        } else {
+            false
+        };
+
+        // Input: USING file-names or INPUT PROCEDURE procedure
+        let input = if self.check(TokenKind::Using) {
+            self.advance();
+            let mut files = Vec::new();
+            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_terminator()
+                && !self.check(TokenKind::Giving)
+                && !self.check(TokenKind::Output)
+                && !self.at_eof()
+            {
+                files.push(self.advance().text);
+            }
+            SortInput::Using(files)
+        } else if self.check(TokenKind::Input) {
+            self.advance();
+            self.eat(TokenKind::Procedure);
+            self.eat_is();
+            let procedure = self.expect_identifier()?;
+            let through = if self.eat(TokenKind::Thru).is_some() {
+                Some(self.expect_identifier()?)
+            } else {
+                None
+            };
+            SortInput::InputProcedure { procedure, through }
+        } else {
+            SortInput::Using(Vec::new())
+        };
+
+        // Output: GIVING file-names or OUTPUT PROCEDURE procedure
+        let output = if self.check(TokenKind::Giving) {
+            self.advance();
+            let mut files = Vec::new();
+            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_terminator()
+                && !self.at_eof()
+            {
+                files.push(self.advance().text);
+            }
+            SortOutput::Giving(files)
+        } else if self.check(TokenKind::Output) {
+            self.advance();
+            self.eat(TokenKind::Procedure);
+            self.eat_is();
+            let procedure = self.expect_identifier()?;
+            let through = if self.eat(TokenKind::Thru).is_some() {
+                Some(self.expect_identifier()?)
+            } else {
+                None
+            };
+            SortOutput::OutputProcedure { procedure, through }
+        } else {
+            SortOutput::Giving(Vec::new())
+        };
+
+        let end_span = self.span();
+        Ok(Statement::Sort(Box::new(SortStatement {
+            file_name,
+            keys,
+            duplicates,
+            input,
+            output,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- MERGE ---
+    fn parse_merge_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Merge)?;
+
+        let file_name = self.expect_identifier()?;
+
+        // Parse key clauses
+        let mut keys = Vec::new();
+        while self.check(TokenKind::OnKw)
+            || self.check(TokenKind::Ascending)
+            || self.check(TokenKind::Descending)
+        {
+            self.eat(TokenKind::OnKw);
+            let order = if self.check(TokenKind::Ascending) {
+                self.advance();
+                SortOrder::Ascending
+            } else if self.check(TokenKind::Descending) {
+                self.advance();
+                SortOrder::Descending
+            } else {
+                break;
+            };
+            self.eat(TokenKind::Key);
+            let mut fields = Vec::new();
+            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_terminator()
+                && !self.check(TokenKind::OnKw)
+                && !self.check(TokenKind::Ascending)
+                && !self.check(TokenKind::Descending)
+                && !self.check(TokenKind::Using)
+                && !self.check(TokenKind::Giving)
+                && !self.check(TokenKind::Output)
+                && !self.at_eof()
+            {
+                fields.push(self.parse_qualified_name()?);
+            }
+            keys.push(SortKey { order, fields });
+        }
+
+        // USING file-names
+        let mut using = Vec::new();
+        if self.eat(TokenKind::Using).is_some() {
+            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_terminator()
+                && !self.check(TokenKind::Giving)
+                && !self.check(TokenKind::Output)
+                && !self.at_eof()
+            {
+                using.push(self.advance().text);
+            }
+        }
+
+        // Output: GIVING file-names or OUTPUT PROCEDURE procedure
+        let output = if self.check(TokenKind::Giving) {
+            self.advance();
+            let mut files = Vec::new();
+            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_terminator()
+                && !self.at_eof()
+            {
+                files.push(self.advance().text);
+            }
+            SortOutput::Giving(files)
+        } else if self.check(TokenKind::Output) {
+            self.advance();
+            self.eat(TokenKind::Procedure);
+            self.eat_is();
+            let procedure = self.expect_identifier()?;
+            let through = if self.eat(TokenKind::Thru).is_some() {
+                Some(self.expect_identifier()?)
+            } else {
+                None
+            };
+            SortOutput::OutputProcedure { procedure, through }
+        } else {
+            SortOutput::Giving(Vec::new())
+        };
+
+        let end_span = self.span();
+        Ok(Statement::Merge(Box::new(MergeStatement {
+            file_name,
+            keys,
+            using,
+            output,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- RELEASE ---
+    fn parse_release_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Release)?;
+
+        let record_name = self.parse_qualified_name()?;
+
+        let from = if self.check(TokenKind::From) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let end_span = self.span();
+        Ok(Statement::Release(ReleaseStatement {
+            record_name,
+            from,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    // --- CANCEL ---
+    fn parse_cancel_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Cancel)?;
+
+        let mut programs = Vec::new();
+        while !self.at_statement_terminator() && !self.at_eof() {
+            programs.push(self.parse_expr()?);
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Cancel(CancelStatement {
+            programs,
+            span: start_span.merge(&end_span),
+        }))
     }
 
     // =========================================================================
@@ -1415,7 +2297,7 @@ impl Parser {
         self.expect(TokenKind::Raise)?;
 
         // RAISE EXCEPTION "name" or RAISE identifier
-        let exception = if self.check(TokenKind::Identifier) && self.current().text == "EXCEPTION" {
+        let exception = if self.check_identifier("EXCEPTION") {
             self.advance(); // consume EXCEPTION
                             // RAISE EXCEPTION exception-name
             if self.check(TokenKind::StringLiteral) {
@@ -1542,13 +2424,12 @@ impl Parser {
             None
         };
 
-        let initialized =
-            if self.check(TokenKind::Identifier) && self.current().text == "INITIALIZED" {
-                self.advance();
-                true
-            } else {
-                false
-            };
+        let initialized = if self.check_identifier("INITIALIZED") {
+            self.advance();
+            true
+        } else {
+            false
+        };
 
         let end_span = self.span();
         Ok(Statement::Allocate(Box::new(AllocateStatement {
@@ -1578,11 +2459,202 @@ impl Parser {
     }
 
     // =========================================================================
+    // Error-phrase helpers (ON SIZE ERROR, AT END, INVALID KEY, ON OVERFLOW)
+    // =========================================================================
+
+    /// Parse ON SIZE ERROR / NOT ON SIZE ERROR phrases.
+    /// Returns (on_size_error_stmts, not_on_size_error_stmts).
+    fn parse_size_error_phrases(
+        &mut self,
+        end_token: TokenKind,
+    ) -> Result<(Vec<Statement>, Vec<Statement>), ()> {
+        let mut on_size_error = Vec::new();
+        let mut not_on_size_error = Vec::new();
+
+        // ON SIZE ERROR
+        if self.check(TokenKind::OnKw) || self.check(TokenKind::SizeKw) {
+            self.eat(TokenKind::OnKw);
+            self.eat(TokenKind::SizeKw);
+            self.eat(TokenKind::ErrorKw);
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(end_token)
+                && !self.check(TokenKind::Period)
+            {
+                on_size_error.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT ON SIZE ERROR
+        if self.check(TokenKind::Not) {
+            self.advance();
+            self.eat(TokenKind::OnKw);
+            self.eat(TokenKind::SizeKw);
+            self.eat(TokenKind::ErrorKw);
+            while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+                not_on_size_error.push(self.parse_statement()?);
+            }
+        }
+
+        self.eat(end_token);
+
+        Ok((on_size_error, not_on_size_error))
+    }
+
+    /// Parse AT END / NOT AT END phrases.
+    /// Returns (at_end_stmts, not_at_end_stmts).
+    fn parse_at_end_phrases(
+        &mut self,
+        end_token: TokenKind,
+    ) -> Result<(Vec<Statement>, Vec<Statement>), ()> {
+        let mut at_end = Vec::new();
+        let mut not_at_end = Vec::new();
+
+        // AT END
+        if self.check(TokenKind::At) {
+            self.advance();
+            self.eat(TokenKind::End);
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(end_token)
+                && !self.check(TokenKind::Period)
+            {
+                at_end.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT AT END
+        if self.check(TokenKind::Not) {
+            self.advance();
+            self.eat(TokenKind::At);
+            self.eat(TokenKind::End);
+            while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+                not_at_end.push(self.parse_statement()?);
+            }
+        }
+
+        self.eat(end_token);
+
+        Ok((at_end, not_at_end))
+    }
+
+    /// Parse INVALID KEY / NOT INVALID KEY phrases.
+    /// Returns (invalid_key_stmts, not_invalid_key_stmts).
+    fn parse_invalid_key_phrases(
+        &mut self,
+        end_token: TokenKind,
+    ) -> Result<(Vec<Statement>, Vec<Statement>), ()> {
+        let mut invalid_key = Vec::new();
+        let mut not_invalid_key = Vec::new();
+
+        // INVALID KEY
+        if self.check(TokenKind::InvalidKey) {
+            self.advance();
+            self.eat(TokenKind::Key);
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(end_token)
+                && !self.check(TokenKind::Period)
+            {
+                invalid_key.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT INVALID KEY
+        if self.check(TokenKind::Not) {
+            self.advance();
+            self.eat(TokenKind::InvalidKey);
+            self.eat(TokenKind::Key);
+            while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+                not_invalid_key.push(self.parse_statement()?);
+            }
+        }
+
+        self.eat(end_token);
+
+        Ok((invalid_key, not_invalid_key))
+    }
+
+    /// Parse ON OVERFLOW / NOT ON OVERFLOW phrases.
+    /// Returns (on_overflow_stmts, not_on_overflow_stmts).
+    fn parse_overflow_phrases(
+        &mut self,
+        end_token: TokenKind,
+    ) -> Result<(Vec<Statement>, Vec<Statement>), ()> {
+        let mut on_overflow = Vec::new();
+        let mut not_on_overflow = Vec::new();
+
+        // ON OVERFLOW
+        if self.check(TokenKind::OnKw) || self.check(TokenKind::Overflow) {
+            self.eat(TokenKind::OnKw);
+            self.eat(TokenKind::Overflow);
+            while !self.at_eof()
+                && !self.check(TokenKind::Not)
+                && !self.check(end_token)
+                && !self.check(TokenKind::Period)
+            {
+                on_overflow.push(self.parse_statement()?);
+            }
+        }
+
+        // NOT ON OVERFLOW
+        if self.check(TokenKind::Not) {
+            self.advance();
+            self.eat(TokenKind::OnKw);
+            self.eat(TokenKind::Overflow);
+            while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+                not_on_overflow.push(self.parse_statement()?);
+            }
+        }
+
+        self.eat(end_token);
+
+        Ok((on_overflow, not_on_overflow))
+    }
+
+    /// Parse BEFORE/AFTER INITIAL phrases for INSPECT.
+    fn parse_before_after_clauses(&mut self) -> Result<Vec<BeforeAfter>, ()> {
+        let mut clauses = Vec::new();
+        while self.check(TokenKind::Before) || self.check(TokenKind::After) {
+            let kind = if self.check(TokenKind::Before) {
+                self.advance();
+                BeforeAfterKind::Before
+            } else {
+                self.advance();
+                BeforeAfterKind::After
+            };
+            self.eat(TokenKind::Initial);
+            let value = self.parse_expr()?;
+            clauses.push(BeforeAfter { kind, value });
+        }
+        Ok(clauses)
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
     fn at_statement_terminator(&self) -> bool {
-        self.check(TokenKind::Period) || self.at_eof() || self.is_end_keyword(self.current().kind)
+        if self.check(TokenKind::Period)
+            || self.at_eof()
+            || self.is_end_keyword(self.current().kind)
+        {
+            return true;
+        }
+        // NOT followed by a phrase keyword signals the start of a
+        // NOT ON SIZE ERROR / NOT AT END / NOT INVALID KEY / NOT ON OVERFLOW /
+        // NOT ON EXCEPTION phrase.  This must terminate the current statement
+        // so the outer phrase parser can handle it.
+        if self.check(TokenKind::Not) {
+            let next = self.peek(1).kind;
+            if matches!(
+                next,
+                TokenKind::OnKw | TokenKind::At | TokenKind::InvalidKey
+            ) {
+                return true;
+            }
+        }
+        false
     }
 
     fn is_end_keyword(&self, kind: TokenKind) -> bool {
@@ -1602,6 +2674,13 @@ impl Parser {
                 | TokenKind::EndUnstring
                 | TokenKind::EndAccept
                 | TokenKind::EndDisplay
+                | TokenKind::EndCompute
+                | TokenKind::EndAdd
+                | TokenKind::EndSubtract
+                | TokenKind::EndMultiply
+                | TokenKind::EndDivide
+                | TokenKind::EndSort
+                | TokenKind::EndMerge
                 | TokenKind::Else
         )
     }

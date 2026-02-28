@@ -53,7 +53,7 @@ impl SemanticAnalyzer {
 
         AnalysisResult {
             has_errors: self.reporter.has_errors(),
-            symbol_table: self.symbol_table.clone(),
+            symbol_table: std::mem::take(&mut self.symbol_table),
         }
     }
 

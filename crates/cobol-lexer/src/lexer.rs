@@ -9,11 +9,7 @@ use crate::token::{Token, TokenKind};
 /// Internally uses `SourceReader` to handle fixed/free format source layout,
 /// then tokenizes the content area of each non-comment, non-blank line.
 pub struct Lexer {
-    #[allow(dead_code)]
-    source: String,
     file_id: FileId,
-    #[allow(dead_code)]
-    format: SourceFormat,
     /// Flattened content built from all non-comment, non-blank lines.
     content: String,
     /// Mapping from byte positions in `content` to global source offsets.
@@ -28,10 +24,16 @@ pub struct Lexer {
     at_statement_start: bool,
 }
 
-/// A segment of content extracted from one source line.
+/// A segment of content extracted from one or more source lines
+/// (when continuation lines are merged).
 struct ContentSegment {
     text: String,
+    /// Global byte offset of the start of the original (non-continuation) line's content.
     global_offset: u32,
+    /// Additional offset mappings from continuation lines that were merged into this
+    /// segment. Each entry is `(byte_offset_in_text, global_offset)` marking where
+    /// a continuation line's content begins within `text`.
+    cont_offsets: Vec<(usize, u32)>,
 }
 
 impl Lexer {
@@ -40,19 +42,8 @@ impl Lexer {
         let reader = SourceReader::new(source, format);
 
         // Build flattened content and offset map from non-comment, non-blank lines.
-        let segments: Vec<ContentSegment> = reader
-            .lines()
-            .iter()
-            .filter(|line| !line.is_comment() && !line.is_blank())
-            .map(|line| {
-                let text = line.content_text().to_string();
-                let global_offset = line.global_offset + line.content_start as u32;
-                ContentSegment {
-                    text,
-                    global_offset,
-                }
-            })
-            .collect();
+        // Continuation lines (indicator '-') are merged with the preceding line.
+        let segments = Self::build_segments(reader.lines());
 
         let mut content = String::new();
         let mut offset_map: Vec<u32> = Vec::new();
@@ -61,23 +52,43 @@ impl Lexer {
             if i > 0 {
                 // Insert a space between lines to separate tokens
                 content.push(' ');
-                // The inter-line space maps to the end of the previous segment
+                // The inter-line space maps to the end of the previous segment's
+                // original content (before any continuation was merged).
                 let prev = &segments[i - 1];
-                offset_map.push(prev.global_offset + prev.text.len() as u32);
+                let prev_end = if let Some(&(start_in_text, base_global)) = prev.cont_offsets.last()
+                {
+                    // The previous segment had continuations; compute end from
+                    // the last continuation region.
+                    let cont_len = prev.text.len() - start_in_text;
+                    base_global + cont_len as u32
+                } else {
+                    prev.global_offset + prev.text.len() as u32
+                };
+                offset_map.push(prev_end);
             }
             let base = content.len();
             content.push_str(&seg.text);
-            // Build offset map for each byte in this segment
+
+            // Build offset map for each byte in this segment, accounting for
+            // continuation offsets that shift the global mapping partway through.
+            let mut cont_idx = 0;
+            let mut current_global_base = seg.global_offset;
+            let mut current_text_start: usize = 0;
+
             for j in 0..seg.text.len() {
+                // Check if we've entered a continuation region
+                if cont_idx < seg.cont_offsets.len() && j >= seg.cont_offsets[cont_idx].0 {
+                    current_text_start = seg.cont_offsets[cont_idx].0;
+                    current_global_base = seg.cont_offsets[cont_idx].1;
+                    cont_idx += 1;
+                }
                 debug_assert_eq!(offset_map.len(), base + j);
-                offset_map.push(seg.global_offset + j as u32);
+                offset_map.push(current_global_base + (j - current_text_start) as u32);
             }
         }
 
         Self {
-            source: source.to_string(),
             file_id,
-            format,
             content,
             offset_map,
             pos: 0,
@@ -97,7 +108,7 @@ impl Lexer {
                 break;
             }
         }
-        self.tokens.clone()
+        std::mem::take(&mut self.tokens)
     }
 
     /// Produces the next token from the source.
@@ -112,7 +123,7 @@ impl Lexer {
         if self.picture_mode {
             self.picture_mode = false;
             // Skip optional IS keyword
-            if self.remaining_upper().starts_with("IS") {
+            if self.remaining_starts_with_ignore_case("IS") {
                 let after_is = &self.content[self.pos + 2..];
                 if after_is.starts_with(' ') || after_is.starts_with('\t') {
                     self.pos += 2;
@@ -175,6 +186,96 @@ impl Lexer {
         self.make_token(TokenKind::Error, start, self.pos)
     }
 
+    // ── Continuation line merging ─────────────────────────────────
+
+    /// Builds content segments from source lines, merging continuation lines
+    /// with their preceding lines.
+    ///
+    /// In COBOL fixed format, a '-' in column 7 indicates that the line
+    /// continues the previous line. For string literal continuations, the
+    /// trailing quote of the previous line and the leading quote of the
+    /// continuation line are removed so that the string content is seamlessly
+    /// joined. For non-string continuations, the continuation line's content
+    /// is appended after trimming trailing whitespace from the previous line.
+    fn build_segments(lines: &[crate::source_reader::SourceLine]) -> Vec<ContentSegment> {
+        let filtered: Vec<_> = lines
+            .iter()
+            .filter(|line| !line.is_comment() && !line.is_blank())
+            .collect();
+
+        let mut segments: Vec<ContentSegment> = Vec::new();
+
+        for line in filtered {
+            if line.is_continuation() {
+                if let Some(prev) = segments.last_mut() {
+                    let cont_text = line.content_text();
+                    let cont_global = line.global_offset + line.content_start as u32;
+
+                    // Determine if this is a string literal continuation by
+                    // checking whether the continuation line's first non-space
+                    // character is a quote.
+                    let cont_bytes = cont_text.as_bytes();
+                    let mut skip = 0;
+                    while skip < cont_bytes.len() && cont_bytes[skip] == b' ' {
+                        skip += 1;
+                    }
+
+                    let first_non_space = cont_bytes.get(skip).copied();
+                    let is_string_continuation = matches!(first_non_space, Some(b'"' | b'\''));
+
+                    if is_string_continuation {
+                        // Skip the opening quote on the continuation line
+                        skip += 1;
+
+                        // Trim trailing spaces from the previous segment's text,
+                        // then remove trailing content up to and including the
+                        // last non-space character so that the string contents
+                        // join seamlessly.
+                        //
+                        // In fixed format, the previous line's content area may
+                        // look like: MOVE "THIS IS A VERY L
+                        // (the string is left open, truncated at column 72).
+                        // We need to keep the text as-is (the string is still
+                        // open) and just trim trailing spaces.
+                        let prev_trimmed_len = prev.text.trim_end().len();
+                        prev.text.truncate(prev_trimmed_len);
+
+                        // Append the continuation content (after the quote)
+                        let appended = &cont_text[skip..];
+                        let append_start = prev.text.len();
+                        prev.text.push_str(appended);
+                        prev.cont_offsets
+                            .push((append_start, cont_global + skip as u32));
+                    } else {
+                        // Non-string continuation: trim previous trailing spaces,
+                        // then append continuation content (trimmed of leading
+                        // spaces).
+                        let prev_trimmed_len = prev.text.trim_end().len();
+                        prev.text.truncate(prev_trimmed_len);
+
+                        let cont_trimmed = cont_text.trim_start();
+                        let leading_spaces = cont_text.len() - cont_trimmed.len();
+                        let append_start = prev.text.len();
+                        prev.text.push_str(cont_trimmed);
+                        prev.cont_offsets
+                            .push((append_start, cont_global + leading_spaces as u32));
+                    }
+                }
+                // If no previous segment exists, skip the orphan continuation line
+            } else {
+                let text = line.content_text().to_string();
+                let global_offset = line.global_offset + line.content_start as u32;
+                segments.push(ContentSegment {
+                    text,
+                    global_offset,
+                    cont_offsets: Vec::new(),
+                });
+            }
+        }
+
+        segments
+    }
+
     // ── Helper methods ──────────────────────────────────────────────
 
     /// Returns the current byte at `self.pos`.
@@ -182,9 +283,14 @@ impl Lexer {
         self.content.as_bytes()[self.pos]
     }
 
-    /// Returns the remaining content from `self.pos`, uppercased.
-    fn remaining_upper(&self) -> String {
-        self.content[self.pos..].to_uppercase()
+    /// Checks whether the remaining content starting at `self.pos` begins
+    /// with `target`, using ASCII case-insensitive comparison.
+    fn remaining_starts_with_ignore_case(&self, target: &str) -> bool {
+        let remaining = &self.content[self.pos..];
+        if remaining.len() < target.len() {
+            return false;
+        }
+        remaining[..target.len()].eq_ignore_ascii_case(target)
     }
 
     /// Skips whitespace characters (spaces, tabs).
@@ -206,7 +312,7 @@ impl Lexer {
         } else if self.pos < self.offset_map.len() {
             self.offset_map[self.pos]
         } else {
-            *self.offset_map.last().unwrap() + 1
+            self.offset_map.last().unwrap_or(&0) + 1
         };
         Token {
             kind: TokenKind::Eof,
@@ -217,13 +323,16 @@ impl Lexer {
 
     /// Creates a token from content byte range [start..end).
     fn make_token(&self, kind: TokenKind, start: usize, end: usize) -> Token {
+        if start >= self.offset_map.len() {
+            return self.make_eof();
+        }
         let text: SmolStr = self.content[start..end].into();
         let global_start = self.offset_map[start];
         let global_end = if end > 0 && end <= self.offset_map.len() {
             if end < self.offset_map.len() {
                 self.offset_map[end]
             } else {
-                *self.offset_map.last().unwrap() + 1
+                self.offset_map.last().unwrap_or(&0) + 1
             }
         } else {
             global_start
@@ -870,5 +979,110 @@ mod tests {
         // Find the level number after STOP RUN.
         let level_tok = tokens.iter().find(|t| t.kind == TokenKind::LevelNumber);
         assert!(level_tok.is_some());
+    }
+
+    // ── Continuation line tests ─────────────────────────────────
+
+    /// Helper to build a fixed-format line padded/truncated to exactly 80 characters
+    /// (72 content columns + 8 identification area, including the newline).
+    /// `seq` is the 6-char sequence area, `ind` is the indicator character,
+    /// and `content` is the Area A+B text (columns 8-72, up to 65 chars).
+    fn fixed_line(seq: &str, ind: char, content: &str) -> String {
+        // columns 1-6: sequence, column 7: indicator, columns 8-72: content
+        // pad content to 65 chars (columns 8-72), then add 8 chars identification area
+        let padded_content = format!("{:<65}", content);
+        let ident_area = "        "; // 8 chars for columns 73-80
+        format!("{}{}{}{}\n", seq, ind, padded_content, ident_area)
+    }
+
+    #[test]
+    fn test_continuation_string_literal() {
+        // Line 1: MOVE "THIS IS A VERY L
+        // Line 2 (continuation): "ONG STRING" TO WS-VAR.
+        let line1 = fixed_line("000100", ' ', r#"MOVE "THIS IS A VERY L"#);
+        let line2 = fixed_line("000200", '-', r#"    "ONG STRING" TO WS-VAR."#);
+        let src = format!("{}{}", line1, line2);
+        let tokens = lex(&src);
+
+        // Find the string literal token
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("should have a string literal token");
+        assert_eq!(
+            str_tok.text.as_str(),
+            r#""THIS IS A VERY LONG STRING""#,
+            "string literal should be merged across continuation"
+        );
+
+        // Verify the surrounding tokens are correct
+        assert_eq!(tokens[0].kind, TokenKind::Move);
+        let to_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::To)
+            .expect("should have TO keyword");
+        assert_eq!(to_tok.text.as_str(), "TO");
+    }
+
+    #[test]
+    fn test_continuation_multiple_lines() {
+        // Three lines forming one long string:
+        // "FIRST P" + "ART SECOND" + " PART THIRD PART"
+        let line1 = fixed_line("000100", ' ', r#"MOVE "FIRST P"#);
+        let line2 = fixed_line("000200", '-', r#"    "ART SECOND P"#);
+        let line3 = fixed_line("000300", '-', r#"    "ART THIRD PART" TO X."#);
+        let src = format!("{}{}{}", line1, line2, line3);
+        let tokens = lex(&src);
+
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("should have a string literal token");
+        assert_eq!(
+            str_tok.text.as_str(),
+            r#""FIRST PART SECOND PART THIRD PART""#,
+            "string should be merged across multiple continuation lines"
+        );
+    }
+
+    #[test]
+    fn test_continuation_non_string() {
+        // Non-string continuation: a long identifier or keyword sequence
+        // Line 1: MOVE VERY-LONG-
+        // Line 2 (continuation): VARIABLE-NAME TO X.
+        let line1 = fixed_line("000100", ' ', "MOVE VERY-LONG-VARI");
+        let line2 = fixed_line("000200", '-', "    ABLE-NAME TO X.");
+        let src = format!("{}{}", line1, line2);
+        let tokens = lex(&src);
+
+        // The continuation should merge into one identifier
+        let ident_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::Identifier)
+            .expect("should have an identifier token");
+        assert_eq!(
+            ident_tok.text.as_str(),
+            "VERY-LONG-VARIABLE-NAME",
+            "identifier should be merged across continuation"
+        );
+    }
+
+    #[test]
+    fn test_continuation_single_quoted_string() {
+        // Same as test_continuation_string_literal but with single quotes
+        let line1 = fixed_line("000100", ' ', "MOVE 'HELLO WO");
+        let line2 = fixed_line("000200", '-', "    'RLD' TO WS-VAR.");
+        let src = format!("{}{}", line1, line2);
+        let tokens = lex(&src);
+
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("should have a string literal token");
+        assert_eq!(
+            str_tok.text.as_str(),
+            "'HELLO WORLD'",
+            "single-quoted string should be merged across continuation"
+        );
     }
 }

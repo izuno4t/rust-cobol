@@ -56,6 +56,9 @@ pub unsafe extern "C" fn cobol_move_string(
     dst_ptr: *mut u8,
     dst_len: u32,
 ) {
+    if src_ptr.is_null() || dst_ptr.is_null() {
+        return;
+    }
     let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
     let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
 
@@ -83,6 +86,9 @@ pub unsafe extern "C" fn cobol_move_numeric_to_display(
     dst_ptr: *mut u8,
     dst_len: u32,
 ) {
+    if dst_ptr.is_null() || dst_len == 0 {
+        return;
+    }
     let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
 
     // Format the numeric value with the decimal point.
@@ -144,6 +150,9 @@ pub unsafe extern "C" fn cobol_string_concat(
     dst_len: u32,
     pointer: *mut u32,
 ) -> i32 {
+    if sources.is_null() || dst_ptr.is_null() || pointer.is_null() {
+        return 1;
+    }
     let srcs = std::slice::from_raw_parts(sources, source_count as usize);
     let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
     let ptr_val = &mut *pointer;
@@ -221,6 +230,9 @@ pub unsafe extern "C" fn cobol_unstring(
     pointer: *mut u32,
     tallying: *mut u32,
 ) -> i32 {
+    if src_ptr.is_null() || targets.is_null() {
+        return 1;
+    }
     let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
     let delim = if !delim_ptr.is_null() && delim_len > 0 {
         std::slice::from_raw_parts(delim_ptr, delim_len as usize)
@@ -325,6 +337,9 @@ pub unsafe extern "C" fn cobol_inspect_tallying(
     search_len: u32,
     mode: u32,
 ) -> u32 {
+    if src_ptr.is_null() {
+        return 0;
+    }
     let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
 
     if mode == 0 {
@@ -332,6 +347,9 @@ pub unsafe extern "C" fn cobol_inspect_tallying(
         return src_len;
     }
 
+    if search_ptr.is_null() || search_len == 0 {
+        return 0;
+    }
     let search = std::slice::from_raw_parts(search_ptr, search_len as usize);
     if search.is_empty() {
         return 0;
@@ -377,12 +395,15 @@ pub unsafe extern "C" fn cobol_inspect_replacing(
     replace_len: u32,
     mode: u32,
 ) {
+    if src_ptr.is_null() || src_len == 0 {
+        return;
+    }
     let src = std::slice::from_raw_parts_mut(src_ptr, src_len as usize);
 
     if mode == 0 {
         // CHARACTERS -- replace every character with the first byte of
         // the replacement string.
-        if replace_len == 0 {
+        if replace_ptr.is_null() || replace_len == 0 {
             return;
         }
         let rep_byte = *replace_ptr;
@@ -392,6 +413,9 @@ pub unsafe extern "C" fn cobol_inspect_replacing(
         return;
     }
 
+    if search_ptr.is_null() || replace_ptr.is_null() {
+        return;
+    }
     let search = std::slice::from_raw_parts(search_ptr, search_len as usize);
     let replace = std::slice::from_raw_parts(replace_ptr, replace_len as usize);
     if search.is_empty() {
@@ -438,6 +462,9 @@ pub unsafe extern "C" fn cobol_inspect_converting(
     to_ptr: *const u8,
     to_len: u32,
 ) {
+    if src_ptr.is_null() || from_ptr.is_null() || to_ptr.is_null() {
+        return;
+    }
     let src = std::slice::from_raw_parts_mut(src_ptr, src_len as usize);
     let from = std::slice::from_raw_parts(from_ptr, from_len as usize);
     let to = std::slice::from_raw_parts(to_ptr, to_len as usize);

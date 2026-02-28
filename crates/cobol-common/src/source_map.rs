@@ -18,6 +18,10 @@ impl SourceMap {
 
     /// Adds a source file and returns its assigned [`FileId`].
     pub fn add_file(&mut self, name: impl Into<String>, content: impl Into<String>) -> FileId {
+        debug_assert!(
+            self.files.len() < u32::MAX as usize,
+            "Too many source files: FileId would overflow u32"
+        );
         let id = FileId(self.files.len() as u32);
         self.files
             .push(SourceFile::new(id, name.into(), content.into()));

@@ -28,6 +28,18 @@ pub enum Expr {
         inner: Box<Expr>,
         span: Span,
     },
+    /// Reference modification: `VAR(start:length)`.
+    ///
+    /// COBOL reference modification extracts a substring from an
+    /// alphanumeric data item. Positions are 1-based.
+    /// - `VAR(start:length)` -- both start and length specified
+    /// - `VAR(start:)` -- start only; length defaults to remaining bytes
+    ReferenceModification {
+        variable: QualifiedName,
+        start: Box<Expr>,
+        length: Option<Box<Expr>>,
+        span: Span,
+    },
 }
 
 /// Binary arithmetic operators.

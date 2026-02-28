@@ -27,15 +27,22 @@ impl Parser {
 
         let mut subscripts = Vec::new();
         if self.check(TokenKind::LeftParen) {
-            self.advance();
-            loop {
-                let expr = self.parse_expr()?;
-                subscripts.push(expr);
-                if self.eat(TokenKind::Comma).is_none() {
-                    break;
+            // Peek ahead to decide: reference modification (contains ':')
+            // vs. subscript. We scan tokens inside the parens looking for
+            // a colon at the top nesting level.
+            if !self.is_reference_modification_ahead() {
+                self.advance(); // consume '('
+                loop {
+                    let expr = self.parse_expr()?;
+                    subscripts.push(expr);
+                    if self.eat(TokenKind::Comma).is_none() {
+                        break;
+                    }
                 }
+                self.expect(TokenKind::RightParen)?;
             }
-            self.expect(TokenKind::RightParen)?;
+            // If it is reference modification, leave the '(' unconsumed --
+            // the caller (parse_primary) handles it.
         }
 
         let end_span = self.span();
@@ -46,6 +53,49 @@ impl Parser {
             subscripts,
             span: start_span.merge(&end_span),
         })
+    }
+
+    /// Look ahead from a `(` token to determine whether the parenthesized
+    /// expression is a reference modification (`VAR(start:length)`) rather
+    /// than a subscript (`TABLE(index)`). We scan tokens at the top
+    /// parenthesis nesting level looking for a `:`.
+    pub(crate) fn is_reference_modification_ahead(&self) -> bool {
+        // We are positioned at '('. Peek past it.
+        let mut offset = 1; // skip the '('
+        let mut depth = 1i32;
+        loop {
+            let tok = self.peek(offset);
+            match tok.kind {
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return false; // Reached matching ')' without seeing ':'
+                    }
+                }
+                TokenKind::Colon if depth == 1 => return true,
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            offset += 1;
+        }
+    }
+
+    /// Parse reference modification: `(start : length)` or `(start :)`.
+    ///
+    /// Called when the current token is `(` and we already know this is
+    /// a reference modification (contains `:`).
+    pub(crate) fn parse_reference_modification(&mut self) -> Result<(Expr, Option<Expr>), ()> {
+        self.expect(TokenKind::LeftParen)?;
+        let start = self.parse_expr()?;
+        self.expect(TokenKind::Colon)?;
+        let length = if self.check(TokenKind::RightParen) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        self.expect(TokenKind::RightParen)?;
+        Ok((start, length))
     }
 
     // =========================================================================
@@ -194,9 +244,24 @@ impl Parser {
             return self.parse_function_call();
         }
 
-        // Identifier (possibly qualified)
+        // Identifier (possibly qualified), possibly with reference modification
         if self.check(TokenKind::Identifier) || self.current().kind.is_keyword() {
+            let start_span = self.span();
             let qn = self.parse_qualified_name()?;
+
+            // Check for trailing reference modification: VAR(start:length)
+            // parse_qualified_name leaves '(' unconsumed when it detects
+            // a reference modification pattern.
+            if self.check(TokenKind::LeftParen) && self.is_reference_modification_ahead() {
+                let (ref_start, ref_length) = self.parse_reference_modification()?;
+                let end_span = self.span();
+                return Ok(Expr::ReferenceModification {
+                    variable: qn,
+                    start: Box::new(ref_start),
+                    length: ref_length.map(Box::new),
+                    span: start_span.merge(&end_span),
+                });
+            }
             return Ok(Expr::Identifier(qn));
         }
 
@@ -210,6 +275,7 @@ impl Parser {
         match self.current().kind {
             TokenKind::IntegerLiteral => {
                 let tok = self.advance();
+                // Note: integers exceeding i64 range silently become 0
                 let val: i64 = tok.text.parse().unwrap_or(0);
                 Some(Literal::Integer(val))
             }

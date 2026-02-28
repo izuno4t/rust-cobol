@@ -133,6 +133,9 @@ pub unsafe extern "C" fn cobol_file_open(
     mode: FileOpenMode,
     record_len: u32,
 ) -> u32 {
+    if path_ptr.is_null() || path_len == 0 {
+        return FS_IO_ERROR;
+    }
     let path_slice = std::slice::from_raw_parts(path_ptr, path_len as usize);
     let path = match std::str::from_utf8(path_slice) {
         Ok(s) => s.trim(),
@@ -223,6 +226,9 @@ pub unsafe extern "C" fn cobol_file_read_next(
     record_ptr: *mut u8,
     record_len: u32,
 ) -> u32 {
+    if record_ptr.is_null() || record_len == 0 {
+        return FS_IO_ERROR;
+    }
     let buf = std::slice::from_raw_parts_mut(record_ptr, record_len as usize);
 
     with_file_table(|table| {
@@ -236,27 +242,37 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 let reader = match &mut file.inner {
                     CobolFileInner::Reader(r) => r,
                     CobolFileInner::ReadWrite(f) => {
-                        // For I-O mode we need to do a line read on the raw file.
+                        // For I-O mode, read byte-by-byte to avoid BufReader
+                        // position desync with the underlying file.
                         let mut line = String::new();
-                        let mut br = BufReader::new(f.try_clone().unwrap());
-                        match br.read_line(&mut line) {
-                            Ok(0) => return FS_AT_END,
-                            Ok(_) => {
-                                let trimmed = line.trim_end_matches(['\r', '\n']);
-                                let bytes = trimmed.as_bytes();
-                                let copy_len = bytes.len().min(buf.len());
-                                buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-                                for b in buf[copy_len..].iter_mut() {
-                                    *b = b' ';
+                        let mut byte_buf = [0u8; 1];
+                        let mut bytes_read_total = 0usize;
+                        loop {
+                            match f.read(&mut byte_buf) {
+                                Ok(0) => break, // EOF
+                                Ok(_) => {
+                                    bytes_read_total += 1;
+                                    if byte_buf[0] == b'\n' {
+                                        break;
+                                    }
+                                    if byte_buf[0] != b'\r' {
+                                        line.push(byte_buf[0] as char);
+                                    }
                                 }
-                                // Seek the underlying file forward.
-                                let line_bytes = line.len() as i64;
-                                let _ = f.seek(SeekFrom::Current(line_bytes));
-                                file.current_record += 1;
-                                return FS_OK;
+                                Err(_) => return FS_IO_ERROR,
                             }
-                            Err(_) => return FS_IO_ERROR,
                         }
+                        if bytes_read_total == 0 {
+                            return FS_AT_END;
+                        }
+                        let bytes = line.as_bytes();
+                        let copy_len = bytes.len().min(buf.len());
+                        buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                        for b in buf[copy_len..].iter_mut() {
+                            *b = b' ';
+                        }
+                        file.current_record += 1;
+                        return FS_OK;
                     }
                     _ => return FS_WRITE_NOT_PERMITTED,
                 };
@@ -352,6 +368,9 @@ pub unsafe extern "C" fn cobol_file_write(
     record_ptr: *const u8,
     record_len: u32,
 ) -> u32 {
+    if record_ptr.is_null() || record_len == 0 {
+        return FS_IO_ERROR;
+    }
     let data = std::slice::from_raw_parts(record_ptr, record_len as usize);
 
     with_file_table(|table| {
@@ -406,6 +425,9 @@ pub unsafe extern "C" fn cobol_file_rewrite(
     record_ptr: *const u8,
     record_len: u32,
 ) -> u32 {
+    if record_ptr.is_null() || record_len == 0 {
+        return FS_IO_ERROR;
+    }
     let data = std::slice::from_raw_parts(record_ptr, record_len as usize);
 
     with_file_table(|table| {
@@ -594,6 +616,18 @@ pub unsafe extern "C" fn cobol_file_start(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Close all open files, flushing writers. Called during program shutdown.
+pub fn close_all_files() {
+    let mut guard = FILE_TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(table) = guard.as_mut() {
+        for (_id, mut file) in table.drain() {
+            if let CobolFileInner::Writer(ref mut w) = file.inner {
+                let _ = w.flush();
+            }
+        }
+    }
+}
 
 /// Trim trailing ASCII spaces from a byte slice.
 fn trim_trailing_spaces(data: &[u8]) -> &[u8] {

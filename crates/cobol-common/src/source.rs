@@ -30,7 +30,7 @@ impl SourceFile {
     /// If `offset` is beyond the content length, returns the position at
     /// the end of the last line.
     pub fn line_col(&self, offset: u32) -> (usize, usize) {
-        let offset = offset as usize;
+        let offset = (offset as usize).min(self.content.len());
         // binary search for the line containing this offset
         let line_idx = match self.line_starts.binary_search(&(offset as u32)) {
             Ok(idx) => idx,

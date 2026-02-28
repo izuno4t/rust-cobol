@@ -1,0 +1,12 @@
+[package]
+name = "cobol-preprocessor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cobol-common.workspace = true
+cobol-diagnostics.workspace = true
+smol_str.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

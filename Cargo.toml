@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/cobol-common",
     "crates/cobol-diagnostics",
+    "crates/cobol-preprocessor",
     "crates/cobol-lexer",
     "crates/cobol-ast",
     "crates/cobol-parser",
@@ -29,6 +30,7 @@ cobol-parser = { path = "crates/cobol-parser" }
 cobol-sema = { path = "crates/cobol-sema" }
 cobol-hir = { path = "crates/cobol-hir" }
 cobol-mir = { path = "crates/cobol-mir" }
+cobol-preprocessor = { path = "crates/cobol-preprocessor" }
 cobol-codegen = { path = "crates/cobol-codegen" }
 cobol-runtime = { path = "crates/cobol-runtime" }
 

@@ -4,8 +4,13 @@
 // program. These functions are called from generated code via C ABI.
 
 /// STOP RUN -- terminate the program with exit code 0.
+///
+/// Flushes stdout and closes all open files before exiting.
 #[no_mangle]
 pub extern "C" fn cobol_stop_run() -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    crate::file_io::close_all_files();
     std::process::exit(0);
 }
 
@@ -15,5 +20,8 @@ pub extern "C" fn cobol_stop_run() -> ! {
 /// but for now we treat it as program termination.
 #[no_mangle]
 pub extern "C" fn cobol_goback() -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    crate::file_io::close_all_files();
     std::process::exit(0);
 }

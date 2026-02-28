@@ -269,6 +269,7 @@ dependencies = [
  "cobol-hir",
  "cobol-lexer",
  "cobol-parser",
+ "cobol-preprocessor",
  "cobol-runtime",
  "cobol-sema",
  "tempfile",
@@ -311,6 +312,16 @@ dependencies = [
  "cobol-diagnostics",
  "cobol-lexer",
  "smol_str",
+]
+
+[[package]]
+name = "cobol-preprocessor"
+version = "0.1.0"
+dependencies = [
+ "cobol-common",
+ "cobol-diagnostics",
+ "smol_str",
+ "tempfile",
 ]
 
 [[package]]

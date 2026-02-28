@@ -5,7 +5,8 @@
 // stored as opaque u64 values.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 /// Global registry of active threads, keyed by handle.
@@ -30,11 +31,12 @@ fn get_thread_registry() -> &'static Mutex<ThreadRegistry> {
 }
 
 /// Global registry of mutexes, keyed by handle.
+/// Each mutex is an AtomicBool used as a spinlock (false = unlocked, true = locked).
 static MUTEX_REGISTRY: OnceLock<Mutex<MutexRegistry>> = OnceLock::new();
 
 struct MutexRegistry {
     next_handle: u64,
-    mutexes: HashMap<u64, std::sync::Arc<Mutex<()>>>,
+    mutexes: HashMap<u64, Arc<AtomicBool>>,
 }
 
 impl MutexRegistry {
@@ -67,7 +69,12 @@ pub unsafe extern "C" fn cobol_thread_create(
     let arg_val = arg as usize;
 
     let join_handle = thread::spawn(move || {
-        func_ptr(arg_val as *mut u8);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            func_ptr(arg_val as *mut u8);
+        }));
+        if result.is_err() {
+            eprintln!("COBOL thread panicked");
+        }
     });
 
     let mut registry = get_thread_registry().lock().unwrap();
@@ -107,13 +114,14 @@ pub extern "C" fn cobol_mutex_create() -> u64 {
     registry.next_handle += 1;
     registry
         .mutexes
-        .insert(handle, std::sync::Arc::new(Mutex::new(())));
+        .insert(handle, Arc::new(AtomicBool::new(false)));
     handle
 }
 
 /// Lock a mutex.
 ///
-/// Blocks until the mutex can be acquired. Does nothing if the handle is invalid.
+/// Blocks (spins with yield) until the mutex can be acquired.
+/// Does nothing if the handle is invalid.
 #[no_mangle]
 pub extern "C" fn cobol_mutex_lock(handle: u64) {
     let mutex = {
@@ -122,11 +130,13 @@ pub extern "C" fn cobol_mutex_lock(handle: u64) {
     };
 
     if let Some(m) = mutex {
-        // We acquire the lock and immediately forget the guard to keep it locked.
-        // This is intentional -- the COBOL program is responsible for calling
-        // cobol_mutex_unlock to release it.
-        let guard = m.lock().unwrap();
-        std::mem::forget(guard);
+        // Spin until we successfully set the lock from false (unlocked) to true (locked).
+        while m
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            thread::yield_now();
+        }
     }
 }
 
@@ -134,10 +144,6 @@ pub extern "C" fn cobol_mutex_lock(handle: u64) {
 ///
 /// Does nothing if the handle is invalid. The caller must ensure that
 /// this is called from the same logical context that called lock.
-///
-/// # Safety
-/// This function uses unsafe internally to release a lock that was
-/// previously acquired via cobol_mutex_lock.
 #[no_mangle]
 pub extern "C" fn cobol_mutex_unlock(handle: u64) {
     let mutex = {
@@ -146,16 +152,7 @@ pub extern "C" fn cobol_mutex_unlock(handle: u64) {
     };
 
     if let Some(m) = mutex {
-        // Safety: The Mutex was previously locked via cobol_mutex_lock which
-        // called std::mem::forget on the guard. We release it by calling
-        // force_unlock. Since std::sync::Mutex doesn't have force_unlock,
-        // we use a workaround: the mutex will be released when the Arc is
-        // dropped or reused. For this stub implementation, we simply
-        // acknowledge the unlock.
-        //
-        // In a production implementation, we would use parking_lot or a
-        // raw mutex that supports explicit unlock.
-        let _ = m;
+        m.store(false, Ordering::Release);
     }
 }
 
@@ -171,25 +168,30 @@ pub extern "C" fn cobol_mutex_destroy(handle: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::atomic::AtomicI32;
 
-    static TEST_COUNTER: AtomicI32 = AtomicI32::new(0);
+    static SINGLE_COUNTER: AtomicI32 = AtomicI32::new(0);
+    static MULTI_COUNTER: AtomicI32 = AtomicI32::new(0);
 
-    extern "C" fn increment_counter(_arg: *mut u8) {
-        TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    extern "C" fn increment_single(_arg: *mut u8) {
+        SINGLE_COUNTER.fetch_add(1, Ordering::SeqCst);
+    }
+
+    extern "C" fn increment_multi(_arg: *mut u8) {
+        MULTI_COUNTER.fetch_add(1, Ordering::SeqCst);
     }
 
     #[test]
     fn test_thread_create_and_join() {
-        TEST_COUNTER.store(0, Ordering::SeqCst);
+        let before = SINGLE_COUNTER.load(Ordering::SeqCst);
 
-        let handle = unsafe { cobol_thread_create(increment_counter, std::ptr::null_mut()) };
+        let handle = unsafe { cobol_thread_create(increment_single, std::ptr::null_mut()) };
 
         assert!(handle > 0);
 
         let result = cobol_thread_join(handle);
         assert_eq!(result, 0);
-        assert_eq!(TEST_COUNTER.load(Ordering::SeqCst), 1);
+        assert_eq!(SINGLE_COUNTER.load(Ordering::SeqCst), before + 1);
     }
 
     #[test]
@@ -229,10 +231,10 @@ mod tests {
 
     #[test]
     fn test_multiple_threads() {
-        TEST_COUNTER.store(0, Ordering::SeqCst);
+        let before = MULTI_COUNTER.load(Ordering::SeqCst);
 
-        let h1 = unsafe { cobol_thread_create(increment_counter, std::ptr::null_mut()) };
-        let h2 = unsafe { cobol_thread_create(increment_counter, std::ptr::null_mut()) };
+        let h1 = unsafe { cobol_thread_create(increment_multi, std::ptr::null_mut()) };
+        let h2 = unsafe { cobol_thread_create(increment_multi, std::ptr::null_mut()) };
 
         assert!(h1 > 0);
         assert!(h2 > 0);
@@ -242,6 +244,6 @@ mod tests {
 
         assert_eq!(r1, 0);
         assert_eq!(r2, 0);
-        assert_eq!(TEST_COUNTER.load(Ordering::SeqCst), 2);
+        assert_eq!(MULTI_COUNTER.load(Ordering::SeqCst), before + 2);
     }
 }

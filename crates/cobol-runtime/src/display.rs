@@ -14,6 +14,9 @@ use std::io::{self, Write};
 /// the caller is responsible for providing valid arguments.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_display_string(ptr: *const u8, len: u32) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
     let slice = std::slice::from_raw_parts(ptr, len as usize);
     let s = std::str::from_utf8(slice).unwrap_or("<invalid utf8>");
     print!("{}", s);

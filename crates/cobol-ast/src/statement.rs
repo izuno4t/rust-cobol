@@ -88,7 +88,8 @@ pub struct MoveStatement {
     /// True for MOVE CORRESPONDING.
     pub corresponding: bool,
     pub from: Expr,
-    pub to: Vec<QualifiedName>,
+    /// Targets can be plain identifiers or reference-modified identifiers.
+    pub to: Vec<Expr>,
     pub span: Span,
 }
 
@@ -541,8 +542,8 @@ pub enum InspectKind {
         replacing: Vec<InspectReplacing>,
     },
     Converting {
-        from: Expr,
-        to: Expr,
+        from: Box<Expr>,
+        to: Box<Expr>,
         before_after: Vec<BeforeAfter>,
     },
 }

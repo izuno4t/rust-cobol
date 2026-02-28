@@ -90,7 +90,11 @@ pub unsafe extern "C" fn cobol_utf8_upper(ptr: *mut u8, byte_len: u32) -> u32 {
 
     let upper = s.to_uppercase();
     let upper_bytes = upper.as_bytes();
-    let copy_len = upper_bytes.len().min(byte_len as usize);
+    // Find a safe truncation point at a character boundary.
+    let mut copy_len = upper_bytes.len().min(byte_len as usize);
+    while copy_len > 0 && !upper.is_char_boundary(copy_len) {
+        copy_len -= 1;
+    }
     std::ptr::copy_nonoverlapping(upper_bytes.as_ptr(), ptr, copy_len);
 
     copy_len as u32
@@ -118,7 +122,11 @@ pub unsafe extern "C" fn cobol_utf8_lower(ptr: *mut u8, byte_len: u32) -> u32 {
 
     let lower = s.to_lowercase();
     let lower_bytes = lower.as_bytes();
-    let copy_len = lower_bytes.len().min(byte_len as usize);
+    // Find a safe truncation point at a character boundary.
+    let mut copy_len = lower_bytes.len().min(byte_len as usize);
+    while copy_len > 0 && !lower.is_char_boundary(copy_len) {
+        copy_len -= 1;
+    }
     std::ptr::copy_nonoverlapping(lower_bytes.as_ptr(), ptr, copy_len);
 
     copy_len as u32

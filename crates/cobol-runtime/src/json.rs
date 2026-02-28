@@ -9,7 +9,7 @@
 pub struct CobolJsonField {
     pub name_ptr: *const u8,
     pub name_len: u32,
-    pub value_ptr: *const u8,
+    pub value_ptr: *mut u8,
     pub value_len: u32,
     /// Value type: 0 = string, 1 = number, 2 = bool.
     pub value_type: u32,
@@ -76,11 +76,15 @@ pub unsafe extern "C" fn cobol_json_generate(
                 json.push('"');
             }
             1 => {
-                // Number
+                // Number -- validate that the string is a valid JSON number.
                 if value.is_empty() {
                     json.push('0');
+                } else if value.trim().chars().all(|c| {
+                    c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'
+                }) {
+                    json.push_str(value.trim());
                 } else {
-                    json.push_str(&value);
+                    json.push('0');
                 }
             }
             2 => {
@@ -216,7 +220,7 @@ pub unsafe extern "C" fn cobol_json_parse(
                     if name == key {
                         if !field.value_ptr.is_null() && field.value_len > 0 {
                             let dst = std::slice::from_raw_parts_mut(
-                                field.value_ptr as *mut u8,
+                                field.value_ptr,
                                 field.value_len as usize,
                             );
                             let value_bytes = value.as_bytes();
@@ -284,7 +288,7 @@ mod tests {
         let field = CobolJsonField {
             name_ptr: name.as_ptr(),
             name_len: name.len() as u32,
-            value_ptr: value.as_ptr(),
+            value_ptr: value.as_ptr() as *mut u8,
             value_len: value.len() as u32,
             value_type: 0, // string
         };
@@ -311,7 +315,7 @@ mod tests {
         let field = CobolJsonField {
             name_ptr: name.as_ptr(),
             name_len: name.len() as u32,
-            value_ptr: value.as_ptr(),
+            value_ptr: value.as_ptr() as *mut u8,
             value_len: value.len() as u32,
             value_type: 1, // number
         };
@@ -341,14 +345,14 @@ mod tests {
             CobolJsonField {
                 name_ptr: name1.as_ptr(),
                 name_len: name1.len() as u32,
-                value_ptr: value1.as_ptr(),
+                value_ptr: value1.as_ptr() as *mut u8,
                 value_len: value1.len() as u32,
                 value_type: 0,
             },
             CobolJsonField {
                 name_ptr: name2.as_ptr(),
                 name_len: name2.len() as u32,
-                value_ptr: value2.as_ptr(),
+                value_ptr: value2.as_ptr() as *mut u8,
                 value_len: value2.len() as u32,
                 value_type: 1,
             },

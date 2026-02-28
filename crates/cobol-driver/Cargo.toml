@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 cobol-common.workspace = true
 cobol-diagnostics.workspace = true
+cobol-preprocessor.workspace = true
 cobol-lexer.workspace = true
 cobol-parser.workspace = true
 cobol-sema.workspace = true

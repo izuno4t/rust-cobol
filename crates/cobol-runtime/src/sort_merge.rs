@@ -25,11 +25,13 @@ pub struct SortKey {
 /// Returns `Ordering` suitable for use in sort comparators.
 fn compare_records(a: &[u8], b: &[u8], keys: &[SortKey]) -> std::cmp::Ordering {
     for key in keys {
-        let start = key.offset as usize;
-        let end = start + key.length as usize;
+        let start_a = (key.offset as usize).min(a.len());
+        let end_a = (start_a + key.length as usize).min(a.len());
+        let start_b = (key.offset as usize).min(b.len());
+        let end_b = (start_b + key.length as usize).min(b.len());
 
-        let ka = &a[start..end.min(a.len())];
-        let kb = &b[start..end.min(b.len())];
+        let ka = &a[start_a..end_a];
+        let kb = &b[start_b..end_b];
 
         let ord = ka.cmp(kb);
         if ord != std::cmp::Ordering::Equal {
@@ -63,7 +65,9 @@ pub unsafe extern "C" fn cobol_sort(
     }
 
     let key_slice = std::slice::from_raw_parts(keys, key_count as usize);
-    let total = record_count as usize * record_len as usize;
+    let total = (record_count as usize)
+        .checked_mul(record_len as usize)
+        .expect("record buffer size overflow");
     let data = std::slice::from_raw_parts_mut(records_ptr, total);
 
     // Collect records into a Vec of owned slices for sorting.

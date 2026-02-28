@@ -470,7 +470,17 @@ impl Parser {
     fn parse_occurs_clause(&mut self) -> Result<OccursClause, ()> {
         let start_span = self.span();
 
-        let max = self.parse_integer()?;
+        let first_value = self.parse_integer()?;
+
+        // Check for OCCURS n TO m TIMES DEPENDING ON
+        let (min, max) = if self.check(TokenKind::To) {
+            self.advance();
+            let max_val = self.parse_integer()?;
+            (Some(first_value), max_val)
+        } else {
+            (None, first_value)
+        };
+
         self.eat(TokenKind::Times);
 
         let mut depending_on = None;
@@ -511,7 +521,7 @@ impl Parser {
         let end_span = self.span();
 
         Ok(OccursClause {
-            min: None,
+            min,
             max,
             depending_on,
             ascending_keys,

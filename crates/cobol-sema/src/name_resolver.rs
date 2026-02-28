@@ -276,7 +276,7 @@ impl<'a> NameResolver<'a> {
             Statement::Move(m) => {
                 self.resolve_expr(&m.from);
                 for target in &m.to {
-                    self.resolve_qualified_name(target);
+                    self.resolve_expr(target);
                 }
             }
             Statement::Compute(c) => {
@@ -682,6 +682,18 @@ impl<'a> NameResolver<'a> {
                 }
             }
             Expr::Literal(_) => {}
+            Expr::ReferenceModification {
+                variable,
+                start,
+                length,
+                ..
+            } => {
+                self.resolve_qualified_name(variable);
+                self.resolve_expr(start);
+                if let Some(len) = length {
+                    self.resolve_expr(len);
+                }
+            }
         }
     }
 

@@ -27,10 +27,17 @@ impl Parser {
     /// Newline and error tokens are filtered out since they are not significant
     /// to parsing.
     pub fn new(tokens: Vec<Token>, file_id: FileId) -> Self {
-        let tokens: Vec<Token> = tokens
+        let mut tokens: Vec<Token> = tokens
             .into_iter()
             .filter(|t| t.kind != TokenKind::Newline && t.kind != TokenKind::Error)
             .collect();
+        if tokens.is_empty() {
+            tokens.push(Token {
+                kind: TokenKind::Eof,
+                text: SmolStr::default(),
+                span: Span::dummy(),
+            });
+        }
         Self {
             tokens,
             pos: 0,
@@ -119,7 +126,7 @@ impl Parser {
     /// (case-insensitive).
     pub(crate) fn check_identifier(&self, name: &str) -> bool {
         self.current().kind == TokenKind::Identifier
-            && self.current().text.to_uppercase() == name.to_uppercase()
+            && self.current().text.eq_ignore_ascii_case(name)
     }
 
     /// Consume a token of the expected kind, or report an error.

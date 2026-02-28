@@ -131,7 +131,7 @@ impl<'a> TypeChecker<'a> {
         let source_type = self.resolve_expr_type(&m.from);
 
         for target in &m.to {
-            let target_type = self.resolve_name_type(target);
+            let target_type = self.resolve_expr_type(target);
 
             if let (Some(src), Some(tgt)) = (&source_type, &target_type) {
                 if !self.is_move_compatible(src, tgt) {
@@ -278,7 +278,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         match (source, target) {
-            // Numeric to numeric: always OK.
+            // Numeric to numeric (including floats): always compatible
             (s, t) if s.is_numeric() && t.is_numeric() => true,
 
             // Numeric to numeric-edited: OK.
@@ -305,9 +305,6 @@ impl<'a> TypeChecker<'a> {
 
             // National types: compatible with each other.
             (CobolType::National { .. }, CobolType::National { .. }) => true,
-
-            // Float types: mutually compatible.
-            (s, t) if s.is_numeric() && t.is_numeric() => true,
 
             // Boolean: only to boolean.
             (CobolType::Boolean, CobolType::Boolean) => true,
@@ -341,6 +338,10 @@ impl<'a> TypeChecker<'a> {
                     is_signed: true,
                 })
             }
+            Expr::ReferenceModification { .. } => {
+                // Reference modification always produces an alphanumeric result.
+                Some(CobolType::Alphanumeric { size: 0 })
+            }
         }
     }
 
@@ -357,11 +358,19 @@ impl<'a> TypeChecker<'a> {
     /// Returns the type of a literal value.
     fn literal_type(&self, lit: &Literal) -> CobolType {
         match lit {
-            Literal::Integer(_) | Literal::Decimal(_) => CobolType::Numeric {
+            Literal::Integer(_) => CobolType::Numeric {
                 size: 18,
                 decimal_places: 0,
                 is_signed: true,
             },
+            Literal::Decimal(d) => {
+                let decimal_places = d.find('.').map_or(0, |pos| (d.len() - pos - 1) as u32);
+                CobolType::Numeric {
+                    size: 18,
+                    decimal_places,
+                    is_signed: true,
+                }
+            }
             Literal::String(s) => CobolType::Alphanumeric {
                 size: s.len() as u32,
             },
@@ -397,6 +406,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Paren { span, .. } => *span,
             Expr::FunctionCall { span, .. } => *span,
             Expr::Literal(_) => cobol_common::Span::dummy(),
+            Expr::ReferenceModification { span, .. } => *span,
         }
     }
 }

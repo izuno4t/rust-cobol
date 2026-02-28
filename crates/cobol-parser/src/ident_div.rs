@@ -114,7 +114,7 @@ impl Parser {
         } else if self.check(TokenKind::StringLiteral) {
             let tok = self.advance();
             let s = tok.text.as_str();
-            let stripped = &s[1..s.len() - 1];
+            let stripped = if s.len() >= 2 { &s[1..s.len() - 1] } else { s };
             Ok(SmolStr::from(stripped))
         } else {
             self.error("expected program name");

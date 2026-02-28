@@ -5,6 +5,8 @@
 // - Flattens PROCEDURE DIVISION into a list of HIR statements
 // - Desugars EVALUATE into nested IF
 
+use std::collections::HashMap;
+
 use cobol_ast::{
     data_div::ValueClause,
     expr::{ArithOp, CompareOp, Condition, FigurativeConstant, UnaryArithOp},
@@ -21,13 +23,29 @@ use cobol_common::Span;
 use smol_str::SmolStr;
 
 use crate::hir::{
-    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirLiteral, HirOpenEntry,
-    HirOpenMode, HirParagraph, HirPerformKind, HirProgram, HirStatement, HirType, HirUnaryOp,
+    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirInspectKind, HirLiteral,
+    HirMoveTarget, HirOpenEntry, HirOpenMode, HirParagraph, HirPerformKind, HirProgram, HirSortKey,
+    HirSortOrder, HirStartRelation, HirStatement, HirType, HirUnaryOp, HirUnstringDelimiter,
 };
+
+/// Information about an 88-level condition name: the parent variable name
+/// and the literal values that make the condition true.
+#[derive(Debug, Clone)]
+struct ConditionNameInfo {
+    parent_name: SmolStr,
+    values: Vec<HirLiteral>,
+}
 
 /// Lowers a COBOL AST program into the HIR.
 pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let name = program.identification.program_id.clone();
+
+    // Collect 88-level condition name mappings before lowering data items.
+    let condition_names = program
+        .data
+        .as_ref()
+        .map(collect_condition_names)
+        .unwrap_or_default();
 
     let data_items = program
         .data
@@ -38,7 +56,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let (body, paragraphs) = program
         .procedure
         .as_ref()
-        .map(lower_procedure_division)
+        .map(|proc| lower_procedure_division(proc, &condition_names))
         .unwrap_or_default();
 
     HirProgram {
@@ -54,12 +72,84 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     }
 }
 
+/// Collect 88-level condition name information from the DATA DIVISION.
+/// Maps each 88-level name to its parent variable name and the values
+/// that make the condition true.
+fn collect_condition_names(data: &DataDivision) -> HashMap<SmolStr, ConditionNameInfo> {
+    let mut map = HashMap::new();
+    for fd in &data.file_section {
+        for item in &fd.items {
+            collect_condition_names_from_item(item, &mut map);
+        }
+    }
+    for item in &data.working_storage {
+        collect_condition_names_from_item(item, &mut map);
+    }
+    for item in &data.local_storage {
+        collect_condition_names_from_item(item, &mut map);
+    }
+    for item in &data.linkage {
+        collect_condition_names_from_item(item, &mut map);
+    }
+    map
+}
+
+fn collect_condition_names_from_item(
+    item: &DataItem,
+    map: &mut HashMap<SmolStr, ConditionNameInfo>,
+) {
+    // Check children for 88-level items that belong to this parent
+    if let Some(parent_name) = &item.name {
+        for child in &item.children {
+            if child.level == 88 {
+                if let Some(cond_name) = &child.name {
+                    let mut values = Vec::new();
+                    for cv in &child.condition_values {
+                        for val_item in &cv.values {
+                            match val_item {
+                                cobol_ast::data_div::ConditionValueItem::Single(lit) => {
+                                    values.push(lower_literal(lit));
+                                }
+                                cobol_ast::data_div::ConditionValueItem::Range { from, to } => {
+                                    // For ranges, store the 'from' value as a simplified approach.
+                                    // A full implementation would generate from <= parent <= to.
+                                    values.push(lower_literal(from));
+                                    values.push(lower_literal(to));
+                                }
+                            }
+                        }
+                    }
+                    map.insert(
+                        cond_name.clone(),
+                        ConditionNameInfo {
+                            parent_name: parent_name.clone(),
+                            values,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    // Recurse into non-88 children
+    for child in &item.children {
+        if child.level != 88 {
+            collect_condition_names_from_item(child, map);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Data Division lowering
 // ---------------------------------------------------------------------------
 
 fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
     let mut items = Vec::new();
+    for fd in &data.file_section {
+        for item in &fd.items {
+            lower_data_item(item, &mut items);
+        }
+    }
     for item in &data.working_storage {
         lower_data_item(item, &mut items);
     }
@@ -69,6 +159,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
     for item in &data.linkage {
         lower_data_item(item, &mut items);
     }
+    // TODO: Add screen, communication, and report section processing
     items
 }
 
@@ -213,13 +304,16 @@ fn lower_literal(lit: &Literal) -> HirLiteral {
 // Procedure Division lowering
 // ---------------------------------------------------------------------------
 
-fn lower_procedure_division(proc: &ProcedureDivision) -> (Vec<HirStatement>, Vec<HirParagraph>) {
+fn lower_procedure_division(
+    proc: &ProcedureDivision,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> (Vec<HirStatement>, Vec<HirParagraph>) {
     let mut body = Vec::new();
     let mut paragraphs = Vec::new();
 
     // Lower top-level paragraphs
     for para in &proc.paragraphs {
-        let stmts = lower_paragraph(para);
+        let stmts = lower_paragraph(para, condition_names);
         if !stmts.is_empty() {
             // If the paragraph has a generated or empty name, inline its statements
             // into the body. Otherwise, keep it as a named paragraph.
@@ -241,7 +335,7 @@ fn lower_procedure_division(proc: &ProcedureDivision) -> (Vec<HirStatement>, Vec
     // Lower sections and their paragraphs
     for section in &proc.sections {
         for para in &section.paragraphs {
-            let stmts = lower_paragraph(para);
+            let stmts = lower_paragraph(para, condition_names);
             if !stmts.is_empty() {
                 body.extend(stmts.clone());
                 paragraphs.push(HirParagraph {
@@ -256,11 +350,14 @@ fn lower_procedure_division(proc: &ProcedureDivision) -> (Vec<HirStatement>, Vec
     (body, paragraphs)
 }
 
-fn lower_paragraph(para: &Paragraph) -> Vec<HirStatement> {
+fn lower_paragraph(
+    para: &Paragraph,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> Vec<HirStatement> {
     let mut stmts = Vec::new();
     for sentence in &para.sentences {
         for stmt in &sentence.statements {
-            if let Some(hir_stmt) = lower_statement(stmt) {
+            if let Some(hir_stmt) = lower_statement(stmt, condition_names) {
                 stmts.push(hir_stmt);
             }
         }
@@ -268,32 +365,58 @@ fn lower_paragraph(para: &Paragraph) -> Vec<HirStatement> {
     stmts
 }
 
-fn lower_statement(stmt: &Statement) -> Option<HirStatement> {
+/// Lower a list of AST statements into a list of HIR statements,
+/// filtering out any that cannot be lowered.
+fn lower_statements(
+    stmts: &[Statement],
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> Vec<HirStatement> {
+    stmts
+        .iter()
+        .filter_map(|s| lower_statement(s, condition_names))
+        .collect()
+}
+
+fn lower_statement(
+    stmt: &Statement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> Option<HirStatement> {
     match stmt {
         Statement::Display(display) => Some(lower_display(display)),
         Statement::Accept(accept) => Some(lower_accept(accept)),
         Statement::Move(mv) => Some(lower_move(mv)),
-        Statement::Compute(compute) => lower_compute(compute),
-        Statement::Add(add) => Some(lower_add(add)),
-        Statement::Subtract(sub) => Some(lower_subtract(sub)),
-        Statement::Multiply(mul) => Some(lower_multiply(mul)),
-        Statement::Divide(div) => Some(lower_divide(div)),
-        Statement::If(if_stmt) => Some(lower_if(if_stmt)),
-        Statement::Evaluate(eval) => Some(lower_evaluate(eval)),
-        Statement::Perform(perform) => Some(lower_perform(perform)),
-        Statement::Call(call) => Some(lower_call(call)),
+        Statement::Compute(compute) => lower_compute(compute, condition_names),
+        Statement::Add(add) => Some(lower_add(add, condition_names)),
+        Statement::Subtract(sub) => Some(lower_subtract(sub, condition_names)),
+        Statement::Multiply(mul) => Some(lower_multiply(mul, condition_names)),
+        Statement::Divide(div) => Some(lower_divide(div, condition_names)),
+        Statement::If(if_stmt) => Some(lower_if(if_stmt, condition_names)),
+        Statement::Evaluate(eval) => Some(lower_evaluate(eval, condition_names)),
+        Statement::Perform(perform) => Some(lower_perform(perform, condition_names)),
+        Statement::Call(call) => Some(lower_call(call, condition_names)),
         Statement::GoTo(goto) => Some(lower_goto(goto)),
         Statement::Open(open) => Some(lower_open(open)),
         Statement::Close(close) => Some(lower_close(close)),
-        Statement::Read(read) => Some(lower_read(read)),
-        Statement::Write(write) => Some(lower_write(write)),
+        Statement::Read(read) => Some(lower_read(read, condition_names)),
+        Statement::Write(write) => Some(lower_write(write, condition_names)),
         Statement::Rewrite(rewrite) => Some(lower_rewrite(rewrite)),
         Statement::Delete(delete) => Some(lower_delete(delete)),
         Statement::Initialize(init) => Some(lower_initialize(init)),
         Statement::Set(set) => Some(lower_set(set)),
-        Statement::String(string_stmt) => Some(lower_string_stmt(string_stmt)),
-        Statement::Unstring(unstring_stmt) => Some(lower_unstring_stmt(unstring_stmt)),
+        Statement::String(string_stmt) => Some(lower_string_stmt(string_stmt, condition_names)),
+        Statement::Unstring(unstring_stmt) => {
+            Some(lower_unstring_stmt(unstring_stmt, condition_names))
+        }
         Statement::Sort(sort) => Some(lower_sort(sort)),
+        Statement::Inspect(inspect) => Some(lower_inspect(inspect)),
+        // --- File I/O: additional statements ---
+        Statement::Start(start) => Some(lower_start(start, condition_names)),
+        Statement::Return(ret) => Some(lower_return(ret, condition_names)),
+        // --- Sort/Merge: additional statements ---
+        Statement::Merge(merge) => Some(lower_merge(merge)),
+        Statement::Release(release) => Some(lower_release(release)),
+        // --- Miscellaneous ---
+        Statement::Cancel(cancel) => Some(lower_cancel(cancel)),
         Statement::StopRun => Some(HirStatement::StopRun {
             span: Span::dummy(),
         }),
@@ -303,7 +426,7 @@ fn lower_statement(stmt: &Statement) -> Option<HirStatement> {
         Statement::Continue => Some(HirStatement::Continue {
             span: Span::dummy(),
         }),
-        Statement::ExitProgram => Some(HirStatement::StopRun {
+        Statement::ExitProgram => Some(HirStatement::ExitProgram {
             span: Span::dummy(),
         }),
         Statement::ExitParagraph | Statement::ExitSection => Some(HirStatement::Continue {
@@ -320,8 +443,6 @@ fn lower_statement(stmt: &Statement) -> Option<HirStatement> {
         Statement::JsonParse(jp) => Some(lower_json_parse(jp)),
         Statement::XmlGenerate(xg) => Some(lower_xml_generate(xg)),
         Statement::XmlParse(xp) => Some(lower_xml_parse(xp)),
-        // Statements not yet lowered are silently skipped
-        _ => None,
     }
 }
 
@@ -340,7 +461,7 @@ fn lower_display(display: &DisplayStatement) -> HirStatement {
 
 fn lower_move(mv: &MoveStatement) -> HirStatement {
     let from = lower_expr(&mv.from);
-    let to = mv.to.iter().map(|q| q.name.clone()).collect();
+    let to = mv.to.iter().map(lower_move_target).collect();
     HirStatement::Move {
         from,
         to,
@@ -348,47 +469,98 @@ fn lower_move(mv: &MoveStatement) -> HirStatement {
     }
 }
 
-fn lower_compute(compute: &ComputeStatement) -> Option<HirStatement> {
-    let target = compute.targets.first()?;
+fn lower_move_target(expr: &Expr) -> HirMoveTarget {
+    match expr {
+        Expr::Identifier(qname) => HirMoveTarget::Variable(qname.name.clone()),
+        Expr::ReferenceModification {
+            variable,
+            start,
+            length,
+            ..
+        } => HirMoveTarget::ReferenceModification {
+            variable: variable.name.clone(),
+            start: lower_expr(start),
+            length: length.as_ref().map(|l| lower_expr(l)),
+        },
+        _ => {
+            // Fallback: should not happen for well-formed MOVE targets
+            HirMoveTarget::Variable(SmolStr::from("FILLER"))
+        }
+    }
+}
+
+fn lower_compute(
+    compute: &ComputeStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> Option<HirStatement> {
+    if compute.targets.is_empty() {
+        return None;
+    }
     let expr = lower_expr(&compute.expr);
+    let targets = compute
+        .targets
+        .iter()
+        .map(|t| t.target.name.clone())
+        .collect();
+    let on_size_error = lower_statements(&compute.on_size_error, condition_names);
+    let not_on_size_error = lower_statements(&compute.not_on_size_error, condition_names);
     Some(HirStatement::Compute {
-        target: target.target.name.clone(),
+        targets,
         expr,
+        on_size_error,
+        not_on_size_error,
         span: compute.span,
     })
 }
 
-fn lower_add(add: &AddStatement) -> HirStatement {
+fn lower_add(
+    add: &AddStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let operands = add.operands.iter().map(lower_expr).collect();
     let to = add.to.iter().map(|t| t.target.name.clone()).collect();
+    let on_size_error = lower_statements(&add.on_size_error, condition_names);
+    let not_on_size_error = lower_statements(&add.not_on_size_error, condition_names);
     HirStatement::Add {
         operands,
         to,
+        on_size_error,
+        not_on_size_error,
         span: add.span,
     }
 }
 
-fn lower_subtract(sub: &SubtractStatement) -> HirStatement {
+fn lower_subtract(
+    sub: &SubtractStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let operands = sub.operands.iter().map(lower_expr).collect();
     let from = sub.from.iter().map(|t| t.target.name.clone()).collect();
+    let on_size_error = lower_statements(&sub.on_size_error, condition_names);
+    let not_on_size_error = lower_statements(&sub.not_on_size_error, condition_names);
     HirStatement::Subtract {
         operands,
         from,
+        on_size_error,
+        not_on_size_error,
         span: sub.span,
     }
 }
 
-fn lower_if(if_stmt: &IfStatement) -> HirStatement {
-    let condition = lower_condition(&if_stmt.condition);
+fn lower_if(
+    if_stmt: &IfStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
+    let condition = lower_condition(&if_stmt.condition, condition_names);
     let then_body: Vec<_> = if_stmt
         .then_body
         .iter()
-        .filter_map(lower_statement)
+        .filter_map(|s| lower_statement(s, condition_names))
         .collect();
     let else_body: Vec<_> = if_stmt
         .else_body
         .iter()
-        .filter_map(lower_statement)
+        .filter_map(|s| lower_statement(s, condition_names))
         .collect();
     HirStatement::If {
         condition,
@@ -399,17 +571,27 @@ fn lower_if(if_stmt: &IfStatement) -> HirStatement {
 }
 
 /// Desugar EVALUATE into nested IF statements.
-fn lower_evaluate(eval: &EvaluateStatement) -> HirStatement {
+fn lower_evaluate(
+    eval: &EvaluateStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     // Build nested IF chain from the WHEN clauses
-    let mut else_body: Vec<HirStatement> =
-        eval.when_other.iter().filter_map(lower_statement).collect();
+    let mut else_body: Vec<HirStatement> = eval
+        .when_other
+        .iter()
+        .filter_map(|s| lower_statement(s, condition_names))
+        .collect();
 
     // Process WHEN clauses in reverse to build the else chain
     for when in eval.when_clauses.iter().rev() {
-        let then_body: Vec<HirStatement> = when.body.iter().filter_map(lower_statement).collect();
+        let then_body: Vec<HirStatement> = when
+            .body
+            .iter()
+            .filter_map(|s| lower_statement(s, condition_names))
+            .collect();
 
         // Build condition from the WHEN objects and subjects
-        let condition = build_evaluate_condition(&eval.subjects, &when.objects);
+        let condition = build_evaluate_condition(&eval.subjects, &when.objects, condition_names);
 
         let if_stmt = HirStatement::If {
             condition,
@@ -436,6 +618,7 @@ fn lower_evaluate(eval: &EvaluateStatement) -> HirStatement {
 fn build_evaluate_condition(
     subjects: &[cobol_ast::statement::EvaluateSubject],
     object_groups: &[Vec<cobol_ast::statement::WhenObject>],
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirCondition {
     use cobol_ast::statement::{EvaluateSubject, WhenObject};
 
@@ -469,7 +652,7 @@ fn build_evaluate_condition(
                     }
                 }
                 WhenObject::Condition(c) => {
-                    conditions.push(lower_condition(c));
+                    conditions.push(lower_condition(c, condition_names));
                 }
                 WhenObject::True => {
                     // TRUE matches when the subject evaluates to true
@@ -494,7 +677,11 @@ fn build_evaluate_condition(
                 }
                 WhenObject::Not(inner) => {
                     // Recursively handle NOT
-                    let inner_cond = build_evaluate_condition(subjects, &[vec![*inner.clone()]]);
+                    let inner_cond = build_evaluate_condition(
+                        subjects,
+                        &[vec![*inner.clone()]],
+                        condition_names,
+                    );
                     conditions.push(HirCondition::Not(Box::new(inner_cond)));
                 }
             }
@@ -516,18 +703,28 @@ fn build_evaluate_condition(
     }
 }
 
-fn lower_perform(perform: &PerformStatement) -> HirStatement {
+fn lower_perform(
+    perform: &PerformStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let kind = match &perform.kind {
         PerformKind::Simple { body } => {
-            let hir_body: Vec<_> = body.iter().filter_map(lower_statement).collect();
+            let hir_body: Vec<_> = body
+                .iter()
+                .filter_map(|s| lower_statement(s, condition_names))
+                .collect();
             HirPerformKind::Inline { body: hir_body }
         }
-        PerformKind::ProcedureName { procedure, .. } => HirPerformKind::ProcedureName {
+        PerformKind::ProcedureName { procedure, through } => HirPerformKind::ProcedureName {
             name: procedure.clone(),
+            through: through.clone(),
         },
         PerformKind::Times { times, body } => {
             let count = lower_expr(times);
-            let hir_body: Vec<_> = body.iter().filter_map(lower_statement).collect();
+            let hir_body: Vec<_> = body
+                .iter()
+                .filter_map(|s| lower_statement(s, condition_names))
+                .collect();
             HirPerformKind::Times {
                 count,
                 body: hir_body,
@@ -536,8 +733,11 @@ fn lower_perform(perform: &PerformStatement) -> HirStatement {
         PerformKind::Until {
             condition, body, ..
         } => {
-            let hir_cond = lower_condition(condition);
-            let hir_body: Vec<_> = body.iter().filter_map(lower_statement).collect();
+            let hir_cond = lower_condition(condition, condition_names);
+            let hir_body: Vec<_> = body
+                .iter()
+                .filter_map(|s| lower_statement(s, condition_names))
+                .collect();
             HirPerformKind::Until {
                 condition: hir_cond,
                 body: hir_body,
@@ -548,8 +748,11 @@ fn lower_perform(perform: &PerformStatement) -> HirStatement {
                 let var = clause.identifier.name.clone();
                 let from = lower_expr(&clause.from);
                 let by = lower_expr(&clause.by);
-                let until = lower_condition(&clause.until);
-                let hir_body: Vec<_> = body.iter().filter_map(lower_statement).collect();
+                let until = lower_condition(&clause.until, condition_names);
+                let hir_body: Vec<_> = body
+                    .iter()
+                    .filter_map(|s| lower_statement(s, condition_names))
+                    .collect();
                 HirPerformKind::Varying {
                     var,
                     from,
@@ -558,7 +761,10 @@ fn lower_perform(perform: &PerformStatement) -> HirStatement {
                     body: hir_body,
                 }
             } else {
-                let hir_body: Vec<_> = body.iter().filter_map(lower_statement).collect();
+                let hir_body: Vec<_> = body
+                    .iter()
+                    .filter_map(|s| lower_statement(s, condition_names))
+                    .collect();
                 HirPerformKind::Inline { body: hir_body }
             }
         }
@@ -569,34 +775,55 @@ fn lower_perform(perform: &PerformStatement) -> HirStatement {
     }
 }
 
-fn lower_call(call: &CallStatement) -> HirStatement {
+fn lower_call(
+    call: &CallStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let program = lower_expr(&call.program);
     let params = call.using.iter().map(|p| lower_expr(&p.value)).collect();
+    let on_exception = lower_statements(&call.on_exception, condition_names);
+    let not_on_exception = lower_statements(&call.not_on_exception, condition_names);
     HirStatement::Call {
         program,
         params,
+        on_exception,
+        not_on_exception,
         span: call.span,
     }
 }
 
-fn lower_multiply(mul: &MultiplyStatement) -> HirStatement {
+fn lower_multiply(
+    mul: &MultiplyStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let operand = lower_expr(&mul.operand);
     let by = mul.by.iter().map(|t| t.target.name.clone()).collect();
+    let on_size_error = lower_statements(&mul.on_size_error, condition_names);
+    let not_on_size_error = lower_statements(&mul.not_on_size_error, condition_names);
     HirStatement::Multiply {
         operand,
         by,
+        on_size_error,
+        not_on_size_error,
         span: mul.span,
     }
 }
 
-fn lower_divide(div: &DivideStatement) -> HirStatement {
+fn lower_divide(
+    div: &DivideStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let operand = lower_expr(&div.operand);
     let into = div.into.iter().map(|t| t.target.name.clone()).collect();
     let remainder = div.remainder.as_ref().map(|r| r.name.clone());
+    let on_size_error = lower_statements(&div.on_size_error, condition_names);
+    let not_on_size_error = lower_statements(&div.not_on_size_error, condition_names);
     HirStatement::Divide {
         operand,
         into,
         remainder,
+        on_size_error,
+        not_on_size_error,
         span: div.span,
     }
 }
@@ -649,10 +876,21 @@ fn lower_close(close: &cobol_ast::statement::CloseStatement) -> HirStatement {
     }
 }
 
-fn lower_read(read: &cobol_ast::statement::ReadStatement) -> HirStatement {
+fn lower_read(
+    read: &cobol_ast::statement::ReadStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let into = read.into.as_ref().map(|q| q.name.clone());
-    let at_end: Vec<_> = read.at_end.iter().filter_map(lower_statement).collect();
-    let not_at_end: Vec<_> = read.not_at_end.iter().filter_map(lower_statement).collect();
+    let at_end: Vec<_> = read
+        .at_end
+        .iter()
+        .filter_map(|s| lower_statement(s, condition_names))
+        .collect();
+    let not_at_end: Vec<_> = read
+        .not_at_end
+        .iter()
+        .filter_map(|s| lower_statement(s, condition_names))
+        .collect();
     HirStatement::Read {
         file_name: read.file_name.clone(),
         into,
@@ -662,11 +900,16 @@ fn lower_read(read: &cobol_ast::statement::ReadStatement) -> HirStatement {
     }
 }
 
-fn lower_write(write: &cobol_ast::statement::WriteStatement) -> HirStatement {
+fn lower_write(
+    write: &cobol_ast::statement::WriteStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let from = write.from.as_ref().map(lower_expr);
+    let invalid_key = lower_statements(&write.invalid_key, condition_names);
     HirStatement::Write {
         record_name: write.record_name.name.clone(),
         from,
+        invalid_key,
         span: write.span,
     }
 }
@@ -719,11 +962,15 @@ fn lower_set(set: &SetStatement) -> HirStatement {
                 cobol_ast::statement::SetDirection::Up => HirStatement::Add {
                     operands: vec![hir_value],
                     to: target_names,
+                    on_size_error: Vec::new(),
+                    not_on_size_error: Vec::new(),
                     span: set.span,
                 },
                 cobol_ast::statement::SetDirection::Down => HirStatement::Subtract {
                     operands: vec![hir_value],
                     from: target_names,
+                    on_size_error: Vec::new(),
+                    not_on_size_error: Vec::new(),
                     span: set.span,
                 },
             }
@@ -753,36 +1000,193 @@ fn lower_set(set: &SetStatement) -> HirStatement {
     }
 }
 
-fn lower_string_stmt(string_stmt: &cobol_ast::statement::StringStatement) -> HirStatement {
+fn lower_string_stmt(
+    string_stmt: &cobol_ast::statement::StringStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     let sources = string_stmt
         .sources
         .iter()
         .flat_map(|s| s.items.iter().map(lower_expr))
         .collect();
+    let on_overflow = lower_statements(&string_stmt.on_overflow, condition_names);
     HirStatement::StringStmt {
         into: string_stmt.into.name.clone(),
         sources,
+        on_overflow,
         span: string_stmt.span,
     }
 }
 
-fn lower_unstring_stmt(unstring_stmt: &cobol_ast::statement::UnstringStatement) -> HirStatement {
+fn lower_unstring_stmt(
+    unstring_stmt: &cobol_ast::statement::UnstringStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
+    let delimiters = unstring_stmt
+        .delimiters
+        .iter()
+        .map(|d| HirUnstringDelimiter {
+            all: d.all,
+            value: lower_expr(&d.value),
+        })
+        .collect();
     let into = unstring_stmt
         .into
         .iter()
         .map(|t| t.target.name.clone())
         .collect();
+    let on_overflow = lower_statements(&unstring_stmt.on_overflow, condition_names);
     HirStatement::UnstringStmt {
         source: unstring_stmt.source.name.clone(),
+        delimiters,
         into,
+        on_overflow,
         span: unstring_stmt.span,
     }
 }
 
 fn lower_sort(sort: &cobol_ast::statement::SortStatement) -> HirStatement {
+    let keys = sort
+        .keys
+        .iter()
+        .map(|k| {
+            let order = match k.order {
+                cobol_ast::statement::SortOrder::Ascending => HirSortOrder::Ascending,
+                cobol_ast::statement::SortOrder::Descending => HirSortOrder::Descending,
+            };
+            let fields = k.fields.iter().map(|f| f.name.clone()).collect();
+            HirSortKey { order, fields }
+        })
+        .collect();
+    let using = match &sort.input {
+        cobol_ast::statement::SortInput::Using(files) => files.clone(),
+        cobol_ast::statement::SortInput::InputProcedure { .. } => Vec::new(),
+    };
+    let giving = match &sort.output {
+        cobol_ast::statement::SortOutput::Giving(files) => files.clone(),
+        cobol_ast::statement::SortOutput::OutputProcedure { .. } => Vec::new(),
+    };
     HirStatement::Sort {
         file_name: sort.file_name.clone(),
+        keys,
+        using,
+        giving,
         span: sort.span,
+    }
+}
+
+fn lower_inspect(inspect: &cobol_ast::statement::InspectStatement) -> HirStatement {
+    let kind = match &inspect.kind {
+        cobol_ast::statement::InspectKind::Tallying { .. } => HirInspectKind::Tallying,
+        cobol_ast::statement::InspectKind::Replacing { .. } => HirInspectKind::Replacing,
+        cobol_ast::statement::InspectKind::TallyingReplacing { .. } => {
+            HirInspectKind::TallyingReplacing
+        }
+        cobol_ast::statement::InspectKind::Converting { .. } => HirInspectKind::Converting,
+    };
+    HirStatement::Inspect {
+        target: inspect.target.name.clone(),
+        kind,
+        span: inspect.span,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File I/O: additional statement lowering
+// ---------------------------------------------------------------------------
+
+fn lower_start(
+    start: &cobol_ast::statement::StartStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
+    let key = start.key_condition.as_ref().map(|kc| kc.key.name.clone());
+    let op = start
+        .key_condition
+        .as_ref()
+        .map(|kc| match kc.op {
+            cobol_ast::statement::StartRelation::Equal => HirStartRelation::Equal,
+            cobol_ast::statement::StartRelation::GreaterThan => HirStartRelation::GreaterThan,
+            cobol_ast::statement::StartRelation::GreaterEqual => HirStartRelation::GreaterEqual,
+            cobol_ast::statement::StartRelation::NotLessThan => HirStartRelation::NotLessThan,
+        })
+        .unwrap_or(HirStartRelation::Equal);
+    let invalid_key = lower_statements(&start.invalid_key, condition_names);
+    let not_invalid_key = lower_statements(&start.not_invalid_key, condition_names);
+    HirStatement::Start {
+        file_name: start.file_name.clone(),
+        key,
+        op,
+        invalid_key,
+        not_invalid_key,
+        span: start.span,
+    }
+}
+
+fn lower_return(
+    ret: &cobol_ast::statement::ReturnStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
+    let into = ret.into.as_ref().map(|q| q.name.clone());
+    let at_end: Vec<_> = ret
+        .at_end
+        .iter()
+        .filter_map(|s| lower_statement(s, condition_names))
+        .collect();
+    let not_at_end: Vec<_> = ret
+        .not_at_end
+        .iter()
+        .filter_map(|s| lower_statement(s, condition_names))
+        .collect();
+    HirStatement::Return {
+        file_name: ret.file_name.clone(),
+        into,
+        at_end,
+        not_at_end,
+        span: ret.span,
+    }
+}
+
+fn lower_cancel(cancel: &cobol_ast::statement::CancelStatement) -> HirStatement {
+    let programs = cancel.programs.iter().map(lower_expr).collect();
+    HirStatement::Cancel {
+        programs,
+        span: cancel.span,
+    }
+}
+
+fn lower_merge(merge: &cobol_ast::statement::MergeStatement) -> HirStatement {
+    let keys = merge
+        .keys
+        .iter()
+        .map(|k| {
+            let order = match k.order {
+                cobol_ast::statement::SortOrder::Ascending => HirSortOrder::Ascending,
+                cobol_ast::statement::SortOrder::Descending => HirSortOrder::Descending,
+            };
+            let fields = k.fields.iter().map(|f| f.name.clone()).collect();
+            HirSortKey { order, fields }
+        })
+        .collect();
+    let using = merge.using.clone();
+    let giving = match &merge.output {
+        cobol_ast::statement::SortOutput::Giving(files) => files.clone(),
+        cobol_ast::statement::SortOutput::OutputProcedure { .. } => Vec::new(),
+    };
+    HirStatement::Merge {
+        file_name: merge.file_name.clone(),
+        keys,
+        using,
+        giving,
+        span: merge.span,
+    }
+}
+
+fn lower_release(release: &cobol_ast::statement::ReleaseStatement) -> HirStatement {
+    let from = release.from.as_ref().map(lower_expr);
+    HirStatement::Release {
+        record_name: release.record_name.name.clone(),
+        from,
+        span: release.span,
     }
 }
 
@@ -917,15 +1321,31 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             UnaryArithOp::Positive => lower_expr(operand),
         },
         Expr::Paren { inner, .. } => lower_expr(inner),
-        Expr::FunctionCall { name, args: _, .. } => {
-            // Function calls are not fully supported yet; use the name as a
-            // variable reference for now.
-            HirExpr::Variable(name.clone())
+        Expr::FunctionCall { name, args, .. } => {
+            // TODO: Implement proper function call support with type resolution.
+            // For now, emit as a function call in HIR preserving name and args.
+            HirExpr::FunctionCall {
+                name: name.clone(),
+                args: args.iter().map(lower_expr).collect(),
+            }
         }
+        Expr::ReferenceModification {
+            variable,
+            start,
+            length,
+            ..
+        } => HirExpr::ReferenceModification {
+            variable: variable.name.clone(),
+            start: Box::new(lower_expr(start)),
+            length: length.as_ref().map(|l| Box::new(lower_expr(l))),
+        },
     }
 }
 
-fn lower_condition(cond: &Condition) -> HirCondition {
+fn lower_condition(
+    cond: &Condition,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirCondition {
     match cond {
         Condition::Comparison {
             left, op, right, ..
@@ -944,14 +1364,18 @@ fn lower_condition(cond: &Condition) -> HirCondition {
                 right: lower_expr(right),
             }
         }
-        Condition::And(a, b) => {
-            HirCondition::And(Box::new(lower_condition(a)), Box::new(lower_condition(b)))
+        Condition::And(a, b) => HirCondition::And(
+            Box::new(lower_condition(a, condition_names)),
+            Box::new(lower_condition(b, condition_names)),
+        ),
+        Condition::Or(a, b) => HirCondition::Or(
+            Box::new(lower_condition(a, condition_names)),
+            Box::new(lower_condition(b, condition_names)),
+        ),
+        Condition::Not(inner) => {
+            HirCondition::Not(Box::new(lower_condition(inner, condition_names)))
         }
-        Condition::Or(a, b) => {
-            HirCondition::Or(Box::new(lower_condition(a)), Box::new(lower_condition(b)))
-        }
-        Condition::Not(inner) => HirCondition::Not(Box::new(lower_condition(inner))),
-        Condition::Paren(inner) => lower_condition(inner),
+        Condition::Paren(inner) => lower_condition(inner, condition_names),
         // Class and sign conditions are simplified to a comparison for now
         Condition::ClassCondition { .. } | Condition::SignCondition { .. } => {
             // Placeholder: always true
@@ -962,11 +1386,45 @@ fn lower_condition(cond: &Condition) -> HirCondition {
             }
         }
         Condition::ConditionName(qname) => {
-            // Condition name: reference the variable
-            HirCondition::Compare {
-                left: HirExpr::Variable(qname.name.clone()),
-                op: HirCompareOp::Eq,
-                right: HirExpr::Literal(HirLiteral::Integer(1)),
+            // 88-level condition name: look up the parent variable and values
+            if let Some(info) = condition_names.get(&qname.name) {
+                if info.values.len() == 1 {
+                    // Single value: parent == value
+                    HirCondition::Compare {
+                        left: HirExpr::Variable(info.parent_name.clone()),
+                        op: HirCompareOp::Eq,
+                        right: HirExpr::Literal(info.values[0].clone()),
+                    }
+                } else if info.values.len() > 1 {
+                    // Multiple values: parent == val1 OR parent == val2 OR ...
+                    let conditions: Vec<HirCondition> = info
+                        .values
+                        .iter()
+                        .map(|v| HirCondition::Compare {
+                            left: HirExpr::Variable(info.parent_name.clone()),
+                            op: HirCompareOp::Eq,
+                            right: HirExpr::Literal(v.clone()),
+                        })
+                        .collect();
+                    conditions
+                        .into_iter()
+                        .reduce(|acc, c| HirCondition::Or(Box::new(acc), Box::new(c)))
+                        .unwrap()
+                } else {
+                    // No values found, fall back to variable == 1
+                    HirCondition::Compare {
+                        left: HirExpr::Variable(qname.name.clone()),
+                        op: HirCompareOp::Eq,
+                        right: HirExpr::Literal(HirLiteral::Integer(1)),
+                    }
+                }
+            } else {
+                // Not a known 88-level, fall back to variable == 1
+                HirCondition::Compare {
+                    left: HirExpr::Variable(qname.name.clone()),
+                    op: HirCompareOp::Eq,
+                    right: HirExpr::Literal(HirLiteral::Integer(1)),
+                }
             }
         }
     }
@@ -1382,5 +1840,125 @@ PROCEDURE DIVISION.
         // Typedefs and interfaces should be empty for a normal program
         assert!(hir.typedefs.is_empty());
         assert!(hir.interfaces.is_empty());
+    }
+
+    #[test]
+    fn test_lower_reference_modification_in_display() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-REFMOD.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(20).
+PROCEDURE DIVISION.
+    DISPLAY WS-NAME(1:5).
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(!hir.body.is_empty());
+        match &hir.body[0] {
+            crate::hir::HirStatement::Display { operands, .. } => {
+                assert_eq!(operands.len(), 1);
+                match &operands[0] {
+                    crate::hir::HirExpr::ReferenceModification {
+                        variable,
+                        start,
+                        length,
+                    } => {
+                        assert_eq!(variable.as_str(), "WS-NAME");
+                        assert!(matches!(
+                            **start,
+                            crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(1))
+                        ));
+                        assert!(length.is_some());
+                        let len = length.as_ref().unwrap();
+                        assert!(matches!(
+                            **len,
+                            crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(5))
+                        ));
+                    }
+                    other => panic!("expected ReferenceModification, got {:?}", other),
+                }
+            }
+            other => panic!("expected Display, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_lower_reference_modification_in_move_target() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-REFMOD-MOVE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(20).
+PROCEDURE DIVISION.
+    MOVE \"ABC\" TO WS-NAME(3:3).
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(!hir.body.is_empty());
+        match &hir.body[0] {
+            crate::hir::HirStatement::Move { to, .. } => {
+                assert_eq!(to.len(), 1);
+                match &to[0] {
+                    crate::hir::HirMoveTarget::ReferenceModification {
+                        variable,
+                        start,
+                        length,
+                    } => {
+                        assert_eq!(variable.as_str(), "WS-NAME");
+                        assert!(matches!(
+                            start,
+                            crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(3))
+                        ));
+                        assert!(length.is_some());
+                        let len = length.as_ref().unwrap();
+                        assert!(matches!(
+                            len,
+                            crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(3))
+                        ));
+                    }
+                    other => panic!("expected ReferenceModification target, got {:?}", other),
+                }
+            }
+            other => panic!("expected Move, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_lower_reference_modification_start_only() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-REFMOD-START.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(20).
+PROCEDURE DIVISION.
+    DISPLAY WS-NAME(5:).
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        match &hir.body[0] {
+            crate::hir::HirStatement::Display { operands, .. } => match &operands[0] {
+                crate::hir::HirExpr::ReferenceModification {
+                    variable,
+                    start,
+                    length,
+                } => {
+                    assert_eq!(variable.as_str(), "WS-NAME");
+                    assert!(matches!(
+                        **start,
+                        crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(5))
+                    ));
+                    assert!(
+                        length.is_none(),
+                        "length should be None for start-only ref mod"
+                    );
+                }
+                other => panic!("expected ReferenceModification, got {:?}", other),
+            },
+            other => panic!("expected Display, got {:?}", other),
+        }
     }
 }

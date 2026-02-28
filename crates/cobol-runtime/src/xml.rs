@@ -162,13 +162,62 @@ pub unsafe extern "C" fn cobol_xml_parse(
                     std::ptr::null(),
                     0,
                 );
-            } else if chars.peek() == Some(&'?') || chars.peek() == Some(&'!') {
-                // Processing instruction or comment -- skip
-                while chars.peek().is_some() && chars.peek() != Some(&'>') {
-                    chars.next();
+            } else if chars.peek() == Some(&'?') {
+                // Processing instruction -- skip until ?>
+                chars.next(); // consume '?'
+                loop {
+                    match chars.next() {
+                        None => break,
+                        Some('?') => {
+                            if chars.peek() == Some(&'>') {
+                                chars.next();
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                if chars.peek() == Some(&'>') {
-                    chars.next();
+            } else if chars.peek() == Some(&'!') {
+                // Check for XML comment <!-- ... -->
+                chars.next(); // consume '!'
+                let is_comment = chars.peek() == Some(&'-');
+                if is_comment {
+                    chars.next(); // consume first '-'
+                    if chars.peek() == Some(&'-') {
+                        chars.next(); // consume second '-'
+                                      // Now skip until -->
+                        loop {
+                            match chars.next() {
+                                None => break,
+                                Some('-') => {
+                                    if chars.peek() == Some(&'-') {
+                                        chars.next(); // consume second '-'
+                                        if chars.peek() == Some(&'>') {
+                                            chars.next(); // consume '>'
+                                            break;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        // Not a comment (e.g., <!DOCTYPE>) -- skip to '>'
+                        while chars.peek().is_some() && chars.peek() != Some(&'>') {
+                            chars.next();
+                        }
+                        if chars.peek() == Some(&'>') {
+                            chars.next();
+                        }
+                    }
+                } else {
+                    // Other declaration (e.g., <!DOCTYPE>) -- skip to '>'
+                    while chars.peek().is_some() && chars.peek() != Some(&'>') {
+                        chars.next();
+                    }
+                    if chars.peek() == Some(&'>') {
+                        chars.next();
+                    }
                 }
             } else {
                 // Start element (possibly with attributes)

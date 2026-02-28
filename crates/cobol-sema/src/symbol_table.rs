@@ -126,7 +126,7 @@ impl SymbolTable {
 
     /// Leaves the current scope, returning to the parent.
     ///
-    /// Panics if called when already at the global scope.
+    /// If already at the global scope, this is a no-op.
     pub fn pop_scope(&mut self) {
         if let Some(parent) = self.scopes[self.current_scope].parent {
             self.current_scope = parent;
@@ -211,6 +211,7 @@ impl SymbolTable {
     }
 
     /// Searches all scopes for a symbol with the given name.
+    // TODO: Normalize symbol names to uppercase at registration time to avoid 2-pass lookup
     fn find_symbol_anywhere(&self, name: &SmolStr) -> Option<&Symbol> {
         for scope in &self.scopes {
             if let Some(sym) = scope.symbols.get(name) {

@@ -18,6 +18,10 @@ pub struct Span {
 impl Span {
     /// Creates a new span with the given byte offsets and file id.
     pub fn new(start: u32, end: u32, file_id: FileId) -> Self {
+        debug_assert!(
+            start <= end,
+            "Span start ({start}) must not exceed end ({end})"
+        );
         Self {
             start,
             end,
@@ -40,7 +44,15 @@ impl Span {
     ///
     /// The resulting span uses the minimum start, maximum end, and
     /// retains the file id of `self`.
+    ///
+    /// # Panics (debug only)
+    /// Panics if `self` and `other` belong to different files.
     pub fn merge(&self, other: &Span) -> Self {
+        debug_assert_eq!(
+            self.file_id, other.file_id,
+            "Cannot merge spans from different files ({:?} vs {:?})",
+            self.file_id, other.file_id
+        );
         Self {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
@@ -50,7 +62,7 @@ impl Span {
 
     /// Returns the byte length of this span.
     pub fn len(&self) -> u32 {
-        self.end - self.start
+        self.end.saturating_sub(self.start)
     }
 
     /// Returns `true` if this span has zero length.

@@ -169,7 +169,11 @@ pub unsafe extern "C" fn cobol_func_numval(ptr: *const u8, len: u32) -> i64 {
 
     // Remove commas and parse.
     let cleaned: String = s.chars().filter(|&c| c != ',').collect();
-    cleaned.parse::<f64>().unwrap_or(0.0) as i64
+    if cleaned.contains('.') {
+        cleaned.parse::<f64>().unwrap_or(0.0) as i64
+    } else {
+        cleaned.parse::<i64>().unwrap_or(0)
+    }
 }
 
 /// FUNCTION MAX (integer variant) -- return the larger of two values.

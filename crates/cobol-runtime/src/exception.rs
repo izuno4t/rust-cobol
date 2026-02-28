@@ -102,7 +102,8 @@ pub unsafe extern "C" fn cobol_raise(exception_name: *const c_char) {
 
     let code = ExceptionCode::from_name(name);
 
-    if let Ok(mut state) = EXCEPTION_STATE.lock() {
+    {
+        let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.code = code as i32;
     }
 
@@ -122,15 +123,13 @@ pub unsafe extern "C" fn cobol_raise(exception_name: *const c_char) {
 pub unsafe extern "C" fn cobol_resume(target: *const c_char) {
     if target.is_null() {
         // Resume at next statement -- clear exception state
-        if let Ok(mut state) = EXCEPTION_STATE.lock() {
-            state.code = 0;
-        }
+        let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.code = 0;
     } else {
         let _target_name = unsafe { CStr::from_ptr(target) }.to_str().unwrap_or("");
         // Resume at the specified target -- would require longjmp in full impl
-        if let Ok(mut state) = EXCEPTION_STATE.lock() {
-            state.code = 0;
-        }
+        let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.code = 0;
     }
 }
 
@@ -139,23 +138,19 @@ pub unsafe extern "C" fn cobol_resume(target: *const c_char) {
 /// Returns the current handler depth (for use with setjmp).
 #[no_mangle]
 pub extern "C" fn cobol_exception_push() -> c_int {
-    if let Ok(mut state) = EXCEPTION_STATE.lock() {
-        if state.depth < MAX_EXCEPTION_DEPTH {
-            state.depth += 1;
-        }
-        state.depth as c_int
-    } else {
-        0
+    let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.depth < MAX_EXCEPTION_DEPTH {
+        state.depth += 1;
     }
+    state.depth as c_int
 }
 
 /// Pop an exception handler from the handler stack.
 #[no_mangle]
 pub extern "C" fn cobol_exception_pop() {
-    if let Ok(mut state) = EXCEPTION_STATE.lock() {
-        if state.depth > 0 {
-            state.depth -= 1;
-        }
+    let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.depth > 0 {
+        state.depth -= 1;
     }
 }
 
@@ -164,19 +159,15 @@ pub extern "C" fn cobol_exception_pop() {
 /// Returns 0 if no exception is active.
 #[no_mangle]
 pub extern "C" fn cobol_exception_code() -> c_int {
-    if let Ok(state) = EXCEPTION_STATE.lock() {
-        state.code
-    } else {
-        0
-    }
+    let state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.code
 }
 
 /// Clear the current exception state.
 #[no_mangle]
 pub extern "C" fn cobol_exception_clear() {
-    if let Ok(mut state) = EXCEPTION_STATE.lock() {
-        state.code = 0;
-    }
+    let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.code = 0;
 }
 
 /// Invoke a method on a COBOL object (OOP runtime support).

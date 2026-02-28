@@ -214,6 +214,7 @@ impl PictureAnalyzer {
                 if i < chars.len() {
                     i += 1; // skip ')'
                 }
+                // Note: Invalid repeat count in PIC string (e.g., PIC X(abc)) defaults to 1
                 let count: u32 = num_str.parse().unwrap_or(1);
                 for _ in 0..count {
                     result.push(ch);

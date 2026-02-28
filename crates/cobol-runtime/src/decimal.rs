@@ -29,24 +29,35 @@ pub struct CobolDecimal {
 
 /// Align two decimals to the same scale (the larger of the two) by
 /// multiplying the smaller-scale operand by the appropriate power of 10.
-/// Returns (aligned_a_value, aligned_b_value, common_scale).
-fn align_scales(a: &CobolDecimal, b: &CobolDecimal) -> (i64, i64, i32) {
+/// Returns (aligned_a_value, aligned_b_value, common_scale) using i128
+/// to avoid overflow during scale alignment.
+fn align_scales(a: &CobolDecimal, b: &CobolDecimal) -> (i128, i128, i32) {
     if a.scale == b.scale {
-        (a.value, b.value, a.scale)
+        (a.value as i128, b.value as i128, a.scale)
     } else if a.scale < b.scale {
         let diff = (b.scale - a.scale) as u32;
-        let factor = 10_i64.pow(diff);
-        (a.value.wrapping_mul(factor), b.value, b.scale)
+        let factor = 10_i128.pow(diff);
+        (a.value as i128 * factor, b.value as i128, b.scale)
     } else {
         let diff = (a.scale - b.scale) as u32;
-        let factor = 10_i64.pow(diff);
-        (a.value, b.value.wrapping_mul(factor), a.scale)
+        let factor = 10_i128.pow(diff);
+        (a.value as i128, b.value as i128 * factor, a.scale)
     }
 }
 
 /// Truncate or clamp a value so that it fits within `size` digit positions
 /// (plus optional sign). If the field is unsigned, negative values become 0.
 fn clamp_to_size(value: i64, size: i32, is_signed: bool) -> i64 {
+    if size <= 0 {
+        return 0;
+    }
+    if size >= 19 {
+        // i64 max is 19 digits; no clamping needed.
+        if !is_signed && value < 0 {
+            return 0;
+        }
+        return value;
+    }
     if !is_signed && value < 0 {
         return 0;
     }
@@ -86,7 +97,7 @@ pub unsafe extern "C" fn cobol_decimal_add(
     let b_adjusted = b.size + (scale - b.scale).max(0);
     r.size = a_adjusted.max(b_adjusted);
     r.is_signed = a.is_signed || b.is_signed;
-    r.value = clamp_to_size(raw, r.size, r.is_signed);
+    r.value = clamp_to_size(raw as i64, r.size, r.is_signed);
 }
 
 /// Subtract b from a. Scales are aligned before subtraction.
@@ -111,7 +122,7 @@ pub unsafe extern "C" fn cobol_decimal_sub(
     let b_adjusted = b.size + (scale - b.scale).max(0);
     r.size = a_adjusted.max(b_adjusted);
     r.is_signed = a.is_signed || b.is_signed;
-    r.value = clamp_to_size(raw, r.size, r.is_signed);
+    r.value = clamp_to_size(raw as i64, r.size, r.is_signed);
 }
 
 /// Multiply two COBOL decimals. The resulting scale is the sum of both
@@ -180,8 +191,8 @@ pub unsafe extern "C" fn cobol_decimal_div(
     // same scale would give an integer result (scale 0). To get the answer at
     // common_scale, multiply the numerator by 10^common_scale first.
     let factor = 10_i128.pow(common_scale as u32);
-    let numerator = av as i128 * factor;
-    let raw = (numerator / bv as i128) as i64;
+    let numerator = av * factor;
+    let raw = (numerator / bv) as i64;
 
     r.scale = common_scale;
     r.size = a.size.max(b.size);
@@ -199,11 +210,25 @@ pub unsafe extern "C" fn cobol_decimal_cmp(a: *const CobolDecimal, b: *const Cob
     let a = &*a;
     let b = &*b;
     let (av, bv, _) = align_scales(a, b);
-    match av.cmp(&bv) {
+    match (av).cmp(&bv) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
     }
+}
+
+/// Count the number of decimal digits in a non-negative integer.
+fn count_digits(n: u64) -> i32 {
+    if n == 0 {
+        return 1;
+    }
+    let mut count = 0;
+    let mut v = n;
+    while v > 0 {
+        count += 1;
+        v /= 10;
+    }
+    count
 }
 
 /// Create a CobolDecimal from a raw integer and scale.
@@ -215,13 +240,9 @@ pub unsafe extern "C" fn cobol_decimal_from_int(value: i64, scale: i32, result: 
     let r = &mut *result;
     r.value = value;
     r.scale = scale;
-    // Compute the number of digit positions.
+    // Compute the number of digit positions using integer arithmetic.
     let abs = value.unsigned_abs();
-    r.size = if abs == 0 {
-        1
-    } else {
-        (abs as f64).log10().floor() as i32 + 1
-    };
+    r.size = count_digits(abs);
     r.is_signed = value < 0;
 }
 
