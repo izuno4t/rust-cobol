@@ -10,7 +10,15 @@ cobol-lexer.workspace = true
 cobol-parser.workspace = true
 cobol-sema.workspace = true
 cobol-hir.workspace = true
-cobol-mir.workspace = true
 cobol-codegen.workspace = true
 cobol-runtime.workspace = true
 clap.workspace = true
+
+[dev-dependencies]
+cobol-common.workspace = true
+cobol-lexer.workspace = true
+cobol-parser.workspace = true
+cobol-sema.workspace = true
+cobol-hir.workspace = true
+cobol-codegen.workspace = true
+tempfile.workspace = true
