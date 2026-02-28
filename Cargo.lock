@@ -309,6 +309,9 @@ dependencies = [
  "cobol-ast",
  "cobol-common",
  "cobol-diagnostics",
+ "cobol-lexer",
+ "cobol-parser",
+ "smol_str",
 ]
 
 [[package]]
