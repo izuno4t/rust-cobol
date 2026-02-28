@@ -18,6 +18,10 @@ pub struct HirProgram {
     pub classes: Vec<HirClass>,
     /// COBOL 2002+: User-defined function definitions.
     pub functions: Vec<HirFunction>,
+    /// COBOL 2014+: Type definitions (TYPEDEF).
+    pub typedefs: Vec<HirTypedef>,
+    /// COBOL 2023+: Interface definitions (INTERFACE-ID).
+    pub interfaces: Vec<HirInterface>,
     pub span: Span,
 }
 
@@ -56,6 +60,22 @@ pub struct HirFunction {
     pub returning: HirType,
     pub data_items: Vec<HirDataItem>,
     pub body: Vec<HirStatement>,
+    pub span: Span,
+}
+
+/// COBOL 2014+: A named type definition (TYPEDEF).
+#[derive(Debug, Clone)]
+pub struct HirTypedef {
+    pub name: SmolStr,
+    pub base_type: HirType,
+    pub span: Span,
+}
+
+/// COBOL 2023+: An interface definition (INTERFACE-ID).
+#[derive(Debug, Clone)]
+pub struct HirInterface {
+    pub name: SmolStr,
+    pub methods: Vec<HirMethod>,
     pub span: Span,
 }
 
@@ -122,6 +142,12 @@ pub enum HirType {
     Pointer,
     /// COBOL 2002+: Boolean type (PIC 1 / USAGE BIT).
     Boolean,
+    /// COBOL 2014+: IEEE 754 single precision (4 bytes).
+    FloatShort,
+    /// COBOL 2014+: IEEE 754 double precision (8 bytes).
+    FloatLong,
+    /// COBOL 2014+: IEEE 754 quad precision (16 bytes, approximated as f64).
+    FloatExtended,
 }
 
 /// A literal value in the HIR.
@@ -301,6 +327,36 @@ pub enum HirStatement {
         targets: Vec<SmolStr>,
         span: Span,
     },
+    // --- COBOL 2014+ statements ---
+    /// VALIDATE statement: validates a data item against its constraints.
+    Validate {
+        target: SmolStr,
+        span: Span,
+    },
+    /// JSON GENERATE statement: serialize a COBOL group item to JSON.
+    JsonGenerate {
+        source: SmolStr,
+        target: SmolStr,
+        span: Span,
+    },
+    /// JSON PARSE statement: deserialize JSON into COBOL data items.
+    JsonParse {
+        source: SmolStr,
+        target: SmolStr,
+        span: Span,
+    },
+    /// XML GENERATE statement: serialize a COBOL group item to XML.
+    XmlGenerate {
+        source: SmolStr,
+        target: SmolStr,
+        span: Span,
+    },
+    /// XML PARSE statement: parse XML using a processing procedure.
+    XmlParse {
+        source: SmolStr,
+        processing_procedure: SmolStr,
+        span: Span,
+    },
 }
 
 /// An expression in the HIR.
@@ -443,6 +499,18 @@ impl std::fmt::Display for HirProgram {
             writeln!(f, "  Functions:")?;
             for func in &self.functions {
                 writeln!(f, "    FUNCTION {}", func.name)?;
+            }
+        }
+        if !self.typedefs.is_empty() {
+            writeln!(f, "  Typedefs:")?;
+            for td in &self.typedefs {
+                writeln!(f, "    TYPEDEF {} {:?}", td.name, td.base_type)?;
+            }
+        }
+        if !self.interfaces.is_empty() {
+            writeln!(f, "  Interfaces:")?;
+            for iface in &self.interfaces {
+                writeln!(f, "    INTERFACE {}", iface.name)?;
             }
         }
         Ok(())
@@ -609,6 +677,26 @@ fn write_stmt(
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
+            )
+        }
+        HirStatement::Validate { target, .. } => writeln!(f, "{pad}VALIDATE {target}"),
+        HirStatement::JsonGenerate { source, target, .. } => {
+            writeln!(f, "{pad}JSON GENERATE {target} FROM {source}")
+        }
+        HirStatement::JsonParse { source, target, .. } => {
+            writeln!(f, "{pad}JSON PARSE {source} INTO {target}")
+        }
+        HirStatement::XmlGenerate { source, target, .. } => {
+            writeln!(f, "{pad}XML GENERATE {target} FROM {source}")
+        }
+        HirStatement::XmlParse {
+            source,
+            processing_procedure,
+            ..
+        } => {
+            writeln!(
+                f,
+                "{pad}XML PARSE {source} PROCESSING PROCEDURE {processing_procedure}"
             )
         }
     }

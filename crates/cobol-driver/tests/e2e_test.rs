@@ -732,3 +732,111 @@ PROCEDURE DIVISION.
     let c_code = compile_to_c(src);
     assert!(c_code.contains("INITIALIZE"));
 }
+
+// ---------------------------------------------------------------------------
+// COBOL 2014+ E2E tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_float_short_e2e() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT-E2E.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-FLOAT USAGE FLOAT-SHORT.
+PROCEDURE DIVISION.
+    DISPLAY WS-FLOAT.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let float_item = hir
+        .data_items
+        .iter()
+        .find(|d| d.name.as_str() == "WS-FLOAT");
+    assert!(float_item.is_some());
+    assert_eq!(float_item.unwrap().data_type, HirType::FloatShort);
+
+    let c_code = generate_c(&hir);
+    assert!(c_code.contains("static float WS_FLOAT"));
+    assert!(c_code.contains("WS_FLOAT = 0.0"));
+}
+
+#[test]
+fn test_float_long_e2e() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT-L-E2E.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-DBL USAGE FLOAT-LONG.
+PROCEDURE DIVISION.
+    DISPLAY WS-DBL.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let item = hir.data_items.iter().find(|d| d.name.as_str() == "WS-DBL");
+    assert!(item.is_some());
+    assert_eq!(item.unwrap().data_type, HirType::FloatLong);
+
+    let c_code = generate_c(&hir);
+    assert!(c_code.contains("static double WS_DBL"));
+}
+
+#[test]
+fn test_float_extended_e2e() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT-E-E2E.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-EXT USAGE FLOAT-EXTENDED.
+PROCEDURE DIVISION.
+    DISPLAY WS-EXT.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let item = hir.data_items.iter().find(|d| d.name.as_str() == "WS-EXT");
+    assert!(item.is_some());
+    assert_eq!(item.unwrap().data_type, HirType::FloatExtended);
+
+    let c_code = generate_c(&hir);
+    assert!(c_code.contains("static long double WS_EXT"));
+}
+
+#[test]
+fn test_c_code_includes_2014_runtime_declarations() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-RUNTIME-DECL.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    // 2014+ runtime declarations
+    assert!(c_code.contains("cobol_validate"));
+    assert!(c_code.contains("cobol_json_generate"));
+    assert!(c_code.contains("cobol_xml_generate"));
+}
+
+#[test]
+fn test_c_code_includes_2023_runtime_declarations() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-RUNTIME-2023.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    // 2023+ runtime declarations
+    assert!(c_code.contains("cobol_utf8_char_count"));
+    assert!(c_code.contains("cobol_utf8_substring"));
+    assert!(c_code.contains("cobol_utf8_upper"));
+    assert!(c_code.contains("cobol_utf8_lower"));
+    assert!(c_code.contains("cobol_thread_create"));
+    assert!(c_code.contains("cobol_thread_join"));
+    assert!(c_code.contains("cobol_mutex_create"));
+    assert!(c_code.contains("cobol_mutex_lock"));
+    assert!(c_code.contains("cobol_mutex_unlock"));
+    assert!(c_code.contains("cobol_mutex_destroy"));
+}

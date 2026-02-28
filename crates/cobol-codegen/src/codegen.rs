@@ -28,6 +28,12 @@ pub fn generate_c(program: &HirProgram) -> String {
     // COBOL 2002+: Emit user-defined function definitions
     emit_functions(&mut out, &program.functions);
 
+    // COBOL 2014+: Emit type definitions
+    emit_typedefs(&mut out, &program.typedefs);
+
+    // COBOL 2023+: Emit interface definitions
+    emit_interfaces(&mut out, &program.interfaces);
+
     // Main function
     out.push_str("int main(int argc, char** argv) {\n");
 
@@ -73,6 +79,33 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str(
         "extern int64_t cobol_invoke(void* obj, const char* method, int64_t* args, int32_t argc);\n",
     );
+    out.push_str("/* COBOL 2014+ runtime declarations */\n");
+    out.push_str("extern void cobol_validate(const char* target_name);\n");
+    out.push_str(
+        "extern uint32_t cobol_json_generate(const void* fields, uint32_t field_count, uint8_t* output, uint32_t output_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_json_parse(const uint8_t* json, uint32_t json_len, void* fields, uint32_t field_count);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_xml_generate(const void* fields, uint32_t field_count, const uint8_t* root_name, uint32_t root_name_len, uint8_t* output, uint32_t output_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_xml_parse(const uint8_t* xml, uint32_t xml_len, void (*callback)(uint32_t, const uint8_t*, uint32_t, const uint8_t*, uint32_t));\n",
+    );
+    out.push_str("/* COBOL 2023+ runtime declarations */\n");
+    out.push_str("extern uint32_t cobol_utf8_char_count(const uint8_t* ptr, uint32_t byte_len);\n");
+    out.push_str(
+        "extern uint32_t cobol_utf8_substring(const uint8_t* src, uint32_t src_len, uint32_t start_char, uint32_t char_count, uint8_t* dst, uint32_t dst_len);\n",
+    );
+    out.push_str("extern uint32_t cobol_utf8_upper(uint8_t* ptr, uint32_t byte_len);\n");
+    out.push_str("extern uint32_t cobol_utf8_lower(uint8_t* ptr, uint32_t byte_len);\n");
+    out.push_str("extern uint64_t cobol_thread_create(void (*func)(void*), void* arg);\n");
+    out.push_str("extern uint32_t cobol_thread_join(uint64_t handle);\n");
+    out.push_str("extern uint64_t cobol_mutex_create(void);\n");
+    out.push_str("extern void cobol_mutex_lock(uint64_t handle);\n");
+    out.push_str("extern void cobol_mutex_unlock(uint64_t handle);\n");
+    out.push_str("extern void cobol_mutex_destroy(uint64_t handle);\n");
     out.push('\n');
 }
 
@@ -119,6 +152,15 @@ fn emit_single_data_item(out: &mut String, item: &HirDataItem) {
         HirType::Boolean => {
             out.push_str(&format!("static int8_t {};\n", c_name));
         }
+        HirType::FloatShort => {
+            out.push_str(&format!("static float {};\n", c_name));
+        }
+        HirType::FloatLong => {
+            out.push_str(&format!("static double {};\n", c_name));
+        }
+        HirType::FloatExtended => {
+            out.push_str(&format!("static long double {};\n", c_name));
+        }
     }
 }
 
@@ -160,7 +202,10 @@ fn emit_single_data_init(out: &mut String, item: &HirDataItem) {
                 | HirType::Index
                 | HirType::Comp3 { .. }
                 | HirType::Binary { .. }
-                | HirType::Boolean,
+                | HirType::Boolean
+                | HirType::FloatShort
+                | HirType::FloatLong
+                | HirType::FloatExtended,
                 HirLiteral::Integer(n),
             ) => {
                 out.push_str(&format!("    {c_name} = {n};\n"));
@@ -170,7 +215,10 @@ fn emit_single_data_init(out: &mut String, item: &HirDataItem) {
                 | HirType::Index
                 | HirType::Comp3 { .. }
                 | HirType::Binary { .. }
-                | HirType::Boolean,
+                | HirType::Boolean
+                | HirType::FloatShort
+                | HirType::FloatLong
+                | HirType::FloatExtended,
                 HirLiteral::Zero,
             ) => {
                 out.push_str(&format!("    {c_name} = 0;\n"));
@@ -197,6 +245,9 @@ fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &str) {
         | HirType::Binary { .. }
         | HirType::Boolean => {
             out.push_str(&format!("    {c_name} = 0;\n"));
+        }
+        HirType::FloatShort | HirType::FloatLong | HirType::FloatExtended => {
+            out.push_str(&format!("    {c_name} = 0.0;\n"));
         }
         HirType::Pointer => {
             out.push_str(&format!("    {c_name} = NULL;\n"));
@@ -474,6 +525,46 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
                 let c_target = sanitize_name(target);
                 out.push_str(&format!("{pad}free({c_target}); {c_target} = NULL;\n"));
             }
+        }
+        // --- COBOL 2014+ statements ---
+        HirStatement::Validate { target, .. } => {
+            let c_target = sanitize_name(target);
+            out.push_str(&format!(
+                "{pad}cobol_validate(\"{c_target}\"); /* VALIDATE */\n"
+            ));
+        }
+        HirStatement::JsonGenerate { source, target, .. } => {
+            let c_source = sanitize_name(source);
+            let c_target = sanitize_name(target);
+            out.push_str(&format!(
+                "{pad}cobol_json_generate(&{c_source}, sizeof({c_source}), (uint8_t*){c_target}, sizeof({c_target})); /* JSON GENERATE */\n"
+            ));
+        }
+        HirStatement::JsonParse { source, target, .. } => {
+            let c_source = sanitize_name(source);
+            let c_target = sanitize_name(target);
+            out.push_str(&format!(
+                "{pad}cobol_json_parse((const uint8_t*){c_source}, strlen({c_source}), &{c_target}, sizeof({c_target})); /* JSON PARSE */\n"
+            ));
+        }
+        HirStatement::XmlGenerate { source, target, .. } => {
+            let c_source = sanitize_name(source);
+            let c_target = sanitize_name(target);
+            out.push_str(&format!(
+                "{pad}cobol_xml_generate(&{c_source}, sizeof({c_source}), \"{c_source}\", {}, (uint8_t*){c_target}, sizeof({c_target})); /* XML GENERATE */\n",
+                c_source.len()
+            ));
+        }
+        HirStatement::XmlParse {
+            source,
+            processing_procedure,
+            ..
+        } => {
+            let c_source = sanitize_name(source);
+            let c_proc = sanitize_name(processing_procedure);
+            out.push_str(&format!(
+                "{pad}/* XML PARSE {c_source} PROCESSING PROCEDURE {c_proc} */\n"
+            ));
         }
     }
 }
@@ -818,6 +909,32 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     }
 }
 
+fn emit_typedefs(out: &mut String, typedefs: &[cobol_hir::HirTypedef]) {
+    for td in typedefs {
+        let c_name = sanitize_name(&td.name);
+        let c_type = hir_type_to_c(&td.base_type);
+        out.push_str(&format!("typedef {c_type} {c_name}; /* TYPEDEF */\n"));
+    }
+    if !typedefs.is_empty() {
+        out.push('\n');
+    }
+}
+
+fn emit_interfaces(out: &mut String, interfaces: &[cobol_hir::HirInterface]) {
+    for iface in interfaces {
+        let c_name = sanitize_name(&iface.name);
+        out.push_str(&format!("/* INTERFACE {} */\n", c_name));
+
+        // Emit interface as a vtable struct
+        out.push_str(&format!("typedef struct {c_name}_vtable_s {{\n"));
+        for method in &iface.methods {
+            let method_name = sanitize_name(&method.name);
+            out.push_str(&format!("    int64_t (*{method_name})(void* self);\n"));
+        }
+        out.push_str(&format!("}} {c_name}_vtable;\n\n"));
+    }
+}
+
 /// Map a HIR type to its C representation.
 fn hir_type_to_c(data_type: &HirType) -> &'static str {
     match data_type {
@@ -829,6 +946,9 @@ fn hir_type_to_c(data_type: &HirType) -> &'static str {
         HirType::Index => "int64_t",
         HirType::Pointer => "void*",
         HirType::Boolean => "int8_t",
+        HirType::FloatShort => "float",
+        HirType::FloatLong => "double",
+        HirType::FloatExtended => "long double",
     }
 }
 
@@ -1129,6 +1249,8 @@ PROCEDURE DIVISION.
                 span: Span::dummy(),
             }],
             functions: Vec::new(),
+            typedefs: Vec::new(),
+            interfaces: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -1189,6 +1311,8 @@ PROCEDURE DIVISION.
                 body: Vec::new(),
                 span: Span::dummy(),
             }],
+            typedefs: Vec::new(),
+            interfaces: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -1229,6 +1353,371 @@ PROCEDURE DIVISION.
         assert!(
             c_code.contains("WS_COUNTER"),
             "Should emit WORKING-STORAGE variable"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // COBOL 2014+ codegen tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_float_short() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-FLOAT USAGE FLOAT-SHORT.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("static float WS_FLOAT"),
+            "FLOAT-SHORT should generate C float type"
+        );
+    }
+
+    #[test]
+    fn test_generate_float_long() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT-L.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-FLOAT-L USAGE FLOAT-LONG.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("static double WS_FLOAT_L"),
+            "FLOAT-LONG should generate C double type"
+        );
+    }
+
+    #[test]
+    fn test_generate_float_extended() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT-E.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-FLOAT-E USAGE FLOAT-EXTENDED.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("static long double WS_FLOAT_E"),
+            "FLOAT-EXTENDED should generate C long double type"
+        );
+    }
+
+    #[test]
+    fn test_generate_float_init() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT-INIT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-F USAGE FLOAT-SHORT.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("WS_F = 0.0"),
+            "Float data items should be initialized to 0.0"
+        );
+    }
+
+    #[test]
+    fn test_hir_type_to_c_float_short() {
+        assert_eq!(hir_type_to_c(&HirType::FloatShort), "float");
+    }
+
+    #[test]
+    fn test_hir_type_to_c_float_long() {
+        assert_eq!(hir_type_to_c(&HirType::FloatLong), "double");
+    }
+
+    #[test]
+    fn test_hir_type_to_c_float_extended() {
+        assert_eq!(hir_type_to_c(&HirType::FloatExtended), "long double");
+    }
+
+    #[test]
+    fn test_generate_validate_statement() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-VALIDATE".into(),
+            data_items: vec![HirDataItem {
+                name: "WS-NAME".into(),
+                data_type: HirType::Alphanumeric { size: 20 },
+                initial_value: None,
+                span: Span::dummy(),
+            }],
+            paragraphs: Vec::new(),
+            body: vec![HirStatement::Validate {
+                target: "WS-NAME".into(),
+                span: Span::dummy(),
+            }],
+            classes: Vec::new(),
+            functions: Vec::new(),
+            typedefs: Vec::new(),
+            interfaces: Vec::new(),
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("cobol_validate"),
+            "VALIDATE should generate cobol_validate call"
+        );
+    }
+
+    #[test]
+    fn test_generate_json_generate_statement() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-JSON-GEN".into(),
+            data_items: Vec::new(),
+            paragraphs: Vec::new(),
+            body: vec![HirStatement::JsonGenerate {
+                source: "WS-DATA".into(),
+                target: "WS-JSON".into(),
+                span: Span::dummy(),
+            }],
+            classes: Vec::new(),
+            functions: Vec::new(),
+            typedefs: Vec::new(),
+            interfaces: Vec::new(),
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("cobol_json_generate"),
+            "JSON GENERATE should emit cobol_json_generate call"
+        );
+    }
+
+    #[test]
+    fn test_generate_json_parse_statement() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-JSON-PARSE".into(),
+            data_items: Vec::new(),
+            paragraphs: Vec::new(),
+            body: vec![HirStatement::JsonParse {
+                source: "WS-JSON".into(),
+                target: "WS-DATA".into(),
+                span: Span::dummy(),
+            }],
+            classes: Vec::new(),
+            functions: Vec::new(),
+            typedefs: Vec::new(),
+            interfaces: Vec::new(),
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("cobol_json_parse"),
+            "JSON PARSE should emit cobol_json_parse call"
+        );
+    }
+
+    #[test]
+    fn test_generate_xml_generate_statement() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-XML-GEN".into(),
+            data_items: Vec::new(),
+            paragraphs: Vec::new(),
+            body: vec![HirStatement::XmlGenerate {
+                source: "WS-DATA".into(),
+                target: "WS-XML".into(),
+                span: Span::dummy(),
+            }],
+            classes: Vec::new(),
+            functions: Vec::new(),
+            typedefs: Vec::new(),
+            interfaces: Vec::new(),
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("cobol_xml_generate"),
+            "XML GENERATE should emit cobol_xml_generate call"
+        );
+    }
+
+    #[test]
+    fn test_generate_xml_parse_statement() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-XML-PARSE".into(),
+            data_items: Vec::new(),
+            paragraphs: Vec::new(),
+            body: vec![HirStatement::XmlParse {
+                source: "WS-XML".into(),
+                processing_procedure: "XML-HANDLER".into(),
+                span: Span::dummy(),
+            }],
+            classes: Vec::new(),
+            functions: Vec::new(),
+            typedefs: Vec::new(),
+            interfaces: Vec::new(),
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("XML PARSE"),
+            "XML PARSE should emit XML PARSE comment"
+        );
+        assert!(
+            c_code.contains("XML_HANDLER"),
+            "XML PARSE should reference processing procedure"
+        );
+    }
+
+    #[test]
+    fn test_generate_typedef() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-TYPEDEF".into(),
+            data_items: Vec::new(),
+            paragraphs: Vec::new(),
+            body: Vec::new(),
+            classes: Vec::new(),
+            functions: Vec::new(),
+            typedefs: vec![cobol_hir::HirTypedef {
+                name: "MONEY-TYPE".into(),
+                base_type: HirType::Numeric {
+                    size: 9,
+                    decimal_places: 2,
+                    is_signed: true,
+                },
+                span: Span::dummy(),
+            }],
+            interfaces: Vec::new(),
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("typedef int64_t MONEY_TYPE"),
+            "TYPEDEF should generate C typedef"
+        );
+    }
+
+    #[test]
+    fn test_generate_interface() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-IFACE".into(),
+            data_items: Vec::new(),
+            paragraphs: Vec::new(),
+            body: Vec::new(),
+            classes: Vec::new(),
+            functions: Vec::new(),
+            typedefs: Vec::new(),
+            interfaces: vec![cobol_hir::HirInterface {
+                name: "IComparable".into(),
+                methods: vec![cobol_hir::HirMethod {
+                    name: "CompareTo".into(),
+                    params: Vec::new(),
+                    returning: None,
+                    data_items: Vec::new(),
+                    body: Vec::new(),
+                    span: Span::dummy(),
+                }],
+                span: Span::dummy(),
+            }],
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("INTERFACE IComparable"),
+            "Should generate interface comment"
+        );
+        assert!(
+            c_code.contains("IComparable_vtable"),
+            "Should generate vtable for interface"
+        );
+        assert!(
+            c_code.contains("CompareTo"),
+            "Should include method in vtable"
+        );
+    }
+
+    #[test]
+    fn test_generate_runtime_declarations_2014() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DECL-2014.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("cobol_validate"),
+            "Should declare cobol_validate"
+        );
+        assert!(
+            c_code.contains("cobol_json_generate"),
+            "Should declare cobol_json_generate"
+        );
+        assert!(
+            c_code.contains("cobol_json_parse"),
+            "Should declare cobol_json_parse"
+        );
+        assert!(
+            c_code.contains("cobol_xml_generate"),
+            "Should declare cobol_xml_generate"
+        );
+        assert!(
+            c_code.contains("cobol_xml_parse"),
+            "Should declare cobol_xml_parse"
+        );
+    }
+
+    #[test]
+    fn test_generate_runtime_declarations_2023() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DECL-2023.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("cobol_utf8_char_count"),
+            "Should declare cobol_utf8_char_count"
+        );
+        assert!(
+            c_code.contains("cobol_utf8_substring"),
+            "Should declare cobol_utf8_substring"
+        );
+        assert!(
+            c_code.contains("cobol_thread_create"),
+            "Should declare cobol_thread_create"
+        );
+        assert!(
+            c_code.contains("cobol_mutex_create"),
+            "Should declare cobol_mutex_create"
         );
     }
 }

@@ -13,9 +13,13 @@ pub mod display;
 pub mod exception;
 pub mod file_io;
 pub mod intrinsic;
+pub mod json;
 pub mod program;
 pub mod sort_merge;
 pub mod string_ops;
+pub mod threading;
+pub mod unicode;
+pub mod xml;
 
 #[cfg(test)]
 mod tests {

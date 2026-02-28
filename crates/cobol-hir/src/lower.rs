@@ -48,6 +48,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         body,
         classes: Vec::new(),
         functions: Vec::new(),
+        typedefs: Vec::new(),
+        interfaces: Vec::new(),
         span: program.span,
     }
 }
@@ -118,6 +120,9 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 }
                 return HirType::Binary { size: 4 };
             }
+            Usage::FloatShort | Usage::Comp1 => return HirType::FloatShort,
+            Usage::FloatLong | Usage::Comp2 => return HirType::FloatLong,
+            Usage::FloatExtended => return HirType::FloatExtended,
             _ => {}
         }
     }
@@ -171,6 +176,9 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 HirType::Index => 4,
                 HirType::Pointer => 8,
                 HirType::Boolean => 1,
+                HirType::FloatShort => 4,
+                HirType::FloatLong => 8,
+                HirType::FloatExtended => 16,
             })
             .sum();
         HirType::Group {
@@ -307,6 +315,11 @@ fn lower_statement(stmt: &Statement) -> Option<HirStatement> {
         Statement::Invoke(invoke) => Some(lower_invoke(invoke)),
         Statement::Allocate(alloc) => Some(lower_allocate(alloc)),
         Statement::Free(free) => Some(lower_free(free)),
+        // --- COBOL 2014+ statements ---
+        Statement::JsonGenerate(jg) => Some(lower_json_generate(jg)),
+        Statement::JsonParse(jp) => Some(lower_json_parse(jp)),
+        Statement::XmlGenerate(xg) => Some(lower_xml_generate(xg)),
+        Statement::XmlParse(xp) => Some(lower_xml_parse(xp)),
         // Statements not yet lowered are silently skipped
         _ => None,
     }
@@ -837,6 +850,42 @@ fn lower_free(free: &cobol_ast::statement::FreeStatement) -> HirStatement {
 }
 
 // ---------------------------------------------------------------------------
+// COBOL 2014+ statement lowering
+// ---------------------------------------------------------------------------
+
+fn lower_json_generate(jg: &cobol_ast::statement::JsonGenerateStatement) -> HirStatement {
+    HirStatement::JsonGenerate {
+        source: jg.source.name.clone(),
+        target: jg.target.name.clone(),
+        span: jg.span,
+    }
+}
+
+fn lower_json_parse(jp: &cobol_ast::statement::JsonParseStatement) -> HirStatement {
+    HirStatement::JsonParse {
+        source: jp.source.name.clone(),
+        target: jp.target.name.clone(),
+        span: jp.span,
+    }
+}
+
+fn lower_xml_generate(xg: &cobol_ast::statement::XmlGenerateStatement) -> HirStatement {
+    HirStatement::XmlGenerate {
+        source: xg.source.name.clone(),
+        target: xg.target.name.clone(),
+        span: xg.span,
+    }
+}
+
+fn lower_xml_parse(xp: &cobol_ast::statement::XmlParseStatement) -> HirStatement {
+    HirStatement::XmlParse {
+        source: xp.source.name.clone(),
+        processing_procedure: xp.processing_procedure.clone(),
+        span: xp.span,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Expression and condition lowering
 // ---------------------------------------------------------------------------
 
@@ -1215,5 +1264,123 @@ PROCEDURE DIVISION.
         // Classes and functions should be empty for a normal program
         assert!(hir.classes.is_empty());
         assert!(hir.functions.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // COBOL 2014+ tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lower_float_short_data_item() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-FLOAT USAGE FLOAT-SHORT.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        let float_item = hir
+            .data_items
+            .iter()
+            .find(|d| d.name.as_str() == "WS-FLOAT");
+        assert!(float_item.is_some(), "Expected WS-FLOAT data item");
+        assert_eq!(float_item.unwrap().data_type, HirType::FloatShort);
+    }
+
+    #[test]
+    fn test_lower_float_long_data_item() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT-L.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-FLOAT-L USAGE FLOAT-LONG.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        let float_item = hir
+            .data_items
+            .iter()
+            .find(|d| d.name.as_str() == "WS-FLOAT-L");
+        assert!(float_item.is_some(), "Expected WS-FLOAT-L data item");
+        assert_eq!(float_item.unwrap().data_type, HirType::FloatLong);
+    }
+
+    #[test]
+    fn test_lower_float_extended_data_item() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOAT-E.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-FLOAT-E USAGE FLOAT-EXTENDED.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        let float_item = hir
+            .data_items
+            .iter()
+            .find(|d| d.name.as_str() == "WS-FLOAT-E");
+        assert!(float_item.is_some(), "Expected WS-FLOAT-E data item");
+        assert_eq!(float_item.unwrap().data_type, HirType::FloatExtended);
+    }
+
+    #[test]
+    fn test_lower_comp1_as_float_short() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-COMP1.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-COMP1 USAGE COMP-1.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        let item = hir
+            .data_items
+            .iter()
+            .find(|d| d.name.as_str() == "WS-COMP1");
+        assert!(item.is_some(), "Expected WS-COMP1 data item");
+        assert_eq!(item.unwrap().data_type, HirType::FloatShort);
+    }
+
+    #[test]
+    fn test_lower_comp2_as_float_long() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-COMP2.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-COMP2 USAGE COMP-2.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        let item = hir
+            .data_items
+            .iter()
+            .find(|d| d.name.as_str() == "WS-COMP2");
+        assert!(item.is_some(), "Expected WS-COMP2 data item");
+        assert_eq!(item.unwrap().data_type, HirType::FloatLong);
+    }
+
+    #[test]
+    fn test_hir_program_has_typedefs_and_interfaces() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-2014.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        // Typedefs and interfaces should be empty for a normal program
+        assert!(hir.typedefs.is_empty());
+        assert!(hir.interfaces.is_empty());
     }
 }
