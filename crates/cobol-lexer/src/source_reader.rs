@@ -100,8 +100,7 @@ impl SourceReader {
             // Preserve the newline in the raw text if it was present in the
             // original source (all lines except possibly the last will have
             // had a newline that split() consumed).
-            let has_newline =
-                global_offset as usize + raw_line.len() < source.len();
+            let has_newline = global_offset as usize + raw_line.len() < source.len();
             let raw = if has_newline {
                 format!("{}\n", raw_line)
             } else {
@@ -155,8 +154,7 @@ impl SourceReader {
         let mut global_offset: u32 = 0;
 
         for (idx, raw_line) in source.split('\n').enumerate() {
-            let has_newline =
-                global_offset as usize + raw_line.len() < source.len();
+            let has_newline = global_offset as usize + raw_line.len() < source.len();
             let raw = if has_newline {
                 format!("{}\n", raw_line)
             } else {
@@ -210,8 +208,7 @@ impl SourceReader {
         let mut global_offset: u32 = 0;
 
         for (idx, raw_line) in source.split('\n').enumerate() {
-            let has_newline =
-                global_offset as usize + raw_line.len() < source.len();
+            let has_newline = global_offset as usize + raw_line.len() < source.len();
             let raw = if has_newline {
                 format!("{}\n", raw_line)
             } else {
@@ -259,22 +256,17 @@ mod tests {
 
     #[test]
     fn test_fixed_format_basic() {
-        let src =
-            "000100 IDENTIFICATION DIVISION.                                          \n";
+        let src = "000100 IDENTIFICATION DIVISION.                                          \n";
         let reader = SourceReader::new(src, SourceFormat::Fixed);
         let lines = reader.lines();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].indicator, ' ');
-        assert_eq!(
-            lines[0].content_text().trim(),
-            "IDENTIFICATION DIVISION."
-        );
+        assert_eq!(lines[0].content_text().trim(), "IDENTIFICATION DIVISION.");
     }
 
     #[test]
     fn test_fixed_format_comment() {
-        let src =
-            "000100*THIS IS A COMMENT                                                 \n";
+        let src = "000100*THIS IS A COMMENT                                                 \n";
         let reader = SourceReader::new(src, SourceFormat::Fixed);
         assert!(reader.lines()[0].is_comment());
     }
@@ -295,10 +287,7 @@ mod tests {
         let reader = SourceReader::new(src, SourceFormat::Free);
         let lines = reader.lines();
         assert_eq!(lines.len(), 1);
-        assert_eq!(
-            lines[0].content_text().trim(),
-            "IDENTIFICATION DIVISION."
-        );
+        assert_eq!(lines[0].content_text().trim(), "IDENTIFICATION DIVISION.");
     }
 
     #[test]
@@ -310,8 +299,7 @@ mod tests {
 
     #[test]
     fn test_sequence_area() {
-        let src =
-            "000100 IDENTIFICATION DIVISION.                                          \n";
+        let src = "000100 IDENTIFICATION DIVISION.                                          \n";
         let reader = SourceReader::new(src, SourceFormat::Fixed);
         assert_eq!(reader.lines()[0].sequence_area(), "000100");
     }
@@ -332,16 +320,14 @@ mod tests {
 
     #[test]
     fn test_fixed_format_debug_line() {
-        let src =
-            "000100D    DISPLAY \"DEBUG INFO\".                                         \n";
+        let src = "000100D    DISPLAY \"DEBUG INFO\".                                         \n";
         let reader = SourceReader::new(src, SourceFormat::Fixed);
         assert!(reader.lines()[0].is_debug());
     }
 
     #[test]
     fn test_fixed_format_page_eject() {
-        let src =
-            "000100/                                                                  \n";
+        let src = "000100/                                                                  \n";
         let reader = SourceReader::new(src, SourceFormat::Fixed);
         assert!(reader.lines()[0].is_comment());
     }
@@ -400,8 +386,7 @@ mod tests {
     #[test]
     fn test_is_blank_with_only_spaces_in_content() {
         // Content area is all spaces
-        let src =
-            "000100                                                                   \n";
+        let src = "000100                                                                   \n";
         let reader = SourceReader::new(src, SourceFormat::Fixed);
         assert!(reader.lines()[0].is_blank());
     }
