@@ -4,6 +4,7 @@ use crate::span::FileId;
 ///
 /// Supports efficient conversion from byte offset to (line, column) pairs
 /// for diagnostic reporting.
+#[derive(Debug)]
 pub struct SourceFile {
     pub id: FileId,
     pub name: String,
