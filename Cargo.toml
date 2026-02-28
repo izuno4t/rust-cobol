@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cobol-common",
+    "crates/cobol-diagnostics",
+    "crates/cobol-lexer",
+    "crates/cobol-ast",
+    "crates/cobol-parser",
+    "crates/cobol-sema",
+    "crates/cobol-hir",
+    "crates/cobol-mir",
+    "crates/cobol-codegen",
+    "crates/cobol-runtime",
+    "crates/cobol-driver",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+cobol-common = { path = "crates/cobol-common" }
+cobol-diagnostics = { path = "crates/cobol-diagnostics" }
+cobol-lexer = { path = "crates/cobol-lexer" }
+cobol-ast = { path = "crates/cobol-ast" }
+cobol-parser = { path = "crates/cobol-parser" }
+cobol-sema = { path = "crates/cobol-sema" }
+cobol-hir = { path = "crates/cobol-hir" }
+cobol-mir = { path = "crates/cobol-mir" }
+cobol-codegen = { path = "crates/cobol-codegen" }
+cobol-runtime = { path = "crates/cobol-runtime" }
+
+ariadne = "0.4"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+num-bigint = "0.4"
+rust_decimal = "1"
+unicode-segmentation = "1"
+thiserror = "2"
+smol_str = "0.3"
+tempfile = "3"

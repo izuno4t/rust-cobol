@@ -1,0 +1,9 @@
+[package]
+name = "cobol-codegen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cobol-common.workspace = true
+cobol-mir.workspace = true
+cobol-runtime.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "cobol-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cobol-common.workspace = true
+cobol-diagnostics.workspace = true
+cobol-lexer.workspace = true
+cobol-ast.workspace = true

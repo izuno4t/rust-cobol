@@ -1,0 +1,9 @@
+[package]
+name = "cobol-ast"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cobol-common.workspace = true
+smol_str.workspace = true
+serde.workspace = true

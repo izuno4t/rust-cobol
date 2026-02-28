@@ -1,0 +1,9 @@
+[package]
+name = "cobol-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cobol-common.workspace = true
+num-bigint.workspace = true
+rust_decimal.workspace = true
