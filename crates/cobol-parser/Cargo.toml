@@ -8,3 +8,4 @@ cobol-common.workspace = true
 cobol-diagnostics.workspace = true
 cobol-lexer.workspace = true
 cobol-ast.workspace = true
+smol_str.workspace = true

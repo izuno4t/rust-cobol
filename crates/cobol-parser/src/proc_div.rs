@@ -1,0 +1,1430 @@
+// COBOL Parser - PROCEDURE DIVISION parsing
+
+use cobol_ast::proc_div::*;
+use cobol_ast::statement::*;
+use cobol_common::Span;
+use cobol_lexer::token::TokenKind;
+use smol_str::SmolStr;
+
+use crate::parser::Parser;
+
+impl Parser {
+    /// Parse the PROCEDURE DIVISION.
+    pub fn parse_procedure_division(&mut self) -> Result<ProcedureDivision, ()> {
+        let start_span = self.span();
+
+        self.expect(TokenKind::Procedure)?;
+        self.expect(TokenKind::Division)?;
+
+        let mut using_params = Vec::new();
+        if self.check(TokenKind::Using) {
+            self.advance();
+            using_params = self.parse_proc_params()?;
+        }
+
+        let mut returning = None;
+        if self.check(TokenKind::Returning) {
+            self.advance();
+            returning = Some(self.expect_identifier()?);
+        }
+
+        self.expect(TokenKind::Period)?;
+
+        let declaratives = Vec::new();
+        let mut sections = Vec::new();
+        let mut paragraphs = Vec::new();
+
+        self.parse_procedure_body(&mut sections, &mut paragraphs)?;
+
+        let end_span = self.span();
+
+        Ok(ProcedureDivision {
+            using_params,
+            returning,
+            declaratives,
+            sections,
+            paragraphs,
+            span: start_span.merge(&end_span),
+        })
+    }
+
+    fn parse_proc_params(&mut self) -> Result<Vec<ProcParam>, ()> {
+        let mut params = Vec::new();
+        let mut current_mode = ParamMode::ByReference;
+
+        while !self.check(TokenKind::Period) && !self.check(TokenKind::Returning) && !self.at_eof()
+        {
+            if self.check(TokenKind::By) {
+                self.advance();
+                if self.check(TokenKind::Reference) {
+                    self.advance();
+                    current_mode = ParamMode::ByReference;
+                } else if self.check(TokenKind::Content) {
+                    self.advance();
+                    current_mode = ParamMode::ByContent;
+                } else if self.check(TokenKind::Value) {
+                    self.advance();
+                    current_mode = ParamMode::ByValue;
+                }
+                continue;
+            }
+
+            let span = self.span();
+            let name = self.expect_identifier()?;
+            params.push(ProcParam {
+                mode: current_mode,
+                name,
+                span,
+            });
+        }
+
+        Ok(params)
+    }
+
+    fn parse_procedure_body(
+        &mut self,
+        sections: &mut Vec<ProcSection>,
+        paragraphs: &mut Vec<Paragraph>,
+    ) -> Result<(), ()> {
+        let mut current_para_name: Option<SmolStr> = None;
+        let mut current_para_span: Option<Span> = None;
+        let mut current_sentences: Vec<Sentence> = Vec::new();
+
+        while !self.at_eof() {
+            // Check for paragraph or section header
+            if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_start()
+            {
+                if self.peek(1).kind == TokenKind::Section {
+                    // Section header: flush current paragraph
+                    if current_para_name.is_some() || !current_sentences.is_empty() {
+                        let para = self.make_paragraph(
+                            current_para_name.take(),
+                            current_para_span.take(),
+                            std::mem::take(&mut current_sentences),
+                        );
+                        paragraphs.push(para);
+                    }
+
+                    let section_name = self.advance().text;
+                    self.advance(); // SECTION
+                    self.expect(TokenKind::Period)?;
+
+                    let section_start = self.span();
+                    let mut section_paragraphs = Vec::new();
+                    let mut sec_para_name: Option<SmolStr> = None;
+                    let mut sec_para_span: Option<Span> = None;
+                    let mut sec_sentences: Vec<Sentence> = Vec::new();
+
+                    while !self.at_eof() {
+                        if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                            && !self.at_statement_start()
+                            && self.peek(1).kind == TokenKind::Section
+                        {
+                            break;
+                        }
+
+                        if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                            && !self.at_statement_start()
+                            && self.peek(1).kind == TokenKind::Period
+                        {
+                            if sec_para_name.is_some() || !sec_sentences.is_empty() {
+                                let para = self.make_paragraph(
+                                    sec_para_name.take(),
+                                    sec_para_span.take(),
+                                    std::mem::take(&mut sec_sentences),
+                                );
+                                section_paragraphs.push(para);
+                            }
+                            sec_para_span = Some(self.span());
+                            sec_para_name = Some(self.advance().text);
+                            self.advance(); // period
+                            continue;
+                        }
+
+                        if let Some(sentence) = self.parse_sentence()? {
+                            sec_sentences.push(sentence);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if sec_para_name.is_some() || !sec_sentences.is_empty() {
+                        let para = self.make_paragraph(
+                            sec_para_name.take(),
+                            sec_para_span.take(),
+                            std::mem::take(&mut sec_sentences),
+                        );
+                        section_paragraphs.push(para);
+                    }
+
+                    sections.push(ProcSection {
+                        name: section_name,
+                        paragraphs: section_paragraphs,
+                        span: section_start,
+                    });
+                    continue;
+                } else if self.peek(1).kind == TokenKind::Period {
+                    // Paragraph header
+                    if current_para_name.is_some() || !current_sentences.is_empty() {
+                        let para = self.make_paragraph(
+                            current_para_name.take(),
+                            current_para_span.take(),
+                            std::mem::take(&mut current_sentences),
+                        );
+                        paragraphs.push(para);
+                    }
+
+                    current_para_span = Some(self.span());
+                    current_para_name = Some(self.advance().text);
+                    self.advance(); // period
+                    continue;
+                }
+            }
+
+            if let Some(sentence) = self.parse_sentence()? {
+                current_sentences.push(sentence);
+            } else {
+                break;
+            }
+        }
+
+        if current_para_name.is_some() || !current_sentences.is_empty() {
+            let para = self.make_paragraph(current_para_name, current_para_span, current_sentences);
+            paragraphs.push(para);
+        }
+
+        Ok(())
+    }
+
+    fn make_paragraph(
+        &self,
+        name: Option<SmolStr>,
+        span: Option<Span>,
+        sentences: Vec<Sentence>,
+    ) -> Paragraph {
+        let name = name.unwrap_or_else(|| SmolStr::from(""));
+        let span = span.unwrap_or_else(Span::dummy);
+        Paragraph {
+            name,
+            sentences,
+            span,
+        }
+    }
+
+    fn parse_sentence(&mut self) -> Result<Option<Sentence>, ()> {
+        if self.at_eof() {
+            return Ok(None);
+        }
+
+        if self.check(TokenKind::Period) {
+            self.advance();
+            return Ok(Some(Sentence {
+                statements: Vec::new(),
+                span: self.span(),
+            }));
+        }
+
+        let start_span = self.span();
+        let mut statements = Vec::new();
+
+        loop {
+            if self.at_eof() || self.check(TokenKind::Period) {
+                break;
+            }
+
+            if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_start()
+                && (self.peek(1).kind == TokenKind::Period
+                    || self.peek(1).kind == TokenKind::Section)
+            {
+                break;
+            }
+
+            match self.parse_statement() {
+                Ok(stmt) => statements.push(stmt),
+                Err(()) => {
+                    self.recover_to_period();
+                    return Ok(Some(Sentence {
+                        statements,
+                        span: start_span.merge(&self.span()),
+                    }));
+                }
+            }
+        }
+
+        if statements.is_empty() && !self.check(TokenKind::Period) {
+            return Ok(None);
+        }
+
+        self.eat(TokenKind::Period);
+
+        let end_span = self.span();
+
+        Ok(Some(Sentence {
+            statements,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    // =========================================================================
+    // Statement parsing
+    // =========================================================================
+
+    pub(crate) fn parse_statement(&mut self) -> Result<Statement, ()> {
+        match self.current().kind {
+            TokenKind::Move => self.parse_move_statement(),
+            TokenKind::Compute => self.parse_compute_statement(),
+            TokenKind::Add => self.parse_add_statement(),
+            TokenKind::Subtract => self.parse_subtract_statement(),
+            TokenKind::Multiply => self.parse_multiply_statement(),
+            TokenKind::Divide => self.parse_divide_statement(),
+            TokenKind::Display => self.parse_display_statement(),
+            TokenKind::Accept => self.parse_accept_statement(),
+            TokenKind::If => self.parse_if_statement(),
+            TokenKind::Evaluate => self.parse_evaluate_statement(),
+            TokenKind::Perform => self.parse_perform_statement(),
+            TokenKind::Go => self.parse_goto_statement(),
+            TokenKind::GoTo => self.parse_goto_statement(),
+            TokenKind::Call => self.parse_call_statement(),
+            TokenKind::Stop => self.parse_stop_statement(),
+            TokenKind::Goback => {
+                self.advance();
+                Ok(Statement::Goback)
+            }
+            TokenKind::Continue => {
+                self.advance();
+                Ok(Statement::Continue)
+            }
+            TokenKind::Exit => self.parse_exit_statement(),
+            TokenKind::Open => self.parse_open_statement(),
+            TokenKind::Close => self.parse_close_statement(),
+            TokenKind::Read => self.parse_read_statement(),
+            TokenKind::Write => self.parse_write_statement(),
+            TokenKind::Initialize => self.parse_initialize_statement(),
+            TokenKind::Set => self.parse_set_statement(),
+            TokenKind::String => self.parse_string_statement(),
+            TokenKind::Unstring => self.parse_unstring_statement(),
+            TokenKind::Inspect => self.parse_inspect_statement(),
+            _ => {
+                let msg = format!("unexpected token: {:?}", self.current().kind);
+                self.error(&msg);
+                Err(())
+            }
+        }
+    }
+
+    // --- MOVE ---
+    fn parse_move_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Move)?;
+
+        let corresponding = self.eat(TokenKind::Corresponding).is_some();
+        let from = self.parse_expr()?;
+        self.expect(TokenKind::To)?;
+
+        let mut to = Vec::new();
+        loop {
+            let qn = self.parse_qualified_name()?;
+            to.push(qn);
+            if !self.check(TokenKind::Identifier) || self.at_statement_terminator() {
+                break;
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Move(MoveStatement {
+            corresponding,
+            from,
+            to,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    // --- COMPUTE ---
+    fn parse_compute_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Compute)?;
+
+        let mut targets = Vec::new();
+        loop {
+            let target = self.parse_qualified_name()?;
+            let rounded = self.eat(TokenKind::Rounded).is_some();
+            targets.push(RoundedTarget { target, rounded });
+            if self.check(TokenKind::Equals) {
+                break;
+            }
+        }
+
+        self.expect(TokenKind::Equals)?;
+        let expr = self.parse_expr()?;
+
+        let end_span = self.span();
+        Ok(Statement::Compute(Box::new(ComputeStatement {
+            targets,
+            expr,
+            on_size_error: Vec::new(),
+            not_on_size_error: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- ADD ---
+    fn parse_add_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Add)?;
+
+        let corresponding = self.eat(TokenKind::Corresponding).is_some();
+
+        let mut operands = Vec::new();
+        while !self.check(TokenKind::To) && !self.check(TokenKind::Giving) && !self.at_eof() {
+            operands.push(self.parse_expr()?);
+        }
+
+        let mut to = Vec::new();
+        let mut giving = Vec::new();
+
+        if self.eat(TokenKind::To).is_some() {
+            loop {
+                let target = self.parse_qualified_name()?;
+                let rounded = self.eat(TokenKind::Rounded).is_some();
+                to.push(RoundedTarget { target, rounded });
+                if self.at_statement_terminator() || self.check(TokenKind::Giving) {
+                    break;
+                }
+            }
+        }
+
+        if self.eat(TokenKind::Giving).is_some() {
+            loop {
+                let target = self.parse_qualified_name()?;
+                let rounded = self.eat(TokenKind::Rounded).is_some();
+                giving.push(RoundedTarget { target, rounded });
+                if self.at_statement_terminator() {
+                    break;
+                }
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Add(Box::new(AddStatement {
+            operands,
+            to,
+            giving,
+            corresponding,
+            on_size_error: Vec::new(),
+            not_on_size_error: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- SUBTRACT ---
+    fn parse_subtract_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Subtract)?;
+
+        let corresponding = self.eat(TokenKind::Corresponding).is_some();
+
+        let mut operands = Vec::new();
+        while !self.check(TokenKind::From) && !self.at_eof() {
+            operands.push(self.parse_expr()?);
+        }
+
+        self.expect(TokenKind::From)?;
+
+        let mut from = Vec::new();
+        let mut giving = Vec::new();
+
+        loop {
+            let target = self.parse_qualified_name()?;
+            let rounded = self.eat(TokenKind::Rounded).is_some();
+            from.push(RoundedTarget { target, rounded });
+            if self.at_statement_terminator() || self.check(TokenKind::Giving) {
+                break;
+            }
+        }
+
+        if self.eat(TokenKind::Giving).is_some() {
+            loop {
+                let target = self.parse_qualified_name()?;
+                let rounded = self.eat(TokenKind::Rounded).is_some();
+                giving.push(RoundedTarget { target, rounded });
+                if self.at_statement_terminator() {
+                    break;
+                }
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Subtract(Box::new(SubtractStatement {
+            operands,
+            from,
+            giving,
+            corresponding,
+            on_size_error: Vec::new(),
+            not_on_size_error: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- MULTIPLY ---
+    fn parse_multiply_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Multiply)?;
+
+        let operand = self.parse_expr()?;
+        self.expect(TokenKind::By)?;
+
+        let mut by = Vec::new();
+        let mut giving = Vec::new();
+
+        loop {
+            let target = self.parse_qualified_name()?;
+            let rounded = self.eat(TokenKind::Rounded).is_some();
+            by.push(RoundedTarget { target, rounded });
+            if self.at_statement_terminator() || self.check(TokenKind::Giving) {
+                break;
+            }
+        }
+
+        if self.eat(TokenKind::Giving).is_some() {
+            loop {
+                let target = self.parse_qualified_name()?;
+                let rounded = self.eat(TokenKind::Rounded).is_some();
+                giving.push(RoundedTarget { target, rounded });
+                if self.at_statement_terminator() {
+                    break;
+                }
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Multiply(Box::new(MultiplyStatement {
+            operand,
+            by,
+            giving,
+            on_size_error: Vec::new(),
+            not_on_size_error: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- DIVIDE ---
+    fn parse_divide_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Divide)?;
+
+        let operand = self.parse_expr()?;
+        self.expect(TokenKind::Into)?;
+
+        let mut into = Vec::new();
+        let mut giving = Vec::new();
+        let mut remainder = None;
+
+        loop {
+            let target = self.parse_qualified_name()?;
+            let rounded = self.eat(TokenKind::Rounded).is_some();
+            into.push(RoundedTarget { target, rounded });
+            if self.at_statement_terminator()
+                || self.check(TokenKind::Giving)
+                || self.check(TokenKind::Remainder)
+            {
+                break;
+            }
+        }
+
+        if self.eat(TokenKind::Giving).is_some() {
+            loop {
+                let target = self.parse_qualified_name()?;
+                let rounded = self.eat(TokenKind::Rounded).is_some();
+                giving.push(RoundedTarget { target, rounded });
+                if self.at_statement_terminator() || self.check(TokenKind::Remainder) {
+                    break;
+                }
+            }
+        }
+
+        if self.eat(TokenKind::Remainder).is_some() {
+            remainder = Some(self.parse_qualified_name()?);
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Divide(Box::new(DivideStatement {
+            operand,
+            into,
+            giving,
+            remainder,
+            on_size_error: Vec::new(),
+            not_on_size_error: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- DISPLAY ---
+    fn parse_display_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Display)?;
+
+        let mut operands = Vec::new();
+        let mut upon = None;
+        let mut with_no_advancing = false;
+
+        while !self.at_statement_terminator() && !self.at_eof() {
+            if self.check_identifier("UPON") {
+                self.advance();
+                upon = Some(self.expect_identifier()?);
+                continue;
+            }
+            if self.check(TokenKind::With) {
+                self.advance();
+                if self.check_identifier("NO") {
+                    self.advance();
+                    self.eat(TokenKind::Advancing);
+                    with_no_advancing = true;
+                }
+                continue;
+            }
+            if self.check(TokenKind::EndDisplay) {
+                self.advance();
+                break;
+            }
+
+            operands.push(self.parse_expr()?);
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Display(DisplayStatement {
+            operands,
+            upon,
+            with_no_advancing,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    // --- ACCEPT ---
+    fn parse_accept_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Accept)?;
+
+        let target = self.parse_qualified_name()?;
+
+        let from = if self.check(TokenKind::From) {
+            self.advance();
+            if self.check_identifier("DATE") {
+                self.advance();
+                Some(AcceptSource::Date)
+            } else if self.check_identifier("DAY-OF-WEEK") {
+                self.advance();
+                Some(AcceptSource::DayOfWeek)
+            } else if self.check_identifier("DAY") {
+                self.advance();
+                Some(AcceptSource::Day)
+            } else if self.check_identifier("TIME") {
+                self.advance();
+                Some(AcceptSource::Time)
+            } else if self.check_identifier("CONSOLE") {
+                self.advance();
+                Some(AcceptSource::Console)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let end_span = self.span();
+        Ok(Statement::Accept(AcceptStatement {
+            target,
+            from,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    // --- IF ---
+    fn parse_if_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::If)?;
+
+        let condition = self.parse_condition()?;
+        self.eat(TokenKind::Then);
+
+        let mut then_body = Vec::new();
+        let mut else_body = Vec::new();
+
+        while !self.at_eof()
+            && !self.check(TokenKind::Else)
+            && !self.check(TokenKind::EndIf)
+            && !self.check(TokenKind::Period)
+        {
+            then_body.push(self.parse_statement()?);
+        }
+
+        if self.eat(TokenKind::Else).is_some() {
+            while !self.at_eof() && !self.check(TokenKind::EndIf) && !self.check(TokenKind::Period)
+            {
+                else_body.push(self.parse_statement()?);
+            }
+        }
+
+        self.eat(TokenKind::EndIf);
+
+        let end_span = self.span();
+        Ok(Statement::If(Box::new(IfStatement {
+            condition,
+            then_body,
+            else_body,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- EVALUATE ---
+    fn parse_evaluate_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Evaluate)?;
+
+        let mut subjects = Vec::new();
+        let subject = self.parse_evaluate_subject()?;
+        subjects.push(subject);
+
+        while self.check(TokenKind::Also) {
+            self.advance();
+            subjects.push(self.parse_evaluate_subject()?);
+        }
+
+        let mut when_clauses = Vec::new();
+        let mut when_other = Vec::new();
+
+        while self.check(TokenKind::When) {
+            self.advance();
+
+            if self.check(TokenKind::Other) {
+                self.advance();
+                while !self.at_eof()
+                    && !self.check(TokenKind::EndEvaluate)
+                    && !self.check(TokenKind::Period)
+                {
+                    when_other.push(self.parse_statement()?);
+                }
+                break;
+            }
+
+            let when_span = self.span();
+            let obj = self.parse_when_object()?;
+            let objects = vec![vec![obj]];
+
+            let mut body = Vec::new();
+            while !self.at_eof()
+                && !self.check(TokenKind::When)
+                && !self.check(TokenKind::EndEvaluate)
+                && !self.check(TokenKind::Period)
+            {
+                body.push(self.parse_statement()?);
+            }
+
+            when_clauses.push(WhenClause {
+                objects,
+                body,
+                span: when_span,
+            });
+        }
+
+        self.eat(TokenKind::EndEvaluate);
+
+        let end_span = self.span();
+        Ok(Statement::Evaluate(Box::new(EvaluateStatement {
+            subjects,
+            when_clauses,
+            when_other,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    fn parse_evaluate_subject(&mut self) -> Result<EvaluateSubject, ()> {
+        if self.check(TokenKind::TrueKw) {
+            self.advance();
+            Ok(EvaluateSubject::True)
+        } else if self.check(TokenKind::FalseKw) {
+            self.advance();
+            Ok(EvaluateSubject::False)
+        } else {
+            let expr = self.parse_expr()?;
+            Ok(EvaluateSubject::Expr(expr))
+        }
+    }
+
+    fn parse_when_object(&mut self) -> Result<WhenObject, ()> {
+        if self.check_identifier("ANY") {
+            self.advance();
+            Ok(WhenObject::Any)
+        } else if self.check(TokenKind::TrueKw) {
+            self.advance();
+            Ok(WhenObject::True)
+        } else if self.check(TokenKind::FalseKw) {
+            self.advance();
+            Ok(WhenObject::False)
+        } else if self.check(TokenKind::Not) {
+            self.advance();
+            let inner = self.parse_when_object()?;
+            Ok(WhenObject::Not(Box::new(inner)))
+        } else {
+            let expr = self.parse_expr()?;
+            if self.check(TokenKind::Thru) {
+                self.advance();
+                let to = self.parse_expr()?;
+                Ok(WhenObject::Range { from: expr, to })
+            } else {
+                Ok(WhenObject::Expr(expr))
+            }
+        }
+    }
+
+    // --- PERFORM ---
+    fn parse_perform_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Perform)?;
+
+        // PERFORM VARYING
+        if self.check(TokenKind::Varying) {
+            return self.parse_perform_varying(start_span);
+        }
+
+        // PERFORM UNTIL
+        if self.check(TokenKind::Until) {
+            return self.parse_perform_until(start_span);
+        }
+
+        // PERFORM n TIMES
+        if self.check(TokenKind::IntegerLiteral)
+            || (self.check(TokenKind::Identifier) && self.peek(1).kind == TokenKind::Times)
+        {
+            let times = self.parse_expr()?;
+            self.expect(TokenKind::Times)?;
+
+            let mut body = Vec::new();
+            while !self.at_eof()
+                && !self.check(TokenKind::EndPerform)
+                && !self.check(TokenKind::Period)
+            {
+                body.push(self.parse_statement()?);
+            }
+            self.eat(TokenKind::EndPerform);
+
+            let end_span = self.span();
+            return Ok(Statement::Perform(Box::new(PerformStatement {
+                kind: PerformKind::Times { times, body },
+                span: start_span.merge(&end_span),
+            })));
+        }
+
+        // Out-of-line PERFORM (procedure name) vs inline
+        if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            && !self.at_statement_start()
+            && (self.peek(1).kind == TokenKind::Thru
+                || self.peek(1).kind == TokenKind::Period
+                || self.peek(1).kind == TokenKind::Varying
+                || self.peek(1).kind == TokenKind::Until
+                || self.peek(1).kind == TokenKind::Times
+                || self.is_end_keyword(self.peek(1).kind))
+        {
+            let procedure = self.advance().text;
+            let through = if self.eat(TokenKind::Thru).is_some() {
+                Some(self.expect_identifier()?)
+            } else {
+                None
+            };
+
+            let end_span = self.span();
+            return Ok(Statement::Perform(Box::new(PerformStatement {
+                kind: PerformKind::ProcedureName { procedure, through },
+                span: start_span.merge(&end_span),
+            })));
+        }
+
+        // Inline PERFORM (simple)
+        let mut body = Vec::new();
+        while !self.at_eof() && !self.check(TokenKind::EndPerform) && !self.check(TokenKind::Period)
+        {
+            body.push(self.parse_statement()?);
+        }
+        self.eat(TokenKind::EndPerform);
+
+        let end_span = self.span();
+        Ok(Statement::Perform(Box::new(PerformStatement {
+            kind: PerformKind::Simple { body },
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    fn parse_perform_varying(&mut self, start_span: Span) -> Result<Statement, ()> {
+        self.expect(TokenKind::Varying)?;
+
+        let mut varying = Vec::new();
+        let ident = self.parse_qualified_name()?;
+        self.expect(TokenKind::From)?;
+        let from = self.parse_expr()?;
+        self.expect(TokenKind::By)?;
+        let by = self.parse_expr()?;
+        self.expect(TokenKind::Until)?;
+        let until = self.parse_condition()?;
+
+        varying.push(VaryingClause {
+            identifier: ident,
+            from,
+            by,
+            until,
+        });
+
+        while self.check(TokenKind::After) {
+            self.advance();
+            let ident = self.parse_qualified_name()?;
+            self.expect(TokenKind::From)?;
+            let from = self.parse_expr()?;
+            self.expect(TokenKind::By)?;
+            let by = self.parse_expr()?;
+            self.expect(TokenKind::Until)?;
+            let until = self.parse_condition()?;
+            varying.push(VaryingClause {
+                identifier: ident,
+                from,
+                by,
+                until,
+            });
+        }
+
+        let mut body = Vec::new();
+        while !self.at_eof() && !self.check(TokenKind::EndPerform) && !self.check(TokenKind::Period)
+        {
+            body.push(self.parse_statement()?);
+        }
+        self.eat(TokenKind::EndPerform);
+
+        let end_span = self.span();
+        Ok(Statement::Perform(Box::new(PerformStatement {
+            kind: PerformKind::Varying {
+                test: PerformTest::Before,
+                varying,
+                body,
+            },
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    fn parse_perform_until(&mut self, start_span: Span) -> Result<Statement, ()> {
+        self.expect(TokenKind::Until)?;
+
+        let condition = self.parse_condition()?;
+
+        let mut body = Vec::new();
+        while !self.at_eof() && !self.check(TokenKind::EndPerform) && !self.check(TokenKind::Period)
+        {
+            body.push(self.parse_statement()?);
+        }
+        self.eat(TokenKind::EndPerform);
+
+        let end_span = self.span();
+        Ok(Statement::Perform(Box::new(PerformStatement {
+            kind: PerformKind::Until {
+                test: PerformTest::Before,
+                condition,
+                body,
+            },
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- GO TO ---
+    fn parse_goto_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+
+        if self.check(TokenKind::Go) {
+            self.advance();
+            self.eat(TokenKind::To);
+        } else {
+            self.advance(); // GoTo
+        }
+
+        let mut targets = Vec::new();
+        let mut depending_on = None;
+
+        while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            && !self.check(TokenKind::Depending)
+            && !self.at_statement_terminator()
+        {
+            targets.push(self.advance().text);
+        }
+
+        if self.check(TokenKind::Depending) {
+            self.advance();
+            self.eat(TokenKind::OnKw);
+            depending_on = Some(self.parse_qualified_name()?);
+        }
+
+        let end_span = self.span();
+        Ok(Statement::GoTo(GoToStatement {
+            targets,
+            depending_on,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    // --- CALL ---
+    fn parse_call_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Call)?;
+
+        let program = self.parse_expr()?;
+
+        let mut using = Vec::new();
+        let mut returning = None;
+
+        if self.check(TokenKind::Using) {
+            self.advance();
+            let mut current_mode = ParamMode::ByReference;
+
+            while !self.at_statement_terminator()
+                && !self.check(TokenKind::Returning)
+                && !self.check(TokenKind::EndCall)
+                && !self.at_eof()
+            {
+                if self.check(TokenKind::By) {
+                    self.advance();
+                    if self.check(TokenKind::Reference) {
+                        self.advance();
+                        current_mode = ParamMode::ByReference;
+                    } else if self.check(TokenKind::Content) {
+                        self.advance();
+                        current_mode = ParamMode::ByContent;
+                    } else if self.check(TokenKind::Value) {
+                        self.advance();
+                        current_mode = ParamMode::ByValue;
+                    }
+                    continue;
+                }
+
+                let value = self.parse_expr()?;
+                using.push(CallParam {
+                    mode: current_mode,
+                    value,
+                });
+            }
+        }
+
+        if self.check(TokenKind::Returning) {
+            self.advance();
+            returning = Some(self.parse_qualified_name()?);
+        }
+
+        self.eat(TokenKind::EndCall);
+
+        let end_span = self.span();
+        Ok(Statement::Call(Box::new(CallStatement {
+            program,
+            using,
+            returning,
+            on_overflow: Vec::new(),
+            on_exception: Vec::new(),
+            not_on_exception: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- STOP ---
+    fn parse_stop_statement(&mut self) -> Result<Statement, ()> {
+        self.expect(TokenKind::Stop)?;
+        self.expect(TokenKind::Run)?;
+        Ok(Statement::StopRun)
+    }
+
+    // --- EXIT ---
+    fn parse_exit_statement(&mut self) -> Result<Statement, ()> {
+        self.expect(TokenKind::Exit)?;
+
+        if self.check(TokenKind::Program) {
+            self.advance();
+            Ok(Statement::ExitProgram)
+        } else if self.check_identifier("PARAGRAPH") {
+            self.advance();
+            Ok(Statement::ExitParagraph)
+        } else if self.check(TokenKind::Section) {
+            self.advance();
+            Ok(Statement::ExitSection)
+        } else {
+            Ok(Statement::Continue)
+        }
+    }
+
+    // --- OPEN ---
+    fn parse_open_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Open)?;
+
+        let mut entries = Vec::new();
+
+        while !self.at_statement_terminator() && !self.at_eof() {
+            let mode = if self.check(TokenKind::Input) {
+                self.advance();
+                OpenMode::Input
+            } else if self.check(TokenKind::Output) {
+                self.advance();
+                OpenMode::Output
+            } else if self.check(TokenKind::IoMode) {
+                self.advance();
+                OpenMode::IoMode
+            } else if self.check(TokenKind::Extend) {
+                self.advance();
+                OpenMode::Extend
+            } else {
+                break;
+            };
+
+            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_terminator()
+            {
+                let file_name = self.advance().text;
+                entries.push(OpenEntry { mode, file_name });
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Open(OpenStatement {
+            entries,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    // --- CLOSE ---
+    fn parse_close_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Close)?;
+
+        let mut files = Vec::new();
+        while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            && !self.at_statement_terminator()
+            && !self.at_eof()
+        {
+            let file_name = self.advance().text;
+            files.push(CloseEntry {
+                file_name,
+                close_option: None,
+            });
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Close(CloseStatement {
+            files,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    // --- READ ---
+    fn parse_read_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Read)?;
+
+        let file_name = self.expect_identifier()?;
+
+        let into = if self.check(TokenKind::Into) {
+            self.advance();
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        self.eat(TokenKind::EndRead);
+
+        let end_span = self.span();
+        Ok(Statement::Read(Box::new(ReadStatement {
+            file_name,
+            into,
+            key: None,
+            at_end: Vec::new(),
+            not_at_end: Vec::new(),
+            invalid_key: Vec::new(),
+            not_invalid_key: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- WRITE ---
+    fn parse_write_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Write)?;
+
+        let record_name = self.parse_qualified_name()?;
+
+        let from = if self.check(TokenKind::From) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        self.eat(TokenKind::EndWrite);
+
+        let end_span = self.span();
+        Ok(Statement::Write(Box::new(WriteStatement {
+            record_name,
+            from,
+            advancing: None,
+            invalid_key: Vec::new(),
+            not_invalid_key: Vec::new(),
+            at_eop: Vec::new(),
+            not_at_eop: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- INITIALIZE ---
+    fn parse_initialize_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Initialize)?;
+
+        let mut targets = Vec::new();
+        while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            && !self.at_statement_terminator()
+            && !self.check(TokenKind::Replacing)
+            && !self.at_eof()
+        {
+            targets.push(self.parse_qualified_name()?);
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Initialize(Box::new(InitializeStatement {
+            targets,
+            replacing: Vec::new(),
+            with_filler: false,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- SET ---
+    fn parse_set_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Set)?;
+
+        let mut targets = Vec::new();
+        while !self.check(TokenKind::To)
+            && !self.check(TokenKind::Up)
+            && !self.check(TokenKind::Down)
+            && !self.at_statement_terminator()
+            && !self.at_eof()
+        {
+            targets.push(self.parse_qualified_name()?);
+        }
+
+        let kind = if self.check(TokenKind::To) {
+            self.advance();
+            let value = self.parse_expr()?;
+            SetKind::To { targets, value }
+        } else if self.check(TokenKind::Up) {
+            self.advance();
+            self.expect(TokenKind::By)?;
+            let value = self.parse_expr()?;
+            SetKind::UpDown {
+                targets,
+                direction: SetDirection::Up,
+                value,
+            }
+        } else if self.check(TokenKind::Down) {
+            self.advance();
+            self.expect(TokenKind::By)?;
+            let value = self.parse_expr()?;
+            SetKind::UpDown {
+                targets,
+                direction: SetDirection::Down,
+                value,
+            }
+        } else {
+            self.error("expected TO, UP, or DOWN after SET targets");
+            return Err(());
+        };
+
+        let end_span = self.span();
+        Ok(Statement::Set(Box::new(SetStatement {
+            kind,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- STRING ---
+    fn parse_string_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::String)?;
+
+        let mut sources = Vec::new();
+        let mut items = Vec::new();
+        let mut delimited_by = StringDelimiter::Size;
+
+        while !self.check(TokenKind::Into)
+            && !self.check(TokenKind::EndString)
+            && !self.at_statement_terminator()
+            && !self.at_eof()
+        {
+            if self.check(TokenKind::Delimited) {
+                self.advance();
+                self.eat(TokenKind::By);
+                if self.check_identifier("SIZE") {
+                    self.advance();
+                    delimited_by = StringDelimiter::Size;
+                } else {
+                    let val = self.parse_expr()?;
+                    delimited_by = StringDelimiter::Value(val);
+                }
+                sources.push(StringSource {
+                    items: std::mem::take(&mut items),
+                    delimited_by: delimited_by.clone(),
+                });
+            } else {
+                items.push(self.parse_expr()?);
+            }
+        }
+
+        if !items.is_empty() {
+            sources.push(StringSource {
+                items,
+                delimited_by,
+            });
+        }
+
+        self.expect(TokenKind::Into)?;
+        let into = self.parse_qualified_name()?;
+
+        let pointer = if self.check(TokenKind::Pointer) || self.check_identifier("POINTER") {
+            self.advance();
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        self.eat(TokenKind::EndString);
+
+        let end_span = self.span();
+        Ok(Statement::String(Box::new(StringStatement {
+            sources,
+            into,
+            pointer,
+            on_overflow: Vec::new(),
+            not_on_overflow: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- UNSTRING ---
+    fn parse_unstring_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Unstring)?;
+
+        let source = self.parse_qualified_name()?;
+
+        while !self.check(TokenKind::Into) && !self.at_statement_terminator() && !self.at_eof() {
+            self.advance();
+        }
+
+        let mut into_targets = Vec::new();
+        if self.eat(TokenKind::Into).is_some() {
+            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                && !self.at_statement_terminator()
+                && !self.check(TokenKind::EndUnstring)
+                && !self.at_eof()
+            {
+                let target = self.parse_qualified_name()?;
+                into_targets.push(UnstringTarget {
+                    target,
+                    delimiter_in: None,
+                    count_in: None,
+                });
+            }
+        }
+
+        self.eat(TokenKind::EndUnstring);
+
+        let end_span = self.span();
+        Ok(Statement::Unstring(Box::new(UnstringStatement {
+            source,
+            delimiters: Vec::new(),
+            into: into_targets,
+            pointer: None,
+            tallying: None,
+            on_overflow: Vec::new(),
+            not_on_overflow: Vec::new(),
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- INSPECT ---
+    fn parse_inspect_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Inspect)?;
+
+        let target = self.parse_qualified_name()?;
+
+        let kind = if self.check(TokenKind::Tallying) {
+            self.advance();
+            InspectKind::Tallying {
+                tallying: Vec::new(),
+            }
+        } else if self.check(TokenKind::Replacing) {
+            self.advance();
+            InspectKind::Replacing {
+                replacing: Vec::new(),
+            }
+        } else if self.check(TokenKind::Converting) {
+            self.advance();
+            let from = self.parse_expr()?;
+            self.expect(TokenKind::To)?;
+            let to = self.parse_expr()?;
+            InspectKind::Converting {
+                from,
+                to,
+                before_after: Vec::new(),
+            }
+        } else {
+            InspectKind::Tallying {
+                tallying: Vec::new(),
+            }
+        };
+
+        while !self.at_statement_terminator() && !self.at_eof() {
+            if self.at_statement_start() {
+                break;
+            }
+            self.advance();
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Inspect(Box::new(InspectStatement {
+            target,
+            kind,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    fn at_statement_terminator(&self) -> bool {
+        self.check(TokenKind::Period) || self.at_eof() || self.is_end_keyword(self.current().kind)
+    }
+
+    fn is_end_keyword(&self, kind: TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::EndIf
+                | TokenKind::EndEvaluate
+                | TokenKind::EndPerform
+                | TokenKind::EndCall
+                | TokenKind::EndRead
+                | TokenKind::EndWrite
+                | TokenKind::EndRewrite
+                | TokenKind::EndDelete
+                | TokenKind::EndStart
+                | TokenKind::EndReturn
+                | TokenKind::EndString
+                | TokenKind::EndUnstring
+                | TokenKind::EndAccept
+                | TokenKind::EndDisplay
+                | TokenKind::Else
+        )
+    }
+}

@@ -290,6 +290,7 @@ dependencies = [
  "cobol-common",
  "cobol-diagnostics",
  "cobol-lexer",
+ "smol_str",
 ]
 
 [[package]]
