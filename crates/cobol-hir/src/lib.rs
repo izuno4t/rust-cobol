@@ -10,3 +10,6 @@ pub mod lower;
 
 pub use hir::*;
 pub use lower::lower_to_hir;
+
+// COBOL 2002+ types are re-exported via `hir::*`:
+//   HirClass, HirMethod, HirFunction, HirParam, HirParamMode

@@ -18,6 +18,7 @@ use cobol_ast::{
     CobolProgram, DataDivision, DataItem, Expr, Literal, Statement, Usage,
 };
 use cobol_common::Span;
+use smol_str::SmolStr;
 
 use crate::hir::{
     HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirLiteral, HirOpenEntry,
@@ -45,6 +46,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         data_items,
         paragraphs,
         body,
+        classes: Vec::new(),
+        functions: Vec::new(),
         span: program.span,
     }
 }
@@ -167,6 +170,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 }
                 HirType::Index => 4,
                 HirType::Pointer => 8,
+                HirType::Boolean => 1,
             })
             .sum();
         HirType::Group {
@@ -297,6 +301,12 @@ fn lower_statement(stmt: &Statement) -> Option<HirStatement> {
         Statement::ExitParagraph | Statement::ExitSection => Some(HirStatement::Continue {
             span: Span::dummy(),
         }),
+        // --- COBOL 2002+ statements ---
+        Statement::Raise(raise) => Some(lower_raise(raise)),
+        Statement::Resume(resume) => Some(lower_resume(resume)),
+        Statement::Invoke(invoke) => Some(lower_invoke(invoke)),
+        Statement::Allocate(alloc) => Some(lower_allocate(alloc)),
+        Statement::Free(free) => Some(lower_free(free)),
         // Statements not yet lowered are silently skipped
         _ => None,
     }
@@ -764,6 +774,69 @@ fn lower_sort(sort: &cobol_ast::statement::SortStatement) -> HirStatement {
 }
 
 // ---------------------------------------------------------------------------
+// COBOL 2002+ statement lowering
+// ---------------------------------------------------------------------------
+
+fn lower_raise(raise: &cobol_ast::statement::RaiseStatement) -> HirStatement {
+    use cobol_ast::statement::RaiseTarget;
+    let exception = match &raise.exception {
+        RaiseTarget::Exception(name) => name.clone(),
+        RaiseTarget::Identifier(qname) => qname.name.clone(),
+    };
+    HirStatement::Raise {
+        exception,
+        span: raise.span,
+    }
+}
+
+fn lower_resume(resume: &cobol_ast::statement::ResumeStatement) -> HirStatement {
+    HirStatement::Resume {
+        target: resume.target.clone(),
+        span: resume.span,
+    }
+}
+
+fn lower_invoke(invoke: &cobol_ast::statement::InvokeStatement) -> HirStatement {
+    let object = lower_expr(&invoke.object);
+    let method = match &invoke.method {
+        Expr::Literal(Literal::String(s)) => s.clone(),
+        Expr::Identifier(qname) => qname.name.clone(),
+        _ => SmolStr::new("UNKNOWN"),
+    };
+    let params = invoke.using.iter().map(|p| lower_expr(&p.value)).collect();
+    let returning = invoke.returning.as_ref().map(|q| q.name.clone());
+    HirStatement::Invoke {
+        object,
+        method,
+        params,
+        returning,
+        span: invoke.span,
+    }
+}
+
+fn lower_allocate(alloc: &cobol_ast::statement::AllocateStatement) -> HirStatement {
+    use cobol_ast::statement::AllocateTarget;
+    let target = match &alloc.target {
+        AllocateTarget::DataName(qname) => qname.name.clone(),
+        AllocateTarget::Characters(_) => SmolStr::new("_ALLOC_CHARS"),
+    };
+    let returning = alloc.returning.as_ref().map(|q| q.name.clone());
+    HirStatement::Allocate {
+        target,
+        returning,
+        span: alloc.span,
+    }
+}
+
+fn lower_free(free: &cobol_ast::statement::FreeStatement) -> HirStatement {
+    let targets = free.targets.iter().map(|q| q.name.clone()).collect();
+    HirStatement::Free {
+        targets,
+        span: free.span,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Expression and condition lowering
 // ---------------------------------------------------------------------------
 
@@ -992,5 +1065,155 @@ PROCEDURE DIVISION.
         assert!(output.contains("HELLO"));
         assert!(output.contains("DISPLAY"));
         assert!(output.contains("STOP RUN"));
+    }
+
+    // -----------------------------------------------------------------------
+    // COBOL 2002+ tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lower_raise_exception() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-RAISE.
+PROCEDURE DIVISION.
+    RAISE EXCEPTION \"EC-SIZE-OVERFLOW\".
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(
+            hir.body
+                .iter()
+                .any(|s| matches!(s, HirStatement::Raise { .. })),
+            "Expected RAISE statement in HIR body"
+        );
+    }
+
+    #[test]
+    fn test_lower_resume() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-RESUME.
+PROCEDURE DIVISION.
+    RESUME.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(
+            hir.body
+                .iter()
+                .any(|s| matches!(s, HirStatement::Resume { .. })),
+            "Expected RESUME statement in HIR body"
+        );
+    }
+
+    #[test]
+    fn test_lower_invoke() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-INVOKE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  MY-OBJ USAGE POINTER.
+01  MY-RESULT PIC 9(5).
+PROCEDURE DIVISION.
+    INVOKE MY-OBJ \"DO-SOMETHING\" RETURNING MY-RESULT.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(
+            hir.body
+                .iter()
+                .any(|s| matches!(s, HirStatement::Invoke { .. })),
+            "Expected INVOKE statement in HIR body"
+        );
+    }
+
+    #[test]
+    fn test_lower_allocate_and_free() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-ALLOC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  MY-PTR USAGE POINTER.
+PROCEDURE DIVISION.
+    ALLOCATE MY-PTR.
+    FREE MY-PTR.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(
+            hir.body
+                .iter()
+                .any(|s| matches!(s, HirStatement::Allocate { .. })),
+            "Expected ALLOCATE statement in HIR body"
+        );
+        assert!(
+            hir.body
+                .iter()
+                .any(|s| matches!(s, HirStatement::Free { .. })),
+            "Expected FREE statement in HIR body"
+        );
+    }
+
+    #[test]
+    fn test_lower_local_storage() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-LOCAL.
+DATA DIVISION.
+LOCAL-STORAGE SECTION.
+01  LS-COUNTER PIC 9(5) VALUE 0.
+WORKING-STORAGE SECTION.
+01  WS-COUNTER PIC 9(5) VALUE 0.
+PROCEDURE DIVISION.
+    ADD 1 TO LS-COUNTER.
+    ADD 1 TO WS-COUNTER.
+    DISPLAY LS-COUNTER.
+    DISPLAY WS-COUNTER.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(hir.data_items.len() >= 2, "Expected at least 2 data items");
+        // Both LOCAL-STORAGE and WORKING-STORAGE items should be present
+        assert!(hir
+            .data_items
+            .iter()
+            .any(|d| d.name.as_str() == "LS-COUNTER"));
+        assert!(hir
+            .data_items
+            .iter()
+            .any(|d| d.name.as_str() == "WS-COUNTER"));
+    }
+
+    #[test]
+    fn test_lower_boolean_literal() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-BOOL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-FLAG PIC 9(1) VALUE 0.
+PROCEDURE DIVISION.
+    MOVE 1 TO WS-FLAG.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(hir.data_items.iter().any(|d| d.name.as_str() == "WS-FLAG"));
+    }
+
+    #[test]
+    fn test_hir_program_has_classes_and_functions() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-OOP.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        // Classes and functions should be empty for a normal program
+        assert!(hir.classes.is_empty());
+        assert!(hir.functions.is_empty());
     }
 }

@@ -14,7 +14,65 @@ pub struct HirProgram {
     pub data_items: Vec<HirDataItem>,
     pub paragraphs: Vec<HirParagraph>,
     pub body: Vec<HirStatement>,
+    /// COBOL 2002+: Class definitions.
+    pub classes: Vec<HirClass>,
+    /// COBOL 2002+: User-defined function definitions.
+    pub functions: Vec<HirFunction>,
     pub span: Span,
+}
+
+// ---------------------------------------------------------------------------
+// COBOL 2002+: OOP constructs
+// ---------------------------------------------------------------------------
+
+/// A class definition lowered from CLASS-ID.
+#[derive(Debug, Clone)]
+pub struct HirClass {
+    pub name: SmolStr,
+    pub parent: Option<SmolStr>,
+    pub factory_methods: Vec<HirMethod>,
+    pub instance_methods: Vec<HirMethod>,
+    pub factory_data: Vec<HirDataItem>,
+    pub instance_data: Vec<HirDataItem>,
+    pub span: Span,
+}
+
+/// A method definition within a class.
+#[derive(Debug, Clone)]
+pub struct HirMethod {
+    pub name: SmolStr,
+    pub params: Vec<HirParam>,
+    pub returning: Option<SmolStr>,
+    pub data_items: Vec<HirDataItem>,
+    pub body: Vec<HirStatement>,
+    pub span: Span,
+}
+
+/// A user-defined function definition (FUNCTION-ID).
+#[derive(Debug, Clone)]
+pub struct HirFunction {
+    pub name: SmolStr,
+    pub params: Vec<HirParam>,
+    pub returning: HirType,
+    pub data_items: Vec<HirDataItem>,
+    pub body: Vec<HirStatement>,
+    pub span: Span,
+}
+
+/// A parameter declaration for methods and functions.
+#[derive(Debug, Clone)]
+pub struct HirParam {
+    pub name: SmolStr,
+    pub mode: HirParamMode,
+    pub data_type: HirType,
+}
+
+/// Parameter passing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirParamMode {
+    ByReference,
+    ByContent,
+    ByValue,
 }
 
 /// A named paragraph from the PROCEDURE DIVISION, preserved for
@@ -62,6 +120,8 @@ pub enum HirType {
     },
     Index,
     Pointer,
+    /// COBOL 2002+: Boolean type (PIC 1 / USAGE BIT).
+    Boolean,
 }
 
 /// A literal value in the HIR.
@@ -211,6 +271,36 @@ pub enum HirStatement {
         file_name: SmolStr,
         span: Span,
     },
+    // --- COBOL 2002+ statements ---
+    /// INVOKE statement: method invocation on an object.
+    Invoke {
+        object: HirExpr,
+        method: SmolStr,
+        params: Vec<HirExpr>,
+        returning: Option<SmolStr>,
+        span: Span,
+    },
+    /// RAISE statement: raises an exception.
+    Raise {
+        exception: SmolStr,
+        span: Span,
+    },
+    /// RESUME statement: resumes execution after exception handling.
+    Resume {
+        target: Option<SmolStr>,
+        span: Span,
+    },
+    /// ALLOCATE statement: dynamic memory allocation.
+    Allocate {
+        target: SmolStr,
+        returning: Option<SmolStr>,
+        span: Span,
+    },
+    /// FREE statement: releases dynamically allocated memory.
+    Free {
+        targets: Vec<SmolStr>,
+        span: Span,
+    },
 }
 
 /// An expression in the HIR.
@@ -338,6 +428,21 @@ impl std::fmt::Display for HirProgram {
                 for stmt in &para.body {
                     write_stmt(f, stmt, 6)?;
                 }
+            }
+        }
+        if !self.classes.is_empty() {
+            writeln!(f, "  Classes:")?;
+            for class in &self.classes {
+                writeln!(f, "    CLASS {}", class.name)?;
+                if let Some(ref parent) = class.parent {
+                    writeln!(f, "      INHERITS {parent}")?;
+                }
+            }
+        }
+        if !self.functions.is_empty() {
+            writeln!(f, "  Functions:")?;
+            for func in &self.functions {
+                writeln!(f, "    FUNCTION {}", func.name)?;
             }
         }
         Ok(())
@@ -483,6 +588,29 @@ fn write_stmt(
         HirStatement::UnstringStmt { source, .. } => writeln!(f, "{pad}UNSTRING {source}"),
         HirStatement::Accept { target, .. } => writeln!(f, "{pad}ACCEPT {target}"),
         HirStatement::Sort { file_name, .. } => writeln!(f, "{pad}SORT {file_name}"),
+        HirStatement::Invoke { object, method, .. } => {
+            writeln!(f, "{pad}INVOKE {} \"{}\"", format_expr(object), method)
+        }
+        HirStatement::Raise { exception, .. } => writeln!(f, "{pad}RAISE {exception}"),
+        HirStatement::Resume { target, .. } => {
+            if let Some(t) = target {
+                writeln!(f, "{pad}RESUME {t}")
+            } else {
+                writeln!(f, "{pad}RESUME")
+            }
+        }
+        HirStatement::Allocate { target, .. } => writeln!(f, "{pad}ALLOCATE {target}"),
+        HirStatement::Free { targets, .. } => {
+            writeln!(
+                f,
+                "{pad}FREE {}",
+                targets
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
     }
 }
 

@@ -306,6 +306,12 @@ impl Parser {
             TokenKind::String => self.parse_string_statement(),
             TokenKind::Unstring => self.parse_unstring_statement(),
             TokenKind::Inspect => self.parse_inspect_statement(),
+            // --- COBOL 2002+ statements ---
+            TokenKind::Raise => self.parse_raise_statement(),
+            TokenKind::Resume => self.parse_resume_statement(),
+            TokenKind::Invoke => self.parse_invoke_statement(),
+            TokenKind::Allocate => self.parse_allocate_statement(),
+            TokenKind::Free => self.parse_free_statement(),
             _ => {
                 let msg = format!("unexpected token: {:?}", self.current().kind);
                 self.error(&msg);
@@ -1397,6 +1403,178 @@ impl Parser {
             kind,
             span: start_span.merge(&end_span),
         })))
+    }
+
+    // =========================================================================
+    // COBOL 2002+ statements
+    // =========================================================================
+
+    fn parse_raise_statement(&mut self) -> Result<Statement, ()> {
+        use cobol_ast::statement::{RaiseStatement, RaiseTarget};
+        let start_span = self.span();
+        self.expect(TokenKind::Raise)?;
+
+        // RAISE EXCEPTION "name" or RAISE identifier
+        let exception = if self.check(TokenKind::Identifier) && self.current().text == "EXCEPTION" {
+            self.advance(); // consume EXCEPTION
+                            // RAISE EXCEPTION exception-name
+            if self.check(TokenKind::StringLiteral) {
+                let name = self.current().text.clone();
+                self.advance();
+                RaiseTarget::Exception(name)
+            } else {
+                let qn = self.parse_qualified_name()?;
+                RaiseTarget::Exception(qn.name)
+            }
+        } else {
+            // RAISE identifier
+            let qn = self.parse_qualified_name()?;
+            RaiseTarget::Identifier(qn)
+        };
+
+        let end_span = self.span();
+        Ok(Statement::Raise(RaiseStatement {
+            exception,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_resume_statement(&mut self) -> Result<Statement, ()> {
+        use cobol_ast::statement::ResumeStatement;
+        let start_span = self.span();
+        self.expect(TokenKind::Resume)?;
+
+        // RESUME [AT label]
+        let target = if !self.at_statement_terminator() {
+            self.eat(TokenKind::At); // optional AT keyword
+            if self.check(TokenKind::Identifier) {
+                let name = self.current().text.clone();
+                self.advance();
+                Some(name)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let end_span = self.span();
+        Ok(Statement::Resume(ResumeStatement {
+            target,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_invoke_statement(&mut self) -> Result<Statement, ()> {
+        use cobol_ast::statement::{CallParam, InvokeStatement};
+        let start_span = self.span();
+        self.expect(TokenKind::Invoke)?;
+
+        // INVOKE object "method" [USING params] [RETURNING result]
+        let object = self.parse_expr()?;
+
+        let method = self.parse_expr()?;
+
+        let mut using = Vec::new();
+        if self.eat(TokenKind::Using).is_some() {
+            let mut current_mode = ParamMode::ByReference;
+            while !self.at_statement_terminator()
+                && !self.check(TokenKind::Returning)
+                && !self.at_eof()
+            {
+                if self.check(TokenKind::By) {
+                    self.advance();
+                    if self.check(TokenKind::Reference) {
+                        self.advance();
+                        current_mode = ParamMode::ByReference;
+                    } else if self.check(TokenKind::Content) {
+                        self.advance();
+                        current_mode = ParamMode::ByContent;
+                    } else if self.check(TokenKind::Value) {
+                        self.advance();
+                        current_mode = ParamMode::ByValue;
+                    }
+                    continue;
+                }
+                let value = self.parse_expr()?;
+                using.push(CallParam {
+                    mode: current_mode,
+                    value,
+                });
+            }
+        }
+
+        let returning = if self.eat(TokenKind::Returning).is_some() {
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        let end_span = self.span();
+        Ok(Statement::Invoke(Box::new(InvokeStatement {
+            object,
+            method,
+            using,
+            returning,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    fn parse_allocate_statement(&mut self) -> Result<Statement, ()> {
+        use cobol_ast::statement::{AllocateStatement, AllocateTarget};
+        let start_span = self.span();
+        self.expect(TokenKind::Allocate)?;
+
+        // ALLOCATE data-name [RETURNING pointer] [INITIALIZED]
+        // or ALLOCATE n CHARACTERS [RETURNING pointer] [INITIALIZED]
+        let target = if self.check(TokenKind::IntegerLiteral) {
+            let expr = self.parse_expr()?;
+            self.eat(TokenKind::Characters);
+            AllocateTarget::Characters(expr)
+        } else {
+            let qn = self.parse_qualified_name()?;
+            AllocateTarget::DataName(qn)
+        };
+
+        let returning = if self.eat(TokenKind::Returning).is_some() {
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        let initialized =
+            if self.check(TokenKind::Identifier) && self.current().text == "INITIALIZED" {
+                self.advance();
+                true
+            } else {
+                false
+            };
+
+        let end_span = self.span();
+        Ok(Statement::Allocate(Box::new(AllocateStatement {
+            target,
+            returning,
+            initialized,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    fn parse_free_statement(&mut self) -> Result<Statement, ()> {
+        use cobol_ast::statement::FreeStatement;
+        let start_span = self.span();
+        self.expect(TokenKind::Free)?;
+
+        let mut targets = Vec::new();
+        while !self.at_statement_terminator() {
+            let qn = self.parse_qualified_name()?;
+            targets.push(qn);
+        }
+
+        let end_span = self.span();
+        Ok(Statement::Free(FreeStatement {
+            targets,
+            span: start_span.merge(&end_span),
+        }))
     }
 
     // =========================================================================

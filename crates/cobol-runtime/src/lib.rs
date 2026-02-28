@@ -10,6 +10,7 @@
 
 pub mod decimal;
 pub mod display;
+pub mod exception;
 pub mod file_io;
 pub mod intrinsic;
 pub mod program;

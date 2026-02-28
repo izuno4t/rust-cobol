@@ -22,6 +22,12 @@ pub fn generate_c(program: &HirProgram) -> String {
     // Global data items
     emit_data_items(&mut out, &program.data_items);
 
+    // COBOL 2002+: Emit class definitions (struct + vtable)
+    emit_classes(&mut out, &program.classes);
+
+    // COBOL 2002+: Emit user-defined function definitions
+    emit_functions(&mut out, &program.functions);
+
     // Main function
     out.push_str("int main(int argc, char** argv) {\n");
 
@@ -46,6 +52,7 @@ fn emit_header(out: &mut String) {
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
     out.push_str("#include <stdint.h>\n");
+    out.push_str("#include <setjmp.h>\n");
     out.push('\n');
 }
 
@@ -58,6 +65,14 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str("extern void cobol_display_flush(void);\n");
     out.push_str("extern void cobol_stop_run(void) __attribute__((noreturn));\n");
     out.push_str("extern void cobol_goback(void) __attribute__((noreturn));\n");
+    out.push_str("/* COBOL 2002+ runtime declarations */\n");
+    out.push_str(
+        "extern void cobol_raise(const char* exception_name) __attribute__((noreturn));\n",
+    );
+    out.push_str("extern void cobol_resume(const char* target);\n");
+    out.push_str(
+        "extern int64_t cobol_invoke(void* obj, const char* method, int64_t* args, int32_t argc);\n",
+    );
     out.push('\n');
 }
 
@@ -101,6 +116,9 @@ fn emit_single_data_item(out: &mut String, item: &HirDataItem) {
         HirType::Pointer => {
             out.push_str(&format!("static void* {};\n", c_name));
         }
+        HirType::Boolean => {
+            out.push_str(&format!("static int8_t {};\n", c_name));
+        }
     }
 }
 
@@ -141,7 +159,8 @@ fn emit_single_data_init(out: &mut String, item: &HirDataItem) {
                 HirType::Numeric { .. }
                 | HirType::Index
                 | HirType::Comp3 { .. }
-                | HirType::Binary { .. },
+                | HirType::Binary { .. }
+                | HirType::Boolean,
                 HirLiteral::Integer(n),
             ) => {
                 out.push_str(&format!("    {c_name} = {n};\n"));
@@ -150,7 +169,8 @@ fn emit_single_data_init(out: &mut String, item: &HirDataItem) {
                 HirType::Numeric { .. }
                 | HirType::Index
                 | HirType::Comp3 { .. }
-                | HirType::Binary { .. },
+                | HirType::Binary { .. }
+                | HirType::Boolean,
                 HirLiteral::Zero,
             ) => {
                 out.push_str(&format!("    {c_name} = 0;\n"));
@@ -174,7 +194,8 @@ fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &str) {
         HirType::Numeric { .. }
         | HirType::Index
         | HirType::Comp3 { .. }
-        | HirType::Binary { .. } => {
+        | HirType::Binary { .. }
+        | HirType::Boolean => {
             out.push_str(&format!("    {c_name} = 0;\n"));
         }
         HirType::Pointer => {
@@ -398,6 +419,62 @@ fn emit_statement(out: &mut String, stmt: &HirStatement, indent: usize) {
         HirStatement::Continue { .. } => {
             out.push_str(&format!("{pad}/* CONTINUE */\n"));
         }
+        // --- COBOL 2002+ statements ---
+        HirStatement::Invoke {
+            object,
+            method,
+            params,
+            returning,
+            ..
+        } => {
+            let c_obj = emit_expr(object);
+            let args: Vec<_> = params.iter().map(emit_expr).collect();
+            let args_str = args.join(", ");
+            if let Some(ret) = returning {
+                let c_ret = sanitize_name(ret);
+                out.push_str(&format!(
+                    "{pad}{c_ret} = cobol_invoke(&{c_obj}, \"{method}\", (int64_t[]){{{args_str}}}, {});\n",
+                    params.len()
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{pad}cobol_invoke(&{c_obj}, \"{method}\", (int64_t[]){{{args_str}}}, {});\n",
+                    params.len()
+                ));
+            }
+        }
+        HirStatement::Raise { exception, .. } => {
+            out.push_str(&format!("{pad}cobol_raise(\"{exception}\");\n"));
+        }
+        HirStatement::Resume { target, .. } => {
+            if let Some(t) = target {
+                let c_target = sanitize_name(t);
+                out.push_str(&format!("{pad}cobol_resume(\"{c_target}\");\n"));
+            } else {
+                out.push_str(&format!("{pad}cobol_resume(NULL);\n"));
+            }
+        }
+        HirStatement::Allocate {
+            target, returning, ..
+        } => {
+            let c_target = sanitize_name(target);
+            if let Some(ret) = returning {
+                let c_ret = sanitize_name(ret);
+                out.push_str(&format!(
+                    "{pad}{c_ret} = malloc(sizeof({c_target})); /* ALLOCATE */\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{pad}{c_target} = malloc(sizeof({c_target})); /* ALLOCATE */\n"
+                ));
+            }
+        }
+        HirStatement::Free { targets, .. } => {
+            for target in targets {
+                let c_target = sanitize_name(target);
+                out.push_str(&format!("{pad}free({c_target}); {c_target} = NULL;\n"));
+            }
+        }
     }
 }
 
@@ -619,6 +696,142 @@ fn escape_c_string(s: &str) -> String {
     escaped
 }
 
+// ---------------------------------------------------------------------------
+// COBOL 2002+: Class and function code generation
+// ---------------------------------------------------------------------------
+
+fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
+    for class in classes {
+        let c_name = sanitize_name(&class.name);
+        out.push_str(&format!("/* CLASS {} */\n", c_name));
+
+        // Emit instance data as a struct
+        out.push_str(&format!("typedef struct {c_name}_s {{\n"));
+        out.push_str("    void* _vtable; /* vtable pointer */\n");
+        for item in &class.instance_data {
+            let member_name = sanitize_name(&item.name);
+            let c_type = hir_type_to_c(&item.data_type);
+            out.push_str(&format!("    {c_type} {member_name};\n"));
+        }
+        out.push_str(&format!("}} {c_name};\n\n"));
+
+        // Emit vtable struct
+        out.push_str(&format!("typedef struct {c_name}_vtable_s {{\n"));
+        for method in &class.instance_methods {
+            let method_name = sanitize_name(&method.name);
+            out.push_str(&format!("    int64_t (*{method_name})({c_name}* self);\n"));
+        }
+        out.push_str(&format!("}} {c_name}_vtable;\n\n"));
+
+        // Emit method implementations
+        for method in &class.instance_methods {
+            let method_name = sanitize_name(&method.name);
+            out.push_str(&format!(
+                "int64_t {c_name}_{method_name}({c_name}* self) {{\n"
+            ));
+            for item in &method.data_items {
+                let local_name = sanitize_name(&item.name);
+                let c_type = hir_type_to_c(&item.data_type);
+                out.push_str(&format!("    {c_type} {local_name};\n"));
+            }
+            for stmt in &method.body {
+                emit_statement(out, stmt, 1);
+            }
+            out.push_str("    return 0;\n");
+            out.push_str("}\n\n");
+        }
+
+        // Emit factory methods
+        for method in &class.factory_methods {
+            let method_name = sanitize_name(&method.name);
+            out.push_str(&format!(
+                "int64_t {c_name}_factory_{method_name}(void) {{\n"
+            ));
+            for stmt in &method.body {
+                emit_statement(out, stmt, 1);
+            }
+            out.push_str("    return 0;\n");
+            out.push_str("}\n\n");
+        }
+
+        // Emit vtable instance
+        out.push_str(&format!(
+            "static {c_name}_vtable {c_name}_vtable_instance = {{\n"
+        ));
+        for method in &class.instance_methods {
+            let method_name = sanitize_name(&method.name);
+            out.push_str(&format!("    .{method_name} = {c_name}_{method_name},\n"));
+        }
+        out.push_str("};\n\n");
+
+        // Emit constructor (NEW)
+        out.push_str(&format!("{c_name}* {c_name}_new(void) {{\n"));
+        out.push_str(&format!(
+            "    {c_name}* obj = ({c_name}*)malloc(sizeof({c_name}));\n"
+        ));
+        out.push_str(&format!("    obj->_vtable = &{c_name}_vtable_instance;\n"));
+        out.push_str("    return obj;\n");
+        out.push_str("}\n\n");
+    }
+}
+
+fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
+    for func in functions {
+        let c_name = sanitize_name(&func.name);
+        let ret_type = hir_type_to_c(&func.returning);
+
+        // Build parameter list
+        let params: Vec<String> = func
+            .params
+            .iter()
+            .map(|p| {
+                let p_name = sanitize_name(&p.name);
+                let p_type = hir_type_to_c(&p.data_type);
+                format!("{p_type} {p_name}")
+            })
+            .collect();
+        let params_str = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params.join(", ")
+        };
+
+        out.push_str(&format!(
+            "{ret_type} cobol_func_{c_name}({params_str}) {{\n"
+        ));
+
+        // Local data items
+        for item in &func.data_items {
+            let local_name = sanitize_name(&item.name);
+            let c_type = hir_type_to_c(&item.data_type);
+            out.push_str(&format!("    {c_type} {local_name};\n"));
+        }
+        emit_data_init(out, &func.data_items);
+
+        // Body
+        for stmt in &func.body {
+            emit_statement(out, stmt, 1);
+        }
+
+        out.push_str(&format!("    return ({ret_type})0;\n"));
+        out.push_str("}\n\n");
+    }
+}
+
+/// Map a HIR type to its C representation.
+fn hir_type_to_c(data_type: &HirType) -> &'static str {
+    match data_type {
+        HirType::Alphanumeric { .. } => "char*",
+        HirType::Numeric { .. } => "int64_t",
+        HirType::Group { .. } => "int64_t",
+        HirType::Comp3 { .. } => "int64_t",
+        HirType::Binary { .. } => "int64_t",
+        HirType::Index => "int64_t",
+        HirType::Pointer => "void*",
+        HirType::Boolean => "int8_t",
+    }
+}
+
 /// Compile a generated C source file into a native executable.
 ///
 /// Returns `Ok(())` on success, or an error message on failure.
@@ -757,5 +970,265 @@ PROCEDURE DIVISION.
         let c_code = parse_lower_generate(src);
         assert!(c_code.contains("if ("));
         assert!(c_code.contains("} else {"));
+    }
+
+    // -----------------------------------------------------------------------
+    // COBOL 2002+ codegen tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_raise() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-RAISE.
+PROCEDURE DIVISION.
+    RAISE EXCEPTION \"EC-SIZE-OVERFLOW\".
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("cobol_raise"),
+            "Generated C should contain cobol_raise call"
+        );
+    }
+
+    #[test]
+    fn test_generate_resume() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-RESUME.
+PROCEDURE DIVISION.
+    RESUME.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("cobol_resume"),
+            "Generated C should contain cobol_resume call"
+        );
+    }
+
+    #[test]
+    fn test_generate_invoke() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-INVOKE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  MY-OBJ USAGE POINTER.
+01  MY-RESULT PIC 9(5).
+PROCEDURE DIVISION.
+    INVOKE MY-OBJ \"DO-SOMETHING\" RETURNING MY-RESULT.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("cobol_invoke"),
+            "Generated C should contain cobol_invoke call"
+        );
+        assert!(
+            c_code.contains("DO-SOMETHING"),
+            "Generated C should reference the method name"
+        );
+    }
+
+    #[test]
+    fn test_generate_allocate_and_free() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-ALLOC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  MY-PTR USAGE POINTER.
+PROCEDURE DIVISION.
+    ALLOCATE MY-PTR.
+    FREE MY-PTR.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("malloc"),
+            "Generated C should contain malloc for ALLOCATE"
+        );
+        assert!(
+            c_code.contains("free("),
+            "Generated C should contain free for FREE"
+        );
+    }
+
+    #[test]
+    fn test_generate_setjmp_header() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-HDR.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("#include <setjmp.h>"),
+            "Generated C should include setjmp.h"
+        );
+    }
+
+    #[test]
+    fn test_generate_runtime_declarations_2002() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DECL.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("cobol_raise"),
+            "Runtime declarations should include cobol_raise"
+        );
+        assert!(
+            c_code.contains("cobol_resume"),
+            "Runtime declarations should include cobol_resume"
+        );
+        assert!(
+            c_code.contains("cobol_invoke"),
+            "Runtime declarations should include cobol_invoke"
+        );
+    }
+
+    #[test]
+    fn test_generate_class_struct() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-CLASS".into(),
+            data_items: Vec::new(),
+            paragraphs: Vec::new(),
+            body: Vec::new(),
+            classes: vec![cobol_hir::HirClass {
+                name: "MY-CLASS".into(),
+                parent: None,
+                factory_methods: Vec::new(),
+                instance_methods: vec![cobol_hir::HirMethod {
+                    name: "DO-WORK".into(),
+                    params: Vec::new(),
+                    returning: None,
+                    data_items: Vec::new(),
+                    body: Vec::new(),
+                    span: Span::dummy(),
+                }],
+                factory_data: Vec::new(),
+                instance_data: vec![HirDataItem {
+                    name: "MY-FIELD".into(),
+                    data_type: HirType::Numeric {
+                        size: 5,
+                        decimal_places: 0,
+                        is_signed: false,
+                    },
+                    initial_value: None,
+                    span: Span::dummy(),
+                }],
+                span: Span::dummy(),
+            }],
+            functions: Vec::new(),
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("typedef struct MY_CLASS_s"),
+            "Should generate struct for class"
+        );
+        assert!(c_code.contains("_vtable"), "Should generate vtable");
+        assert!(
+            c_code.contains("MY_CLASS_new"),
+            "Should generate constructor"
+        );
+        assert!(
+            c_code.contains("MY_CLASS_DO_WORK"),
+            "Should generate method implementation"
+        );
+    }
+
+    #[test]
+    fn test_generate_function() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-FUNC".into(),
+            data_items: Vec::new(),
+            paragraphs: Vec::new(),
+            body: Vec::new(),
+            classes: Vec::new(),
+            functions: vec![cobol_hir::HirFunction {
+                name: "ADD-NUMBERS".into(),
+                params: vec![
+                    cobol_hir::HirParam {
+                        name: "A".into(),
+                        mode: cobol_hir::HirParamMode::ByValue,
+                        data_type: HirType::Numeric {
+                            size: 5,
+                            decimal_places: 0,
+                            is_signed: false,
+                        },
+                    },
+                    cobol_hir::HirParam {
+                        name: "B".into(),
+                        mode: cobol_hir::HirParamMode::ByValue,
+                        data_type: HirType::Numeric {
+                            size: 5,
+                            decimal_places: 0,
+                            is_signed: false,
+                        },
+                    },
+                ],
+                returning: HirType::Numeric {
+                    size: 5,
+                    decimal_places: 0,
+                    is_signed: false,
+                },
+                data_items: Vec::new(),
+                body: Vec::new(),
+                span: Span::dummy(),
+            }],
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(
+            c_code.contains("cobol_func_ADD_NUMBERS"),
+            "Should generate function with cobol_func_ prefix"
+        );
+        assert!(c_code.contains("int64_t A"), "Should generate parameter A");
+        assert!(c_code.contains("int64_t B"), "Should generate parameter B");
+    }
+
+    #[test]
+    fn test_hir_type_to_c_boolean() {
+        assert_eq!(hir_type_to_c(&HirType::Boolean), "int8_t");
+    }
+
+    #[test]
+    fn test_generate_local_storage() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-LOCAL.
+DATA DIVISION.
+LOCAL-STORAGE SECTION.
+01  LS-COUNTER PIC 9(5) VALUE 0.
+WORKING-STORAGE SECTION.
+01  WS-COUNTER PIC 9(5) VALUE 0.
+PROCEDURE DIVISION.
+    ADD 1 TO LS-COUNTER.
+    ADD 1 TO WS-COUNTER.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("LS_COUNTER"),
+            "Should emit LOCAL-STORAGE variable"
+        );
+        assert!(
+            c_code.contains("WS_COUNTER"),
+            "Should emit WORKING-STORAGE variable"
+        );
     }
 }
