@@ -3,6 +3,9 @@ name = "cobol-runtime"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
 cobol-common.workspace = true
 num-bigint.workspace = true
