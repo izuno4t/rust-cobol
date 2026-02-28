@@ -318,8 +318,10 @@ name = "cobol-runtime"
 version = "0.1.0"
 dependencies = [
  "cobol-common",
+ "libc",
  "num-bigint",
  "rust_decimal",
+ "tempfile",
 ]
 
 [[package]]

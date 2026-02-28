@@ -1,0 +1,708 @@
+// COBOL Runtime - String operations
+//
+// Implements the COBOL STRING, UNSTRING, INSPECT, and MOVE statements.
+// COBOL strings are fixed-length byte arrays, left-justified and
+// space-padded (for alphanumeric fields) or right-justified and
+// zero-padded (for numeric display fields).
+//
+// All public functions use the C ABI for linking with generated code.
+
+/// Descriptor for a source operand in a STRING statement.
+#[repr(C)]
+pub struct CobolStringSource {
+    /// Pointer to source bytes.
+    pub ptr: *const u8,
+    /// Length of the source field.
+    pub len: u32,
+    /// Pointer to delimiter bytes (null if no DELIMITED BY).
+    pub delim_ptr: *const u8,
+    /// Length of the delimiter (0 if no delimiter / DELIMITED BY SIZE).
+    pub delim_len: u32,
+}
+
+/// Descriptor for a target operand in an UNSTRING statement.
+#[repr(C)]
+pub struct CobolUnstringTarget {
+    /// Pointer to the target field buffer.
+    pub ptr: *mut u8,
+    /// Length of the target field.
+    pub len: u32,
+    /// Pointer to the delimiter buffer (receives the matched delimiter).
+    /// May be null if not requested.
+    pub delimiter_ptr: *mut u8,
+    /// Length of the delimiter buffer.
+    pub delimiter_len: u32,
+    /// Pointer to the count field (receives the number of characters moved).
+    /// May be null if not requested.
+    pub count_ptr: *mut u32,
+}
+
+// ---------------------------------------------------------------------------
+// MOVE operations
+// ---------------------------------------------------------------------------
+
+/// MOVE string with COBOL semantics.
+///
+/// Alphanumeric MOVE: the source is left-justified in the destination,
+/// padded with spaces on the right (or truncated on the right).
+///
+/// # Safety
+/// `src_ptr` must be readable for `src_len` bytes.
+/// `dst_ptr` must be writable for `dst_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_move_string(
+    src_ptr: *const u8,
+    src_len: u32,
+    dst_ptr: *mut u8,
+    dst_len: u32,
+) {
+    let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
+
+    let copy_len = src.len().min(dst.len());
+    dst[..copy_len].copy_from_slice(&src[..copy_len]);
+
+    // Pad remainder with spaces.
+    for b in dst[copy_len..].iter_mut() {
+        *b = b' ';
+    }
+}
+
+/// MOVE numeric to alphanumeric display.
+///
+/// The numeric value is right-justified in the destination buffer with
+/// leading spaces. A negative sign is placed immediately before the
+/// first digit.
+///
+/// # Safety
+/// `dst_ptr` must be writable for `dst_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_move_numeric_to_display(
+    value: i64,
+    scale: i32,
+    dst_ptr: *mut u8,
+    dst_len: u32,
+) {
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
+
+    // Format the numeric value with the decimal point.
+    let formatted = if scale > 0 {
+        let abs = value.unsigned_abs();
+        let factor = 10u64.pow(scale as u32);
+        let int_part = abs / factor;
+        let frac_part = abs % factor;
+        let num_str = format!(
+            "{}.{:0>width$}",
+            int_part,
+            frac_part,
+            width = scale as usize
+        );
+        if value < 0 {
+            format!("-{}", num_str)
+        } else {
+            num_str
+        }
+    } else {
+        format!("{}", value)
+    };
+
+    let bytes = formatted.as_bytes();
+    // Right-justify in the destination.
+    if bytes.len() >= dst.len() {
+        // Truncate from the left (show rightmost digits).
+        let offset = bytes.len() - dst.len();
+        dst.copy_from_slice(&bytes[offset..]);
+    } else {
+        let pad = dst.len() - bytes.len();
+        for b in dst[..pad].iter_mut() {
+            *b = b' ';
+        }
+        dst[pad..].copy_from_slice(bytes);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// STRING statement
+// ---------------------------------------------------------------------------
+
+/// STRING statement -- concatenate multiple source strings into a
+/// destination buffer, honoring delimiters and a POINTER variable.
+///
+/// `pointer` is a 1-based index into the destination. It is updated to
+/// reflect the next available position after the operation.
+///
+/// Returns 0 on success, 1 if an overflow occurred (destination full).
+///
+/// # Safety
+/// All pointers must be valid. `sources` must point to an array of
+/// `source_count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_string_concat(
+    sources: *const CobolStringSource,
+    source_count: u32,
+    dst_ptr: *mut u8,
+    dst_len: u32,
+    pointer: *mut u32,
+) -> i32 {
+    let srcs = std::slice::from_raw_parts(sources, source_count as usize);
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
+    let ptr_val = &mut *pointer;
+
+    // COBOL POINTER is 1-based.
+    let mut pos = (*ptr_val as usize).saturating_sub(1);
+    let mut overflow = false;
+
+    for src in srcs {
+        let src_data = std::slice::from_raw_parts(src.ptr, src.len as usize);
+
+        // Determine the effective data to copy (up to delimiter).
+        let effective = if !src.delim_ptr.is_null() && src.delim_len > 0 {
+            let delim = std::slice::from_raw_parts(src.delim_ptr, src.delim_len as usize);
+            find_delimiter(src_data, delim).unwrap_or(src_data.len())
+        } else {
+            src_data.len()
+        };
+
+        for &byte in src_data.iter().take(effective) {
+            if pos >= dst.len() {
+                overflow = true;
+                break;
+            }
+            dst[pos] = byte;
+            pos += 1;
+        }
+
+        if overflow {
+            break;
+        }
+    }
+
+    *ptr_val = (pos + 1) as u32; // back to 1-based
+    if overflow {
+        1
+    } else {
+        0
+    }
+}
+
+/// Find the starting position of `delim` within `data`.
+fn find_delimiter(data: &[u8], delim: &[u8]) -> Option<usize> {
+    if delim.is_empty() || delim.len() > data.len() {
+        return None;
+    }
+    data.windows(delim.len()).position(|w| w == delim)
+}
+
+// ---------------------------------------------------------------------------
+// UNSTRING statement
+// ---------------------------------------------------------------------------
+
+/// UNSTRING statement -- split a source string into multiple targets
+/// using a delimiter.
+///
+/// `pointer` is a 1-based index into the source. It is updated to
+/// reflect the next position after the last character examined.
+///
+/// `tallying` is incremented by the number of targets that received data.
+///
+/// Returns 0 on success, 1 if the pointer was out of range.
+///
+/// # Safety
+/// All pointers must be valid. `targets` must point to an array of
+/// `target_count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_unstring(
+    src_ptr: *const u8,
+    src_len: u32,
+    delim_ptr: *const u8,
+    delim_len: u32,
+    targets: *mut CobolUnstringTarget,
+    target_count: u32,
+    pointer: *mut u32,
+    tallying: *mut u32,
+) -> i32 {
+    let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
+    let delim = if !delim_ptr.is_null() && delim_len > 0 {
+        std::slice::from_raw_parts(delim_ptr, delim_len as usize)
+    } else {
+        &[]
+    };
+    let tgts = std::slice::from_raw_parts_mut(targets, target_count as usize);
+
+    // POINTER is 1-based.
+    let start = if !pointer.is_null() {
+        ((*pointer) as usize).saturating_sub(1)
+    } else {
+        0
+    };
+
+    if start >= src.len() {
+        return 1;
+    }
+
+    let mut pos = start;
+    let mut tally_count = 0u32;
+
+    for tgt in tgts.iter_mut() {
+        if pos >= src.len() {
+            break;
+        }
+
+        // Find the next delimiter.
+        let remaining = &src[pos..];
+        let field_end = if !delim.is_empty() {
+            find_delimiter(remaining, delim).unwrap_or(remaining.len())
+        } else {
+            remaining.len()
+        };
+
+        let field = &remaining[..field_end];
+
+        // Move field data into the target (left-justified, space-padded).
+        let tgt_buf = std::slice::from_raw_parts_mut(tgt.ptr, tgt.len as usize);
+        let copy_len = field.len().min(tgt_buf.len());
+        tgt_buf[..copy_len].copy_from_slice(&field[..copy_len]);
+        for b in tgt_buf[copy_len..].iter_mut() {
+            *b = b' ';
+        }
+
+        // Set the delimiter if requested.
+        if !tgt.delimiter_ptr.is_null() && tgt.delimiter_len > 0 {
+            let delim_buf =
+                std::slice::from_raw_parts_mut(tgt.delimiter_ptr, tgt.delimiter_len as usize);
+            if field_end < remaining.len() {
+                let d_copy = delim.len().min(delim_buf.len());
+                delim_buf[..d_copy].copy_from_slice(&delim[..d_copy]);
+                for b in delim_buf[d_copy..].iter_mut() {
+                    *b = b' ';
+                }
+            } else {
+                for b in delim_buf.iter_mut() {
+                    *b = b' ';
+                }
+            }
+        }
+
+        // Set the count if requested.
+        if !tgt.count_ptr.is_null() {
+            *tgt.count_ptr = copy_len as u32;
+        }
+
+        tally_count += 1;
+
+        // Advance past the field and the delimiter.
+        pos += field_end;
+        if field_end < remaining.len() {
+            pos += delim.len();
+        }
+    }
+
+    if !pointer.is_null() {
+        *pointer = (pos + 1) as u32; // 1-based
+    }
+    if !tallying.is_null() {
+        *tallying += tally_count;
+    }
+
+    0
+}
+
+// ---------------------------------------------------------------------------
+// INSPECT statement
+// ---------------------------------------------------------------------------
+
+/// INSPECT TALLYING -- count occurrences.
+///
+/// Modes: 0 = CHARACTERS (count all bytes), 1 = ALL, 2 = LEADING.
+///
+/// # Safety
+/// Pointers must be valid for their respective lengths.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_inspect_tallying(
+    src_ptr: *const u8,
+    src_len: u32,
+    search_ptr: *const u8,
+    search_len: u32,
+    mode: u32,
+) -> u32 {
+    let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
+
+    if mode == 0 {
+        // CHARACTERS -- return the length of the source.
+        return src_len;
+    }
+
+    let search = std::slice::from_raw_parts(search_ptr, search_len as usize);
+    if search.is_empty() {
+        return 0;
+    }
+
+    let mut count = 0u32;
+    let mut i = 0usize;
+
+    while i + search.len() <= src.len() {
+        if &src[i..i + search.len()] == search {
+            count += 1;
+            i += search.len();
+            if mode == 2 {
+                // LEADING -- stop at first non-match position.
+                continue;
+            }
+        } else {
+            if mode == 2 {
+                // LEADING -- first non-match ends the tally.
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    count
+}
+
+/// INSPECT REPLACING -- replace occurrences in-place.
+///
+/// Modes: 0 = CHARACTERS, 1 = ALL, 2 = LEADING, 3 = FIRST.
+///
+/// # Safety
+/// `src_ptr` must be writable for `src_len` bytes. Search and replace
+/// must have the same length (or replace_len >= search_len for CHARACTERS).
+#[no_mangle]
+pub unsafe extern "C" fn cobol_inspect_replacing(
+    src_ptr: *mut u8,
+    src_len: u32,
+    search_ptr: *const u8,
+    search_len: u32,
+    replace_ptr: *const u8,
+    replace_len: u32,
+    mode: u32,
+) {
+    let src = std::slice::from_raw_parts_mut(src_ptr, src_len as usize);
+
+    if mode == 0 {
+        // CHARACTERS -- replace every character with the first byte of
+        // the replacement string.
+        if replace_len == 0 {
+            return;
+        }
+        let rep_byte = *replace_ptr;
+        for b in src.iter_mut() {
+            *b = rep_byte;
+        }
+        return;
+    }
+
+    let search = std::slice::from_raw_parts(search_ptr, search_len as usize);
+    let replace = std::slice::from_raw_parts(replace_ptr, replace_len as usize);
+    if search.is_empty() {
+        return;
+    }
+
+    let rep_len = search.len().min(replace.len());
+    let mut i = 0usize;
+
+    while i + search.len() <= src.len() {
+        if &src[i..i + search.len()] == search {
+            src[i..i + rep_len].copy_from_slice(&replace[..rep_len]);
+            i += search.len();
+            match mode {
+                3 => return,   // FIRST -- only replace the first occurrence.
+                2 => continue, // LEADING -- continue while matching.
+                _ => {}        // ALL -- keep going.
+            }
+        } else {
+            if mode == 2 {
+                // LEADING -- stop at first non-match.
+                return;
+            }
+            i += 1;
+        }
+    }
+}
+
+/// INSPECT CONVERTING -- translate characters.
+///
+/// Each character in the FROM string is replaced with the corresponding
+/// character in the TO string (positional 1:1 mapping, like `tr`).
+///
+/// # Safety
+/// `src_ptr` must be writable for `src_len` bytes.
+/// `from_ptr` and `to_ptr` must be readable for their respective lengths.
+/// `from_len` and `to_len` should be equal.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_inspect_converting(
+    src_ptr: *mut u8,
+    src_len: u32,
+    from_ptr: *const u8,
+    from_len: u32,
+    to_ptr: *const u8,
+    to_len: u32,
+) {
+    let src = std::slice::from_raw_parts_mut(src_ptr, src_len as usize);
+    let from = std::slice::from_raw_parts(from_ptr, from_len as usize);
+    let to = std::slice::from_raw_parts(to_ptr, to_len as usize);
+
+    // Build a translation table for single-byte mapping.
+    let mut table = [0u8; 256];
+    for (i, entry) in table.iter_mut().enumerate() {
+        *entry = i as u8;
+    }
+    let map_len = from.len().min(to.len());
+    for (&f, &t) in from.iter().zip(to.iter()).take(map_len) {
+        table[f as usize] = t;
+    }
+
+    for b in src.iter_mut() {
+        *b = table[*b as usize];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_move_string_padded() {
+        let src = b"HELLO";
+        let mut dst = [0u8; 10];
+        unsafe { cobol_move_string(src.as_ptr(), 5, dst.as_mut_ptr(), 10) };
+        assert_eq!(&dst, b"HELLO     ");
+    }
+
+    #[test]
+    fn test_move_string_truncated() {
+        let src = b"HELLO WORLD";
+        let mut dst = [0u8; 5];
+        unsafe { cobol_move_string(src.as_ptr(), 11, dst.as_mut_ptr(), 5) };
+        assert_eq!(&dst, b"HELLO");
+    }
+
+    #[test]
+    fn test_move_numeric_to_display() {
+        let mut dst = [0u8; 10];
+        unsafe { cobol_move_numeric_to_display(12345, 2, dst.as_mut_ptr(), 10) };
+        let s = std::str::from_utf8(&dst).unwrap();
+        assert_eq!(s, "    123.45");
+    }
+
+    #[test]
+    fn test_move_numeric_to_display_negative() {
+        let mut dst = [0u8; 10];
+        unsafe { cobol_move_numeric_to_display(-4200, 2, dst.as_mut_ptr(), 10) };
+        let s = std::str::from_utf8(&dst).unwrap();
+        assert_eq!(s, "    -42.00");
+    }
+
+    #[test]
+    fn test_string_concat() {
+        let s1 = b"HELLO";
+        let s2 = b" WORLD";
+        let sources = [
+            CobolStringSource {
+                ptr: s1.as_ptr(),
+                len: 5,
+                delim_ptr: std::ptr::null(),
+                delim_len: 0,
+            },
+            CobolStringSource {
+                ptr: s2.as_ptr(),
+                len: 6,
+                delim_ptr: std::ptr::null(),
+                delim_len: 0,
+            },
+        ];
+        let mut dst = [b' '; 20];
+        let mut pointer = 1u32; // 1-based
+        let rc =
+            unsafe { cobol_string_concat(sources.as_ptr(), 2, dst.as_mut_ptr(), 20, &mut pointer) };
+        assert_eq!(rc, 0);
+        assert_eq!(pointer, 12); // 1-based, next position
+        assert_eq!(&dst[..11], b"HELLO WORLD");
+    }
+
+    #[test]
+    fn test_string_concat_with_delimiter() {
+        let s1 = b"HELLO, WORLD";
+        let delim = b",";
+        let sources = [CobolStringSource {
+            ptr: s1.as_ptr(),
+            len: 12,
+            delim_ptr: delim.as_ptr(),
+            delim_len: 1,
+        }];
+        let mut dst = [b' '; 20];
+        let mut pointer = 1u32;
+        let rc =
+            unsafe { cobol_string_concat(sources.as_ptr(), 1, dst.as_mut_ptr(), 20, &mut pointer) };
+        assert_eq!(rc, 0);
+        assert_eq!(&dst[..5], b"HELLO");
+    }
+
+    #[test]
+    fn test_string_concat_overflow() {
+        let s1 = b"HELLO WORLD THIS IS LONG";
+        let sources = [CobolStringSource {
+            ptr: s1.as_ptr(),
+            len: 24,
+            delim_ptr: std::ptr::null(),
+            delim_len: 0,
+        }];
+        let mut dst = [b' '; 5];
+        let mut pointer = 1u32;
+        let rc =
+            unsafe { cobol_string_concat(sources.as_ptr(), 1, dst.as_mut_ptr(), 5, &mut pointer) };
+        assert_eq!(rc, 1); // overflow
+        assert_eq!(&dst, b"HELLO");
+    }
+
+    #[test]
+    fn test_unstring() {
+        let src = b"HELLO,WORLD,FOO";
+        let delim = b",";
+        let mut t1 = [0u8; 10];
+        let mut t2 = [0u8; 10];
+        let mut t3 = [0u8; 10];
+        let mut c1 = 0u32;
+        let mut c2 = 0u32;
+        let mut c3 = 0u32;
+        let mut targets = [
+            CobolUnstringTarget {
+                ptr: t1.as_mut_ptr(),
+                len: 10,
+                delimiter_ptr: std::ptr::null_mut(),
+                delimiter_len: 0,
+                count_ptr: &mut c1,
+            },
+            CobolUnstringTarget {
+                ptr: t2.as_mut_ptr(),
+                len: 10,
+                delimiter_ptr: std::ptr::null_mut(),
+                delimiter_len: 0,
+                count_ptr: &mut c2,
+            },
+            CobolUnstringTarget {
+                ptr: t3.as_mut_ptr(),
+                len: 10,
+                delimiter_ptr: std::ptr::null_mut(),
+                delimiter_len: 0,
+                count_ptr: &mut c3,
+            },
+        ];
+        let mut pointer = 1u32;
+        let mut tallying = 0u32;
+        let rc = unsafe {
+            cobol_unstring(
+                src.as_ptr(),
+                15,
+                delim.as_ptr(),
+                1,
+                targets.as_mut_ptr(),
+                3,
+                &mut pointer,
+                &mut tallying,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(tallying, 3);
+        assert_eq!(&t1[..5], b"HELLO");
+        assert_eq!(&t2[..5], b"WORLD");
+        assert_eq!(&t3[..3], b"FOO");
+        assert_eq!(c1, 5);
+        assert_eq!(c2, 5);
+        assert_eq!(c3, 3);
+    }
+
+    #[test]
+    fn test_inspect_tallying_all() {
+        let src = b"ABCABC";
+        let search = b"A";
+        let count = unsafe { cobol_inspect_tallying(src.as_ptr(), 6, search.as_ptr(), 1, 1) };
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_inspect_tallying_leading() {
+        let src = b"AAABBC";
+        let search = b"A";
+        let count = unsafe { cobol_inspect_tallying(src.as_ptr(), 6, search.as_ptr(), 1, 2) };
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_inspect_tallying_characters() {
+        let src = b"HELLO";
+        let count = unsafe { cobol_inspect_tallying(src.as_ptr(), 5, std::ptr::null(), 0, 0) };
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_inspect_replacing_all() {
+        let mut src = *b"ABCABC";
+        let search = b"A";
+        let replace = b"X";
+        unsafe {
+            cobol_inspect_replacing(
+                src.as_mut_ptr(),
+                6,
+                search.as_ptr(),
+                1,
+                replace.as_ptr(),
+                1,
+                1,
+            )
+        };
+        assert_eq!(&src, b"XBCXBC");
+    }
+
+    #[test]
+    fn test_inspect_replacing_first() {
+        let mut src = *b"ABCABC";
+        let search = b"A";
+        let replace = b"X";
+        unsafe {
+            cobol_inspect_replacing(
+                src.as_mut_ptr(),
+                6,
+                search.as_ptr(),
+                1,
+                replace.as_ptr(),
+                1,
+                3,
+            )
+        };
+        assert_eq!(&src, b"XBCABC");
+    }
+
+    #[test]
+    fn test_inspect_replacing_leading() {
+        let mut src = *b"AABABC";
+        let search = b"A";
+        let replace = b"X";
+        unsafe {
+            cobol_inspect_replacing(
+                src.as_mut_ptr(),
+                6,
+                search.as_ptr(),
+                1,
+                replace.as_ptr(),
+                1,
+                2,
+            )
+        };
+        // Only leading A's are replaced: first two A's, then 'B' breaks the chain.
+        assert_eq!(&src, b"XXBABC");
+    }
+
+    #[test]
+    fn test_inspect_converting() {
+        let mut src = *b"HELLO";
+        let from = b"HELO";
+        let to = b"helo";
+        unsafe { cobol_inspect_converting(src.as_mut_ptr(), 5, from.as_ptr(), 4, to.as_ptr(), 4) };
+        assert_eq!(&src, b"hello");
+    }
+}

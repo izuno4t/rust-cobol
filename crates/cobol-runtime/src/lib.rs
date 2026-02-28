@@ -8,8 +8,13 @@
 // the CLI driver) and a staticlib (for linking with generated object
 // files).
 
+pub mod decimal;
 pub mod display;
+pub mod file_io;
+pub mod intrinsic;
 pub mod program;
+pub mod sort_merge;
+pub mod string_ops;
 
 #[cfg(test)]
 mod tests {

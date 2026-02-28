@@ -8,5 +8,9 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 cobol-common.workspace = true
+libc = "0.2"
 num-bigint.workspace = true
 rust_decimal.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
