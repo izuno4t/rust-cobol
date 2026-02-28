@@ -20,7 +20,9 @@ impl DiagnosticReporter {
 
     /// Returns `true` if any reported diagnostic has error severity.
     pub fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(|d| d.severity == Severity::Error)
+        self.diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error)
     }
 
     /// Returns the number of error-level diagnostics.

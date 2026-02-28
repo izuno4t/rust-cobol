@@ -68,7 +68,11 @@ mod tests {
 
     #[test]
     fn test_source_file_creation() {
-        let src = SourceFile::new(FileId(1), "test.cob".to_string(), "HELLO\nWORLD".to_string());
+        let src = SourceFile::new(
+            FileId(1),
+            "test.cob".to_string(),
+            "HELLO\nWORLD".to_string(),
+        );
         assert_eq!(src.id, FileId(1));
         assert_eq!(src.name, "test.cob");
         assert_eq!(src.content, "HELLO\nWORLD");
@@ -76,7 +80,11 @@ mod tests {
 
     #[test]
     fn test_line_col_first_line() {
-        let src = SourceFile::new(FileId(0), "test.cob".to_string(), "HELLO\nWORLD".to_string());
+        let src = SourceFile::new(
+            FileId(0),
+            "test.cob".to_string(),
+            "HELLO\nWORLD".to_string(),
+        );
         // 'H' is at offset 0 -> line 1, col 1
         assert_eq!(src.line_col(0), (1, 1));
         // 'O' is at offset 4 -> line 1, col 5
@@ -85,7 +93,11 @@ mod tests {
 
     #[test]
     fn test_line_col_second_line() {
-        let src = SourceFile::new(FileId(0), "test.cob".to_string(), "HELLO\nWORLD".to_string());
+        let src = SourceFile::new(
+            FileId(0),
+            "test.cob".to_string(),
+            "HELLO\nWORLD".to_string(),
+        );
         // 'W' is at offset 6 -> line 2, col 1
         assert_eq!(src.line_col(6), (2, 1));
         // 'D' is at offset 10 -> line 2, col 5
@@ -100,8 +112,7 @@ mod tests {
         let two = SourceFile::new(FileId(0), "b.cob".to_string(), "HELLO\nWORLD".to_string());
         assert_eq!(two.line_count(), 2);
 
-        let three =
-            SourceFile::new(FileId(0), "c.cob".to_string(), "A\nB\nC".to_string());
+        let three = SourceFile::new(FileId(0), "c.cob".to_string(), "A\nB\nC".to_string());
         assert_eq!(three.line_count(), 3);
     }
 }
