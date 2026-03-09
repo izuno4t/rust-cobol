@@ -197,6 +197,99 @@ pub unsafe extern "C" fn cobol_file_open(
     })
 }
 
+/// Build the in-memory index for an indexed file by scanning all records.
+///
+/// Reads the file from the beginning, extracting the key from each record
+/// at the given offset and length, and stores (key, file_offset) pairs
+/// sorted by key.
+fn build_index(file: &mut CobolFile, key_offset: u32, key_len: u32) {
+    if file.org != FileOrganization::Indexed {
+        return;
+    }
+    let rec_len = file.record_len as usize;
+    if rec_len == 0 {
+        return;
+    }
+    let key_off = key_offset as usize;
+    let key_length = key_len as usize;
+    if key_off + key_length > rec_len {
+        return;
+    }
+
+    let f = match &mut file.inner {
+        CobolFileInner::Reader(r) => r.get_mut(),
+        CobolFileInner::ReadWrite(f) => f,
+        _ => return,
+    };
+
+    // Seek to the beginning.
+    if f.seek(SeekFrom::Start(0)).is_err() {
+        return;
+    }
+
+    let mut buf = vec![0u8; rec_len];
+    let mut offset = 0u64;
+    file.index.clear();
+
+    while f.read_exact(&mut buf).is_ok() {
+        let key = buf[key_off..key_off + key_length].to_vec();
+        file.index.push((key, offset));
+        offset += rec_len as u64;
+    }
+
+    // Sort index by key.
+    file.index.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Reset file position to beginning.
+    let _ = f.seek(SeekFrom::Start(0));
+    file.current_record = 0;
+}
+
+/// Open an indexed file with key information.
+///
+/// This extends `cobol_file_open` by also specifying the primary key's
+/// offset and length within each record. After opening, the index is
+/// built by scanning all existing records (for INPUT and I-O modes).
+///
+/// # Safety
+/// `path_ptr` must point to a valid UTF-8 string of `path_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_file_open_indexed(
+    file_id: u32,
+    path_ptr: *const u8,
+    path_len: u32,
+    access: FileAccessMode,
+    mode: FileOpenMode,
+    record_len: u32,
+    key_offset: u32,
+    key_len: u32,
+) -> u32 {
+    // Delegate the actual open to the standard function.
+    let rc = cobol_file_open(
+        file_id,
+        path_ptr,
+        path_len,
+        FileOrganization::Indexed,
+        access,
+        mode,
+        record_len,
+    );
+    if rc != FS_OK {
+        return rc;
+    }
+
+    // Build index for INPUT or I-O mode.
+    if mode == FileOpenMode::Input || mode == FileOpenMode::IoMode {
+        with_file_table(|table| {
+            if let Some(file) = table.get_mut(&file_id) {
+                build_index(file, key_offset, key_len);
+            }
+        });
+    }
+
+    FS_OK
+}
+
 /// Close a file.
 #[no_mangle]
 pub extern "C" fn cobol_file_close(file_id: u32) -> u32 {
@@ -356,6 +449,89 @@ pub unsafe extern "C" fn cobol_file_read_next(
     })
 }
 
+/// Read a record by key (random access).
+///
+/// For relative files: `key_ptr` is interpreted as a big-endian record number.
+/// For indexed files: `key_ptr` is the record key to look up.
+///
+/// # Safety
+/// `record_ptr` must be writable for `record_len` bytes.
+/// `key_ptr` must be readable for `key_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_file_read_key(
+    file_id: u32,
+    key_ptr: *const u8,
+    key_len: u32,
+    record_ptr: *mut u8,
+    record_len: u32,
+) -> u32 {
+    if key_ptr.is_null() || record_ptr.is_null() || record_len == 0 {
+        return FS_IO_ERROR;
+    }
+    let key = std::slice::from_raw_parts(key_ptr, key_len as usize);
+    let buf = std::slice::from_raw_parts_mut(record_ptr, record_len as usize);
+
+    with_file_table(|table| {
+        let file = match table.get_mut(&file_id) {
+            Some(f) => f,
+            None => return FS_NOT_OPEN,
+        };
+
+        match file.org {
+            FileOrganization::Relative => {
+                // Key is a big-endian record number (1-based).
+                let mut rec_num = 0u64;
+                for &b in key.iter() {
+                    rec_num = rec_num * 256 + b as u64;
+                }
+                if rec_num == 0 {
+                    return FS_REC_NOT_FOUND;
+                }
+                let offset = (rec_num - 1) * (file.record_len as u64);
+                let f = match &mut file.inner {
+                    CobolFileInner::Reader(r) => r.get_mut(),
+                    CobolFileInner::ReadWrite(f) => f,
+                    _ => return FS_IO_ERROR,
+                };
+                if f.seek(SeekFrom::Start(offset)).is_err() {
+                    return FS_REC_NOT_FOUND;
+                }
+                match f.read_exact(buf) {
+                    Ok(()) => {
+                        file.current_record = rec_num;
+                        FS_OK
+                    }
+                    Err(_) => FS_REC_NOT_FOUND,
+                }
+            }
+            FileOrganization::Indexed => {
+                // Binary search the sorted index.
+                let pos = file.index.partition_point(|(k, _)| k.as_slice() < key);
+                if pos >= file.index.len() || file.index[pos].0 != key {
+                    return FS_REC_NOT_FOUND;
+                }
+                let offset = file.index[pos].1;
+                let f = match &mut file.inner {
+                    CobolFileInner::Reader(r) => r.get_mut(),
+                    CobolFileInner::ReadWrite(f) => f,
+                    _ => return FS_IO_ERROR,
+                };
+                if f.seek(SeekFrom::Start(offset)).is_err() {
+                    return FS_IO_ERROR;
+                }
+                match f.read_exact(buf) {
+                    Ok(()) => {
+                        file.current_record = (pos + 1) as u64;
+                        FS_OK
+                    }
+                    Err(_) => FS_IO_ERROR,
+                }
+            }
+            _ => FS_IO_ERROR, // Random read not supported for sequential files.
+        }
+    })
+}
+
 /// Write a record.
 ///
 /// For line sequential: appends a newline after the record.
@@ -407,6 +583,90 @@ pub unsafe extern "C" fn cobol_file_write(
 
         match write_result {
             Ok(()) => {
+                file.current_record += 1;
+                FS_OK
+            }
+            Err(_) => FS_IO_ERROR,
+        }
+    })
+}
+
+/// Write a record to an indexed file, updating the in-memory index.
+///
+/// The key is extracted from the record at the given offset and length.
+///
+/// # Safety
+/// `record_ptr` must be readable for `record_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_file_write_indexed(
+    file_id: u32,
+    record_ptr: *const u8,
+    record_len: u32,
+    key_offset: u32,
+    key_len: u32,
+) -> u32 {
+    if record_ptr.is_null() || record_len == 0 {
+        return FS_IO_ERROR;
+    }
+    let data = std::slice::from_raw_parts(record_ptr, record_len as usize);
+    let key_off = key_offset as usize;
+    let key_length = key_len as usize;
+    if key_off + key_length > record_len as usize {
+        return FS_IO_ERROR;
+    }
+
+    with_file_table(|table| {
+        let file = match table.get_mut(&file_id) {
+            Some(f) => f,
+            None => return FS_NOT_OPEN,
+        };
+
+        if file.org != FileOrganization::Indexed {
+            return FS_IO_ERROR;
+        }
+
+        match file.mode {
+            FileOpenMode::Output | FileOpenMode::Extend | FileOpenMode::IoMode => {}
+            _ => return FS_WRITE_NOT_PERMITTED,
+        }
+
+        // Check for duplicate key.
+        let key = data[key_off..key_off + key_length].to_vec();
+        let insert_pos = file
+            .index
+            .partition_point(|(k, _)| k.as_slice() < key.as_slice());
+        if insert_pos < file.index.len() && file.index[insert_pos].0 == key {
+            return 22; // FS_DUPLICATE_KEY
+        }
+
+        // Get current write position.
+        let offset = match &mut file.inner {
+            CobolFileInner::Writer(w) => {
+                // Flush first to get the correct stream position.
+                let _ = w.flush();
+                match w.get_ref().stream_position() {
+                    Ok(pos) => pos,
+                    Err(_) => return FS_IO_ERROR,
+                }
+            }
+            CobolFileInner::ReadWrite(f) => match f.seek(SeekFrom::End(0)) {
+                Ok(pos) => pos,
+                Err(_) => return FS_IO_ERROR,
+            },
+            _ => return FS_WRITE_NOT_PERMITTED,
+        };
+
+        // Write the record.
+        let write_result = match &mut file.inner {
+            CobolFileInner::Writer(w) => w.write_all(data),
+            CobolFileInner::ReadWrite(f) => f.write_all(data),
+            _ => return FS_WRITE_NOT_PERMITTED,
+        };
+
+        match write_result {
+            Ok(()) => {
+                // Insert into sorted index.
+                file.index.insert(insert_pos, (key, offset));
                 file.current_record += 1;
                 FS_OK
             }
@@ -845,5 +1105,131 @@ mod tests {
         assert_eq!(trim_trailing_spaces(b"HELLO"), b"HELLO");
         assert_eq!(trim_trailing_spaces(b"     "), b"");
         assert_eq!(trim_trailing_spaces(b""), b"");
+    }
+
+    #[test]
+    fn test_relative_file_random_read() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("cobol_test_relative.dat");
+        // Write 3 fixed-length records.
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"REC1xxxx").unwrap(); // record 1 (8 bytes)
+            f.write_all(b"REC2xxxx").unwrap(); // record 2
+            f.write_all(b"REC3xxxx").unwrap(); // record 3
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 500u32;
+        let rec_len = 8u32;
+
+        // Open as relative, sequential access, input.
+        let rc = unsafe {
+            cobol_file_open(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Relative,
+                FileAccessMode::Sequential,
+                FileOpenMode::Input,
+                rec_len,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        // Read record 2 by key (big-endian 2).
+        let key = 2u32.to_be_bytes();
+        let mut buf = [0u8; 8];
+        let rc = unsafe {
+            cobol_file_read_key(
+                fid,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                rec_len,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(&buf, b"REC2xxxx");
+
+        let _ = cobol_file_close(fid);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_indexed_file_open_and_read_key() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("cobol_test_indexed.dat");
+        // Write 3 records: each 10 bytes, key is first 3 bytes.
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"BBBrecord2").unwrap();
+            f.write_all(b"AAArecord1").unwrap();
+            f.write_all(b"CCCrecord3").unwrap();
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 501u32;
+        let rec_len = 10u32;
+
+        // Open as indexed with key at offset 0, length 3.
+        let rc = unsafe {
+            cobol_file_open_indexed(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileAccessMode::Random,
+                FileOpenMode::Input,
+                rec_len,
+                0,
+                3,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        // Read by key "AAA".
+        let key = b"AAA";
+        let mut buf = [0u8; 10];
+        let rc = unsafe {
+            cobol_file_read_key(
+                fid,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                rec_len,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(&buf, b"AAArecord1");
+
+        // Read by key "CCC".
+        let key = b"CCC";
+        let rc = unsafe {
+            cobol_file_read_key(
+                fid,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                rec_len,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(&buf, b"CCCrecord3");
+
+        // Read by nonexistent key.
+        let key = b"ZZZ";
+        let rc = unsafe {
+            cobol_file_read_key(
+                fid,
+                key.as_ptr(),
+                key.len() as u32,
+                buf.as_mut_ptr(),
+                rec_len,
+            )
+        };
+        assert_eq!(rc, FS_REC_NOT_FOUND);
+
+        let _ = cobol_file_close(fid);
+        let _ = std::fs::remove_file(&path);
     }
 }

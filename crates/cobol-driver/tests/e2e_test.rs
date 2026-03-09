@@ -3,9 +3,9 @@
 // Tests the full flow: Source -> Lex -> Parse -> Sema -> HIR -> Codegen
 
 use cobol_codegen::generate_c;
-use cobol_common::{FileId, SourceFormat};
+use cobol_common::{FileId, SourceFormat, Span};
 use cobol_hir::lower_to_hir;
-use cobol_hir::{HirStatement, HirType};
+use cobol_hir::{HirDeclarative, HirStatement, HirType};
 use cobol_lexer::Lexer;
 use cobol_parser::Parser;
 use cobol_sema::SemanticAnalyzer;
@@ -284,7 +284,7 @@ PROCEDURE DIVISION.
         .any(|s| matches!(s, HirStatement::Move { .. })));
 
     let c_code = compile_to_c(src);
-    assert!(c_code.contains("strncpy"));
+    assert!(c_code.contains("cobol_move_string"));
     assert!(c_code.contains("cobol_display_int"));
 }
 
@@ -1409,5 +1409,1247 @@ PROCEDURE DIVISION.
         stdout.contains("BEFORE"),
         "should display BEFORE, got: {}",
         stdout
+    );
+}
+
+// ===========================================================================
+// Phase 1: OCCURS / Table (array) tests
+// ===========================================================================
+
+#[test]
+fn test_native_occurs_basic() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. OCCURS-BASIC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-TABLE PIC 9(3) OCCURS 10 TIMES.
+PROCEDURE DIVISION.
+    MOVE 42 TO WS-TABLE(3).
+    DISPLAY WS-TABLE(3).
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("42"),
+        "WS-TABLE(3) should be 42, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_native_occurs_variable_subscript() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. OCCURS-VAR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-TABLE PIC 9(3) OCCURS 10 TIMES.
+01  WS-IDX PIC 9(2) VALUE 5.
+PROCEDURE DIVISION.
+    MOVE 99 TO WS-TABLE(WS-IDX).
+    DISPLAY WS-TABLE(5).
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("99"),
+        "WS-TABLE(5) should be 99, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_native_occurs_loop() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. OCCURS-LOOP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-TABLE PIC 9(3) OCCURS 5 TIMES.
+01  WS-IDX PIC 9(2).
+PROCEDURE DIVISION.
+    PERFORM VARYING WS-IDX FROM 1 BY 1
+        UNTIL WS-IDX > 5
+        MOVE WS-IDX TO WS-TABLE(WS-IDX)
+    END-PERFORM.
+    DISPLAY WS-TABLE(1).
+    DISPLAY WS-TABLE(3).
+    DISPLAY WS-TABLE(5).
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.len() >= 3, "should have 3 lines, got: {}", stdout);
+    assert!(
+        lines[0].contains('1'),
+        "first element should be 1, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains('3'),
+        "third element should be 3, got: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].contains('5'),
+        "fifth element should be 5, got: {}",
+        lines[2]
+    );
+}
+
+// ===========================================================================
+// Phase 2: Decimal arithmetic tests
+// ===========================================================================
+
+#[test]
+fn test_native_decimal_add() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DEC-ADD.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-A PIC 9(3)V99 VALUE 10.50.
+01  WS-B PIC 9(3)V99 VALUE 20.25.
+PROCEDURE DIVISION.
+    ADD WS-A TO WS-B.
+    DISPLAY WS-B.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("30.75"),
+        "10.50 + 20.25 should be 030.75, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_native_decimal_display() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DEC-DISP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-AMOUNT PIC 9(5)V99 VALUE 123.45.
+PROCEDURE DIVISION.
+    DISPLAY WS-AMOUNT.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("123.45"),
+        "should display 123.45, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_native_decimal_subtract() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DEC-SUB.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-A PIC 9(3)V99 VALUE 50.00.
+01  WS-B PIC 9(3)V99 VALUE 12.75.
+PROCEDURE DIVISION.
+    SUBTRACT WS-B FROM WS-A.
+    DISPLAY WS-A.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("37.25"),
+        "50.00 - 12.75 should be 037.25, got: {}",
+        stdout
+    );
+}
+
+// ===========================================================================
+// Phase 3: Error handling tests
+// ===========================================================================
+
+#[test]
+fn test_native_on_size_error_overflow() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SIZE-ERR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-SMALL PIC 9(2) VALUE 99.
+PROCEDURE DIVISION.
+    ADD 1 TO WS-SMALL
+        ON SIZE ERROR DISPLAY \"OVERFLOW\"
+        NOT ON SIZE ERROR DISPLAY \"OK\"
+    END-ADD.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("OVERFLOW"),
+        "99 + 1 should overflow PIC 9(2), got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_native_on_size_error_no_overflow() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SIZE-OK.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-VAL PIC 9(3) VALUE 50.
+PROCEDURE DIVISION.
+    ADD 10 TO WS-VAL
+        ON SIZE ERROR DISPLAY \"OVERFLOW\"
+        NOT ON SIZE ERROR DISPLAY \"OK\"
+    END-ADD.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("OK"),
+        "50 + 10 should not overflow PIC 9(3), got: {}",
+        stdout
+    );
+}
+
+// -----------------------------------------------------------------------
+// Phase 4: Figurative constants (HIGH-VALUE, LOW-VALUE, QUOTE, NULL)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_native_high_value() {
+    // Verify HIGH-VALUES and LOW-VALUES are generated correctly by checking
+    // the generated C code for proper memset calls.
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. HV-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-HV PIC X(3).
+01  WS-LV PIC X(3).
+PROCEDURE DIVISION.
+    MOVE HIGH-VALUES TO WS-HV.
+    MOVE LOW-VALUES TO WS-LV.
+    DISPLAY \"DONE\".
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("memset(WS_HV, 0xFF,"),
+        "HIGH-VALUES should generate memset with 0xFF, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("memset(WS_LV, 0x00,"),
+        "LOW-VALUES should generate memset with 0x00, got:\n{}",
+        c_code
+    );
+
+    // Also verify the native binary runs successfully
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("DONE"),
+        "HIGH-VALUE/LOW-VALUE program should complete, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_native_low_value() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. LV-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-LV PIC X(3).
+01  WS-NUM PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    MOVE LOW-VALUES TO WS-LV.
+    IF WS-NUM = 0
+        DISPLAY \"LV-OK\"
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("LV-OK"), "LOW-VALUE test, got: {}", stdout);
+}
+
+// -----------------------------------------------------------------------
+// Phase 4: FILE STATUS variable - C codegen verification
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_file_status_codegen() {
+    // Test that FILE STATUS clause generates proper status updates in C code.
+    // We use parse_and_lower which includes the environment division lowering.
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FS-TEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT MYFILE ASSIGN TO \"test.dat\"
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD  MYFILE.
+01  MY-REC PIC X(80).
+WORKING-STORAGE SECTION.
+01  WS-FS PIC XX.
+PROCEDURE DIVISION.
+    OPEN INPUT MYFILE.
+    READ MYFILE.
+    CLOSE MYFILE.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+
+    // Verify file_status_vars was populated
+    assert_eq!(hir.file_status_vars.len(), 1);
+    assert_eq!(hir.file_status_vars[0].file_name.as_str(), "MYFILE");
+    assert_eq!(hir.file_status_vars[0].status_var.as_str(), "WS-FS");
+
+    let c_code = generate_c(&hir);
+
+    // OPEN should capture return value and set FILE STATUS
+    assert!(
+        c_code.contains("snprintf((char*)WS_FS"),
+        "OPEN should update FILE STATUS variable, got:\n{}",
+        c_code
+    );
+}
+
+// -----------------------------------------------------------------------
+// Phase A: Critical correctness tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_a1_alphanumeric_comparison_generates_memcmp() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CMP-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-A PIC X(10).
+01  WS-B PIC X(10).
+PROCEDURE DIVISION.
+    IF WS-A = WS-B
+        DISPLAY \"EQUAL\"
+    END-IF.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_compare_alphanumeric"),
+        "Alphanumeric comparison should use cobol_compare_alphanumeric, got:\n{}",
+        c_code
+    );
+    assert!(
+        !c_code.contains("(WS_A == WS_B)"),
+        "Should not generate pointer comparison for alphanumeric fields"
+    );
+}
+
+#[test]
+fn test_a1_alphanumeric_comparison_with_literal() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CMP-LIT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-STATUS PIC X(5).
+PROCEDURE DIVISION.
+    IF WS-STATUS = \"DONE\"
+        DISPLAY \"FINISHED\"
+    END-IF.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_compare_alphanumeric"),
+        "Alphanumeric-to-literal comparison should use runtime function, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a1_numeric_comparison_unchanged() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NUM-CMP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-X PIC 9(5).
+01  WS-Y PIC 9(5).
+PROCEDURE DIVISION.
+    IF WS-X > WS-Y
+        DISPLAY \"GREATER\"
+    END-IF.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    // The declaration always exists; check that no *call* is generated in the main body
+    let main_body = c_code.split("int main(").nth(1).unwrap_or("");
+    assert!(
+        !main_body.contains("cobol_compare_alphanumeric("),
+        "Numeric comparison should NOT call cobol_compare_alphanumeric, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("(WS_X > WS_Y)"),
+        "Numeric comparison should use direct operators, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a2_initialize_alphanumeric_spaces() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INIT-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NAME PIC X(20).
+PROCEDURE DIVISION.
+    INITIALIZE WS-NAME.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("memset(WS_NAME, ' ', 20)"),
+        "INITIALIZE of alphanumeric should fill with spaces, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a2_initialize_numeric_zero() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INIT-NUM.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-COUNT PIC 9(5).
+PROCEDURE DIVISION.
+    INITIALIZE WS-COUNT.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("WS_COUNT = 0; /* INITIALIZE */"),
+        "INITIALIZE of numeric should set to zero, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a3_sign_condition_positive() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SIGN-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NUM PIC S9(5).
+PROCEDURE DIVISION.
+    IF WS-NUM IS POSITIVE
+        DISPLAY \"POS\"
+    END-IF.
+    STOP RUN.
+";
+    let hir = compile_to_hir(src);
+    let c_code = generate_c(&hir);
+    // POSITIVE should generate > 0
+    assert!(
+        c_code.contains("> 0") || c_code.contains("> ((int64_t)0)"),
+        "POSITIVE condition should generate > 0, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a3_sign_condition_negative() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SIGN-NEG.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NUM PIC S9(5).
+PROCEDURE DIVISION.
+    IF WS-NUM IS NEGATIVE
+        DISPLAY \"NEG\"
+    END-IF.
+    STOP RUN.
+";
+    let hir = compile_to_hir(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("< 0") || c_code.contains("< ((int64_t)0)"),
+        "NEGATIVE condition should generate < 0, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a3_sign_condition_zero() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SIGN-ZERO.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NUM PIC S9(5).
+PROCEDURE DIVISION.
+    IF WS-NUM IS ZERO
+        DISPLAY \"ZERO\"
+    END-IF.
+    STOP RUN.
+";
+    let hir = compile_to_hir(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("== 0") || c_code.contains("== ((int64_t)0)"),
+        "ZERO condition should generate == 0, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a5_goto_depending_on() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. GOTO-DEP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-IDX PIC 9.
+PROCEDURE DIVISION.
+    GO TO PARA-A PARA-B PARA-C
+        DEPENDING ON WS-IDX.
+    STOP RUN.
+PARA-A.
+    DISPLAY \"A\".
+PARA-B.
+    DISPLAY \"B\".
+PARA-C.
+    DISPLAY \"C\".
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("switch"),
+        "GO TO DEPENDING ON should generate switch statement, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("case 1:") && c_code.contains("case 2:") && c_code.contains("case 3:"),
+        "switch should have cases 1, 2, 3, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a6_88_level_thru_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. THRU-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-SCORE PIC 9(3).
+    88 PASSING VALUES 60 THRU 100.
+PROCEDURE DIVISION.
+    IF PASSING
+        DISPLAY \"PASS\"
+    END-IF.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    // Should generate range comparison: score >= 60 AND score <= 100
+    assert!(
+        c_code.contains(">= ") && c_code.contains("<= "),
+        "88 THRU should generate range comparison (>= and <=), got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a4_class_condition_numeric() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CLASS-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-INPUT PIC X(10).
+PROCEDURE DIVISION.
+    IF WS-INPUT IS NUMERIC
+        DISPLAY \"NUMBER\"
+    END-IF.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_is_numeric"),
+        "IS NUMERIC should call cobol_is_numeric, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a4_class_condition_alphabetic() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CLASS-ALPHA.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-INPUT PIC X(10).
+PROCEDURE DIVISION.
+    IF WS-INPUT IS ALPHABETIC
+        DISPLAY \"ALPHA\"
+    END-IF.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_is_alphabetic"),
+        "IS ALPHABETIC should call cobol_is_alphabetic, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a4_class_condition_not_numeric() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CLASS-NOT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-INPUT PIC X(10).
+PROCEDURE DIVISION.
+    IF WS-INPUT IS NOT NUMERIC
+        DISPLAY \"NOT NUMBER\"
+    END-IF.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("(!") && c_code.contains("cobol_is_numeric"),
+        "NOT NUMERIC should generate negated call, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_a7_call_on_exception_not_dead() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CALL-EXC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+PROCEDURE DIVISION.
+    CALL \"SUBPROG\"
+        ON EXCEPTION DISPLAY \"ERROR\"
+        NOT ON EXCEPTION DISPLAY \"OK\"
+    END-CALL.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        !c_code.contains("if (0)"),
+        "ON EXCEPTION should not generate dead if(0) code, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("_call_failed"),
+        "ON EXCEPTION should use _call_failed flag, got:\n{}",
+        c_code
+    );
+}
+
+// -----------------------------------------------------------------------
+// Phase B: Common pattern completion tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_b1_string_with_delimiter() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STR-DELIM.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-RESULT PIC X(30).
+01  WS-FIRST  PIC X(10) VALUE \"HELLO\".
+01  WS-SECOND PIC X(10) VALUE \"WORLD\".
+PROCEDURE DIVISION.
+    STRING WS-FIRST DELIMITED BY SPACE
+           WS-SECOND DELIMITED BY SIZE
+           INTO WS-RESULT.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_string_concat"),
+        "STRING should call cobol_string_concat, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("_delim_ptr_") || c_code.contains("delim"),
+        "STRING with DELIMITED BY should set up delimiter info, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_b2_move_string_literal_to_alphanumeric() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MOV-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NAME PIC X(10).
+PROCEDURE DIVISION.
+    MOVE \"HELLO\" TO WS-NAME.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_move_string"),
+        "String literal to alphanumeric MOVE should use cobol_move_string, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_b2_move_numeric_to_alphanumeric() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MOV-NUM2ALPHA.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NUM   PIC 9(5) VALUE 42.
+01  WS-DISP  PIC X(10).
+PROCEDURE DIVISION.
+    MOVE WS-NUM TO WS-DISP.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_move_numeric_to_display"),
+        "Numeric to alphanumeric MOVE should use cobol_move_numeric_to_display, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_b2_move_alphanumeric_to_numeric() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MOV-ALPHA2NUM.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-STR   PIC X(5) VALUE \"12345\".
+01  WS-NUM   PIC 9(5).
+PROCEDURE DIVISION.
+    MOVE WS-STR TO WS-NUM.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_func_numval"),
+        "Alphanumeric to numeric MOVE should use cobol_func_numval, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_b4_inspect_tallying_all() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSP-TALLY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-STR   PIC X(10) VALUE \"AABBAACCA\".
+01  WS-COUNT PIC 9(3)  VALUE 0.
+PROCEDURE DIVISION.
+    INSPECT WS-STR TALLYING WS-COUNT FOR ALL \"A\".
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_inspect_tallying"),
+        "INSPECT TALLYING should call cobol_inspect_tallying, got:\n{}",
+        c_code
+    );
+    // mode 1 = ALL
+    assert!(
+        c_code.contains(", 1);"),
+        "INSPECT TALLYING ALL should use mode 1, got:\n{}",
+        c_code
+    );
+    // Counter variable should be incremented
+    assert!(
+        c_code.contains("WS_COUNT +="),
+        "INSPECT TALLYING should increment counter variable, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_b4_inspect_replacing_all() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSP-REPL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-STR PIC X(10) VALUE \"AABBAACCA\".
+PROCEDURE DIVISION.
+    INSPECT WS-STR REPLACING ALL \"A\" BY \"X\".
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_inspect_replacing"),
+        "INSPECT REPLACING should call cobol_inspect_replacing, got:\n{}",
+        c_code
+    );
+    // mode 1 = ALL
+    assert!(
+        c_code.contains(", 1);"),
+        "INSPECT REPLACING ALL should use mode 1, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_b5_sort_with_using() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SORT-TEST.
+DATA DIVISION.
+FILE SECTION.
+FD  SORT-FILE.
+01  SORT-REC PIC X(80).
+FD  INPUT-FILE.
+01  INPUT-REC PIC X(80).
+WORKING-STORAGE SECTION.
+01  WS-KEY PIC X(10).
+PROCEDURE DIVISION.
+    SORT SORT-FILE ON ASCENDING KEY WS-KEY
+        USING INPUT-FILE
+        GIVING SORT-FILE.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    // Should read records from USING file
+    assert!(
+        c_code.contains("_sort_count"),
+        "SORT with USING should track record count, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_sort("),
+        "SORT should call cobol_sort, got:\n{}",
+        c_code
+    );
+}
+
+// -----------------------------------------------------------------------
+// Phase C: Completeness improvement tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_c4_refmod_dynamic_value() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. REFMOD-DYN.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-STR PIC X(20) VALUE \"HELLO WORLD\".
+01  WS-POS PIC 9(3) VALUE 7.
+01  WS-LEN PIC 9(3) VALUE 5.
+PROCEDURE DIVISION.
+    DISPLAY WS-STR(WS-POS:WS-LEN).
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    // Dynamic start/length should use variable names, not literals
+    assert!(
+        c_code.contains("WS_POS"),
+        "Reference modification should use variable WS_POS, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("WS_LEN"),
+        "Reference modification should use variable WS_LEN, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_c1_redefines_pointer_cast() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. REDEF-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NUM   PIC 9(5) VALUE 12345.
+01  WS-STR   REDEFINES WS-NUM PIC X(5).
+PROCEDURE DIVISION.
+    DISPLAY WS-STR.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("REDEFINES"),
+        "REDEFINES should be annotated in generated C, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("WS_STR") && c_code.contains("WS_NUM"),
+        "Both WS_STR and WS_NUM should be in generated C, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_c5_call_by_value() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CALL-VAL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NUM PIC 9(5) VALUE 42.
+PROCEDURE DIVISION.
+    CALL \"SUBPROG\" USING BY VALUE WS-NUM.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    // BY VALUE should pass the value directly, not &var
+    let main_body = c_code.split("int main(").nth(1).unwrap_or("");
+    assert!(
+        main_body.contains("int64_t"),
+        "CALL BY VALUE should declare int64_t param type, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_c5_call_by_content() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CALL-CONT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NUM PIC 9(5) VALUE 42.
+PROCEDURE DIVISION.
+    CALL \"SUBPROG\" USING BY CONTENT WS-NUM.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    // BY CONTENT should create a copy variable
+    let main_body = c_code.split("int main(").nth(1).unwrap_or("");
+    assert!(
+        main_body.contains("_content_copy_"),
+        "CALL BY CONTENT should create a copy variable, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_c6_on_size_error_overflow_check() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SIZE-ERR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-A PIC 9(3) VALUE 999.
+01  WS-B PIC 9(3).
+PROCEDURE DIVISION.
+    ADD 1 TO WS-A
+        ON SIZE ERROR
+            DISPLAY \"OVERFLOW\"
+        NOT ON SIZE ERROR
+            DISPLAY \"OK\"
+    END-ADD.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("_size_error"),
+        "ON SIZE ERROR should use _size_error flag, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("llabs"),
+        "ON SIZE ERROR should check absolute value with llabs, got:\n{}",
+        c_code
+    );
+}
+
+// -----------------------------------------------------------------------
+// Phase C-3: DECLARATIVES section
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_c3_declaratives_handler_generation() {
+    // Build HIR directly with a declarative section since the parser
+    // doesn't yet support DECLARATIVES syntax.
+    let mut hir = parse_and_lower(
+        "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DECL-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    DISPLAY \"MAIN\".
+    STOP RUN.
+",
+    );
+
+    // Inject a declarative handler for a file named "MY-FILE"
+    hir.declaratives.push(HirDeclarative {
+        name: "FILE-ERR-SECTION".into(),
+        file_names: vec!["MY-FILE".into()],
+        body: vec![HirStatement::Display {
+            operands: vec![cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::String(
+                "FILE ERROR HANDLER".into(),
+            ))],
+            no_advancing: false,
+            span: Span::dummy(),
+        }],
+    });
+
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("decl_FILE_ERR_SECTION"),
+        "Should generate declarative handler function, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("_check_file_declarative"),
+        "Should generate dispatcher function, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("MY_FILE"),
+        "Dispatcher should match file name MY_FILE, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("FILE ERROR HANDLER"),
+        "Handler body should contain the DISPLAY statement, got:\n{}",
+        c_code
+    );
+}
+
+// -----------------------------------------------------------------------
+// Phase C-2: CORRESPONDING (CORR) matching
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_c2_move_corresponding() {
+    use cobol_hir::HirDataItem;
+    // Build HIR directly with group items having matching members.
+    let hir = cobol_hir::HirProgram {
+        name: "CORR-TEST".into(),
+        data_items: vec![
+            HirDataItem {
+                name: "WS-SRC".into(),
+                data_type: HirType::Group {
+                    members: vec![
+                        HirDataItem {
+                            name: "FIELD-A".into(),
+                            data_type: HirType::Numeric {
+                                size: 5,
+                                decimal_places: 0,
+                                is_signed: false,
+                            },
+                            initial_value: None,
+                            occurs: None,
+                            redefines: None,
+                            span: Span::dummy(),
+                        },
+                        HirDataItem {
+                            name: "FIELD-B".into(),
+                            data_type: HirType::Alphanumeric { size: 10 },
+                            initial_value: None,
+                            occurs: None,
+                            redefines: None,
+                            span: Span::dummy(),
+                        },
+                    ],
+                    size: 15,
+                },
+                initial_value: None,
+                occurs: None,
+                redefines: None,
+                span: Span::dummy(),
+            },
+            HirDataItem {
+                name: "WS-DST".into(),
+                data_type: HirType::Group {
+                    members: vec![
+                        HirDataItem {
+                            name: "FIELD-A".into(),
+                            data_type: HirType::Numeric {
+                                size: 5,
+                                decimal_places: 0,
+                                is_signed: false,
+                            },
+                            initial_value: None,
+                            occurs: None,
+                            redefines: None,
+                            span: Span::dummy(),
+                        },
+                        HirDataItem {
+                            name: "FIELD-C".into(),
+                            data_type: HirType::Alphanumeric { size: 10 },
+                            initial_value: None,
+                            occurs: None,
+                            redefines: None,
+                            span: Span::dummy(),
+                        },
+                    ],
+                    size: 15,
+                },
+                initial_value: None,
+                occurs: None,
+                redefines: None,
+                span: Span::dummy(),
+            },
+        ],
+        paragraphs: Vec::new(),
+        body: vec![HirStatement::MoveCorresponding {
+            from: "WS-SRC".into(),
+            to: "WS-DST".into(),
+            span: Span::dummy(),
+        }],
+        classes: Vec::new(),
+        functions: Vec::new(),
+        typedefs: Vec::new(),
+        interfaces: Vec::new(),
+        file_status_vars: Vec::new(),
+        declaratives: Vec::new(),
+        span: Span::dummy(),
+    };
+
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("MOVE CORRESPONDING"),
+        "Should have MOVE CORRESPONDING comment, got:\n{}",
+        c_code
+    );
+    // FIELD-A is numeric in both groups → should generate assignment
+    assert!(
+        c_code.contains("WS_DST.FIELD_A = WS_SRC.FIELD_A"),
+        "Should move matching FIELD-A, got:\n{}",
+        c_code
+    );
+    // FIELD-B and FIELD-C don't match → should NOT appear
+    assert!(
+        !c_code.contains("FIELD_B = ") && !c_code.contains("FIELD_C = "),
+        "Should NOT move non-matching fields, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_c2_add_corresponding() {
+    use cobol_hir::HirDataItem;
+    let hir = cobol_hir::HirProgram {
+        name: "ADD-CORR-TEST".into(),
+        data_items: vec![
+            HirDataItem {
+                name: "GRP-A".into(),
+                data_type: HirType::Group {
+                    members: vec![HirDataItem {
+                        name: "AMT".into(),
+                        data_type: HirType::Numeric {
+                            size: 9,
+                            decimal_places: 2,
+                            is_signed: false,
+                        },
+                        initial_value: None,
+                        occurs: None,
+                        redefines: None,
+                        span: Span::dummy(),
+                    }],
+                    size: 9,
+                },
+                initial_value: None,
+                occurs: None,
+                redefines: None,
+                span: Span::dummy(),
+            },
+            HirDataItem {
+                name: "GRP-B".into(),
+                data_type: HirType::Group {
+                    members: vec![HirDataItem {
+                        name: "AMT".into(),
+                        data_type: HirType::Numeric {
+                            size: 9,
+                            decimal_places: 2,
+                            is_signed: false,
+                        },
+                        initial_value: None,
+                        occurs: None,
+                        redefines: None,
+                        span: Span::dummy(),
+                    }],
+                    size: 9,
+                },
+                initial_value: None,
+                occurs: None,
+                redefines: None,
+                span: Span::dummy(),
+            },
+        ],
+        paragraphs: Vec::new(),
+        body: vec![HirStatement::AddCorresponding {
+            from: "GRP-A".into(),
+            to: "GRP-B".into(),
+            on_size_error: Vec::new(),
+            not_on_size_error: Vec::new(),
+            span: Span::dummy(),
+        }],
+        classes: Vec::new(),
+        functions: Vec::new(),
+        typedefs: Vec::new(),
+        interfaces: Vec::new(),
+        file_status_vars: Vec::new(),
+        declaratives: Vec::new(),
+        span: Span::dummy(),
+    };
+
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("ADD CORRESPONDING"),
+        "Should have ADD CORRESPONDING comment, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("GRP_B.AMT = GRP_B.AMT + GRP_A.AMT"),
+        "Should add matching AMT field, got:\n{}",
+        c_code
     );
 }

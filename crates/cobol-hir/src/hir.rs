@@ -22,7 +22,28 @@ pub struct HirProgram {
     pub typedefs: Vec<HirTypedef>,
     /// COBOL 2023+: Interface definitions (INTERFACE-ID).
     pub interfaces: Vec<HirInterface>,
+    /// FILE STATUS variable mapping: file_name → status variable name.
+    pub file_status_vars: Vec<HirFileInfo>,
+    /// DECLARATIVES sections: USE AFTER EXCEPTION handlers for file I/O.
+    pub declaratives: Vec<HirDeclarative>,
     pub span: Span,
+}
+
+/// A USE AFTER EXCEPTION declarative section.
+#[derive(Debug, Clone)]
+pub struct HirDeclarative {
+    pub name: SmolStr,
+    /// File names this declarative applies to.
+    pub file_names: Vec<SmolStr>,
+    /// Statements in the declarative body.
+    pub body: Vec<HirStatement>,
+}
+
+/// Maps a COBOL file name to its FILE STATUS variable.
+#[derive(Debug, Clone)]
+pub struct HirFileInfo {
+    pub file_name: SmolStr,
+    pub status_var: SmolStr,
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +116,13 @@ pub enum HirParamMode {
     ByValue,
 }
 
+/// A CALL parameter with its passing mode.
+#[derive(Debug, Clone)]
+pub struct HirCallParam {
+    pub expr: HirExpr,
+    pub mode: HirParamMode,
+}
+
 /// A named paragraph from the PROCEDURE DIVISION, preserved for
 /// PERFORM procedure-name support.
 #[derive(Debug, Clone)]
@@ -110,6 +138,10 @@ pub struct HirDataItem {
     pub name: SmolStr,
     pub data_type: HirType,
     pub initial_value: Option<HirLiteral>,
+    /// OCCURS clause: number of repetitions (None = scalar).
+    pub occurs: Option<u32>,
+    /// REDEFINES clause: the name of the redefined item.
+    pub redefines: Option<SmolStr>,
     pub span: Span,
 }
 
@@ -158,6 +190,14 @@ pub enum HirLiteral {
     String(SmolStr),
     Zero,
     Space,
+    /// HIGH-VALUE / HIGH-VALUES: all bits 1 (0xFF per byte).
+    HighValue,
+    /// LOW-VALUE / LOW-VALUES: all bits 0 (0x00 per byte).
+    LowValue,
+    /// QUOTE / QUOTES: double-quote character per byte.
+    Quote,
+    /// NULL / NULLS: null pointer.
+    Null,
 }
 
 /// A MOVE target, which may be a plain variable or a reference-modified variable.
@@ -170,6 +210,11 @@ pub enum HirMoveTarget {
         variable: SmolStr,
         start: HirExpr,
         length: Option<HirExpr>,
+    },
+    /// A subscripted table element (e.g., `WS-TABLE(3)`).
+    Subscript {
+        variable: SmolStr,
+        subscripts: Vec<HirExpr>,
     },
 }
 
@@ -184,6 +229,28 @@ pub enum HirStatement {
     Move {
         from: HirExpr,
         to: Vec<HirMoveTarget>,
+        span: Span,
+    },
+    /// MOVE CORRESPONDING: move matching fields from source group to target group.
+    MoveCorresponding {
+        from: SmolStr,
+        to: SmolStr,
+        span: Span,
+    },
+    /// ADD CORRESPONDING: add matching numeric fields from source to target group.
+    AddCorresponding {
+        from: SmolStr,
+        to: SmolStr,
+        on_size_error: Vec<HirStatement>,
+        not_on_size_error: Vec<HirStatement>,
+        span: Span,
+    },
+    /// SUBTRACT CORRESPONDING: subtract matching numeric fields from source to target.
+    SubtractCorresponding {
+        from: SmolStr,
+        to: SmolStr,
+        on_size_error: Vec<HirStatement>,
+        not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     Compute {
@@ -234,7 +301,7 @@ pub enum HirStatement {
     },
     Call {
         program: HirExpr,
-        params: Vec<HirExpr>,
+        params: Vec<HirCallParam>,
         on_exception: Vec<HirStatement>,
         not_on_exception: Vec<HirStatement>,
         span: Span,
@@ -308,7 +375,7 @@ pub enum HirStatement {
     /// STRING statement.
     StringStmt {
         into: SmolStr,
-        sources: Vec<HirExpr>,
+        sources: Vec<HirStringSource>,
         on_overflow: Vec<HirStatement>,
         span: Span,
     },
@@ -466,6 +533,13 @@ pub enum HirExpr {
         start: Box<HirExpr>,
         length: Option<Box<HirExpr>>,
     },
+    /// Subscripted table access: `TABLE(idx1, idx2, ...)`.
+    ///
+    /// Subscripts are 1-based COBOL indices.
+    Subscript {
+        variable: SmolStr,
+        subscripts: Vec<HirExpr>,
+    },
 }
 
 /// Binary arithmetic operators.
@@ -484,6 +558,15 @@ pub enum HirUnaryOp {
     Neg,
 }
 
+/// Class condition types for IS NUMERIC, IS ALPHABETIC, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirClassType {
+    Numeric,
+    Alphabetic,
+    AlphabeticLower,
+    AlphabeticUpper,
+}
+
 /// A conditional expression in the HIR.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirCondition {
@@ -491,6 +574,11 @@ pub enum HirCondition {
         left: HirExpr,
         op: HirCompareOp,
         right: HirExpr,
+    },
+    /// Class condition: IS NUMERIC, IS ALPHABETIC, etc.
+    ClassCondition {
+        operand: HirExpr,
+        class: HirClassType,
     },
     And(Box<HirCondition>, Box<HirCondition>),
     Or(Box<HirCondition>, Box<HirCondition>),
@@ -568,6 +656,14 @@ pub enum HirSortOrder {
     Descending,
 }
 
+/// A source operand for STRING, optionally with a DELIMITED BY clause.
+#[derive(Debug, Clone)]
+pub struct HirStringSource {
+    pub value: HirExpr,
+    /// `None` means DELIMITED BY SIZE (the whole field).
+    pub delimiter: Option<HirExpr>,
+}
+
 /// A delimiter specification for UNSTRING.
 #[derive(Debug, Clone)]
 pub struct HirUnstringDelimiter {
@@ -584,17 +680,59 @@ pub enum HirStartRelation {
     NotLessThan,
 }
 
-/// The kind of INSPECT operation (simplified).
+/// The kind of INSPECT operation.
 #[derive(Debug, Clone)]
 pub enum HirInspectKind {
     /// INSPECT TALLYING -- count occurrences.
-    Tallying,
+    Tallying { tallying: Vec<HirInspectTallying> },
     /// INSPECT REPLACING -- replace characters.
-    Replacing,
+    Replacing { replacing: Vec<HirInspectReplacing> },
     /// INSPECT TALLYING AND REPLACING.
-    TallyingReplacing,
+    TallyingReplacing {
+        tallying: Vec<HirInspectTallying>,
+        replacing: Vec<HirInspectReplacing>,
+    },
     /// INSPECT CONVERTING.
-    Converting,
+    Converting { from: HirExpr, to: HirExpr },
+}
+
+/// A tallying phrase in INSPECT TALLYING.
+#[derive(Debug, Clone)]
+pub struct HirInspectTallying {
+    pub counter: SmolStr,
+    pub kind: HirTallyingKind,
+    pub before_after: Vec<HirBeforeAfter>,
+}
+
+/// Kind of tallying in INSPECT.
+#[derive(Debug, Clone)]
+pub enum HirTallyingKind {
+    Characters,
+    All(HirExpr),
+    Leading(HirExpr),
+}
+
+/// A replacing phrase in INSPECT REPLACING.
+#[derive(Debug, Clone)]
+pub struct HirInspectReplacing {
+    pub kind: HirReplacingKind,
+    pub before_after: Vec<HirBeforeAfter>,
+}
+
+/// Kind of replacing in INSPECT.
+#[derive(Debug, Clone)]
+pub enum HirReplacingKind {
+    Characters(HirExpr),
+    All { from: HirExpr, to: HirExpr },
+    Leading { from: HirExpr, to: HirExpr },
+    First { from: HirExpr, to: HirExpr },
+}
+
+/// BEFORE/AFTER INITIAL phrase for INSPECT.
+#[derive(Debug, Clone)]
+pub struct HirBeforeAfter {
+    pub is_before: bool,
+    pub value: HirExpr,
 }
 
 impl std::fmt::Display for HirProgram {
@@ -685,6 +823,15 @@ fn write_stmt(
                 format_expr(from),
                 targets.join(", ")
             )
+        }
+        HirStatement::MoveCorresponding { from, to, .. } => {
+            writeln!(f, "{pad}MOVE CORRESPONDING {from} TO {to}")
+        }
+        HirStatement::AddCorresponding { from, to, .. } => {
+            writeln!(f, "{pad}ADD CORRESPONDING {from} TO {to}")
+        }
+        HirStatement::SubtractCorresponding { from, to, .. } => {
+            writeln!(f, "{pad}SUBTRACT CORRESPONDING {from} FROM {to}")
         }
         HirStatement::Compute { targets, expr, .. } => {
             writeln!(
@@ -872,6 +1019,10 @@ fn format_expr(expr: &HirExpr) -> String {
             HirLiteral::String(s) => format!("\"{}\"", s),
             HirLiteral::Zero => "ZERO".to_string(),
             HirLiteral::Space => "SPACE".to_string(),
+            HirLiteral::HighValue => "HIGH-VALUE".to_string(),
+            HirLiteral::LowValue => "LOW-VALUE".to_string(),
+            HirLiteral::Quote => "QUOTE".to_string(),
+            HirLiteral::Null => "NULL".to_string(),
         },
         HirExpr::Variable(name) => name.to_string(),
         HirExpr::BinaryOp { op, left, right } => {
@@ -905,6 +1056,13 @@ fn format_expr(expr: &HirExpr) -> String {
                 format!("{}({}:)", variable, format_expr(start))
             }
         }
+        HirExpr::Subscript {
+            variable,
+            subscripts,
+        } => {
+            let subs: Vec<_> = subscripts.iter().map(format_expr).collect();
+            format!("{}({})", variable, subs.join(", "))
+        }
     }
 }
 
@@ -921,6 +1079,13 @@ fn format_move_target(target: &HirMoveTarget) -> String {
             } else {
                 format!("{}({}:)", variable, format_expr(start))
             }
+        }
+        HirMoveTarget::Subscript {
+            variable,
+            subscripts,
+        } => {
+            let subs: Vec<_> = subscripts.iter().map(format_expr).collect();
+            format!("{}({})", variable, subs.join(", "))
         }
     }
 }

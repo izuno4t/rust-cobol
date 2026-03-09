@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use cobol_ast::{
     data_div::ValueClause,
-    expr::{ArithOp, CompareOp, Condition, FigurativeConstant, UnaryArithOp},
-    proc_div::{Paragraph, ProcedureDivision},
+    expr::{ArithOp, ClassType, CompareOp, Condition, FigurativeConstant, SignType, UnaryArithOp},
+    proc_div::{Paragraph, ProcedureDivision, UseStatement},
     statement::{
         AcceptStatement, AddStatement, CallStatement, ComputeStatement, DisplayStatement,
         DivideStatement, EvaluateStatement, GoToStatement, IfStatement, InitializeStatement,
@@ -23,17 +23,26 @@ use cobol_common::Span;
 use smol_str::SmolStr;
 
 use crate::hir::{
-    HirBinOp, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirInspectKind, HirLiteral,
-    HirMoveTarget, HirOpenEntry, HirOpenMode, HirParagraph, HirPerformKind, HirProgram, HirSortKey,
-    HirSortOrder, HirStartRelation, HirStatement, HirType, HirUnaryOp, HirUnstringDelimiter,
+    HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCompareOp, HirCondition, HirDataItem,
+    HirDeclarative, HirExpr, HirFileInfo, HirInspectKind, HirInspectReplacing, HirInspectTallying,
+    HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode, HirParagraph, HirParamMode,
+    HirPerformKind, HirProgram, HirReplacingKind, HirSortKey, HirSortOrder, HirStartRelation,
+    HirStatement, HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
 };
+
+/// A single or range value for an 88-level condition.
+#[derive(Debug, Clone)]
+enum ConditionValue {
+    Single(HirLiteral),
+    Range { from: HirLiteral, to: HirLiteral },
+}
 
 /// Information about an 88-level condition name: the parent variable name
 /// and the literal values that make the condition true.
 #[derive(Debug, Clone)]
 struct ConditionNameInfo {
     parent_name: SmolStr,
-    values: Vec<HirLiteral>,
+    values: Vec<ConditionValue>,
 }
 
 /// Lowers a COBOL AST program into the HIR.
@@ -59,6 +68,12 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         .map(|proc| lower_procedure_division(proc, &condition_names))
         .unwrap_or_default();
 
+    // Extract FILE STATUS variable mappings from ENVIRONMENT DIVISION.
+    let file_status_vars = extract_file_status_vars(program);
+
+    // Lower DECLARATIVES sections (USE AFTER EXCEPTION handlers).
+    let declaratives = lower_declaratives(program, &condition_names);
+
     HirProgram {
         name,
         data_items,
@@ -68,6 +83,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         functions: Vec::new(),
         typedefs: Vec::new(),
         interfaces: Vec::new(),
+        file_status_vars,
+        declaratives,
         span: program.span,
     }
 }
@@ -108,13 +125,13 @@ fn collect_condition_names_from_item(
                         for val_item in &cv.values {
                             match val_item {
                                 cobol_ast::data_div::ConditionValueItem::Single(lit) => {
-                                    values.push(lower_literal(lit));
+                                    values.push(ConditionValue::Single(lower_literal(lit)));
                                 }
                                 cobol_ast::data_div::ConditionValueItem::Range { from, to } => {
-                                    // For ranges, store the 'from' value as a simplified approach.
-                                    // A full implementation would generate from <= parent <= to.
-                                    values.push(lower_literal(from));
-                                    values.push(lower_literal(to));
+                                    values.push(ConditionValue::Range {
+                                        from: lower_literal(from),
+                                        to: lower_literal(to),
+                                    });
                                 }
                             }
                         }
@@ -172,11 +189,14 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
     if let Some(name) = &item.name {
         let data_type = determine_hir_type(item);
         let initial_value = item.value.as_ref().map(lower_value_clause);
+        let occurs = item.occurs.as_ref().map(|o| o.max);
 
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
             initial_value,
+            occurs,
+            redefines: item.redefines.clone(),
             span: item.span,
         });
     }
@@ -240,10 +260,13 @@ fn determine_hir_type(item: &DataItem) -> HirType {
             if let Some(name) = &child.name {
                 let data_type = determine_hir_type(child);
                 let initial_value = child.value.as_ref().map(lower_value_clause);
+                let occurs = child.occurs.as_ref().map(|o| o.max);
                 members.push(HirDataItem {
                     name: name.clone(),
                     data_type,
                     initial_value,
+                    occurs,
+                    redefines: child.redefines.clone(),
                     span: child.span,
                 });
             }
@@ -293,7 +316,11 @@ fn lower_literal(lit: &Literal) -> HirLiteral {
         Literal::String(s) => HirLiteral::String(s.clone()),
         Literal::FigurativeConstant(FigurativeConstant::Zero) => HirLiteral::Zero,
         Literal::FigurativeConstant(FigurativeConstant::Space) => HirLiteral::Space,
-        Literal::FigurativeConstant(_) => HirLiteral::Zero, // simplification for now
+        Literal::FigurativeConstant(FigurativeConstant::HighValue) => HirLiteral::HighValue,
+        Literal::FigurativeConstant(FigurativeConstant::LowValue) => HirLiteral::LowValue,
+        Literal::FigurativeConstant(FigurativeConstant::Quote) => HirLiteral::Quote,
+        Literal::FigurativeConstant(FigurativeConstant::Null) => HirLiteral::Null,
+        Literal::FigurativeConstant(FigurativeConstant::All) => HirLiteral::Zero, // ALL requires context
         Literal::HexString(s) => HirLiteral::String(s.clone()),
         Literal::Boolean(s) => HirLiteral::String(s.clone()),
         Literal::National(s) => HirLiteral::String(s.clone()),
@@ -460,6 +487,26 @@ fn lower_display(display: &DisplayStatement) -> HirStatement {
 }
 
 fn lower_move(mv: &MoveStatement) -> HirStatement {
+    if mv.corresponding {
+        // MOVE CORRESPONDING: source and target are group names.
+        let from_name = match &mv.from {
+            Expr::Identifier(qname) => qname.name.clone(),
+            _ => SmolStr::from("FILLER"),
+        };
+        let to_name = mv
+            .to
+            .first()
+            .map(|e| match e {
+                Expr::Identifier(qname) => qname.name.clone(),
+                _ => SmolStr::from("FILLER"),
+            })
+            .unwrap_or_else(|| SmolStr::from("FILLER"));
+        return HirStatement::MoveCorresponding {
+            from: from_name,
+            to: to_name,
+            span: mv.span,
+        };
+    }
     let from = lower_expr(&mv.from);
     let to = mv.to.iter().map(lower_move_target).collect();
     HirStatement::Move {
@@ -471,7 +518,16 @@ fn lower_move(mv: &MoveStatement) -> HirStatement {
 
 fn lower_move_target(expr: &Expr) -> HirMoveTarget {
     match expr {
-        Expr::Identifier(qname) => HirMoveTarget::Variable(qname.name.clone()),
+        Expr::Identifier(qname) => {
+            if qname.subscripts.is_empty() {
+                HirMoveTarget::Variable(qname.name.clone())
+            } else {
+                HirMoveTarget::Subscript {
+                    variable: qname.name.clone(),
+                    subscripts: qname.subscripts.iter().map(lower_expr).collect(),
+                }
+            }
+        }
         Expr::ReferenceModification {
             variable,
             start,
@@ -517,6 +573,27 @@ fn lower_add(
     add: &AddStatement,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
+    if add.corresponding {
+        // ADD CORRESPONDING: source is first operand (group), target is first TO (group).
+        let from_name = match &add.operands[0] {
+            Expr::Identifier(qname) => qname.name.clone(),
+            _ => SmolStr::from("FILLER"),
+        };
+        let to_name = add
+            .to
+            .first()
+            .map(|t| t.target.name.clone())
+            .unwrap_or_else(|| SmolStr::from("FILLER"));
+        let on_size_error = lower_statements(&add.on_size_error, condition_names);
+        let not_on_size_error = lower_statements(&add.not_on_size_error, condition_names);
+        return HirStatement::AddCorresponding {
+            from: from_name,
+            to: to_name,
+            on_size_error,
+            not_on_size_error,
+            span: add.span,
+        };
+    }
     let operands = add.operands.iter().map(lower_expr).collect();
     let to = add.to.iter().map(|t| t.target.name.clone()).collect();
     let on_size_error = lower_statements(&add.on_size_error, condition_names);
@@ -534,6 +611,27 @@ fn lower_subtract(
     sub: &SubtractStatement,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
+    if sub.corresponding {
+        // SUBTRACT CORRESPONDING: source is first operand (group), target is first FROM (group).
+        let from_name = match &sub.operands[0] {
+            Expr::Identifier(qname) => qname.name.clone(),
+            _ => SmolStr::from("FILLER"),
+        };
+        let to_name = sub
+            .from
+            .first()
+            .map(|t| t.target.name.clone())
+            .unwrap_or_else(|| SmolStr::from("FILLER"));
+        let on_size_error = lower_statements(&sub.on_size_error, condition_names);
+        let not_on_size_error = lower_statements(&sub.not_on_size_error, condition_names);
+        return HirStatement::SubtractCorresponding {
+            from: from_name,
+            to: to_name,
+            on_size_error,
+            not_on_size_error,
+            span: sub.span,
+        };
+    }
     let operands = sub.operands.iter().map(lower_expr).collect();
     let from = sub.from.iter().map(|t| t.target.name.clone()).collect();
     let on_size_error = lower_statements(&sub.on_size_error, condition_names);
@@ -779,8 +877,23 @@ fn lower_call(
     call: &CallStatement,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
+    use cobol_ast::proc_div::ParamMode;
     let program = lower_expr(&call.program);
-    let params = call.using.iter().map(|p| lower_expr(&p.value)).collect();
+    let params = call
+        .using
+        .iter()
+        .map(|p| {
+            let mode = match p.mode {
+                ParamMode::ByReference => HirParamMode::ByReference,
+                ParamMode::ByContent => HirParamMode::ByContent,
+                ParamMode::ByValue => HirParamMode::ByValue,
+            };
+            HirCallParam {
+                expr: lower_expr(&p.value),
+                mode,
+            }
+        })
+        .collect();
     let on_exception = lower_statements(&call.on_exception, condition_names);
     let not_on_exception = lower_statements(&call.not_on_exception, condition_names);
     HirStatement::Call {
@@ -1004,10 +1117,20 @@ fn lower_string_stmt(
     string_stmt: &cobol_ast::statement::StringStatement,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
+    use cobol_ast::statement::StringDelimiter;
     let sources = string_stmt
         .sources
         .iter()
-        .flat_map(|s| s.items.iter().map(lower_expr))
+        .flat_map(|s| {
+            let delimiter = match &s.delimited_by {
+                StringDelimiter::Size => None,
+                StringDelimiter::Value(expr) => Some(lower_expr(expr)),
+            };
+            s.items.iter().map(move |item| HirStringSource {
+                value: lower_expr(item),
+                delimiter: delimiter.clone(),
+            })
+        })
         .collect();
     let on_overflow = lower_statements(&string_stmt.on_overflow, condition_names);
     HirStatement::StringStmt {
@@ -1077,17 +1200,74 @@ fn lower_sort(sort: &cobol_ast::statement::SortStatement) -> HirStatement {
 
 fn lower_inspect(inspect: &cobol_ast::statement::InspectStatement) -> HirStatement {
     let kind = match &inspect.kind {
-        cobol_ast::statement::InspectKind::Tallying { .. } => HirInspectKind::Tallying,
-        cobol_ast::statement::InspectKind::Replacing { .. } => HirInspectKind::Replacing,
-        cobol_ast::statement::InspectKind::TallyingReplacing { .. } => {
-            HirInspectKind::TallyingReplacing
+        cobol_ast::statement::InspectKind::Tallying { tallying } => HirInspectKind::Tallying {
+            tallying: tallying.iter().map(lower_inspect_tallying).collect(),
+        },
+        cobol_ast::statement::InspectKind::Replacing { replacing } => HirInspectKind::Replacing {
+            replacing: replacing.iter().map(lower_inspect_replacing).collect(),
+        },
+        cobol_ast::statement::InspectKind::TallyingReplacing {
+            tallying,
+            replacing,
+        } => HirInspectKind::TallyingReplacing {
+            tallying: tallying.iter().map(lower_inspect_tallying).collect(),
+            replacing: replacing.iter().map(lower_inspect_replacing).collect(),
+        },
+        cobol_ast::statement::InspectKind::Converting { from, to, .. } => {
+            HirInspectKind::Converting {
+                from: lower_expr(from),
+                to: lower_expr(to),
+            }
         }
-        cobol_ast::statement::InspectKind::Converting { .. } => HirInspectKind::Converting,
     };
     HirStatement::Inspect {
         target: inspect.target.name.clone(),
         kind,
         span: inspect.span,
+    }
+}
+
+fn lower_inspect_tallying(t: &cobol_ast::statement::InspectTallying) -> HirInspectTallying {
+    let kind = match &t.kind {
+        cobol_ast::statement::TallyingKind::Characters => HirTallyingKind::Characters,
+        cobol_ast::statement::TallyingKind::All(e) => HirTallyingKind::All(lower_expr(e)),
+        cobol_ast::statement::TallyingKind::Leading(e) => HirTallyingKind::Leading(lower_expr(e)),
+    };
+    HirInspectTallying {
+        counter: t.counter.name.clone(),
+        kind,
+        before_after: t.before_after.iter().map(lower_before_after).collect(),
+    }
+}
+
+fn lower_inspect_replacing(r: &cobol_ast::statement::InspectReplacing) -> HirInspectReplacing {
+    let kind = match &r.kind {
+        cobol_ast::statement::ReplacingKind::Characters(e) => {
+            HirReplacingKind::Characters(lower_expr(e))
+        }
+        cobol_ast::statement::ReplacingKind::All { from, to } => HirReplacingKind::All {
+            from: lower_expr(from),
+            to: lower_expr(to),
+        },
+        cobol_ast::statement::ReplacingKind::Leading { from, to } => HirReplacingKind::Leading {
+            from: lower_expr(from),
+            to: lower_expr(to),
+        },
+        cobol_ast::statement::ReplacingKind::First { from, to } => HirReplacingKind::First {
+            from: lower_expr(from),
+            to: lower_expr(to),
+        },
+    };
+    HirInspectReplacing {
+        kind,
+        before_after: r.before_after.iter().map(lower_before_after).collect(),
+    }
+}
+
+fn lower_before_after(ba: &cobol_ast::statement::BeforeAfter) -> HirBeforeAfter {
+    HirBeforeAfter {
+        is_before: ba.kind == cobol_ast::statement::BeforeAfterKind::Before,
+        value: lower_expr(&ba.value),
     }
 }
 
@@ -1296,7 +1476,16 @@ fn lower_xml_parse(xp: &cobol_ast::statement::XmlParseStatement) -> HirStatement
 fn lower_expr(expr: &Expr) -> HirExpr {
     match expr {
         Expr::Literal(lit) => HirExpr::Literal(lower_literal(lit)),
-        Expr::Identifier(qname) => HirExpr::Variable(qname.name.clone()),
+        Expr::Identifier(qname) => {
+            if qname.subscripts.is_empty() {
+                HirExpr::Variable(qname.name.clone())
+            } else {
+                HirExpr::Subscript {
+                    variable: qname.name.clone(),
+                    subscripts: qname.subscripts.iter().map(lower_expr).collect(),
+                }
+            }
+        }
         Expr::BinaryOp {
             op, left, right, ..
         } => {
@@ -1376,47 +1565,84 @@ fn lower_condition(
             HirCondition::Not(Box::new(lower_condition(inner, condition_names)))
         }
         Condition::Paren(inner) => lower_condition(inner, condition_names),
-        // Class and sign conditions are simplified to a comparison for now
-        Condition::ClassCondition { .. } | Condition::SignCondition { .. } => {
-            // Placeholder: always true
+        Condition::SignCondition {
+            operand, sign, not, ..
+        } => {
+            let hir_op = match (sign, *not) {
+                (SignType::Positive, false) => HirCompareOp::Gt,
+                (SignType::Positive, true) => HirCompareOp::Le,
+                (SignType::Negative, false) => HirCompareOp::Lt,
+                (SignType::Negative, true) => HirCompareOp::Ge,
+                (SignType::Zero, false) => HirCompareOp::Eq,
+                (SignType::Zero, true) => HirCompareOp::Ne,
+            };
             HirCondition::Compare {
-                left: HirExpr::Literal(HirLiteral::Integer(1)),
-                op: HirCompareOp::Eq,
-                right: HirExpr::Literal(HirLiteral::Integer(1)),
+                left: lower_expr(operand),
+                op: hir_op,
+                right: HirExpr::Literal(HirLiteral::Integer(0)),
+            }
+        }
+        Condition::ClassCondition {
+            operand,
+            class,
+            not,
+            ..
+        } => {
+            let hir_class = match class {
+                ClassType::Numeric => HirClassType::Numeric,
+                ClassType::Alphabetic => HirClassType::Alphabetic,
+                ClassType::AlphabeticLower => HirClassType::AlphabeticLower,
+                ClassType::AlphabeticUpper => HirClassType::AlphabeticUpper,
+                ClassType::National => HirClassType::Alphabetic, // fallback for NATIONAL
+            };
+            let cond = HirCondition::ClassCondition {
+                operand: lower_expr(operand),
+                class: hir_class,
+            };
+            if *not {
+                HirCondition::Not(Box::new(cond))
+            } else {
+                cond
             }
         }
         Condition::ConditionName(qname) => {
             // 88-level condition name: look up the parent variable and values
             if let Some(info) = condition_names.get(&qname.name) {
-                if info.values.len() == 1 {
-                    // Single value: parent == value
-                    HirCondition::Compare {
-                        left: HirExpr::Variable(info.parent_name.clone()),
-                        op: HirCompareOp::Eq,
-                        right: HirExpr::Literal(info.values[0].clone()),
-                    }
-                } else if info.values.len() > 1 {
-                    // Multiple values: parent == val1 OR parent == val2 OR ...
-                    let conditions: Vec<HirCondition> = info
-                        .values
-                        .iter()
-                        .map(|v| HirCondition::Compare {
+                let conditions: Vec<HirCondition> = info
+                    .values
+                    .iter()
+                    .map(|v| match v {
+                        ConditionValue::Single(lit) => HirCondition::Compare {
                             left: HirExpr::Variable(info.parent_name.clone()),
                             op: HirCompareOp::Eq,
-                            right: HirExpr::Literal(v.clone()),
-                        })
-                        .collect();
-                    conditions
-                        .into_iter()
-                        .reduce(|acc, c| HirCondition::Or(Box::new(acc), Box::new(c)))
-                        .unwrap()
-                } else {
+                            right: HirExpr::Literal(lit.clone()),
+                        },
+                        ConditionValue::Range { from, to } => HirCondition::And(
+                            Box::new(HirCondition::Compare {
+                                left: HirExpr::Variable(info.parent_name.clone()),
+                                op: HirCompareOp::Ge,
+                                right: HirExpr::Literal(from.clone()),
+                            }),
+                            Box::new(HirCondition::Compare {
+                                left: HirExpr::Variable(info.parent_name.clone()),
+                                op: HirCompareOp::Le,
+                                right: HirExpr::Literal(to.clone()),
+                            }),
+                        ),
+                    })
+                    .collect();
+                if conditions.is_empty() {
                     // No values found, fall back to variable == 1
                     HirCondition::Compare {
                         left: HirExpr::Variable(qname.name.clone()),
                         op: HirCompareOp::Eq,
                         right: HirExpr::Literal(HirLiteral::Integer(1)),
                     }
+                } else {
+                    conditions
+                        .into_iter()
+                        .reduce(|acc, c| HirCondition::Or(Box::new(acc), Box::new(c)))
+                        .unwrap()
                 }
             } else {
                 // Not a known 88-level, fall back to variable == 1
@@ -1428,6 +1654,57 @@ fn lower_condition(
             }
         }
     }
+}
+
+/// Extract FILE STATUS variable mappings from the ENVIRONMENT DIVISION's
+/// FILE-CONTROL paragraph.  Each `FileControlEntry` that has a `file_status`
+/// clause contributes a mapping of file_name → status variable name.
+fn extract_file_status_vars(program: &CobolProgram) -> Vec<HirFileInfo> {
+    let Some(env) = &program.environment else {
+        return Vec::new();
+    };
+    let Some(io) = &env.input_output else {
+        return Vec::new();
+    };
+    io.file_controls
+        .iter()
+        .filter_map(|fc| {
+            fc.file_status.as_ref().map(|qname| HirFileInfo {
+                file_name: fc.file_name.clone(),
+                status_var: qname.name.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Lower DECLARATIVES sections from the PROCEDURE DIVISION.
+/// Only USE AFTER EXCEPTION sections are lowered; other USE types are ignored.
+fn lower_declaratives(
+    program: &CobolProgram,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> Vec<HirDeclarative> {
+    let Some(proc) = &program.procedure else {
+        return Vec::new();
+    };
+    proc.declaratives
+        .iter()
+        .filter_map(|decl| {
+            if let UseStatement::AfterException { file_names } = &decl.use_statement {
+                let body: Vec<HirStatement> = decl
+                    .paragraphs
+                    .iter()
+                    .flat_map(|para| lower_paragraph(para, condition_names))
+                    .collect();
+                Some(HirDeclarative {
+                    name: decl.name.clone(),
+                    file_names: file_names.clone(),
+                    body,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

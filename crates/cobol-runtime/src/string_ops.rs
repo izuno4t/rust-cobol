@@ -38,6 +38,140 @@ pub struct CobolUnstringTarget {
 }
 
 // ---------------------------------------------------------------------------
+// Alphanumeric comparison
+// ---------------------------------------------------------------------------
+
+/// Compare two alphanumeric fields with COBOL semantics.
+///
+/// The shorter field is logically padded with spaces on the right.
+/// Returns negative if a < b, 0 if a == b, positive if a > b.
+///
+/// # Safety
+/// `a_ptr` must be readable for `a_len` bytes.
+/// `b_ptr` must be readable for `b_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_compare_alphanumeric(
+    a_ptr: *const u8,
+    a_len: u32,
+    b_ptr: *const u8,
+    b_len: u32,
+) -> i32 {
+    if a_ptr.is_null() || b_ptr.is_null() {
+        return 0;
+    }
+    let a = std::slice::from_raw_parts(a_ptr, a_len as usize);
+    let b = std::slice::from_raw_parts(b_ptr, b_len as usize);
+    let max_len = a.len().max(b.len());
+    for i in 0..max_len {
+        let ca = if i < a.len() { a[i] } else { b' ' };
+        let cb = if i < b.len() { b[i] } else { b' ' };
+        if ca < cb {
+            return -1;
+        }
+        if ca > cb {
+            return 1;
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// Class condition checks
+// ---------------------------------------------------------------------------
+
+/// Check if the given alphanumeric field is NUMERIC (all bytes are digits,
+/// optionally with leading/trailing sign and a decimal point).
+///
+/// # Safety
+/// `ptr` must be readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_is_numeric(ptr: *const u8, len: u32) -> i32 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let data = std::slice::from_raw_parts(ptr, len as usize);
+    let mut has_digit = false;
+    let mut has_decimal = false;
+    for (i, &b) in data.iter().enumerate() {
+        match b {
+            b'0'..=b'9' => has_digit = true,
+            b'+' | b'-' => {
+                if i != 0 && i != data.len() - 1 {
+                    return 0; // sign only allowed at start or end
+                }
+            }
+            b'.' => {
+                if has_decimal {
+                    return 0; // only one decimal point
+                }
+                has_decimal = true;
+            }
+            b' ' => {} // trailing/leading spaces allowed
+            _ => return 0,
+        }
+    }
+    if has_digit {
+        1
+    } else {
+        0
+    }
+}
+
+/// Check if the given field is ALPHABETIC (all bytes are A-Z, a-z, or space).
+///
+/// # Safety
+/// `ptr` must be readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_is_alphabetic(ptr: *const u8, len: u32) -> i32 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let data = std::slice::from_raw_parts(ptr, len as usize);
+    for &b in data {
+        if !b.is_ascii_alphabetic() && b != b' ' {
+            return 0;
+        }
+    }
+    1
+}
+
+/// Check if the given field is ALPHABETIC-LOWER (all bytes a-z or space).
+///
+/// # Safety
+/// `ptr` must be readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_is_alphabetic_lower(ptr: *const u8, len: u32) -> i32 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let data = std::slice::from_raw_parts(ptr, len as usize);
+    for &b in data {
+        if !b.is_ascii_lowercase() && b != b' ' {
+            return 0;
+        }
+    }
+    1
+}
+
+/// Check if the given field is ALPHABETIC-UPPER (all bytes A-Z or space).
+///
+/// # Safety
+/// `ptr` must be readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_is_alphabetic_upper(ptr: *const u8, len: u32) -> i32 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let data = std::slice::from_raw_parts(ptr, len as usize);
+    for &b in data {
+        if !b.is_ascii_uppercase() && b != b' ' {
+            return 0;
+        }
+    }
+    1
+}
+
+// ---------------------------------------------------------------------------
 // MOVE operations
 // ---------------------------------------------------------------------------
 
@@ -491,6 +625,86 @@ pub unsafe extern "C" fn cobol_inspect_converting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compare_alphanumeric_equal() {
+        let a = b"HELLO";
+        let b = b"HELLO";
+        let r = unsafe { cobol_compare_alphanumeric(a.as_ptr(), 5, b.as_ptr(), 5) };
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_compare_alphanumeric_less() {
+        let a = b"APPLE";
+        let b = b"BANANA";
+        let r = unsafe { cobol_compare_alphanumeric(a.as_ptr(), 5, b.as_ptr(), 6) };
+        assert!(r < 0);
+    }
+
+    #[test]
+    fn test_compare_alphanumeric_space_padding() {
+        // "HELLO" (5 bytes) should equal "HELLO     " (10 bytes with trailing spaces)
+        let a = b"HELLO";
+        let b = b"HELLO     ";
+        let r = unsafe { cobol_compare_alphanumeric(a.as_ptr(), 5, b.as_ptr(), 10) };
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_compare_alphanumeric_shorter_with_padding() {
+        // "AB" padded with spaces should be less than "ABC"
+        let a = b"AB";
+        let b = b"ABC";
+        let r = unsafe { cobol_compare_alphanumeric(a.as_ptr(), 2, b.as_ptr(), 3) };
+        assert!(r < 0, "AB (space-padded) should be less than ABC");
+    }
+
+    #[test]
+    fn test_is_numeric_digits() {
+        let data = b"12345";
+        assert_eq!(unsafe { cobol_is_numeric(data.as_ptr(), 5) }, 1);
+    }
+
+    #[test]
+    fn test_is_numeric_with_sign() {
+        let data = b"+123";
+        assert_eq!(unsafe { cobol_is_numeric(data.as_ptr(), 4) }, 1);
+    }
+
+    #[test]
+    fn test_is_numeric_alpha() {
+        let data = b"HELLO";
+        assert_eq!(unsafe { cobol_is_numeric(data.as_ptr(), 5) }, 0);
+    }
+
+    #[test]
+    fn test_is_alphabetic() {
+        let data = b"HELLO WORLD";
+        assert_eq!(unsafe { cobol_is_alphabetic(data.as_ptr(), 11) }, 1);
+    }
+
+    #[test]
+    fn test_is_alphabetic_with_digit() {
+        let data = b"HELLO1";
+        assert_eq!(unsafe { cobol_is_alphabetic(data.as_ptr(), 6) }, 0);
+    }
+
+    #[test]
+    fn test_is_alphabetic_lower() {
+        let data = b"hello";
+        assert_eq!(unsafe { cobol_is_alphabetic_lower(data.as_ptr(), 5) }, 1);
+        let upper = b"HELLO";
+        assert_eq!(unsafe { cobol_is_alphabetic_lower(upper.as_ptr(), 5) }, 0);
+    }
+
+    #[test]
+    fn test_is_alphabetic_upper() {
+        let data = b"HELLO";
+        assert_eq!(unsafe { cobol_is_alphabetic_upper(data.as_ptr(), 5) }, 1);
+        let lower = b"hello";
+        assert_eq!(unsafe { cobol_is_alphabetic_upper(lower.as_ptr(), 5) }, 0);
+    }
 
     #[test]
     fn test_move_string_padded() {
