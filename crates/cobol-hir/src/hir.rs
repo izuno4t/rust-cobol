@@ -14,6 +14,8 @@ pub struct HirProgram {
     pub data_items: Vec<HirDataItem>,
     pub paragraphs: Vec<HirParagraph>,
     pub body: Vec<HirStatement>,
+    /// PROCEDURE DIVISION USING parameters (non-empty means sub-program).
+    pub using_params: Vec<HirParam>,
     /// COBOL 2002+: Class definitions.
     pub classes: Vec<HirClass>,
     /// COBOL 2002+: User-defined function definitions.

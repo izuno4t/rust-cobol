@@ -26,7 +26,7 @@ use crate::hir::{
     HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCompareOp,
     HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
     HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
-    HirParagraph, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind, HirSortKey,
+    HirParagraph, HirParam, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind, HirSortKey,
     HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirType,
     HirUnaryOp, HirUnstringDelimiter,
 };
@@ -78,11 +78,39 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Lower DECLARATIVES sections (USE AFTER EXCEPTION handlers).
     let declaratives = lower_declaratives(program, &condition_names);
 
+    // Extract USING parameters from PROCEDURE DIVISION.
+    let using_params = program
+        .procedure
+        .as_ref()
+        .map(|proc| {
+            proc.using_params
+                .iter()
+                .map(|p| {
+                    let mode = match p.mode {
+                        cobol_ast::proc_div::ParamMode::ByReference => HirParamMode::ByReference,
+                        cobol_ast::proc_div::ParamMode::ByContent => HirParamMode::ByContent,
+                        cobol_ast::proc_div::ParamMode::ByValue => HirParamMode::ByValue,
+                    };
+                    HirParam {
+                        name: p.name.clone(),
+                        mode,
+                        data_type: HirType::Numeric {
+                            size: 18,
+                            decimal_places: 0,
+                            is_signed: true,
+                        },
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut hir = HirProgram {
         name,
         data_items,
         paragraphs,
         body,
+        using_params,
         classes: Vec::new(),
         functions: Vec::new(),
         typedefs: Vec::new(),
@@ -123,6 +151,15 @@ fn collect_condition_names(data: &DataDivision) -> HashMap<SmolStr, ConditionNam
         collect_condition_names_from_item(item, &mut map);
     }
     for item in &data.linkage {
+        collect_condition_names_from_item(item, &mut map);
+    }
+    for item in &data.screen {
+        collect_condition_names_from_item(item, &mut map);
+    }
+    for item in &data.communication {
+        collect_condition_names_from_item(item, &mut map);
+    }
+    for item in &data.report {
         collect_condition_names_from_item(item, &mut map);
     }
     map
@@ -193,7 +230,15 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
     for item in &data.linkage {
         lower_data_item(item, &mut items);
     }
-    // TODO: Add screen, communication, and report section processing
+    for item in &data.screen {
+        lower_data_item(item, &mut items);
+    }
+    for item in &data.communication {
+        lower_data_item(item, &mut items);
+    }
+    for item in &data.report {
+        lower_data_item(item, &mut items);
+    }
     items
 }
 

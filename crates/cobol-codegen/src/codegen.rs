@@ -89,6 +89,40 @@ pub fn generate_c(program: &HirProgram) -> String {
         out.push_str("}\n\n");
     }
 
+    // XML PARSE support: emit special registers and callback functions
+    let xml_procs = collect_xml_parse_procedures(program);
+    if !xml_procs.is_empty() {
+        out.push_str("/* XML PARSE special registers */\n");
+        out.push_str("static char XML_EVENT[30] = {0};\n");
+        out.push_str("static char XML_TEXT[1024] = {0};\n\n");
+
+        for proc_name in &xml_procs {
+            out.push_str(&format!(
+                "static void _xml_cb_{proc_name}(uint32_t event, const uint8_t* name, uint32_t name_len, const uint8_t* value, uint32_t value_len) {{\n"
+            ));
+            out.push_str("    switch(event) {\n");
+            out.push_str("        case 1: strcpy(XML_EVENT, \"START-OF-ELEMENT\"); break;\n");
+            out.push_str("        case 2: strcpy(XML_EVENT, \"END-OF-ELEMENT\"); break;\n");
+            out.push_str("        case 3: strcpy(XML_EVENT, \"CONTENT-CHARACTERS\"); break;\n");
+            out.push_str("        case 4: strcpy(XML_EVENT, \"ATTRIBUTE-NAME\"); break;\n");
+            out.push_str("        default: strcpy(XML_EVENT, \"EXCEPTION\"); break;\n");
+            out.push_str("    }\n");
+            out.push_str("    if (name && name_len > 0) {\n");
+            out.push_str("        uint32_t n = name_len < 1023 ? name_len : 1023;\n");
+            out.push_str("        memcpy(XML_TEXT, name, n);\n");
+            out.push_str("        XML_TEXT[n] = '\\0';\n");
+            out.push_str("    } else if (value && value_len > 0) {\n");
+            out.push_str("        uint32_t n = value_len < 1023 ? value_len : 1023;\n");
+            out.push_str("        memcpy(XML_TEXT, value, n);\n");
+            out.push_str("        XML_TEXT[n] = '\\0';\n");
+            out.push_str("    } else {\n");
+            out.push_str("        XML_TEXT[0] = '\\0';\n");
+            out.push_str("    }\n");
+            out.push_str(&format!("    para_{proc_name}();\n"));
+            out.push_str("}\n\n");
+        }
+    }
+
     // Build FILE STATUS variable mapping (file name → status variable C name)
     let fs_map = build_file_status_map(&program.file_status_vars);
 
@@ -153,6 +187,26 @@ pub fn generate_c(program: &HirProgram) -> String {
         out.push_str("}\n");
     }
 
+    // For sub-programs (those with USING params), emit a callable entry point.
+    // This allows other programs to CALL this program by name.
+    if !program.using_params.is_empty() {
+        let prog_name = sanitize_name(&program.name);
+        out.push_str(&format!("\nvoid {prog_name}(void) {{\n"));
+        out.push_str("    /* Sub-program entry point */\n");
+        for stmt in &program.body {
+            emit_statement(
+                &mut out,
+                stmt,
+                &program.data_items,
+                &program.paragraphs,
+                &fs_map,
+                has_decl,
+                1,
+            );
+        }
+        out.push_str("}\n");
+    }
+
     out
 }
 
@@ -176,7 +230,9 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str("extern void cobol_display_space(void);\n");
     out.push_str("extern void cobol_display_flush(void);\n");
     out.push_str("extern void cobol_stop_run(void) __attribute__((noreturn));\n");
-    out.push_str("extern void cobol_goback(void) __attribute__((noreturn));\n");
+    out.push_str("extern void cobol_goback(void);\n");
+    out.push_str("extern void cobol_call_enter(uintptr_t jmp_buf_ptr);\n");
+    out.push_str("extern void cobol_call_leave(void);\n");
     // File I/O runtime declarations
     out.push_str("/* File I/O runtime declarations */\n");
     out.push_str(
@@ -258,6 +314,10 @@ fn emit_runtime_declarations(out: &mut String) {
         "extern void cobol_raise(const char* exception_name) __attribute__((noreturn));\n",
     );
     out.push_str("extern void cobol_resume(const char* target);\n");
+    out.push_str("extern void cobol_exception_push(uintptr_t jmp_buf_ptr);\n");
+    out.push_str("extern void cobol_exception_pop(void);\n");
+    out.push_str("extern int32_t cobol_exception_code(void);\n");
+    out.push_str("extern void cobol_exception_clear(void);\n");
     out.push_str(
         "extern int64_t cobol_invoke(void* obj, const char* method, int64_t* args, int32_t argc);\n",
     );
@@ -310,11 +370,45 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
     if items.is_empty() {
         return;
     }
+    // Collect names that are members of groups (emitted inside struct).
+    // These should be skipped when they appear as top-level items to avoid
+    // redefinition conflicts with the #define macros.
+    let group_member_names = collect_group_member_names(items);
+
     out.push_str("/* Data items */\n");
     for item in items {
+        let c_name = sanitize_name(&item.name);
+        if group_member_names.contains(&c_name) && !matches!(&item.data_type, HirType::Group { .. })
+        {
+            continue; // Already emitted as part of a group struct
+        }
         emit_single_data_item(out, item);
     }
     out.push('\n');
+}
+
+/// Collect sanitized names of all items that are members of a group.
+fn collect_group_member_names(items: &[HirDataItem]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for item in items {
+        if let HirType::Group { members, .. } = &item.data_type {
+            collect_member_names_recursive(members, &mut names);
+        }
+    }
+    names
+}
+
+fn collect_member_names_recursive(members: &[HirDataItem], names: &mut BTreeSet<String>) {
+    for member in members {
+        names.insert(sanitize_name(&member.name));
+        if let HirType::Group {
+            members: sub_members,
+            ..
+        } = &member.data_type
+        {
+            collect_member_names_recursive(sub_members, names);
+        }
+    }
 }
 
 fn emit_single_data_item(out: &mut String, item: &HirDataItem) {
@@ -353,10 +447,16 @@ fn emit_single_data_item(out: &mut String, item: &HirDataItem) {
             out.push_str(&format!("static int64_t {c_name}{array_suffix};\n"));
         }
         HirType::Group { members, .. } => {
-            out.push_str(&format!("/* Group: {} */\n", c_name));
-            for member in members {
-                emit_single_data_item(out, member);
-            }
+            // Emit group as union of struct + byte array for group-level operations
+            emit_group_typedefs(out, &c_name, members);
+            out.push_str("static union {\n");
+            out.push_str(&format!("    _grp_{c_name}_t members;\n"));
+            out.push_str(&format!("    uint8_t _bytes[sizeof(_grp_{c_name}_t)];\n"));
+            out.push_str(&format!("}} {c_name};\n"));
+            emit_group_macros(out, members, &format!("{c_name}.members"));
+            // Emit REDEFINES members as separate static pointers
+            emit_group_redefines(out, members);
+            out.push('\n');
         }
         HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
             out.push_str(&format!("static CobolDecimal {c_name}{array_suffix};\n"));
@@ -388,6 +488,136 @@ fn emit_single_data_item(out: &mut String, item: &HirDataItem) {
     }
 }
 
+/// Emit struct typedef(s) for a group and its nested groups (bottom-up).
+fn emit_group_typedefs(out: &mut String, c_name: &str, members: &[HirDataItem]) {
+    // First, recurse into nested groups
+    for member in members {
+        if member.redefines.is_some() {
+            continue;
+        }
+        if let HirType::Group {
+            members: sub_members,
+            ..
+        } = &member.data_type
+        {
+            let member_c_name = sanitize_name(&member.name);
+            emit_group_typedefs(out, &member_c_name, sub_members);
+        }
+    }
+    // Emit this level's struct typedef
+    out.push_str("typedef struct {\n");
+    for member in members {
+        if member.redefines.is_some() {
+            continue; // REDEFINES handled separately
+        }
+        emit_group_struct_member(out, member);
+    }
+    out.push_str(&format!("}} _grp_{c_name}_t;\n"));
+}
+
+/// Emit a single member within a group struct typedef.
+fn emit_group_struct_member(out: &mut String, member: &HirDataItem) {
+    let c_name = sanitize_name(&member.name);
+    let array_suffix = member.occurs.map_or(String::new(), |n| format!("[{n}]"));
+    match &member.data_type {
+        HirType::Alphanumeric { size } => {
+            if member.occurs.is_some() {
+                out.push_str(&format!(
+                    "    char _m_{c_name}{array_suffix}[{}];\n",
+                    size + 1
+                ));
+            } else {
+                out.push_str(&format!("    char _m_{c_name}[{}];\n", size + 1));
+            }
+        }
+        HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+            out.push_str(&format!("    CobolDecimal _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::Numeric { .. } => {
+            out.push_str(&format!("    int64_t _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::Group { .. } => {
+            out.push_str(&format!(
+                "    union {{ _grp_{c_name}_t members; uint8_t _bytes[sizeof(_grp_{c_name}_t)]; }} _m_{c_name};\n"
+            ));
+        }
+        HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
+            out.push_str(&format!("    CobolDecimal _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::Comp3 { .. } => {
+            out.push_str(&format!("    int64_t _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::Binary { .. } => {
+            out.push_str(&format!("    int64_t _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::Index => {
+            out.push_str(&format!("    int64_t _m_{c_name};\n"));
+        }
+        HirType::Pointer => {
+            out.push_str(&format!("    void* _m_{c_name};\n"));
+        }
+        HirType::Boolean => {
+            out.push_str(&format!("    int8_t _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::FloatShort => {
+            out.push_str(&format!("    float _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::FloatLong => {
+            out.push_str(&format!("    double _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::FloatExtended => {
+            out.push_str(&format!("    long double _m_{c_name}{array_suffix};\n"));
+        }
+    }
+}
+
+/// Emit #define macros for all elementary members in a group.
+fn emit_group_macros(out: &mut String, members: &[HirDataItem], path_prefix: &str) {
+    for member in members {
+        if member.redefines.is_some() {
+            continue;
+        }
+        let c_name = sanitize_name(&member.name);
+        match &member.data_type {
+            HirType::Group {
+                members: sub_members,
+                ..
+            } => {
+                out.push_str(&format!("#define {c_name} {path_prefix}._m_{c_name}\n"));
+                emit_group_macros(
+                    out,
+                    sub_members,
+                    &format!("{path_prefix}._m_{c_name}.members"),
+                );
+            }
+            _ => {
+                out.push_str(&format!("#define {c_name} {path_prefix}._m_{c_name}\n"));
+            }
+        }
+    }
+}
+
+/// Emit REDEFINES members within a group as separate static pointers.
+fn emit_group_redefines(out: &mut String, members: &[HirDataItem]) {
+    for member in members {
+        if let Some(ref redef_name) = member.redefines {
+            let c_name = sanitize_name(&member.name);
+            let c_redef = sanitize_name(redef_name);
+            let c_type = c_type_for_hir_type(&member.data_type);
+            out.push_str(&format!(
+                "static {c_type}* {c_name} = ({c_type}*)&{c_redef}; /* REDEFINES {c_redef} */\n"
+            ));
+        }
+        if let HirType::Group {
+            members: sub_members,
+            ..
+        } = &member.data_type
+        {
+            emit_group_redefines(out, sub_members);
+        }
+    }
+}
+
 /// Return the C type string for a given HIR type.
 fn c_type_for_hir_type(ty: &HirType) -> &'static str {
     match ty {
@@ -408,7 +638,15 @@ fn c_type_for_hir_type(ty: &HirType) -> &'static str {
 }
 
 fn emit_data_init(out: &mut String, items: &[HirDataItem]) {
+    // Skip top-level items that are already members of a group
+    // (they are initialized through the group's recursive init)
+    let group_member_names = collect_group_member_names(items);
     for item in items {
+        let c_name = sanitize_name(&item.name);
+        if group_member_names.contains(&c_name) && !matches!(&item.data_type, HirType::Group { .. })
+        {
+            continue;
+        }
         emit_single_data_init(out, item);
     }
 }
@@ -1035,12 +1273,14 @@ fn emit_statement(
                     out.push_str(&format!(
                         "{inner_pad}extern void {prog_name}(void) __attribute__((weak));\n"
                     ));
+                    out.push_str(&format!("{inner_pad}if ({prog_name}) {{\n"));
                     out.push_str(&format!(
-                        "{inner_pad}if ({prog_name}) {{ {prog_name}(); }} else {{ _call_failed = 1; }}\n"
+                        "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }}\n"
                     ));
+                    out.push_str(&format!("{inner_pad}}} else {{ _call_failed = 1; }}\n"));
                 } else {
                     out.push_str(&format!(
-                        "{inner_pad}{{ extern void {prog_name}(void); {prog_name}(); }}\n"
+                        "{inner_pad}{{ extern void {prog_name}(void); jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }} }}\n"
                     ));
                 }
             } else {
@@ -1078,12 +1318,14 @@ fn emit_statement(
                     out.push_str(&format!(
                         "{inner_pad}extern void {prog_name}({types_str}) __attribute__((weak));\n"
                     ));
+                    out.push_str(&format!("{inner_pad}if ({prog_name}) {{\n"));
                     out.push_str(&format!(
-                        "{inner_pad}if ({prog_name}) {{ {prog_name}({values_str}); }} else {{ _call_failed = 1; }}\n"
+                        "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
                     ));
+                    out.push_str(&format!("{inner_pad}}} else {{ _call_failed = 1; }}\n"));
                 } else {
                     out.push_str(&format!(
-                        "{inner_pad}{{ extern void {prog_name}({types_str}); {prog_name}({values_str}); }}\n"
+                        "{inner_pad}{{ extern void {prog_name}({types_str}); jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }} }}\n"
                     ));
                 }
             }
@@ -1878,6 +2120,9 @@ fn emit_statement(
             out.push_str(&format!(
                 "{pad}/* XML PARSE {c_source} PROCESSING PROCEDURE {c_proc} */\n"
             ));
+            out.push_str(&format!(
+                "{pad}cobol_xml_parse((const uint8_t*){c_source}, strlen((const char*){c_source}), _xml_cb_{c_proc});\n"
+            ));
         }
         // --- File I/O: additional statements ---
         HirStatement::Start {
@@ -2273,6 +2518,27 @@ fn emit_move_to(
 ) {
     let target_type = find_data_item(target_name.as_str(), data_items).map(|item| &item.data_type);
     let is_target_alpha = matches!(target_type, Some(HirType::Alphanumeric { .. }));
+    let is_target_group = matches!(target_type, Some(HirType::Group { .. }));
+
+    // Group-to-group move: use memcpy
+    if is_target_group {
+        if let HirExpr::Variable(src_name) = from {
+            let c_src = sanitize_name(src_name);
+            let src_size = find_data_item_size(&c_src, data_items);
+            let tgt_size = find_data_item_size(c_target, data_items);
+            let copy_size = src_size.min(tgt_size);
+            out.push_str(&format!(
+                "{pad}memcpy(&{c_target}, &{c_src}, {copy_size});\n"
+            ));
+        } else {
+            // Non-variable to group: treat as string
+            let e = emit_expr(from);
+            out.push_str(&format!(
+                "{pad}memcpy(&{c_target}, &{e}, sizeof({c_target}));\n"
+            ));
+        }
+        return;
+    }
 
     // Detect source type for cross-type moves
     let is_source_numeric_var = matches!(from, HirExpr::Variable(name)
@@ -3662,6 +3928,56 @@ fn collect_file_names_stmt(stmt: &HirStatement, names: &mut BTreeSet<String>) {
     }
 }
 
+/// Collect unique XML PARSE processing procedure names from the program.
+fn collect_xml_parse_procedures(program: &HirProgram) -> Vec<String> {
+    let mut procs = BTreeSet::new();
+    for stmt in &program.body {
+        collect_xml_parse_stmt(stmt, &mut procs);
+    }
+    for para in &program.paragraphs {
+        for stmt in &para.body {
+            collect_xml_parse_stmt(stmt, &mut procs);
+        }
+    }
+    procs.into_iter().collect()
+}
+
+fn collect_xml_parse_stmt(stmt: &HirStatement, procs: &mut BTreeSet<String>) {
+    match stmt {
+        HirStatement::XmlParse {
+            processing_procedure,
+            ..
+        } => {
+            procs.insert(sanitize_name(processing_procedure));
+        }
+        HirStatement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                collect_xml_parse_stmt(s, procs);
+            }
+            for s in else_body {
+                collect_xml_parse_stmt(s, procs);
+            }
+        }
+        HirStatement::Perform { kind, .. } => {
+            let body = match kind {
+                HirPerformKind::Inline { body } => body.as_slice(),
+                HirPerformKind::Times { body, .. } => body.as_slice(),
+                HirPerformKind::Until { body, .. } => body.as_slice(),
+                HirPerformKind::Varying { body, .. } => body.as_slice(),
+                HirPerformKind::ProcedureName { .. } => &[],
+            };
+            for s in body {
+                collect_xml_parse_stmt(s, procs);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Find the record length for a file/record name by looking up
 /// the data item with a matching (sanitized) name. Returns the
 /// size in bytes (default 80 if not found).
@@ -3773,6 +4089,11 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
         let c_name = sanitize_name(&class.name);
         out.push_str(&format!("/* CLASS {} */\n", c_name));
 
+        // Forward-declare the dispatch function (needed for vtable struct)
+        out.push_str(&format!(
+            "static int64_t {c_name}_dispatch(void* obj, const char* method, int64_t* args, int32_t argc);\n\n"
+        ));
+
         // Emit instance data as a struct
         out.push_str(&format!("typedef struct {c_name}_s {{\n"));
         out.push_str("    void* _vtable; /* vtable pointer */\n");
@@ -3783,8 +4104,11 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
         }
         out.push_str(&format!("}} {c_name};\n\n"));
 
-        // Emit vtable struct
+        // Emit vtable struct: first entry is the dispatch function pointer
         out.push_str(&format!("typedef struct {c_name}_vtable_s {{\n"));
+        out.push_str(
+            "    int64_t (*_dispatch)(void* obj, const char* method, int64_t* args, int32_t argc);\n",
+        );
         for method in &class.instance_methods {
             let method_name = sanitize_name(&method.name);
             out.push_str(&format!("    int64_t (*{method_name})({c_name}* self);\n"));
@@ -3809,6 +4133,25 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
             out.push_str("}\n\n");
         }
 
+        // Emit dispatch function: maps method name to function pointer
+        out.push_str(&format!(
+            "static int64_t {c_name}_dispatch(void* obj, const char* method, int64_t* args, int32_t argc) {{\n"
+        ));
+        out.push_str("    (void)args; (void)argc;\n");
+        for method in &class.instance_methods {
+            let method_name = sanitize_name(&method.name);
+            let method_str = &method.name;
+            out.push_str(&format!(
+                "    if (strcmp(method, \"{method_str}\") == 0) return {c_name}_{method_name}(({c_name}*)obj);\n"
+            ));
+        }
+        out.push_str(&format!(
+            "    fprintf(stderr, \"COBOL INVOKE: unknown method '%s' on class {}\\n\", method);\n",
+            class.name
+        ));
+        out.push_str("    return 0;\n");
+        out.push_str("}\n\n");
+
         // Emit factory methods
         for method in &class.factory_methods {
             let method_name = sanitize_name(&method.name);
@@ -3822,10 +4165,11 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
             out.push_str("}\n\n");
         }
 
-        // Emit vtable instance
+        // Emit vtable instance: dispatch function first, then methods
         out.push_str(&format!(
             "static {c_name}_vtable {c_name}_vtable_instance = {{\n"
         ));
+        out.push_str(&format!("    ._dispatch = {c_name}_dispatch,\n"));
         for method in &class.instance_methods {
             let method_name = sanitize_name(&method.name);
             out.push_str(&format!("    .{method_name} = {c_name}_{method_name},\n"));
@@ -4236,6 +4580,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
@@ -4301,6 +4646,7 @@ PROCEDURE DIVISION.
             }],
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
@@ -4461,6 +4807,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
@@ -4491,6 +4838,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
@@ -4521,6 +4869,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
@@ -4551,6 +4900,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
@@ -4581,6 +4931,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
@@ -4619,6 +4970,7 @@ PROCEDURE DIVISION.
                 span: Span::dummy(),
             }],
             interfaces: Vec::new(),
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
@@ -4656,6 +5008,7 @@ PROCEDURE DIVISION.
                 }],
                 span: Span::dummy(),
             }],
+            using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),

@@ -154,15 +154,15 @@
 1. ~~**GOTOラベル生成**（1-1）~~ ✅ パラグラフ関数呼び出しに変換
 2. ~~**SORT USINGシグネチャ**（1-2）~~ ✅ 7引数に修正
 3. ~~**CORRESPONDINGフラット化**（1-3）~~ ✅ フラット変数名で展開
-4. **グループ項目の構造体化**（1-4）— 未着手。最も影響範囲が大きい根本修正
+4. ~~**グループ項目の構造体化**（1-4）~~ ✅ union+struct+#defineマクロ方式でC構造体生成
 5. ~~**GIVING対応**（2-1）~~ ✅ HIR+codegen修正
 6. ~~**INVALID KEY / ON OVERFLOW**（2-2）~~ ✅ 条件分岐追加
 7. ~~**ACCEPT FROM DATE/TIME**（2-3）~~ ✅ AcceptSource追加
 8. ~~**EXIT PARAGRAPH/SECTION**（2-4）~~ ✅ return生成
-9. **GOBACK サブプログラム**（2-5）— 未着手。CALL機構と同時対応
+9. ~~**GOBACK サブプログラム**（2-5）~~ ✅ setjmp/longjmpでCALL元に復帰
 10. ~~**ALL figurative constant**（2-6）~~ ✅ AllChar+memset
 11. ~~**ファイル組織**（2-7）~~ ✅ org値渡し修正
-12. **CALL ON EXCEPTION**（2-8）— 未着手。動的リンク依存
+12. ~~**CALL ON EXCEPTION**（2-8）~~ ✅ weak属性による動的リンク失敗検知
 13. ~~**DECLARATIVES パース**（3-1）~~ ✅ parse_declaratives実装
 14. ~~**EVALUATE ALSO**（3-2）~~ ✅ ALSOパース追加
 15. ~~**SORT INPUT/OUTPUT PROCEDURE**（3-3）~~ ✅ プロシージャ名保持+codegen
@@ -171,10 +171,10 @@
 18. ~~**ALLOCATE CHARACTERS**（3-6）~~ ✅ char_count式保持
 19. ~~**組み込み関数文字列戻り値**（3-7）~~ ✅ DISPLAY時の文字列関数対応
 20. ~~**subscripted DISPLAY**（3-12）~~ ✅ 型判定で文字列表示
-21. **SCREEN/REPORT/COMMUNICATION**（3-8）— 未着手（優先度低）
-22. **XML PARSE**（3-9）— 未着手（大規模）
-23. **RAISE 例外**（3-10）— 未着手（大規模）
-24. **INVOKE OOP**（3-11）— 未着手（大規模）
+21. ~~**SCREEN/REPORT/COMMUNICATION**（3-8）~~ ✅ HIR loweringにscreen/report/communication追加
+22. ~~**XML PARSE**（3-9）~~ ✅ コールバック関数生成+cobol_xml_parse呼び出し
+23. ~~**RAISE 例外**（3-10）~~ ✅ setjmp/longjmpベースの例外伝播実装
+24. ~~**INVOKE OOP**（3-11）~~ ✅ vtableディスパッチ関数生成+ランタイム実装
 
 ### 検証用COBOLプログラム
 実装の進捗確認用に、以下のパターンをカバーするテストプログラムを用意すべき：

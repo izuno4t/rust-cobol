@@ -79,11 +79,14 @@ impl ExceptionCode {
 struct ExceptionState {
     /// Current exception code (0 = no exception).
     code: i32,
-    /// Handler stack depth.
-    depth: usize,
+    /// Handler stack: jmp_buf addresses for setjmp-based exception handling.
+    handler_stack: Vec<usize>,
 }
 
-static EXCEPTION_STATE: Mutex<ExceptionState> = Mutex::new(ExceptionState { code: 0, depth: 0 });
+static EXCEPTION_STATE: Mutex<ExceptionState> = Mutex::new(ExceptionState {
+    code: 0,
+    handler_stack: Vec::new(),
+});
 
 /// Raise a COBOL exception by name.
 ///
@@ -102,15 +105,26 @@ pub unsafe extern "C" fn cobol_raise(exception_name: *const c_char) {
 
     let code = ExceptionCode::from_name(name);
 
-    {
+    let jmp_buf_addr = {
         let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.code = code as i32;
-    }
+        state.handler_stack.pop()
+    };
 
-    // In a full implementation, this would longjmp to the nearest handler.
-    // For now, print the exception and abort.
-    eprintln!("COBOL EXCEPTION: {} (code {})", name, code as i32);
-    std::process::abort();
+    if let Some(addr) = jmp_buf_addr {
+        // longjmp back to the nearest exception handler
+        extern "C" {
+            fn longjmp(env: *mut u8, val: i32) -> !;
+        }
+        longjmp(addr as *mut u8, code as i32);
+    } else {
+        // No handler registered -- abort
+        eprintln!(
+            "COBOL EXCEPTION (unhandled): {} (code {})",
+            name, code as i32
+        );
+        std::process::abort();
+    }
 }
 
 /// Resume execution after exception handling.
@@ -133,25 +147,22 @@ pub unsafe extern "C" fn cobol_resume(target: *const c_char) {
     }
 }
 
-/// Push an exception handler onto the handler stack.
+/// Push an exception handler (jmp_buf address) onto the handler stack.
 ///
-/// Returns the current handler depth (for use with setjmp).
+/// Called from generated C code: `cobol_exception_push((uintptr_t)&_jbuf)`.
 #[no_mangle]
-pub extern "C" fn cobol_exception_push() -> c_int {
+pub extern "C" fn cobol_exception_push(jmp_buf_ptr: usize) {
     let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if state.depth < MAX_EXCEPTION_DEPTH {
-        state.depth += 1;
+    if state.handler_stack.len() < MAX_EXCEPTION_DEPTH {
+        state.handler_stack.push(jmp_buf_ptr);
     }
-    state.depth as c_int
 }
 
 /// Pop an exception handler from the handler stack.
 #[no_mangle]
 pub extern "C" fn cobol_exception_pop() {
     let mut state = EXCEPTION_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if state.depth > 0 {
-        state.depth -= 1;
-    }
+    state.handler_stack.pop();
 }
 
 /// Get the current exception code.
@@ -170,39 +181,48 @@ pub extern "C" fn cobol_exception_clear() {
     state.code = 0;
 }
 
-/// Invoke a method on a COBOL object (OOP runtime support).
+/// Invoke a method on a COBOL object via vtable dispatch.
 ///
-/// This is a simplified dispatcher. In a full implementation, the vtable
-/// would be looked up from the object's header and the method resolved
-/// dynamically.
+/// The object's first member is a pointer to a vtable. The vtable's first
+/// entry is a dispatch function with the signature:
+///   `int64_t dispatch(void* obj, const char* method, int64_t* args, int32_t argc)`
+///
+/// The dispatch function (generated per class by codegen) maps method name
+/// strings to the actual method implementations.
 ///
 /// # Safety
 ///
-/// `obj` must be a valid pointer to a COBOL object.
+/// `obj` must be a valid pointer to a COBOL object whose first member is
+/// a vtable pointer. The vtable's first entry must be a valid dispatch
+/// function pointer.
 /// `method` must be a valid, NUL-terminated C string.
 /// `args` must point to an array of at least `argc` int64_t values,
 /// or be NULL if `argc` is 0.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_invoke(
-    _obj: *mut std::ffi::c_void,
+    obj: *mut std::ffi::c_void,
     method: *const c_char,
-    _args: *mut i64,
-    _argc: i32,
+    args: *mut i64,
+    argc: i32,
 ) -> i64 {
-    let method_name = if method.is_null() {
-        "UNKNOWN"
-    } else {
-        unsafe { CStr::from_ptr(method) }
-            .to_str()
-            .unwrap_or("UNKNOWN")
-    };
+    if obj.is_null() {
+        eprintln!("COBOL INVOKE: null object reference");
+        return 0;
+    }
 
-    // Placeholder: in a full implementation, dispatch through the vtable
-    eprintln!(
-        "COBOL INVOKE: method '{}' (not yet fully implemented)",
-        method_name
-    );
-    0
+    // The object's first member is a void* pointing to the vtable.
+    // The vtable's first entry is the dispatch function pointer.
+    type DispatchFn =
+        unsafe extern "C" fn(*mut std::ffi::c_void, *const c_char, *mut i64, i32) -> i64;
+
+    let vtable_ptr = *(obj as *const *const *const std::ffi::c_void);
+    if vtable_ptr.is_null() {
+        eprintln!("COBOL INVOKE: null vtable");
+        return 0;
+    }
+
+    let dispatch: DispatchFn = std::mem::transmute(*vtable_ptr);
+    dispatch(obj, method, args, argc)
 }
 
 #[cfg(test)]
@@ -259,11 +279,9 @@ mod tests {
         // Reset state
         cobol_exception_clear();
 
-        let depth1 = cobol_exception_push();
-        assert!(depth1 > 0);
-
-        let depth2 = cobol_exception_push();
-        assert_eq!(depth2, depth1 + 1);
+        // Push dummy handler addresses
+        cobol_exception_push(0x1000);
+        cobol_exception_push(0x2000);
 
         cobol_exception_pop();
         cobol_exception_pop();
