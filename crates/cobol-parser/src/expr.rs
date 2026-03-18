@@ -325,6 +325,23 @@ impl Parser {
                 self.advance();
                 Some(Literal::FigurativeConstant(FigurativeConstant::Null))
             }
+            TokenKind::All => {
+                self.advance();
+                // ALL followed by a string literal
+                if let Some(lit) = self.try_parse_literal() {
+                    let s = match &lit {
+                        Literal::String(s) => s.clone(),
+                        Literal::FigurativeConstant(FigurativeConstant::Zero) => "0".into(),
+                        Literal::FigurativeConstant(FigurativeConstant::Space) => " ".into(),
+                        _ => " ".into(),
+                    };
+                    Some(Literal::FigurativeConstant(FigurativeConstant::All(s)))
+                } else {
+                    Some(Literal::FigurativeConstant(FigurativeConstant::All(
+                        " ".into(),
+                    )))
+                }
+            }
             _ => None,
         }
     }

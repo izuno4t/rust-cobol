@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 use cobol_hir::{
-    HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem, HirExpr, HirFileInfo,
-    HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph, HirPerformKind, HirProgram,
+    HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem, HirExpr,
+    HirFileInfo, HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph, HirPerformKind, HirProgram,
     HirStartRelation, HirStatement, HirType, HirUnaryOp,
 };
 
@@ -164,6 +164,7 @@ fn emit_header(out: &mut String) {
     out.push_str("#include <stdint.h>\n");
     out.push_str("#include <setjmp.h>\n");
     out.push_str("#include <math.h>\n");
+    out.push_str("#include <time.h>\n");
     out.push('\n');
 }
 
@@ -859,6 +860,7 @@ fn emit_statement(
         HirStatement::Multiply {
             operand,
             by,
+            giving,
             on_size_error,
             not_on_size_error,
             ..
@@ -867,28 +869,46 @@ fn emit_statement(
             if has_size_error {
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
-            for target in by {
-                let c_target = sanitize_name(target);
-                let target_is_decimal =
-                    find_data_item(target, data_items).is_some_and(|i| needs_decimal(&i.data_type));
-                if target_is_decimal {
-                    emit_decimal_arith(
-                        out,
-                        &c_target,
-                        operand,
-                        "cobol_decimal_mul",
-                        data_items,
-                        &pad,
-                    );
-                } else {
-                    let c_operand = emit_expr(operand);
+            if !giving.is_empty() {
+                // MULTIPLY A BY B GIVING C [D ...]:  C = A * B
+                let c_operand = emit_expr(operand);
+                let first_by = by.first().map(|b| sanitize_name(b)).unwrap_or_default();
+                let mul_expr = format!("{first_by} * {c_operand}");
+                for target in giving {
+                    let c_target = sanitize_name(target);
                     if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                        out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+                        out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
                         emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
-                        out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+                        out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
+                    }
+                }
+            } else {
+                for target in by {
+                    let c_target = sanitize_name(target);
+                    let target_is_decimal = find_data_item(target, data_items)
+                        .is_some_and(|i| needs_decimal(&i.data_type));
+                    if target_is_decimal {
+                        emit_decimal_arith(
+                            out,
+                            &c_target,
+                            operand,
+                            "cobol_decimal_mul",
+                            data_items,
+                            &pad,
+                        );
+                    } else {
+                        let c_operand = emit_expr(operand);
+                        if has_size_error {
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+                            emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                            out.push_str(&format!("{pad}}}\n"));
+                        } else {
+                            out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+                        }
                     }
                 }
             }
@@ -909,6 +929,7 @@ fn emit_statement(
         HirStatement::Divide {
             operand,
             into,
+            giving,
             remainder,
             on_size_error,
             not_on_size_error,
@@ -919,33 +940,55 @@ fn emit_statement(
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
             let c_operand = emit_expr(operand);
-            for target in into {
-                let c_target = sanitize_name(target);
-                let target_is_decimal =
-                    find_data_item(target, data_items).is_some_and(|i| needs_decimal(&i.data_type));
-                if target_is_decimal {
-                    emit_decimal_arith(
-                        out,
-                        &c_target,
-                        operand,
-                        "cobol_decimal_div",
-                        data_items,
-                        &pad,
-                    );
-                } else {
+            if !giving.is_empty() {
+                // DIVIDE A INTO B GIVING C: C = B / A
+                let first_into = into.first().map(|b| sanitize_name(b)).unwrap_or_default();
+                for target in giving {
+                    let c_target = sanitize_name(target);
                     if let Some(rem) = remainder {
                         let c_rem = sanitize_name(rem);
-                        // In format!, %% is the escape sequence to produce a literal '%' character.
-                        out.push_str(&format!("{pad}{c_rem} = {c_target} %% {c_operand};\n"));
+                        out.push_str(&format!("{pad}{c_rem} = {first_into} %% {c_operand};\n"));
                     }
                     if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                        // Zero divide check
-                        out.push_str(&format!("{pad}if ({c_operand} == 0) {{ _size_error = 1; }} else {{ {c_target} /= {c_operand}; }}\n"));
+                        out.push_str(&format!(
+                            "{pad}if ({c_operand} == 0) {{ _size_error = 1; }} else {{ {c_target} = {first_into} / {c_operand}; }}\n"
+                        ));
                         emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
-                        out.push_str(&format!("{pad}{c_target} /= {c_operand};\n"));
+                        out.push_str(&format!("{pad}{c_target} = {first_into} / {c_operand};\n"));
+                    }
+                }
+            } else {
+                for target in into {
+                    let c_target = sanitize_name(target);
+                    let target_is_decimal = find_data_item(target, data_items)
+                        .is_some_and(|i| needs_decimal(&i.data_type));
+                    if target_is_decimal {
+                        emit_decimal_arith(
+                            out,
+                            &c_target,
+                            operand,
+                            "cobol_decimal_div",
+                            data_items,
+                            &pad,
+                        );
+                    } else {
+                        if let Some(rem) = remainder {
+                            let c_rem = sanitize_name(rem);
+                            out.push_str(&format!("{pad}{c_rem} = {c_target} %% {c_operand};\n"));
+                        }
+                        if has_size_error {
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            out.push_str(&format!(
+                                "{pad}if ({c_operand} == 0) {{ _size_error = 1; }} else {{ {c_target} /= {c_operand}; }}\n"
+                            ));
+                            emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                            out.push_str(&format!("{pad}}}\n"));
+                        } else {
+                            out.push_str(&format!("{pad}{c_target} /= {c_operand};\n"));
+                        }
                     }
                 }
             }
@@ -988,9 +1031,18 @@ fn emit_statement(
                 pad.to_string()
             };
             if params.is_empty() {
-                out.push_str(&format!(
-                    "{inner_pad}{{ extern void {prog_name}(void); {prog_name}(); }}\n"
-                ));
+                if has_exception_handlers {
+                    out.push_str(&format!(
+                        "{inner_pad}extern void {prog_name}(void) __attribute__((weak));\n"
+                    ));
+                    out.push_str(&format!(
+                        "{inner_pad}if ({prog_name}) {{ {prog_name}(); }} else {{ _call_failed = 1; }}\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{inner_pad}{{ extern void {prog_name}(void); {prog_name}(); }}\n"
+                    ));
+                }
             } else {
                 // Build param types and values based on passing mode
                 let mut param_types = Vec::new();
@@ -1020,11 +1072,20 @@ fn emit_statement(
                 for copy in &content_copies {
                     out.push_str(copy);
                 }
-                out.push_str(&format!(
-                    "{inner_pad}{{ extern void {prog_name}({}); {prog_name}({}); }}\n",
-                    param_types.join(", "),
-                    param_values.join(", ")
-                ));
+                let types_str = param_types.join(", ");
+                let values_str = param_values.join(", ");
+                if has_exception_handlers {
+                    out.push_str(&format!(
+                        "{inner_pad}extern void {prog_name}({types_str}) __attribute__((weak));\n"
+                    ));
+                    out.push_str(&format!(
+                        "{inner_pad}if ({prog_name}) {{ {prog_name}({values_str}); }} else {{ _call_failed = 1; }}\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{inner_pad}{{ extern void {prog_name}({types_str}); {prog_name}({values_str}); }}\n"
+                    ));
+                }
             }
             if has_exception_handlers {
                 emit_on_exception(
@@ -1060,12 +1121,13 @@ fn emit_statement(
                 let file_name_str = entry.file_name.as_str();
                 let escaped_name = escape_c_string(file_name_str);
                 let name_len = file_name_str.len();
+                let org_val = entry.organization;
                 out.push_str(&format!("{pad}/* OPEN {mode_comment} {c_name} */\n"));
                 let has_fs = fs_map.contains_key(&c_name);
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, 1, 0, {mode_val}, {rec_len});\n"
+                        "{pad}    uint32_t _fs = cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {org_val}, 0, {mode_val}, {rec_len});\n"
                     ));
                     emit_file_status_update(
                         out,
@@ -1077,9 +1139,8 @@ fn emit_statement(
                     );
                     out.push_str(&format!("{pad}}}\n"));
                 } else {
-                    // org=1 (LineSequential) by default; access=0 (Sequential)
                     out.push_str(&format!(
-                        "{pad}cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, 1, 0, {mode_val}, {rec_len});\n"
+                        "{pad}cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {org_val}, 0, {mode_val}, {rec_len});\n"
                     ));
                 }
             }
@@ -1173,6 +1234,7 @@ fn emit_statement(
             record_name,
             from,
             invalid_key,
+            not_invalid_key,
             ..
         } => {
             let c_name = sanitize_name(record_name);
@@ -1183,7 +1245,55 @@ fn emit_statement(
                 c_name.clone()
             };
             out.push_str(&format!("{pad}/* WRITE {c_name} */\n"));
-            {
+            let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
+            if needs_rc {
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!(
+                    "{pad}    uint32_t _wrc = cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+                ));
+                let has_fs = fs_map.contains_key(&c_name);
+                if has_fs {
+                    emit_file_status_update(
+                        out,
+                        &c_name,
+                        "_wrc",
+                        fs_map,
+                        has_declaratives,
+                        &format!("{pad}    "),
+                    );
+                }
+                if !invalid_key.is_empty() {
+                    out.push_str(&format!("{pad}    if (_wrc != 0) {{\n"));
+                    for s in invalid_key {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 2,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+                if !not_invalid_key.is_empty() {
+                    out.push_str(&format!("{pad}    if (_wrc == 0) {{\n"));
+                    for s in not_invalid_key {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 2,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+                out.push_str(&format!("{pad}}}\n"));
+            } else {
                 let has_fs = fs_map.contains_key(&c_name);
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
@@ -1203,20 +1313,6 @@ fn emit_statement(
                     out.push_str(&format!(
                         "{pad}cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
                     ));
-                }
-            }
-            if !invalid_key.is_empty() {
-                out.push_str(&format!("{pad}/* TODO: INVALID KEY check for WRITE */\n"));
-                for s in invalid_key {
-                    emit_statement(
-                        out,
-                        s,
-                        data_items,
-                        paragraphs,
-                        fs_map,
-                        has_declaratives,
-                        indent,
-                    );
                 }
             }
         }
@@ -1289,7 +1385,7 @@ fn emit_statement(
                 for (i, target) in targets.iter().enumerate() {
                     let c_target = sanitize_name(target);
                     out.push_str(&format!(
-                        "{pad}    case {}: goto label_{c_target};\n",
+                        "{pad}    case {}: para_{c_target}(); return;\n",
                         i + 1
                     ));
                 }
@@ -1297,7 +1393,7 @@ fn emit_statement(
                 out.push_str(&format!("{pad}}}\n"));
             } else if let Some(target) = targets.first() {
                 let c_target = sanitize_name(target);
-                out.push_str(&format!("{pad}goto label_{c_target};\n"));
+                out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
             }
         }
         HirStatement::Initialize { targets, .. } => {
@@ -1312,6 +1408,13 @@ fn emit_statement(
                 let c_target = sanitize_name(target);
                 out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
             }
+        }
+        HirStatement::SetAddress { target, source, .. } => {
+            let c_target = sanitize_name(target);
+            let c_source = sanitize_name(source);
+            out.push_str(&format!(
+                "{pad}{c_target} = (void*){c_source}; /* SET ADDRESS OF */\n"
+            ));
         }
         HirStatement::StringStmt {
             into,
@@ -1342,9 +1445,8 @@ fn emit_statement(
             out.push_str(&format!(
                 "{pad}    int32_t _str_rc = cobol_string_concat(_sources, {src_count}, (uint8_t*){c_into}, {into_size}, &_pointer);\n"
             ));
-            out.push_str(&format!("{pad}}}\n"));
             if !on_overflow.is_empty() {
-                out.push_str(&format!("{pad}/* TODO: ON OVERFLOW check for STRING */\n"));
+                out.push_str(&format!("{pad}    if (_str_rc != 0) {{\n"));
                 for s in on_overflow {
                     emit_statement(
                         out,
@@ -1353,10 +1455,12 @@ fn emit_statement(
                         paragraphs,
                         fs_map,
                         has_declaratives,
-                        indent,
+                        indent + 2,
                     );
                 }
+                out.push_str(&format!("{pad}    }}\n"));
             }
+            out.push_str(&format!("{pad}}}\n"));
         }
         HirStatement::UnstringStmt {
             source,
@@ -1408,13 +1512,10 @@ fn emit_statement(
                 ("(const uint8_t*)\" \"".to_string(), "1".to_string())
             };
             out.push_str(&format!(
-                "{pad}    cobol_unstring((const uint8_t*){c_source}, {src_size}, {delim_ptr}, {delim_len}, _targets, {tgt_count}, &_pointer, &_tallying);\n"
+                "{pad}    int32_t _ustr_rc = cobol_unstring((const uint8_t*){c_source}, {src_size}, {delim_ptr}, {delim_len}, _targets, {tgt_count}, &_pointer, &_tallying);\n"
             ));
-            out.push_str(&format!("{pad}}}\n"));
             if !on_overflow.is_empty() {
-                out.push_str(&format!(
-                    "{pad}/* TODO: ON OVERFLOW check for UNSTRING */\n"
-                ));
+                out.push_str(&format!("{pad}    if (_ustr_rc != 0) {{\n"));
                 for s in on_overflow {
                     emit_statement(
                         out,
@@ -1423,26 +1524,86 @@ fn emit_statement(
                         paragraphs,
                         fs_map,
                         has_declaratives,
-                        indent,
+                        indent + 2,
                     );
                 }
+                out.push_str(&format!("{pad}    }}\n"));
             }
+            out.push_str(&format!("{pad}}}\n"));
         }
-        HirStatement::Accept { target, .. } => {
+        HirStatement::Accept { target, source, .. } => {
             let c_target = sanitize_name(target);
             let size = find_data_item_size(&c_target, data_items);
             out.push_str(&format!("{pad}/* ACCEPT {c_target} */\n"));
-            out.push_str(&format!("{pad}fgets({c_target}, {size}, stdin);\n"));
-            // Remove trailing newline if present
-            out.push_str(&format!(
-                "{pad}{c_target}[strcspn({c_target}, \"\\n\")] = '\\0';\n"
-            ));
+            match source {
+                HirAcceptSource::Date => {
+                    // ACCEPT FROM DATE: YYMMDD (6 digits)
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!(
+                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    {c_target} = (_tm->tm_year % 100) * 10000 + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
+                    ));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                HirAcceptSource::Day => {
+                    // ACCEPT FROM DAY: YYDDD (Julian day)
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!(
+                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    {c_target} = (_tm->tm_year % 100) * 1000 + _tm->tm_yday + 1;\n"
+                    ));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                HirAcceptSource::DayOfWeek => {
+                    // ACCEPT FROM DAY-OF-WEEK: 1=Monday ... 7=Sunday
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!(
+                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    {c_target} = _tm->tm_wday == 0 ? 7 : _tm->tm_wday;\n"
+                    ));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                HirAcceptSource::Time => {
+                    // ACCEPT FROM TIME: HHMMSScc (8 digits)
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!(
+                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    {c_target} = _tm->tm_hour * 1000000 + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
+                    ));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                HirAcceptSource::Environment(env_name) => {
+                    let c_env = sanitize_name(env_name);
+                    out.push_str(&format!(
+                        "{pad}{{ const char* _env = getenv(\"{c_env}\");\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}  if (_env) {{ strncpy((char*){c_target}, _env, {size}); }} }}\n"
+                    ));
+                }
+                HirAcceptSource::Console => {
+                    out.push_str(&format!("{pad}fgets((char*){c_target}, {size}, stdin);\n"));
+                    out.push_str(&format!(
+                        "{pad}((char*){c_target})[strcspn((char*){c_target}, \"\\n\")] = '\\0';\n"
+                    ));
+                }
+            }
         }
         HirStatement::Sort {
             file_name,
             keys,
             using,
             giving,
+            input_procedure,
+            output_procedure,
             ..
         } => {
             let c_name = sanitize_name(file_name);
@@ -1481,7 +1642,8 @@ fn emit_statement(
                         "{pad}    /* USING {c_using}: read all records */\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    cobol_file_open({c_using}_handle, \"{c_using}\", 1, 0);\n"
+                        "{pad}    cobol_file_open({c_using}_handle, (const uint8_t*)\"{c_using}\", {using_name_len}, 1, 0, 0, {rec_len});\n",
+                        using_name_len = c_using.len()
                     ));
                     out.push_str(&format!("{pad}    while (1) {{\n"));
                     out.push_str(&format!(
@@ -1498,9 +1660,7 @@ fn emit_statement(
                     ));
                     out.push_str(&format!("{pad}        }}\n"));
                     out.push_str(&format!("{pad}    }}\n"));
-                    out.push_str(&format!(
-                        "{pad}    cobol_file_close({c_using}_handle, 0);\n"
-                    ));
+                    out.push_str(&format!("{pad}    cobol_file_close({c_using}_handle);\n"));
                 }
                 out.push_str(&format!(
                     "{pad}    cobol_sort(_sort_buf, _sort_count, {rec_len}, _sort_keys, {key_count});\n"
@@ -1512,7 +1672,8 @@ fn emit_statement(
                             "{pad}    /* GIVING {c_giving}: write sorted records */\n"
                         ));
                         out.push_str(&format!(
-                            "{pad}    cobol_file_open({c_giving}_handle, \"{c_giving}\", 2, 0);\n"
+                            "{pad}    cobol_file_open({c_giving}_handle, (const uint8_t*)\"{c_giving}\", {giving_name_len}, 1, 0, 2, {rec_len});\n",
+                            giving_name_len = c_giving.len()
                         ));
                         out.push_str(&format!(
                             "{pad}    for (uint32_t _si = 0; _si < _sort_count; _si++) {{\n"
@@ -1521,12 +1682,34 @@ fn emit_statement(
                             "{pad}        cobol_file_write({c_giving}_handle, (const uint8_t*)&_sort_buf[_si * {rec_len}], {rec_len});\n"
                         ));
                         out.push_str(&format!("{pad}    }}\n"));
-                        out.push_str(&format!(
-                            "{pad}    cobol_file_close({c_giving}_handle, 0);\n"
-                        ));
+                        out.push_str(&format!("{pad}    cobol_file_close({c_giving}_handle);\n"));
                     }
                 }
                 out.push_str(&format!("{pad}    free(_sort_buf);\n"));
+            } else if input_procedure.is_some() || output_procedure.is_some() {
+                // INPUT/OUTPUT PROCEDURE: call the procedure paragraphs
+                if let Some((proc_name, thru)) = input_procedure {
+                    let c_proc = sanitize_name(proc_name);
+                    out.push_str(&format!("{pad}    /* INPUT PROCEDURE {c_proc} */\n"));
+                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
+                    if let Some(thru_name) = thru {
+                        let c_thru = sanitize_name(thru_name);
+                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
+                    }
+                }
+                // Sort the accumulated records
+                out.push_str(&format!(
+                    "{pad}    cobol_sort((uint8_t*){c_name}, 0, {rec_len}, _sort_keys, {key_count});\n"
+                ));
+                if let Some((proc_name, thru)) = output_procedure {
+                    let c_proc = sanitize_name(proc_name);
+                    out.push_str(&format!("{pad}    /* OUTPUT PROCEDURE {c_proc} */\n"));
+                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
+                    if let Some(thru_name) = thru {
+                        let c_thru = sanitize_name(thru_name);
+                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
+                    }
+                }
             } else {
                 // No USING: sort in-place (record_count must be managed externally)
                 out.push_str(&format!(
@@ -1586,6 +1769,9 @@ fn emit_statement(
         HirStatement::ExitProgram { .. } => {
             out.push_str(&format!("{pad}return; /* EXIT PROGRAM */\n"));
         }
+        HirStatement::ExitParagraph { .. } => {
+            out.push_str(&format!("{pad}return; /* EXIT PARAGRAPH */\n"));
+        }
         HirStatement::Continue { .. } => {
             out.push_str(&format!("{pad}/* CONTINUE */\n"));
         }
@@ -1625,17 +1811,25 @@ fn emit_statement(
             }
         }
         HirStatement::Allocate {
-            target, returning, ..
+            target,
+            returning,
+            char_count,
+            ..
         } => {
             let c_target = sanitize_name(target);
+            let size_expr = if let Some(count_expr) = char_count {
+                emit_expr(count_expr)
+            } else {
+                format!("sizeof({c_target})")
+            };
             if let Some(ret) = returning {
                 let c_ret = sanitize_name(ret);
                 out.push_str(&format!(
-                    "{pad}{c_ret} = malloc(sizeof({c_target})); /* ALLOCATE */\n"
+                    "{pad}{c_ret} = malloc({size_expr}); /* ALLOCATE */\n"
                 ));
             } else {
                 out.push_str(&format!(
-                    "{pad}{c_target} = malloc(sizeof({c_target})); /* ALLOCATE */\n"
+                    "{pad}{c_target} = malloc({size_expr}); /* ALLOCATE */\n"
                 ));
             }
         }
@@ -1701,47 +1895,51 @@ fn emit_statement(
                 HirStartRelation::GreaterEqual | HirStartRelation::NotLessThan => 2,
             };
             out.push_str(&format!("{pad}/* START {c_name} */\n"));
-            if let Some(key_name) = key {
+            let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
+            out.push_str(&format!("{pad}{{\n"));
+            let start_call = if let Some(key_name) = key {
                 let c_key = sanitize_name(key_name);
                 let key_size = find_data_item_size(&c_key, data_items);
-                out.push_str(&format!(
-                    "{pad}cobol_file_start(FILE_ID_{c_name}, (const uint8_t*){c_key}, {key_size}, {mode_val});\n"
-                ));
+                format!("cobol_file_start(FILE_ID_{c_name}, (const uint8_t*){c_key}, {key_size}, {mode_val})")
             } else {
-                out.push_str(&format!(
-                    "{pad}cobol_file_start(FILE_ID_{c_name}, NULL, 0, {mode_val});\n"
-                ));
-            }
-            if !invalid_key.is_empty() {
-                out.push_str(&format!("{pad}/* TODO: INVALID KEY check for START */\n"));
-                for s in invalid_key {
-                    emit_statement(
-                        out,
-                        s,
-                        data_items,
-                        paragraphs,
-                        fs_map,
-                        has_declaratives,
-                        indent,
-                    );
+                format!("cobol_file_start(FILE_ID_{c_name}, NULL, 0, {mode_val})")
+            };
+            if needs_rc {
+                out.push_str(&format!("{pad}    uint32_t _src = {start_call};\n"));
+                if !invalid_key.is_empty() {
+                    out.push_str(&format!("{pad}    if (_src != 0) {{\n"));
+                    for s in invalid_key {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 2,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    }}\n"));
                 }
-            }
-            if !not_invalid_key.is_empty() {
-                out.push_str(&format!(
-                    "{pad}/* TODO: NOT INVALID KEY check for START */\n"
-                ));
-                for s in not_invalid_key {
-                    emit_statement(
-                        out,
-                        s,
-                        data_items,
-                        paragraphs,
-                        fs_map,
-                        has_declaratives,
-                        indent,
-                    );
+                if !not_invalid_key.is_empty() {
+                    out.push_str(&format!("{pad}    if (_src == 0) {{\n"));
+                    for s in not_invalid_key {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 2,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    }}\n"));
                 }
+            } else {
+                out.push_str(&format!("{pad}    {start_call};\n"));
             }
+            out.push_str(&format!("{pad}}}\n"));
         }
         HirStatement::Return {
             file_name,
@@ -1924,6 +2122,13 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
         HirExpr::Literal(HirLiteral::Null) => {
             out.push_str(&format!("{pad}cobol_display_int(0);\n"));
         }
+        HirExpr::Literal(HirLiteral::AllChar(s)) => {
+            let escaped = escape_c_string(s);
+            let len = s.len();
+            out.push_str(&format!(
+                "{pad}cobol_display_string((const uint8_t*)\"{escaped}\", {len});\n"
+            ));
+        }
         HirExpr::Variable(name) => {
             let c_name = sanitize_name(name);
             let item = find_data_item(name, data_items);
@@ -1953,9 +2158,58 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
                 out.push_str(&format!("{pad}cobol_display_int({c_name});\n"));
             }
         }
-        HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. } | HirExpr::FunctionCall { .. } => {
+        HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. } => {
             let e = emit_expr(expr);
             out.push_str(&format!("{pad}cobol_display_int({e});\n"));
+        }
+        HirExpr::FunctionCall { name, args } => {
+            let upper_name = name.to_uppercase();
+            match upper_name.as_str() {
+                "UPPER-CASE" | "LOWER-CASE" | "REVERSE" => {
+                    // In-place string functions: copy arg to temp buffer,
+                    // apply function, then display
+                    if let Some(arg) = args.first() {
+                        let c_arg = emit_expr(arg);
+                        let func = match upper_name.as_str() {
+                            "UPPER-CASE" => "cobol_func_upper_case",
+                            "LOWER-CASE" => "cobol_func_lower_case",
+                            _ => "cobol_func_reverse",
+                        };
+                        let size: u32 = if let HirExpr::Variable(v) = arg {
+                            find_data_item_size(&sanitize_name(v), data_items)
+                        } else {
+                            64
+                        };
+                        out.push_str(&format!(
+                            "{pad}{{ uint8_t _fbuf[{size}]; memcpy(_fbuf, (const uint8_t*){c_arg}, {size}); {func}(_fbuf, {size}); cobol_display_string(_fbuf, {size}); }}\n"
+                        ));
+                    }
+                }
+                "TRIM" => {
+                    if let Some(arg) = args.first() {
+                        let c_arg = emit_expr(arg);
+                        let size: u32 = if let HirExpr::Variable(v) = arg {
+                            find_data_item_size(&sanitize_name(v), data_items)
+                        } else {
+                            64
+                        };
+                        // mode: 0 = both, 1 = leading, 2 = trailing
+                        let mode = if args.len() > 1 {
+                            emit_expr(&args[1])
+                        } else {
+                            "0".to_string()
+                        };
+                        out.push_str(&format!(
+                            "{pad}{{ uint8_t _fbuf[256]; uint32_t _flen = cobol_func_trim((const uint8_t*){c_arg}, {size}, _fbuf, 256, {mode}); cobol_display_string(_fbuf, _flen); }}\n"
+                        ));
+                    }
+                }
+                _ => {
+                    // Numeric function
+                    let e = emit_expr(expr);
+                    out.push_str(&format!("{pad}cobol_display_int({e});\n"));
+                }
+            }
         }
         HirExpr::ReferenceModification {
             variable,
@@ -1980,15 +2234,28 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
             subscripts,
         } => {
             let c_access = emit_subscript_access(variable, subscripts);
-            // Look up whether the element type is alphanumeric
-            let is_alpha = data_items.iter().any(|item| {
-                item.name.as_str() == variable.as_str()
-                    && matches!(item.data_type, HirType::Alphanumeric { .. })
-            });
+            let item = find_data_item(variable, data_items);
+            let is_alpha =
+                item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
+            let is_decimal = item.is_some_and(|i| needs_decimal(&i.data_type));
             if is_alpha {
-                // For alphanumeric OCCURS items, each element is a single char array
-                // Display as integer for now (element access returns int64_t)
-                out.push_str(&format!("{pad}cobol_display_int({c_access});\n"));
+                let size = item
+                    .and_then(|i| match &i.data_type {
+                        HirType::Alphanumeric { size } => Some(*size),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                out.push_str(&format!(
+                    "{pad}cobol_display_string((const uint8_t*){c_access}, {size});\n"
+                ));
+            } else if is_decimal {
+                let pic_str = item
+                    .map(|i| generate_pic_string(&i.data_type))
+                    .unwrap_or_else(|| "9".to_string());
+                let pic_len = pic_str.len();
+                out.push_str(&format!(
+                    "{pad}{{ char _dbuf[64]; uint32_t _dlen = cobol_decimal_to_display(&{c_access}, (uint8_t*)_dbuf, 64, (const uint8_t*)\"{pic_str}\", {pic_len}); cobol_display_string((const uint8_t*)_dbuf, _dlen); }}\n"
+                ));
             } else {
                 out.push_str(&format!("{pad}cobol_display_int({c_access});\n"));
             }
@@ -2095,6 +2362,31 @@ fn emit_move_to(
         }
         HirExpr::Literal(HirLiteral::Null) => {
             out.push_str(&format!("{pad}{c_target} = 0;\n"));
+        }
+        HirExpr::Literal(HirLiteral::AllChar(s)) => {
+            if is_target_alpha {
+                let tgt_size = find_data_item_size(c_target, data_items);
+                if s.len() == 1 {
+                    let ch = s.chars().next().unwrap();
+                    out.push_str(&format!(
+                        "{pad}memset({c_target}, '{ch}', {tgt_size}); {c_target}[{tgt_size}] = '\\0';\n"
+                    ));
+                } else {
+                    let escaped = escape_c_string(s);
+                    let slen = s.len();
+                    out.push_str(&format!(
+                        "{pad}{{ const char* _all = \"{escaped}\"; int _al = {slen};\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}  for (int _i = 0; _i < {tgt_size}; _i++) {c_target}[_i] = _all[_i % _al];\n"
+                    ));
+                    out.push_str(&format!("{pad}  {c_target}[{tgt_size}] = '\\0'; }}\n"));
+                }
+            } else {
+                if let Some(ch) = s.chars().next() {
+                    out.push_str(&format!("{pad}{c_target} = '{ch}';\n"));
+                }
+            }
         }
         _ => {
             if is_target_alpha && is_source_numeric_var {
@@ -2462,6 +2754,13 @@ fn emit_expr(expr: &HirExpr) -> String {
         HirExpr::Literal(HirLiteral::LowValue) => "((int64_t)0)".to_string(),
         HirExpr::Literal(HirLiteral::Quote) => "((int64_t)'\"')".to_string(),
         HirExpr::Literal(HirLiteral::Null) => "((int64_t)0)".to_string(),
+        HirExpr::Literal(HirLiteral::AllChar(s)) => {
+            if let Some(ch) = s.chars().next() {
+                format!("((int64_t)'{}')", ch)
+            } else {
+                "((int64_t)' ')".to_string()
+            }
+        }
         HirExpr::Variable(name) => sanitize_name(name),
         HirExpr::BinaryOp { op, left, right } => {
             let l = emit_expr(left);
@@ -2643,13 +2942,11 @@ fn emit_corresponding_move(
         for tgt_item in to_members {
             if src_item.name == tgt_item.name {
                 let member_c = sanitize_name(&src_item.name);
-                let from_field = format!("{c_from}.{member_c}");
-                let to_field = format!("{c_to}.{member_c}");
                 match (&src_item.data_type, &tgt_item.data_type) {
                     (HirType::Numeric { .. }, HirType::Numeric { .. })
                     | (HirType::Binary { .. }, HirType::Binary { .. })
                     | (HirType::Comp3 { .. }, HirType::Comp3 { .. }) => {
-                        out.push_str(&format!("{pad}{to_field} = {from_field};\n"));
+                        out.push_str(&format!("{pad}{member_c} = {member_c};\n"));
                     }
                     (
                         HirType::Alphanumeric { size: src_sz },
@@ -2657,19 +2954,18 @@ fn emit_corresponding_move(
                     ) => {
                         let copy_len = std::cmp::min(*src_sz, *tgt_sz);
                         out.push_str(&format!(
-                            "{pad}memcpy({to_field}, {from_field}, {copy_len});\n"
+                            "{pad}memcpy({member_c}, {member_c}, {copy_len});\n"
                         ));
                         if *tgt_sz > *src_sz {
                             out.push_str(&format!(
-                                "{pad}memset({to_field} + {src_sz}, ' ', {});\n",
+                                "{pad}memset({member_c} + {src_sz}, ' ', {});\n",
                                 tgt_sz - src_sz
                             ));
                         }
                     }
                     _ => {
-                        // For mixed types or group-to-group, do byte copy
                         out.push_str(&format!(
-                            "{pad}memcpy(&{to_field}, &{from_field}, sizeof({from_field}));\n"
+                            "{pad}memcpy(&{member_c}, &{member_c}, sizeof({member_c}));\n"
                         ));
                     }
                 }
@@ -2700,11 +2996,7 @@ fn emit_corresponding_arith(
         for tgt_item in to_members {
             if src_item.name == tgt_item.name && is_numeric_type(&tgt_item.data_type) {
                 let member_c = sanitize_name(&src_item.name);
-                let from_field = format!("{c_from}.{member_c}");
-                let to_field = format!("{c_to}.{member_c}");
-                out.push_str(&format!(
-                    "{pad}{to_field} = {to_field} {op} {from_field};\n"
-                ));
+                out.push_str(&format!("{pad}{member_c} = {member_c} {op} {member_c};\n"));
             }
         }
     }
@@ -3944,6 +4236,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4008,6 +4301,7 @@ PROCEDURE DIVISION.
             }],
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4167,6 +4461,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4196,6 +4491,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4225,6 +4521,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4254,6 +4551,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4283,6 +4581,7 @@ PROCEDURE DIVISION.
             functions: Vec::new(),
             typedefs: Vec::new(),
             interfaces: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4320,6 +4619,7 @@ PROCEDURE DIVISION.
                 span: Span::dummy(),
             }],
             interfaces: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4356,6 +4656,7 @@ PROCEDURE DIVISION.
                 }],
                 span: Span::dummy(),
             }],
+            file_organizations: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),

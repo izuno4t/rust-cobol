@@ -143,13 +143,13 @@ pub enum Literal {
 }
 
 /// COBOL figurative constants (ZERO, SPACE, HIGH-VALUE, etc.).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FigurativeConstant {
     Zero,
     Space,
     HighValue,
     LowValue,
     Quote,
-    All,
+    All(SmolStr),
     Null,
 }

@@ -23,11 +23,12 @@ use cobol_common::Span;
 use smol_str::SmolStr;
 
 use crate::hir::{
-    HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCompareOp, HirCondition, HirDataItem,
-    HirDeclarative, HirExpr, HirFileInfo, HirInspectKind, HirInspectReplacing, HirInspectTallying,
-    HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode, HirParagraph, HirParamMode,
-    HirPerformKind, HirProgram, HirReplacingKind, HirSortKey, HirSortOrder, HirStartRelation,
-    HirStatement, HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
+    HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCompareOp,
+    HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
+    HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
+    HirParagraph, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind, HirSortKey,
+    HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirType,
+    HirUnaryOp, HirUnstringDelimiter,
 };
 
 /// A single or range value for an 88-level condition.
@@ -71,10 +72,13 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Extract FILE STATUS variable mappings from ENVIRONMENT DIVISION.
     let file_status_vars = extract_file_status_vars(program);
 
+    // Extract file organization mappings.
+    let file_organizations = extract_file_organizations(program);
+
     // Lower DECLARATIVES sections (USE AFTER EXCEPTION handlers).
     let declaratives = lower_declaratives(program, &condition_names);
 
-    HirProgram {
+    let mut hir = HirProgram {
         name,
         data_items,
         paragraphs,
@@ -83,10 +87,23 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         functions: Vec::new(),
         typedefs: Vec::new(),
         interfaces: Vec::new(),
+        file_organizations,
         file_status_vars,
         declaratives,
         span: program.span,
+    };
+
+    // Post-process: update Open statements with correct file organization
+    let org_map = hir.file_organizations.clone();
+    patch_open_org(&mut hir.body, &org_map);
+    for para in &mut hir.paragraphs {
+        patch_open_org(&mut para.body, &org_map);
     }
+    for decl in &mut hir.declaratives {
+        patch_open_org(&mut decl.body, &org_map);
+    }
+
+    hir
 }
 
 /// Collect 88-level condition name information from the DATA DIVISION.
@@ -320,7 +337,7 @@ fn lower_literal(lit: &Literal) -> HirLiteral {
         Literal::FigurativeConstant(FigurativeConstant::LowValue) => HirLiteral::LowValue,
         Literal::FigurativeConstant(FigurativeConstant::Quote) => HirLiteral::Quote,
         Literal::FigurativeConstant(FigurativeConstant::Null) => HirLiteral::Null,
-        Literal::FigurativeConstant(FigurativeConstant::All) => HirLiteral::Zero, // ALL requires context
+        Literal::FigurativeConstant(FigurativeConstant::All(s)) => HirLiteral::AllChar(s.clone()),
         Literal::HexString(s) => HirLiteral::String(s.clone()),
         Literal::Boolean(s) => HirLiteral::String(s.clone()),
         Literal::National(s) => HirLiteral::String(s.clone()),
@@ -361,16 +378,27 @@ fn lower_procedure_division(
 
     // Lower sections and their paragraphs
     for section in &proc.sections {
+        // Collect all statements in this section for the section-level paragraph
+        let mut section_stmts = Vec::new();
         for para in &section.paragraphs {
             let stmts = lower_paragraph(para, condition_names);
             if !stmts.is_empty() {
                 body.extend(stmts.clone());
+                section_stmts.extend(stmts.clone());
                 paragraphs.push(HirParagraph {
                     name: para.name.clone(),
                     body: stmts,
                     span: para.span,
                 });
             }
+        }
+        // Register section name as a callable paragraph (for PERFORM section-name)
+        if !section_stmts.is_empty() {
+            paragraphs.push(HirParagraph {
+                name: section.name.clone(),
+                body: section_stmts,
+                span: section.span,
+            });
         }
     }
 
@@ -456,7 +484,7 @@ fn lower_statement(
         Statement::ExitProgram => Some(HirStatement::ExitProgram {
             span: Span::dummy(),
         }),
-        Statement::ExitParagraph | Statement::ExitSection => Some(HirStatement::Continue {
+        Statement::ExitParagraph | Statement::ExitSection => Some(HirStatement::ExitParagraph {
             span: Span::dummy(),
         }),
         // --- COBOL 2002+ statements ---
@@ -911,11 +939,13 @@ fn lower_multiply(
 ) -> HirStatement {
     let operand = lower_expr(&mul.operand);
     let by = mul.by.iter().map(|t| t.target.name.clone()).collect();
+    let giving = mul.giving.iter().map(|t| t.target.name.clone()).collect();
     let on_size_error = lower_statements(&mul.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&mul.not_on_size_error, condition_names);
     HirStatement::Multiply {
         operand,
         by,
+        giving,
         on_size_error,
         not_on_size_error,
         span: mul.span,
@@ -928,12 +958,14 @@ fn lower_divide(
 ) -> HirStatement {
     let operand = lower_expr(&div.operand);
     let into = div.into.iter().map(|t| t.target.name.clone()).collect();
+    let giving = div.giving.iter().map(|t| t.target.name.clone()).collect();
     let remainder = div.remainder.as_ref().map(|r| r.name.clone());
     let on_size_error = lower_statements(&div.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&div.not_on_size_error, condition_names);
     HirStatement::Divide {
         operand,
         into,
+        giving,
         remainder,
         on_size_error,
         not_on_size_error,
@@ -942,8 +974,18 @@ fn lower_divide(
 }
 
 fn lower_accept(accept: &AcceptStatement) -> HirStatement {
+    use cobol_ast::statement::AcceptSource as AstSource;
+    let source = match &accept.from {
+        Some(AstSource::Date) => HirAcceptSource::Date,
+        Some(AstSource::Day) => HirAcceptSource::Day,
+        Some(AstSource::DayOfWeek) => HirAcceptSource::DayOfWeek,
+        Some(AstSource::Time) => HirAcceptSource::Time,
+        Some(AstSource::Environment(name)) => HirAcceptSource::Environment(name.clone()),
+        Some(AstSource::Console) | None => HirAcceptSource::Console,
+    };
     HirStatement::Accept {
         target: accept.target.name.clone(),
+        source,
         span: accept.span,
     }
 }
@@ -972,6 +1014,7 @@ fn lower_open(open: &cobol_ast::statement::OpenStatement) -> HirStatement {
             HirOpenEntry {
                 mode,
                 file_name: e.file_name.clone(),
+                organization: 1, // default, will be updated post-lowering
             }
         })
         .collect();
@@ -1019,10 +1062,12 @@ fn lower_write(
 ) -> HirStatement {
     let from = write.from.as_ref().map(lower_expr);
     let invalid_key = lower_statements(&write.invalid_key, condition_names);
+    let not_invalid_key = lower_statements(&write.not_invalid_key, condition_names);
     HirStatement::Write {
         record_name: write.record_name.name.clone(),
         from,
         invalid_key,
+        not_invalid_key,
         span: write.span,
     }
 }
@@ -1102,14 +1147,11 @@ fn lower_set(set: &SetStatement) -> HirStatement {
                 span: set.span,
             }
         }
-        SetKind::Address { target, source } => {
-            // SET pointer TO ADDRESS OF source -- simplified
-            HirStatement::Set {
-                targets: vec![target.name.clone()],
-                value: HirExpr::Variable(source.name.clone()),
-                span: set.span,
-            }
-        }
+        SetKind::Address { target, source } => HirStatement::SetAddress {
+            target: target.name.clone(),
+            source: source.name.clone(),
+            span: set.span,
+        },
     }
 }
 
@@ -1181,19 +1223,25 @@ fn lower_sort(sort: &cobol_ast::statement::SortStatement) -> HirStatement {
             HirSortKey { order, fields }
         })
         .collect();
-    let using = match &sort.input {
-        cobol_ast::statement::SortInput::Using(files) => files.clone(),
-        cobol_ast::statement::SortInput::InputProcedure { .. } => Vec::new(),
+    let (using, input_procedure) = match &sort.input {
+        cobol_ast::statement::SortInput::Using(files) => (files.clone(), None),
+        cobol_ast::statement::SortInput::InputProcedure { procedure, through } => {
+            (Vec::new(), Some((procedure.clone(), through.clone())))
+        }
     };
-    let giving = match &sort.output {
-        cobol_ast::statement::SortOutput::Giving(files) => files.clone(),
-        cobol_ast::statement::SortOutput::OutputProcedure { .. } => Vec::new(),
+    let (giving, output_procedure) = match &sort.output {
+        cobol_ast::statement::SortOutput::Giving(files) => (files.clone(), None),
+        cobol_ast::statement::SortOutput::OutputProcedure { procedure, through } => {
+            (Vec::new(), Some((procedure.clone(), through.clone())))
+        }
     };
     HirStatement::Sort {
         file_name: sort.file_name.clone(),
         keys,
         using,
         giving,
+        input_procedure,
+        output_procedure,
         span: sort.span,
     }
 }
@@ -1348,15 +1396,18 @@ fn lower_merge(merge: &cobol_ast::statement::MergeStatement) -> HirStatement {
         })
         .collect();
     let using = merge.using.clone();
-    let giving = match &merge.output {
-        cobol_ast::statement::SortOutput::Giving(files) => files.clone(),
-        cobol_ast::statement::SortOutput::OutputProcedure { .. } => Vec::new(),
+    let (giving, output_procedure) = match &merge.output {
+        cobol_ast::statement::SortOutput::Giving(files) => (files.clone(), None),
+        cobol_ast::statement::SortOutput::OutputProcedure { procedure, through } => {
+            (Vec::new(), Some((procedure.clone(), through.clone())))
+        }
     };
     HirStatement::Merge {
         file_name: merge.file_name.clone(),
         keys,
         using,
         giving,
+        output_procedure,
         span: merge.span,
     }
 }
@@ -1413,14 +1464,15 @@ fn lower_invoke(invoke: &cobol_ast::statement::InvokeStatement) -> HirStatement 
 
 fn lower_allocate(alloc: &cobol_ast::statement::AllocateStatement) -> HirStatement {
     use cobol_ast::statement::AllocateTarget;
-    let target = match &alloc.target {
-        AllocateTarget::DataName(qname) => qname.name.clone(),
-        AllocateTarget::Characters(_) => SmolStr::new("_ALLOC_CHARS"),
+    let (target, char_count) = match &alloc.target {
+        AllocateTarget::DataName(qname) => (qname.name.clone(), None),
+        AllocateTarget::Characters(expr) => (SmolStr::new("_ALLOC_CHARS"), Some(lower_expr(expr))),
     };
     let returning = alloc.returning.as_ref().map(|q| q.name.clone());
     HirStatement::Allocate {
         target,
         returning,
+        char_count,
         span: alloc.span,
     }
 }
@@ -1673,6 +1725,40 @@ fn extract_file_status_vars(program: &CobolProgram) -> Vec<HirFileInfo> {
                 file_name: fc.file_name.clone(),
                 status_var: qname.name.clone(),
             })
+        })
+        .collect()
+}
+
+fn patch_open_org(stmts: &mut [HirStatement], org_map: &HashMap<SmolStr, u32>) {
+    for stmt in stmts.iter_mut() {
+        if let HirStatement::Open { entries, .. } = stmt {
+            for entry in entries.iter_mut() {
+                if let Some(&org) = org_map.get(&entry.file_name) {
+                    entry.organization = org;
+                }
+            }
+        }
+    }
+}
+
+fn extract_file_organizations(program: &CobolProgram) -> HashMap<SmolStr, u32> {
+    use cobol_ast::FileOrganization;
+    let Some(env) = &program.environment else {
+        return HashMap::new();
+    };
+    let Some(io) = &env.input_output else {
+        return HashMap::new();
+    };
+    io.file_controls
+        .iter()
+        .map(|fc| {
+            let org = match fc.organization {
+                Some(FileOrganization::Sequential) => 0,
+                Some(FileOrganization::LineSequential) | None => 1,
+                Some(FileOrganization::Indexed) => 2,
+                Some(FileOrganization::Relative) => 3,
+            };
+            (fc.file_name.clone(), org)
         })
         .collect()
 }

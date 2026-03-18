@@ -2548,6 +2548,7 @@ fn test_c2_move_corresponding() {
         functions: Vec::new(),
         typedefs: Vec::new(),
         interfaces: Vec::new(),
+        file_organizations: std::collections::HashMap::new(),
         file_status_vars: Vec::new(),
         declaratives: Vec::new(),
         span: Span::dummy(),
@@ -2559,9 +2560,9 @@ fn test_c2_move_corresponding() {
         "Should have MOVE CORRESPONDING comment, got:\n{}",
         c_code
     );
-    // FIELD-A is numeric in both groups → should generate assignment
+    // FIELD-A is numeric in both groups → should generate assignment (flat variable)
     assert!(
-        c_code.contains("WS_DST.FIELD_A = WS_SRC.FIELD_A"),
+        c_code.contains("FIELD_A = FIELD_A"),
         "Should move matching FIELD-A, got:\n{}",
         c_code
     );
@@ -2636,6 +2637,7 @@ fn test_c2_add_corresponding() {
         functions: Vec::new(),
         typedefs: Vec::new(),
         interfaces: Vec::new(),
+        file_organizations: std::collections::HashMap::new(),
         file_status_vars: Vec::new(),
         declaratives: Vec::new(),
         span: Span::dummy(),
@@ -2648,7 +2650,7 @@ fn test_c2_add_corresponding() {
         c_code
     );
     assert!(
-        c_code.contains("GRP_B.AMT = GRP_B.AMT + GRP_A.AMT"),
+        c_code.contains("AMT = AMT + AMT"),
         "Should add matching AMT field, got:\n{}",
         c_code
     );

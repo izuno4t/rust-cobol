@@ -31,7 +31,11 @@ impl Parser {
 
         self.expect(TokenKind::Period)?;
 
-        let declaratives = Vec::new();
+        let declaratives = if self.check_identifier("DECLARATIVES") {
+            self.parse_declaratives()?
+        } else {
+            Vec::new()
+        };
         let mut sections = Vec::new();
         let mut paragraphs = Vec::new();
 
@@ -80,6 +84,181 @@ impl Parser {
         }
 
         Ok(params)
+    }
+
+    /// Parse the DECLARATIVES section.
+    ///
+    /// ```text
+    /// DECLARATIVES.
+    ///   section-name SECTION.
+    ///     USE AFTER EXCEPTION ON file-name-1 ...
+    ///   paragraph-name.
+    ///     statements ...
+    /// END DECLARATIVES.
+    /// ```
+    fn parse_declaratives(&mut self) -> Result<Vec<DeclarativeSection>, ()> {
+        let mut sections = Vec::new();
+
+        // Consume "DECLARATIVES"
+        self.advance();
+        self.expect(TokenKind::Period)?;
+
+        // Parse sections until END DECLARATIVES
+        while !self.at_eof() {
+            // Check for END DECLARATIVES
+            if self.check_identifier("END")
+                && self.peek(1).text.eq_ignore_ascii_case("DECLARATIVES")
+            {
+                self.advance(); // END
+                self.advance(); // DECLARATIVES
+                self.expect(TokenKind::Period)?;
+                break;
+            }
+
+            // Parse section-name SECTION.
+            let section_start = self.span();
+            let section_name = self.expect_identifier()?;
+            self.expect(TokenKind::Section)?;
+            self.expect(TokenKind::Period)?;
+
+            // Parse USE statement
+            let use_stmt = self.parse_use_statement()?;
+
+            // Parse paragraphs within this declarative section
+            let mut paragraphs = Vec::new();
+            let mut current_para_name: Option<SmolStr> = None;
+            let mut current_para_span: Option<Span> = None;
+            let mut current_sentences: Vec<Sentence> = Vec::new();
+
+            while !self.at_eof() {
+                // Check for END DECLARATIVES or next section header
+                if self.check_identifier("END")
+                    && self.peek(1).text.eq_ignore_ascii_case("DECLARATIVES")
+                {
+                    break;
+                }
+
+                // Check for next section (section-name SECTION)
+                if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                    && !self.at_statement_start()
+                    && self.peek(1).kind == TokenKind::Section
+                {
+                    break;
+                }
+
+                // Check for paragraph header
+                if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                    && !self.at_statement_start()
+                    && self.peek(1).kind == TokenKind::Period
+                {
+                    // Flush current paragraph
+                    if current_para_name.is_some() || !current_sentences.is_empty() {
+                        let para = self.make_paragraph(
+                            current_para_name.take(),
+                            current_para_span.take(),
+                            std::mem::take(&mut current_sentences),
+                        );
+                        paragraphs.push(para);
+                    }
+                    current_para_span = Some(self.span());
+                    current_para_name = Some(self.advance().text);
+                    self.advance(); // period
+                    continue;
+                }
+
+                // Parse a sentence
+                if let Some(sentence) = self.parse_sentence()? {
+                    current_sentences.push(sentence);
+                }
+            }
+
+            // Flush last paragraph
+            if current_para_name.is_some() || !current_sentences.is_empty() {
+                let para = self.make_paragraph(
+                    current_para_name.take(),
+                    current_para_span.take(),
+                    std::mem::take(&mut current_sentences),
+                );
+                paragraphs.push(para);
+            }
+
+            let section_end = self.span();
+            sections.push(DeclarativeSection {
+                name: section_name,
+                use_statement: use_stmt,
+                paragraphs,
+                span: section_start.merge(&section_end),
+            });
+        }
+
+        Ok(sections)
+    }
+
+    /// Parse a USE statement in a declarative section.
+    fn parse_use_statement(&mut self) -> Result<UseStatement, ()> {
+        // Expect "USE"
+        if !self.check_identifier("USE") {
+            self.error("expected USE statement in declarative section");
+            return Err(());
+        }
+        self.advance(); // USE
+
+        let use_stmt = if self.check(TokenKind::After) || self.check_identifier("GLOBAL") {
+            // USE [GLOBAL] AFTER [STANDARD] EXCEPTION/ERROR ON ...
+            if self.check_identifier("GLOBAL") {
+                self.advance();
+            }
+            self.expect(TokenKind::After)?;
+            // optional STANDARD
+            if self.check_identifier("STANDARD") {
+                self.advance();
+            }
+            // EXCEPTION or ERROR (synonyms)
+            if self.check(TokenKind::ExceptionKw) || self.check(TokenKind::ErrorKw) {
+                self.advance();
+            }
+            // optional ON
+            if self.check(TokenKind::OnKw) {
+                self.advance();
+            }
+            // Parse file names (or INPUT/OUTPUT/I-O/EXTEND)
+            let mut file_names = Vec::new();
+            while !self.check(TokenKind::Period) && !self.at_eof() {
+                let name = self.expect_identifier()?;
+                file_names.push(name);
+            }
+            UseStatement::AfterException { file_names }
+        } else if self.check(TokenKind::Before) {
+            // USE BEFORE REPORTING report-group
+            self.advance(); // BEFORE
+            if self.check(TokenKind::Report) {
+                self.advance(); // REPORTING
+            }
+            let report_group = self.expect_identifier()?;
+            UseStatement::BeforeReporting { report_group }
+        } else if self.check(TokenKind::ForKw) {
+            // USE FOR DEBUGGING ON debug-items
+            self.advance(); // FOR
+            if self.check_identifier("DEBUGGING") {
+                self.advance();
+            }
+            if self.check(TokenKind::OnKw) {
+                self.advance();
+            }
+            let mut debug_items = Vec::new();
+            while !self.check(TokenKind::Period) && !self.at_eof() {
+                let name = self.expect_identifier()?;
+                debug_items.push(name);
+            }
+            UseStatement::ForDebugging { debug_items }
+        } else {
+            // Fallback: try AFTER EXCEPTION
+            self.error("expected AFTER, BEFORE, or FOR in USE statement");
+            return Err(());
+        };
+
+        self.expect(TokenKind::Period)?;
+        Ok(use_stmt)
     }
 
     fn parse_procedure_body(
@@ -810,7 +989,14 @@ impl Parser {
 
             let when_span = self.span();
             let obj = self.parse_when_object()?;
-            let objects = vec![vec![obj]];
+            let mut objects = vec![vec![obj]];
+
+            // Parse ALSO-separated objects for multi-subject EVALUATE
+            while self.check(TokenKind::Also) {
+                self.advance();
+                let also_obj = self.parse_when_object()?;
+                objects.push(vec![also_obj]);
+            }
 
             let mut body = Vec::new();
             while !self.at_eof()

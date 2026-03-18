@@ -391,7 +391,7 @@ impl<'a> TypeChecker<'a> {
                 | FigurativeConstant::HighValue
                 | FigurativeConstant::LowValue
                 | FigurativeConstant::Quote
-                | FigurativeConstant::All => CobolType::Alphanumeric { size: 1 },
+                | FigurativeConstant::All(_) => CobolType::Alphanumeric { size: 1 },
                 FigurativeConstant::Null => CobolType::Pointer,
             },
         }

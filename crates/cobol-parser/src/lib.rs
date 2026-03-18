@@ -979,4 +979,73 @@ PROCEDURE DIVISION.
             panic!("expected DISPLAY statement");
         }
     }
+
+    #[test]
+    fn test_parse_declaratives() {
+        let source = r#"
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. DECLTEST.
+            DATA DIVISION.
+            FILE SECTION.
+            FD INPUT-FILE.
+            01 INPUT-REC PIC X(80).
+            PROCEDURE DIVISION.
+            DECLARATIVES.
+            INPUT-ERR SECTION.
+                USE AFTER EXCEPTION ON INPUT-FILE.
+            INPUT-ERR-PARA.
+                DISPLAY "FILE ERROR".
+            END DECLARATIVES.
+            MAIN-PARA.
+                DISPLAY "HELLO".
+                STOP RUN.
+        "#;
+        let program = parse_free(source).expect("parse failed");
+        let proc = program.procedure.expect("no procedure division");
+        assert_eq!(proc.declaratives.len(), 1);
+        assert_eq!(proc.declaratives[0].name.to_ascii_uppercase(), "INPUT-ERR");
+        match &proc.declaratives[0].use_statement {
+            cobol_ast::proc_div::UseStatement::AfterException { file_names } => {
+                assert_eq!(file_names.len(), 1);
+            }
+            other => panic!("expected AfterException, got {:?}", other),
+        }
+        assert!(!proc.declaratives[0].paragraphs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_evaluate_also() {
+        let source = r#"
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. EVALTEST.
+            DATA DIVISION.
+            WORKING-STORAGE SECTION.
+            01 WS-A PIC 9 VALUE 1.
+            01 WS-B PIC 9 VALUE 2.
+            PROCEDURE DIVISION.
+            MAIN-PARA.
+                EVALUATE WS-A ALSO WS-B
+                    WHEN 1 ALSO 2
+                        DISPLAY "ONE-TWO"
+                    WHEN 1 ALSO 3
+                        DISPLAY "ONE-THREE"
+                    WHEN OTHER
+                        DISPLAY "OTHER"
+                END-EVALUATE.
+                STOP RUN.
+        "#;
+        let program = parse_free(source).expect("parse failed");
+        let proc = program.procedure.expect("no procedure division");
+        let stmts = &proc.paragraphs[0].sentences[0].statements;
+        match &stmts[0] {
+            statement::Statement::Evaluate(eval) => {
+                assert_eq!(eval.subjects.len(), 2, "should have 2 subjects");
+                assert_eq!(eval.when_clauses.len(), 2);
+                // Each WHEN clause should have 2 ALSO-separated object groups
+                assert_eq!(eval.when_clauses[0].objects.len(), 2);
+                assert_eq!(eval.when_clauses[1].objects.len(), 2);
+            }
+            other => panic!("expected Evaluate, got {:?}", std::mem::discriminant(other)),
+        }
+    }
 }

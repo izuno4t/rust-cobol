@@ -849,7 +849,7 @@ fn format_literal(lit: &Literal) -> String {
             FigurativeConstant::HighValue => "HIGH-VALUE".to_string(),
             FigurativeConstant::LowValue => "LOW-VALUE".to_string(),
             FigurativeConstant::Quote => "QUOTE".to_string(),
-            FigurativeConstant::All => "ALL".to_string(),
+            FigurativeConstant::All(ref s) => format!("ALL \"{}\"", s),
             FigurativeConstant::Null => "NULL".to_string(),
         },
     }

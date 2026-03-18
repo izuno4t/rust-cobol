@@ -22,6 +22,8 @@ pub struct HirProgram {
     pub typedefs: Vec<HirTypedef>,
     /// COBOL 2023+: Interface definitions (INTERFACE-ID).
     pub interfaces: Vec<HirInterface>,
+    /// File organization mapping: file_name → org value for runtime.
+    pub file_organizations: std::collections::HashMap<SmolStr, u32>,
     /// FILE STATUS variable mapping: file_name → status variable name.
     pub file_status_vars: Vec<HirFileInfo>,
     /// DECLARATIVES sections: USE AFTER EXCEPTION handlers for file I/O.
@@ -190,6 +192,8 @@ pub enum HirLiteral {
     String(SmolStr),
     Zero,
     Space,
+    /// ALL "X": fill target with repeated character/string.
+    AllChar(SmolStr),
     /// HIGH-VALUE / HIGH-VALUES: all bits 1 (0xFF per byte).
     HighValue,
     /// LOW-VALUE / LOW-VALUES: all bits 0 (0x00 per byte).
@@ -216,6 +220,17 @@ pub enum HirMoveTarget {
         variable: SmolStr,
         subscripts: Vec<HirExpr>,
     },
+}
+
+/// Source for ACCEPT statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirAcceptSource {
+    Console,
+    Date,
+    Day,
+    DayOfWeek,
+    Time,
+    Environment(SmolStr),
 }
 
 /// An executable statement in the HIR.
@@ -277,6 +292,7 @@ pub enum HirStatement {
     Multiply {
         operand: HirExpr,
         by: Vec<SmolStr>,
+        giving: Vec<SmolStr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
@@ -284,6 +300,7 @@ pub enum HirStatement {
     Divide {
         operand: HirExpr,
         into: Vec<SmolStr>,
+        giving: Vec<SmolStr>,
         remainder: Option<SmolStr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
@@ -311,6 +328,9 @@ pub enum HirStatement {
     },
     /// EXIT PROGRAM statement (returns from called program, unlike STOP RUN which terminates).
     ExitProgram {
+        span: Span,
+    },
+    ExitParagraph {
         span: Span,
     },
     Goback {
@@ -342,6 +362,7 @@ pub enum HirStatement {
         record_name: SmolStr,
         from: Option<HirExpr>,
         invalid_key: Vec<HirStatement>,
+        not_invalid_key: Vec<HirStatement>,
         span: Span,
     },
     /// REWRITE statement.
@@ -372,6 +393,12 @@ pub enum HirStatement {
         value: HirExpr,
         span: Span,
     },
+    /// SET ADDRESS OF target TO source — pointer assignment.
+    SetAddress {
+        target: SmolStr,
+        source: SmolStr,
+        span: Span,
+    },
     /// STRING statement.
     StringStmt {
         into: SmolStr,
@@ -390,6 +417,7 @@ pub enum HirStatement {
     /// ACCEPT statement.
     Accept {
         target: SmolStr,
+        source: HirAcceptSource,
         span: Span,
     },
     /// SORT statement.
@@ -398,6 +426,10 @@ pub enum HirStatement {
         keys: Vec<HirSortKey>,
         using: Vec<SmolStr>,
         giving: Vec<SmolStr>,
+        /// INPUT PROCEDURE name and optional THRU.
+        input_procedure: Option<(SmolStr, Option<SmolStr>)>,
+        /// OUTPUT PROCEDURE name and optional THRU.
+        output_procedure: Option<(SmolStr, Option<SmolStr>)>,
         span: Span,
     },
     /// INSPECT statement.
@@ -429,6 +461,8 @@ pub enum HirStatement {
     Allocate {
         target: SmolStr,
         returning: Option<SmolStr>,
+        /// For ALLOCATE n CHARACTERS, the character count expression.
+        char_count: Option<HirExpr>,
         span: Span,
     },
     /// FREE statement: releases dynamically allocated memory.
@@ -495,6 +529,8 @@ pub enum HirStatement {
         keys: Vec<HirSortKey>,
         using: Vec<SmolStr>,
         giving: Vec<SmolStr>,
+        /// OUTPUT PROCEDURE name and optional THRU.
+        output_procedure: Option<(SmolStr, Option<SmolStr>)>,
         span: Span,
     },
     /// RELEASE statement: sends a record to the sort file.
@@ -631,6 +667,8 @@ pub enum HirPerformKind {
 pub struct HirOpenEntry {
     pub mode: HirOpenMode,
     pub file_name: SmolStr,
+    /// File organization: 0=Sequential, 1=LineSequential, 2=Indexed, 3=Relative.
+    pub organization: u32,
 }
 
 /// File open modes.
@@ -895,6 +933,7 @@ fn write_stmt(
         }
         HirStatement::StopRun { .. } => writeln!(f, "{pad}STOP RUN"),
         HirStatement::ExitProgram { .. } => writeln!(f, "{pad}EXIT PROGRAM"),
+        HirStatement::ExitParagraph { .. } => writeln!(f, "{pad}EXIT PARAGRAPH"),
         HirStatement::Goback { .. } => writeln!(f, "{pad}GOBACK"),
         HirStatement::Continue { .. } => writeln!(f, "{pad}CONTINUE"),
         HirStatement::Open { entries, .. } => {
@@ -949,6 +988,9 @@ fn write_stmt(
                     .join(", "),
                 format_expr(value)
             )
+        }
+        HirStatement::SetAddress { target, source, .. } => {
+            writeln!(f, "{pad}SET ADDRESS OF {target} TO {source}")
         }
         HirStatement::StringStmt { into, .. } => writeln!(f, "{pad}STRING INTO {into}"),
         HirStatement::UnstringStmt { source, .. } => writeln!(f, "{pad}UNSTRING {source}"),
@@ -1023,6 +1065,7 @@ fn format_expr(expr: &HirExpr) -> String {
             HirLiteral::LowValue => "LOW-VALUE".to_string(),
             HirLiteral::Quote => "QUOTE".to_string(),
             HirLiteral::Null => "NULL".to_string(),
+            HirLiteral::AllChar(s) => format!("ALL \"{}\"", s),
         },
         HirExpr::Variable(name) => name.to_string(),
         HirExpr::BinaryOp { op, left, right } => {
