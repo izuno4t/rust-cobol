@@ -633,6 +633,9 @@ impl<'a> NameResolver<'a> {
                 self.resolve_statements(&x.on_exception);
                 self.resolve_statements(&x.not_on_exception);
             }
+            Statement::Validate(v) => {
+                self.resolve_qualified_name(&v.target);
+            }
         }
     }
 

@@ -76,6 +76,7 @@ pub enum Statement {
     JsonParse(Box<JsonParseStatement>),
     XmlGenerate(Box<XmlGenerateStatement>),
     XmlParse(Box<XmlParseStatement>),
+    Validate(ValidateStatement),
 }
 
 // ---------------------------------------------------------------------------
@@ -875,5 +876,12 @@ pub struct XmlParseStatement {
     pub through: Option<SmolStr>,
     pub on_exception: Vec<Statement>,
     pub not_on_exception: Vec<Statement>,
+    pub span: Span,
+}
+
+/// VALIDATE statement (COBOL 2014+).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidateStatement {
+    pub target: QualifiedName,
     pub span: Span,
 }

@@ -564,6 +564,10 @@ fn lower_statement(
         Statement::JsonParse(jp) => Some(lower_json_parse(jp)),
         Statement::XmlGenerate(xg) => Some(lower_xml_generate(xg)),
         Statement::XmlParse(xp) => Some(lower_xml_parse(xp)),
+        Statement::Validate(v) => Some(HirStatement::Validate {
+            target: v.target.name.clone(),
+            span: v.span,
+        }),
     }
 }
 

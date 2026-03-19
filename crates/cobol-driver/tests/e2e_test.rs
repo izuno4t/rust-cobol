@@ -3632,3 +3632,101 @@ PROCEDURE DIVISION.
     assert!(lines[3].contains("40"), "Fourth: got '{}'", lines[3]);
     assert!(lines[4].contains("50"), "Fifth: got '{}'", lines[4]);
 }
+
+#[test]
+fn test_validate_statement() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VALTEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NUM PIC 9(5) VALUE 12345.
+PROCEDURE DIVISION.
+    VALIDATE WS-NUM.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_validate"),
+        "should generate validate call: {}",
+        c_code
+    );
+}
+
+#[test]
+fn test_xml_generate_parse() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. XMLTEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(100).
+01 WS-XML PIC X(500).
+PROCEDURE DIVISION.
+    XML GENERATE WS-XML FROM WS-DATA
+    END-XML.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_xml_generate"),
+        "should generate xml_generate call: {}",
+        c_code
+    );
+}
+
+#[test]
+fn test_xml_parse_statement() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. XMLPARSE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-XML PIC X(500).
+PROCEDURE DIVISION.
+MAIN-PARA.
+    XML PARSE WS-XML PROCESSING PROCEDURE XML-HANDLER
+    END-XML.
+    STOP RUN.
+XML-HANDLER.
+    DISPLAY \"XML EVENT\".
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_xml_parse"),
+        "should generate xml_parse call: {}",
+        c_code
+    );
+}
+
+#[test]
+fn test_json_generate_parse() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. JSONTEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(100).
+01 WS-JSON PIC X(200).
+PROCEDURE DIVISION.
+    JSON GENERATE WS-JSON FROM WS-DATA
+    END-JSON.
+    JSON PARSE WS-JSON INTO WS-DATA
+    END-JSON.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_json_generate"),
+        "should generate json_generate call: {}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_json_parse"),
+        "should generate json_parse call: {}",
+        c_code
+    );
+}

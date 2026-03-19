@@ -243,6 +243,206 @@ pub extern "C" fn cobol_func_char(ord: u32) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Mathematical intrinsic functions
+// ---------------------------------------------------------------------------
+
+/// FUNCTION ABS -- absolute value (integer variant).
+#[no_mangle]
+pub extern "C" fn cobol_func_abs(value: i64) -> i64 {
+    value.abs()
+}
+
+/// FUNCTION ABS -- absolute value (float variant).
+#[no_mangle]
+pub extern "C" fn cobol_func_abs_float(value: f64) -> f64 {
+    value.abs()
+}
+
+/// FUNCTION SQRT -- square root.
+#[no_mangle]
+pub extern "C" fn cobol_func_sqrt(value: f64) -> f64 {
+    value.sqrt()
+}
+
+/// FUNCTION EXP -- natural exponential (e^x).
+#[no_mangle]
+pub extern "C" fn cobol_func_exp(value: f64) -> f64 {
+    value.exp()
+}
+
+/// FUNCTION EXP10 -- base-10 exponential (10^x).
+#[no_mangle]
+pub extern "C" fn cobol_func_exp10(value: f64) -> f64 {
+    (10.0_f64).powf(value)
+}
+
+/// FUNCTION LOG -- natural logarithm.
+#[no_mangle]
+pub extern "C" fn cobol_func_log(value: f64) -> f64 {
+    value.ln()
+}
+
+/// FUNCTION LOG10 -- base-10 logarithm.
+#[no_mangle]
+pub extern "C" fn cobol_func_log10(value: f64) -> f64 {
+    value.log10()
+}
+
+/// FUNCTION SIN -- sine (radians).
+#[no_mangle]
+pub extern "C" fn cobol_func_sin(value: f64) -> f64 {
+    value.sin()
+}
+
+/// FUNCTION COS -- cosine (radians).
+#[no_mangle]
+pub extern "C" fn cobol_func_cos(value: f64) -> f64 {
+    value.cos()
+}
+
+/// FUNCTION TAN -- tangent (radians).
+#[no_mangle]
+pub extern "C" fn cobol_func_tan(value: f64) -> f64 {
+    value.tan()
+}
+
+/// FUNCTION ASIN -- arc sine.
+#[no_mangle]
+pub extern "C" fn cobol_func_asin(value: f64) -> f64 {
+    value.asin()
+}
+
+/// FUNCTION ACOS -- arc cosine.
+#[no_mangle]
+pub extern "C" fn cobol_func_acos(value: f64) -> f64 {
+    value.acos()
+}
+
+/// FUNCTION ATAN -- arc tangent.
+#[no_mangle]
+pub extern "C" fn cobol_func_atan(value: f64) -> f64 {
+    value.atan()
+}
+
+/// FUNCTION CEILING -- smallest integer >= value.
+#[no_mangle]
+pub extern "C" fn cobol_func_ceiling(value: f64) -> i64 {
+    value.ceil() as i64
+}
+
+/// FUNCTION FLOOR -- largest integer <= value.
+#[no_mangle]
+pub extern "C" fn cobol_func_floor(value: f64) -> i64 {
+    value.floor() as i64
+}
+
+/// FUNCTION FACTORIAL -- factorial of a non-negative integer.
+#[no_mangle]
+pub extern "C" fn cobol_func_factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    let mut result: i64 = 1;
+    for i in 2..=n {
+        result = result.saturating_mul(i);
+    }
+    result
+}
+
+/// FUNCTION REM / REMAINDER -- truncated remainder.
+#[no_mangle]
+pub extern "C" fn cobol_func_rem(a: f64, b: f64) -> f64 {
+    if b == 0.0 {
+        return 0.0;
+    }
+    a - (a / b).trunc() * b
+}
+
+/// FUNCTION RANDOM -- pseudo-random number in [0, 1).
+///
+/// Uses a simple LCG. Pass seed > 0 to reseed.
+#[no_mangle]
+pub extern "C" fn cobol_func_random(seed: i64) -> f64 {
+    static mut STATE: u64 = 12345;
+    unsafe {
+        if seed > 0 {
+            STATE = seed as u64;
+        }
+        STATE = STATE
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (STATE >> 33) as f64 / (1u64 << 31) as f64
+    }
+}
+
+/// FUNCTION SIGN -- sign of a value (-1, 0, or 1).
+#[no_mangle]
+pub extern "C" fn cobol_func_sign(value: i64) -> i64 {
+    match value.cmp(&0) {
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Less => -1,
+    }
+}
+
+/// FUNCTION MEAN -- arithmetic mean of an array of f64 values.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub extern "C" fn cobol_func_mean(values: *const f64, count: i32) -> f64 {
+    if count <= 0 {
+        return 0.0;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(values, count as usize) };
+    slice.iter().sum::<f64>() / count as f64
+}
+
+/// FUNCTION SUM (float variant) -- sum of an array of f64 values.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub extern "C" fn cobol_func_sum_float(values: *const f64, count: i32) -> f64 {
+    if count <= 0 {
+        return 0.0;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(values, count as usize) };
+    slice.iter().sum()
+}
+
+/// FUNCTION ANNUITY -- annuity factor.
+///
+/// If rate == 0, returns 1/periods. Otherwise rate / (1 - (1+rate)^(-periods)).
+#[no_mangle]
+pub extern "C" fn cobol_func_annuity(rate: f64, periods: i64) -> f64 {
+    if periods <= 0 {
+        return 0.0;
+    }
+    if rate == 0.0 {
+        return 1.0 / periods as f64;
+    }
+    rate / (1.0 - (1.0 + rate).powf(-(periods as f64)))
+}
+
+/// FUNCTION PRESENT-VALUE -- present value of a series of future amounts.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub extern "C" fn cobol_func_present_value(rate: f64, values: *const f64, count: i32) -> f64 {
+    if count <= 0 {
+        return 0.0;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(values, count as usize) };
+    let mut sum = 0.0;
+    for (i, &val) in slice.iter().enumerate() {
+        sum += val / (1.0 + rate).powf((i + 1) as f64);
+    }
+    sum
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

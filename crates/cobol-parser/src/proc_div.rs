@@ -500,6 +500,9 @@ impl Parser {
             TokenKind::Invoke => self.parse_invoke_statement(),
             TokenKind::Allocate => self.parse_allocate_statement(),
             TokenKind::Free => self.parse_free_statement(),
+            TokenKind::Validate => self.parse_validate_statement(),
+            TokenKind::Xml => self.parse_xml_statement(),
+            TokenKind::Json => self.parse_json_statement(),
             _ => {
                 let msg = format!("unexpected token: {:?}", self.current().kind);
                 self.error(&msg);
@@ -2771,6 +2774,18 @@ impl Parser {
         }))
     }
 
+    fn parse_validate_statement(&mut self) -> Result<Statement, ()> {
+        use cobol_ast::statement::ValidateStatement;
+        let start_span = self.span();
+        self.expect(TokenKind::Validate)?;
+        let target = self.parse_qualified_name()?;
+        let end_span = self.span();
+        Ok(Statement::Validate(ValidateStatement {
+            target,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
     // =========================================================================
     // Error-phrase helpers (ON SIZE ERROR, AT END, INVALID KEY, ON OVERFLOW)
     // =========================================================================
@@ -2941,6 +2956,482 @@ impl Parser {
             clauses.push(BeforeAfter { kind, value });
         }
         Ok(clauses)
+    }
+
+    // =========================================================================
+    // XML GENERATE / XML PARSE
+    // =========================================================================
+
+    fn parse_xml_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Xml)?;
+
+        if self.check(TokenKind::Generate) {
+            self.advance();
+            self.parse_xml_generate(start_span)
+        } else if self.check(TokenKind::Parse) {
+            self.advance();
+            self.parse_xml_parse(start_span)
+        } else {
+            self.error("expected GENERATE or PARSE after XML");
+            Err(())
+        }
+    }
+
+    fn parse_xml_generate(
+        &mut self,
+        start_span: Span,
+    ) -> Result<Statement, ()> {
+        let target = self.parse_qualified_name()?;
+
+        // FROM source
+        self.eat_identifier("FROM");
+        let source = self.parse_qualified_name()?;
+
+        let mut count = None;
+        let mut encoding = None;
+        let mut xml_declaration = false;
+        let mut attributes = false;
+        let mut namespace = None;
+        let mut namespace_prefix = None;
+        let mut name_mapping = Vec::new();
+        let mut suppress = Vec::new();
+        let mut on_exception = Vec::new();
+        let mut not_on_exception = Vec::new();
+
+        loop {
+            if self.at_statement_terminator() || self.at_eof() {
+                break;
+            }
+            if self.check_identifier("COUNT") {
+                self.advance();
+                self.eat(TokenKind::In);
+                count = Some(self.parse_qualified_name()?);
+            } else if self.check_identifier("ENCODING") {
+                self.advance();
+                encoding = Some(self.parse_expr()?);
+            } else if self.check_identifier("XML-DECLARATION") {
+                self.advance();
+                xml_declaration = true;
+            } else if self.check_identifier("ATTRIBUTES") {
+                self.advance();
+                attributes = true;
+            } else if self.check_identifier("NAMESPACE") {
+                self.advance();
+                self.eat_identifier("IS");
+                namespace = Some(self.parse_expr()?);
+                if self.check_identifier("NAMESPACE-PREFIX") {
+                    self.advance();
+                    self.eat_identifier("IS");
+                    namespace_prefix = Some(self.parse_expr()?);
+                }
+            } else if self.check_identifier("NAME") {
+                self.advance();
+                self.eat(TokenKind::Of);
+                let data_name = self.parse_qualified_name()?;
+                self.eat_identifier("IS");
+                if self.check(TokenKind::StringLiteral) {
+                    let xml_name = self.current().text.clone();
+                    self.advance();
+                    name_mapping.push(XmlNameMapping {
+                        data_name,
+                        xml_name,
+                    });
+                }
+            } else if self.check_identifier("SUPPRESS") {
+                self.advance();
+                while !self.at_statement_terminator()
+                    && !self.at_eof()
+                    && !self.check_identifier("NAME")
+                    && !self.check_identifier("END-XML")
+                    && !self.check(TokenKind::OnKw)
+                    && !self.check(TokenKind::Not)
+                    && !self.check_identifier("ENCODING")
+                    && !self.check_identifier("XML-DECLARATION")
+                    && !self.check_identifier("ATTRIBUTES")
+                    && !self.check_identifier("NAMESPACE")
+                {
+                    suppress.push(self.parse_qualified_name()?);
+                }
+            } else if self.check(TokenKind::OnKw) {
+                self.advance();
+                if self.check(TokenKind::ExceptionKw) {
+                    self.advance();
+                    while !self.at_eof()
+                        && !self.check(TokenKind::Not)
+                        && !self.check_identifier("END-XML")
+                        && !self.check(TokenKind::Period)
+                    {
+                        on_exception.push(self.parse_statement()?);
+                    }
+                } else {
+                    break;
+                }
+            } else if self.check(TokenKind::ExceptionKw) {
+                self.advance();
+                while !self.at_eof()
+                    && !self.check(TokenKind::Not)
+                    && !self.check_identifier("END-XML")
+                    && !self.check(TokenKind::Period)
+                {
+                    on_exception.push(self.parse_statement()?);
+                }
+            } else if self.check(TokenKind::Not) {
+                self.advance();
+                self.eat(TokenKind::OnKw);
+                if self.check(TokenKind::ExceptionKw) {
+                    self.advance();
+                }
+                while !self.at_eof()
+                    && !self.check_identifier("END-XML")
+                    && !self.check(TokenKind::Period)
+                {
+                    not_on_exception.push(self.parse_statement()?);
+                }
+            } else if self.check_identifier("END-XML") {
+                self.advance();
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::XmlGenerate(Box::new(XmlGenerateStatement {
+            target,
+            source,
+            count,
+            encoding,
+            xml_declaration,
+            attributes,
+            namespace,
+            namespace_prefix,
+            name_mapping,
+            suppress,
+            on_exception,
+            not_on_exception,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    fn parse_xml_parse(
+        &mut self,
+        start_span: Span,
+    ) -> Result<Statement, ()> {
+        let source = self.parse_qualified_name()?;
+
+        // PROCESSING PROCEDURE IS procedure-name [THRU procedure-name]
+        self.eat_identifier("PROCESSING");
+        self.eat_identifier("PROCEDURE");
+        self.eat_identifier("IS");
+
+        let proc_name = if self.check(TokenKind::Identifier) {
+            let name = self.current().text.clone();
+            self.advance();
+            name
+        } else {
+            self.error("expected processing procedure name");
+            return Err(());
+        };
+
+        let through = if self.check(TokenKind::Thru) {
+            self.advance();
+            if self.check(TokenKind::Identifier) {
+                let name = self.current().text.clone();
+                self.advance();
+                Some(name)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut on_exception = Vec::new();
+        let mut not_on_exception = Vec::new();
+
+        loop {
+            if self.at_statement_terminator() || self.at_eof() {
+                break;
+            }
+            if self.check(TokenKind::OnKw) {
+                self.advance();
+                if self.check(TokenKind::ExceptionKw) {
+                    self.advance();
+                    while !self.at_eof()
+                        && !self.check(TokenKind::Not)
+                        && !self.check_identifier("END-XML")
+                        && !self.check(TokenKind::Period)
+                    {
+                        on_exception.push(self.parse_statement()?);
+                    }
+                } else {
+                    break;
+                }
+            } else if self.check(TokenKind::ExceptionKw) {
+                self.advance();
+                while !self.at_eof()
+                    && !self.check(TokenKind::Not)
+                    && !self.check_identifier("END-XML")
+                    && !self.check(TokenKind::Period)
+                {
+                    on_exception.push(self.parse_statement()?);
+                }
+            } else if self.check(TokenKind::Not) {
+                self.advance();
+                self.eat(TokenKind::OnKw);
+                if self.check(TokenKind::ExceptionKw) {
+                    self.advance();
+                }
+                while !self.at_eof()
+                    && !self.check_identifier("END-XML")
+                    && !self.check(TokenKind::Period)
+                {
+                    not_on_exception.push(self.parse_statement()?);
+                }
+            } else if self.check_identifier("END-XML") {
+                self.advance();
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::XmlParse(Box::new(XmlParseStatement {
+            source,
+            processing_procedure: proc_name,
+            through,
+            on_exception,
+            not_on_exception,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // =========================================================================
+    // JSON GENERATE / JSON PARSE
+    // =========================================================================
+
+    fn parse_json_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Json)?;
+
+        if self.check(TokenKind::Generate) {
+            self.advance();
+            self.parse_json_generate(start_span)
+        } else if self.check(TokenKind::Parse) {
+            self.advance();
+            self.parse_json_parse(start_span)
+        } else {
+            self.error("expected GENERATE or PARSE after JSON");
+            Err(())
+        }
+    }
+
+    fn parse_json_generate(
+        &mut self,
+        start_span: Span,
+    ) -> Result<Statement, ()> {
+        use cobol_ast::statement::{JsonGenerateStatement, JsonNameMapping};
+
+        let target = self.parse_qualified_name()?;
+
+        self.eat_identifier("FROM");
+        let source = self.parse_qualified_name()?;
+
+        let mut count = None;
+        let mut name_mapping = Vec::new();
+        let mut suppress = Vec::new();
+        let mut on_exception = Vec::new();
+        let mut not_on_exception = Vec::new();
+
+        loop {
+            if self.at_statement_terminator() || self.at_eof() {
+                break;
+            }
+            if self.check_identifier("COUNT") {
+                self.advance();
+                self.eat(TokenKind::In);
+                count = Some(self.parse_qualified_name()?);
+            } else if self.check_identifier("NAME") {
+                self.advance();
+                if self.check(TokenKind::Of) {
+                    self.advance();
+                }
+                let data_name = self.parse_qualified_name()?;
+                self.eat_identifier("IS");
+                if self.check(TokenKind::StringLiteral) {
+                    let json_name = self.current().text.clone();
+                    self.advance();
+                    name_mapping.push(JsonNameMapping {
+                        data_name,
+                        json_name,
+                    });
+                } else if self.check_identifier("OMITTED") {
+                    self.advance();
+                    name_mapping.push(JsonNameMapping {
+                        data_name,
+                        json_name: "".into(),
+                    });
+                }
+            } else if self.check_identifier("SUPPRESS") {
+                self.advance();
+                while !self.at_statement_terminator()
+                    && !self.at_eof()
+                    && !self.check_identifier("NAME")
+                    && !self.check_identifier("END-JSON")
+                    && !self.check(TokenKind::OnKw)
+                    && !self.check(TokenKind::Not)
+                {
+                    suppress.push(self.parse_qualified_name()?);
+                }
+            } else if self.check(TokenKind::OnKw) {
+                self.advance();
+                if self.check(TokenKind::ExceptionKw) {
+                    self.advance();
+                    while !self.at_statement_terminator()
+                        && !self.at_eof()
+                        && !self.check(TokenKind::Not)
+                        && !self.check_identifier("END-JSON")
+                    {
+                        on_exception.push(self.parse_statement()?);
+                    }
+                } else {
+                    break;
+                }
+            } else if self.check(TokenKind::ExceptionKw) {
+                self.advance();
+                while !self.at_statement_terminator()
+                    && !self.at_eof()
+                    && !self.check(TokenKind::Not)
+                    && !self.check_identifier("END-JSON")
+                {
+                    on_exception.push(self.parse_statement()?);
+                }
+            } else if self.check(TokenKind::Not) {
+                self.advance();
+                self.eat(TokenKind::OnKw);
+                if self.check(TokenKind::ExceptionKw) {
+                    self.advance();
+                    while !self.at_statement_terminator()
+                        && !self.at_eof()
+                        && !self.check_identifier("END-JSON")
+                    {
+                        not_on_exception.push(self.parse_statement()?);
+                    }
+                }
+            } else if self.check_identifier("END-JSON") {
+                self.advance();
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::JsonGenerate(Box::new(JsonGenerateStatement {
+            target,
+            source,
+            count,
+            name_mapping,
+            suppress,
+            on_exception,
+            not_on_exception,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    fn parse_json_parse(
+        &mut self,
+        start_span: Span,
+    ) -> Result<Statement, ()> {
+        use cobol_ast::statement::{JsonNameMapping, JsonParseStatement};
+
+        let source = self.parse_qualified_name()?;
+
+        self.eat_identifier("INTO");
+        let target = self.parse_qualified_name()?;
+
+        let mut name_mapping = Vec::new();
+        let mut on_exception = Vec::new();
+        let mut not_on_exception = Vec::new();
+
+        loop {
+            if self.at_statement_terminator() || self.at_eof() {
+                break;
+            }
+            if self.check_identifier("NAME") || self.check_identifier("WITH") {
+                if self.check_identifier("WITH") {
+                    self.advance();
+                }
+                if self.check_identifier("NAME") {
+                    self.advance();
+                }
+                if self.check(TokenKind::Of) {
+                    self.advance();
+                }
+                let data_name = self.parse_qualified_name()?;
+                self.eat_identifier("IS");
+                if self.check(TokenKind::StringLiteral) {
+                    let json_name = self.current().text.clone();
+                    self.advance();
+                    name_mapping.push(JsonNameMapping {
+                        data_name,
+                        json_name,
+                    });
+                }
+            } else if self.check(TokenKind::OnKw) {
+                self.advance();
+                if self.check(TokenKind::ExceptionKw) {
+                    self.advance();
+                    while !self.at_statement_terminator()
+                        && !self.at_eof()
+                        && !self.check(TokenKind::Not)
+                        && !self.check_identifier("END-JSON")
+                    {
+                        on_exception.push(self.parse_statement()?);
+                    }
+                } else {
+                    break;
+                }
+            } else if self.check(TokenKind::ExceptionKw) {
+                self.advance();
+                while !self.at_statement_terminator()
+                    && !self.at_eof()
+                    && !self.check(TokenKind::Not)
+                    && !self.check_identifier("END-JSON")
+                {
+                    on_exception.push(self.parse_statement()?);
+                }
+            } else if self.check(TokenKind::Not) {
+                self.advance();
+                self.eat(TokenKind::OnKw);
+                if self.check(TokenKind::ExceptionKw) {
+                    self.advance();
+                    while !self.at_statement_terminator()
+                        && !self.at_eof()
+                        && !self.check_identifier("END-JSON")
+                    {
+                        not_on_exception.push(self.parse_statement()?);
+                    }
+                }
+            } else if self.check_identifier("END-JSON") {
+                self.advance();
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let end_span = self.span();
+        Ok(Statement::JsonParse(Box::new(JsonParseStatement {
+            source,
+            target,
+            name_mapping,
+            on_exception,
+            not_on_exception,
+            span: start_span.merge(&end_span),
+        })))
     }
 
     // =========================================================================
