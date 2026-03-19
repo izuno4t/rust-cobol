@@ -1,5 +1,10 @@
 # COBOL language terms and compiler-specific vocabulary
 
+# COBOL test suites and tools
+CCVS
+COBC
+newcob
+
 # COBOL statements and clauses
 DECLARATIVES
 GOBACK
