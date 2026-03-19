@@ -2807,10 +2807,8 @@ fn emit_move_to(
                     ));
                     out.push_str(&format!("{pad}  {c_target}[{tgt_size}] = '\\0'; }}\n"));
                 }
-            } else {
-                if let Some(ch) = s.chars().next() {
-                    out.push_str(&format!("{pad}{c_target} = '{ch}';\n"));
-                }
+            } else if let Some(ch) = s.chars().next() {
+                out.push_str(&format!("{pad}{c_target} = '{ch}';\n"));
             }
         }
         _ => {

@@ -1,188 +1,396 @@
 # 製品レベルまでの残課題一覧
 
 作成日: 2026-03-01
-更新日: 2026-03-18
-現在のテスト数: 475（ユニット + E2Eネイティブ実行テスト含む）
-全24項目完了済み。E2Eネイティブ実行テスト34件追加。
+更新日: 2026-03-19
+現在のテスト数: ユニット348 + E2E 123 = 471
+前回24項目（v1）完了済み。以下はv2として新たに洗い出した残課題。
 
 ---
 
-## 1. 致命的：生成Cコードがコンパイルできない
+## 凡例
 
-### 1-1. GOTO ラベルが生成されない
-- **場所**: `codegen.rs` — `HirStatement::GoTo` の処理
-- **問題**: `goto label_PARA;` を生成するが、対応する `label_PARA:` ラベルを一切生成していない
-- **影響**: GOTOを使うCOBOLプログラムは全てCコンパイルエラー
-- **修正方針**: パラグラフ関数のエントリにラベルを生成するか、GOTOをパラグラフ関数呼び出しに変換
-
-### 1-2. SORT USING のC関数呼び出しシグネチャ不一致
-- **場所**: `codegen.rs` 1484-1504行付近
-- **問題**: `cobol_file_open(handle, name, 1, 0)` と4引数で呼び出すが、ランタイムは7引数
-- **影響**: SORT USING を使うプログラムはCコンパイルエラー
-- **修正方針**: ランタイムのシグネチャに合わせてcodegenを修正
-
-### 1-3. CORRESPONDING がフラット変数にドット記法を使う
-- **場所**: `codegen.rs` — `emit_corresponding_move`, `emit_corresponding_arith`
-- **問題**: `WS_SRC.FIELD_A` のようなC構造体メンバアクセスを生成するが、実際の変数はフラットな `static int64_t FIELD_A`
-- **影響**: MOVE CORR / ADD CORR を使うプログラムはCコンパイルエラー
-- **修正方針**: グループ項目の構造体化（1-4）と同時に修正するか、フラット変数名で展開する方式に変更
-
-### 1-4. グループ項目がC構造体として生成されない
-- **場所**: `codegen.rs` — `emit_data_items`, `emit_single_data_item`
-- **問題**: グループ項目のメンバが個別のフラット `static` 変数として生成される。Cの `struct` にならない
-- **影響**: グループ単位のMOVE、DISPLAY、比較、REDEFINESが全て不正動作。CORRESPONDINGも壊れる
-- **修正方針**: `HirType::Group` を `typedef struct { ... } GROUP_NAME_t;` として生成。最も影響範囲が大きい根本修正
+- **parser** — パーサ未実装（パースエラーになる）
+- **codegen** — コード生成が不十分
+- **runtime** — ランタイム関数が不足/スタブ
+- **sema** — 意味解析が不足
+- **hir** — HIR loweringが不足
+- **test** — E2E検証が不十分
 
 ---
 
-## 2. 高：コンパイルは通るが動作が間違う
+## 1. 致命的：パースすらできない
 
-### 2-1. MULTIPLY/DIVIDE GIVING のターゲットが無視される
-- **場所**: `lower.rs` — `lower_multiply`, `lower_divide`
-- **問題**: AST の `giving` フィールドが完全に無視される
-- **影響**: `MULTIPLY A BY B GIVING C` が `B = A * B` になり、Cに結果が入らない
-- **修正方針**: HIR に `giving` フィールドを追加し、codegen で結果を GIVING ターゲットに格納
+### 1-1. JSON GENERATE / JSON PARSE 文 — parser
 
-### 2-2. INVALID KEY / ON OVERFLOW ハンドラが無条件実行
-- **場所**: `codegen.rs` — WRITE, START, STRING, UNSTRING の各処理
-- **問題**: `/* TODO: INVALID KEY check */` コメントだけで条件分岐なし。ハンドラの本体が常に実行される
-- **影響**: ファイルI/Oのエラーハンドリングが壊れる（常にエラー扱い）
-- **修正方針**: ランタイム戻り値を変数にキャプチャし、if文で条件分岐
+- **場所**: `proc_div.rs` の `parse_statement()` に
+  JSON系トークンのマッチなし
+- **問題**: TokenKind::Json は lexer に存在するが、パーサが未対応
+- **影響**: JSON文を含むプログラムは全てパースエラー
+- **HIR/codegen**: HirStatement::JsonGenerate/JsonParse は定義済み、
+  codegenもランタイム呼び出し生成済み
+- **規格**: COBOL 2014+
 
-### 2-3. ACCEPT FROM DATE/TIME/DAY が stdin から読む
-- **場所**: `lower.rs` — `lower_accept`（`from` フィールド無視）、`codegen.rs` — Accept処理
-- **問題**: `ACCEPT WS-DATE FROM DATE` が `fgets(stdin)` になる
-- **影響**: 日付・時刻取得が全て壊れる
-- **修正方針**: HIR に `AcceptSource` を追加、codegen でシステム日付取得関数を呼び出す
+### 1-2. XML GENERATE / XML PARSE 文 — parser
 
-### 2-4. EXIT PARAGRAPH / EXIT SECTION が CONTINUE（no-op）になる
-- **場所**: `lower.rs` 459行
-- **問題**: パラグラフ/セクションの残りをスキップすべきだが、何もしない
-- **影響**: 制御フローが壊れる
-- **修正方針**: パラグラフ末尾へのgotoまたはreturnに変換
+- **場所**: `proc_div.rs` の `parse_statement()` に
+  XML系トークンのマッチなし
+- **問題**: TokenKind::Xml は lexer に存在するが、パーサが未対応
+- **影響**: XML文を含むプログラムは全てパースエラー
+- **HIR/codegen**: HirStatement::XmlGenerate/XmlParse は定義済み、
+  codegenも生成済み
+- **規格**: COBOL 2002+
 
-### 2-5. GOBACK がサブプログラムからプロセス終了する
-- **場所**: `cobol-runtime/src/program.rs` — `cobol_goback()`
-- **問題**: `std::process::exit(0)` を呼ぶ。CALLされたサブプログラムからは呼び出し元に戻るべき
-- **影響**: サブプログラム構造を持つプログラムが壊れる
-- **修正方針**: `setjmp/longjmp` または関数returnで呼び出し元に復帰
+### 1-3. VALIDATE 文 — parser
 
-### 2-6. ALL figurative constant がゼロに変換される
-- **場所**: `lower.rs` 323行
-- **問題**: `ALL "X"` が `HirLiteral::Zero` にマップされる
-- **影響**: `MOVE ALL "X" TO WS-FIELD` がゼロ移動になる
-- **修正方針**: `HirLiteral::AllChar(char)` を追加し、codegen で `memset` 生成
-
-### 2-7. ファイル組織が常に行順（org=1）
-- **場所**: `codegen.rs` — Open文の生成
-- **問題**: SELECT句のファイル組織（INDEXED/RELATIVE/SEQUENTIAL）がcodegenに渡されず、常に `org=1`
-- **影響**: INDEXED/RELATIVEファイルのI/Oが全て壊れる（ランタイム実装はある）
-- **修正方針**: HIRにファイル組織情報を追加し、codegen で正しい org 値を渡す
-
-### 2-8. CALL ON EXCEPTION が発火しない
-- **場所**: `codegen.rs` — `_call_failed` が常に0
-- **問題**: 動的リンク失敗を検知していない
-- **修正方針**: `dlopen/dlsym` 失敗時にフラグを立てる
+- **場所**: `proc_div.rs` の `parse_statement()` に
+  Validateトークンのマッチなし
+- **問題**: TokenKind::Validate は lexer に存在するが、パーサが未対応
+- **影響**: VALIDATE文を含むプログラムは全てパースエラー
+- **HIR/codegen**: HirStatement::Validate は定義済み
+- **規格**: COBOL 2014+
 
 ---
 
-## 3. 中：機能未実装
+## 2. 高：コンパイルは通るが機能が不足
 
-### 3-1. DECLARATIVES のパース未実装
-- **場所**: `cobol-parser/src/proc_div.rs` 34行 — `let declaratives = Vec::new();`
-- **状況**: HIR/lower/codegen は実装済みだがパーサが常に空Vecを返す
-- **修正方針**: `DECLARATIVES ... END DECLARATIVES` ブロックのパースを実装
+### 2-1. 組み込み関数（数学系）が未実装 — codegen
 
-### 3-2. EVALUATE ALSO（複数サブジェクト）未対応
-- **場所**: `cobol-parser/src/proc_div.rs` — `parse_when_object()`
-- **問題**: WHEN句のALSOループがなく、単一オブジェクトのみ
-- **修正方針**: ALSO区切りで複数オブジェクトをパースし、ネストIF生成を拡張
+- **場所**: `codegen.rs` 3229-3293行 —
+  emit_expr の IntrinsicCall マッチ
+- **現在対応済み**: LENGTH, NUMVAL, NUMVAL-C, MAX, MIN,
+  MOD, INTEGER, INTEGER-PART, ORD, CHAR
+- **未対応一覧**:
+  - ABS, SQRT, EXP, LOG, LOG10（数学関数）
+  - SIN, COS, TAN, ASIN, ACOS, ATAN（三角関数）
+  - FLOOR, CEILING, FRACTION-PART（丸め）
+  - MEAN, MEDIAN, VARIANCE, STANDARD-DEVIATION（統計）
+  - SUM（集約）
+  - FACTORIAL, REM, RANDOM, ANNUITY, PRESENT-VALUE
+- **修正方針**: C標準ライブラリの対応する関数にマッピング
+- **規格**: COBOL-85+（一部COBOL 2002+）
 
-### 3-3. SORT INPUT/OUTPUT PROCEDURE が無視される
-- **場所**: `lower.rs` 1184-1191行
-- **問題**: `SortInput::InputProcedure` が `Vec::new()` に変換される
-- **修正方針**: プロシージャ名を保持し、codegen でプロシージャ呼び出しを生成
+### 2-2. 組み込み関数（文字列系）が未実装 — codegen
 
-### 3-4. PERFORM THRU のセクション横断
-- **場所**: `codegen.rs` — emit_perform
-- **問題**: パラグラフインデックスの解決が同一セクション内のみ
-- **修正方針**: セクション+パラグラフの順序リストを構築し、範囲実行
+- **場所**: `codegen.rs` — emit_expr の IntrinsicCall マッチ
+- **現在対応済み**: UPPER-CASE, LOWER-CASE, REVERSE,
+  TRIM, LENGTH
+- **未対応一覧**:
+  - CONCATENATE（文字列連結）
+  - SUBSTITUTE, SUBSTITUTE-CASE（文字列置換）
+  - NATIONAL-OF, DISPLAY-OF（文字コード変換）
+  - HEX-OF, HEX-TO-CHAR（16進変換）
+  - ORD-MAX, ORD-MIN（順序位置）
+  - STORED-CHAR-LENGTH
+- **修正方針**: ランタイム関数を追加し、codegenでマッピング
+- **規格**: COBOL 2002+
 
-### 3-5. SET ADDRESS OF — ポインタセマンティクス欠如
-- **場所**: `lower.rs` 1105-1112行
-- **問題**: アドレス操作が単純値代入に変換される
-- **修正方針**: HIRにポインタ操作ノードを追加
+### 2-3. 組み込み関数（日付系）が未実装 — codegen, runtime
 
-### 3-6. ALLOCATE CHARACTERS 形式 — サイズ計算が間違う
-- **場所**: `lower.rs` 1418行
-- **問題**: 文字数ではなく `sizeof(_ALLOC_CHARS)` が使われる
-- **修正方針**: 文字数を保持してcodegenで `malloc(n)` を生成
+- **場所**: `codegen.rs` / `intrinsic.rs`
+- **現在対応済み**: CURRENT-DATE
+- **未対応一覧**:
+  - DATE-OF-INTEGER, INTEGER-OF-DATE
+  - DAY-OF-INTEGER, INTEGER-OF-DAY
+  - DATE-TO-YYYYMMDD, YEAR-TO-YYYY, DAY-TO-YYYYDDD
+  - TEST-DATE-YYYYMMDD, TEST-DAY-YYYYDDD
+  - WHEN-COMPILED
+  - LOCALE-DATE, LOCALE-TIME
+- **修正方針**: ランタイムに日付変換関数を追加
+- **規格**: COBOL-85+（一部COBOL 2002+）
 
-### 3-7. 組み込み関数の文字列戻り値未対応
-- **場所**: `lower.rs` 1514行付近
-- **問題**: TRIM, UPPER-CASE, LOWER-CASE 等が数値式として扱われる
-- **修正方針**: 戻り型に応じたコード生成の分岐
+### 2-4. RENAMES句（レベル66）がHIR/codegenで無視 — hir, codegen
 
-### 3-8. SCREEN / REPORT / COMMUNICATION SECTION
-- **場所**: パーサは一部パース、HIR lowerで完全無視
-- **修正方針**: 優先度低。段階的に実装
+- **場所**: パーサは `parse_renames_clause()` で対応済み、
+  AST `DataItem.renames` に格納
+- **問題**: HIR loweringでrenames情報を一切処理しない
+- **影響**: レベル66のデータ項目参照が未定義動作
+- **修正方針**: HIRでREDEFINES類似のエイリアス生成
+- **規格**: COBOL-85+
 
-### 3-9. XML PARSE が空コメントのみ
-- **場所**: `codegen.rs` — XmlParse
-- **修正方針**: ランタイムにXMLパーサ統合（libxml2等）
+### 2-5. 添字付きターゲットの算術文 — codegen
 
-### 3-10. RAISE 例外が常にabort
-- **場所**: `cobol-runtime/src/exception.rs`
-- **修正方針**: setjmp/longjmpベースの例外伝播
+- **場所**: `codegen.rs` — 算術文のターゲット生成
+- **問題**: `ADD 1 TO TABLE(IDX)` のような添字付きターゲットが
+  正しく生成されないケースがある
+- **影響**: テーブル要素への直接算術が壊れる可能性
+  （COMPUTEで代替可能）
+- **修正方針**: ターゲット生成時に添字展開を統一
+- **規格**: COBOL-85+
 
-### 3-11. INVOKE（OOPメソッド呼び出し）がスタブ
-- **場所**: `cobol-runtime/src/exception.rs` 200-205行
-- **修正方針**: vtableディスパッチの実装
+### 2-6. SORT INPUT/OUTPUT PROCEDUREの動作不完全 — codegen, runtime, test
 
-### 3-12. DISPLAY of subscripted alphanumeric — 整数として表示
-- **場所**: `codegen.rs` 1984-1994行
-- **修正方針**: 型情報に基づいてcobol_display_str/cobol_display_intを使い分け
+- **場所**: `codegen.rs` 2001-2120行、`sort_merge.rs`
+- **問題**: プロシージャ名は保持されるが、
+  RELEASE/RETURNとの連携が不完全。E2E検証なし
+- **影響**: 手続き型ソートが正しく動作しない可能性
+- **修正方針**: RELEASE→ソートバッファ追加、
+  RETURN→ソートバッファ取得のランタイム連携
+- **規格**: COBOL-85+
+
+### 2-7. DECLARATIVES USE文とファイルI/O例外の連携 — codegen
+
+- **場所**: `codegen.rs` 70-174行 —
+  declarativesコード生成済みだが
+- **問題**: ファイルI/O操作時に
+  DECLARATIVES例外ハンドラが自動発火しない
+- **影響**: USE AFTER EXCEPTION ON file のハンドラが呼ばれない
+- **修正方針**: ファイルI/O後にステータスチェック→
+  declarativeハンドラ呼び出しを挿入
+- **規格**: COBOL-85+
+
+### 2-8. 例外のネスト・伝播が不完全 — runtime
+
+- **場所**: `exception.rs` — setjmp/longjmpベースの例外
+- **問題**: 例外ハンドラ内での例外、
+  CALLスタック越えの例外伝播が未対応
+- **影響**: 複雑な例外処理フローが壊れる
+- **修正方針**: 例外スタックのネスト管理
+- **規格**: COBOL 2002+
+
+### 2-9. ファイルI/Oのステータスコードが不完全 — runtime
+
+- **場所**: `file_io.rs` — 各操作のステータスコード
+- **問題**: 一部の操作で正しいFILE STATUSコードが設定されない
+- **影響**: FILE STATUS変数を参照する
+  エラーハンドリングが壊れる
+- **修正方針**: 全操作でCOBOL標準のステータスコード
+  (00, 10, 21, 22, 23, 30, 35, etc.)を返す
+- **規格**: COBOL-85+
+
+### 2-10. 索引ファイル（INDEXED）のREWRITE/DELETE — runtime, test
+
+- **場所**: `file_io.rs`
+- **問題**: 基本的なOPEN/READ/WRITEは動くが、
+  REWRITE/DELETEの動作がE2E未検証
+- **影響**: 索引ファイル更新処理が壊れる可能性
+- **規格**: COBOL-85+
+
+### 2-11. 相対ファイル（RELATIVE）操作 — runtime, test
+
+- **場所**: `file_io.rs`
+- **問題**: 相対ファイルの各アクセスモード
+  （SEQUENTIAL/RANDOM/DYNAMIC）の動作がE2E未検証
+- **影響**: 相対ファイルを使うプログラムの信頼性が不明
+- **規格**: COBOL-85+
+
+### 2-12. ランタイムテストのファイルID競合 — runtime, test
+
+- **場所**: `file_io.rs`, `sort_merge.rs` のテスト
+- **問題**: 複数テストがファイルID 500/501を共有。
+  並列実行時にグローバルFILE_TABLEで競合
+- **影響**: `test_merge_two_files` が間欠的に失敗
+- **修正方針**: テストごとにユニークなファイルIDを使用、
+  またはserial_test
+- **規格**: N/A（テスト品質）
 
 ---
 
-## 4. 今後の進め方（推奨）
+## 3. 中：機能が骨格のみ / 未接続
 
-### 原則
-- **テストは必ずclangコンパイル→実行→出力検証のE2Eで書く**
-- 文字列パターンマッチのユニットテストに頼らない
-- 1つ修正するごとに `make example` 相当の実行確認
+### 3-1. SCREEN SECTION — hir, codegen
 
-### 優先順位（進捗状況 2026-03-18更新）
-1. ~~**GOTOラベル生成**（1-1）~~ ✅ パラグラフ関数呼び出しに変換
-2. ~~**SORT USINGシグネチャ**（1-2）~~ ✅ 7引数に修正
-3. ~~**CORRESPONDINGフラット化**（1-3）~~ ✅ フラット変数名で展開
-4. ~~**グループ項目の構造体化**（1-4）~~ ✅ union+struct+#defineマクロ方式でC構造体生成
-5. ~~**GIVING対応**（2-1）~~ ✅ HIR+codegen修正
-6. ~~**INVALID KEY / ON OVERFLOW**（2-2）~~ ✅ 条件分岐追加
-7. ~~**ACCEPT FROM DATE/TIME**（2-3）~~ ✅ AcceptSource追加
-8. ~~**EXIT PARAGRAPH/SECTION**（2-4）~~ ✅ return生成
-9. ~~**GOBACK サブプログラム**（2-5）~~ ✅ setjmp/longjmpでCALL元に復帰
-10. ~~**ALL figurative constant**（2-6）~~ ✅ AllChar+memset
-11. ~~**ファイル組織**（2-7）~~ ✅ org値渡し修正
-12. ~~**CALL ON EXCEPTION**（2-8）~~ ✅ weak属性による動的リンク失敗検知
-13. ~~**DECLARATIVES パース**（3-1）~~ ✅ parse_declaratives実装
-14. ~~**EVALUATE ALSO**（3-2）~~ ✅ ALSOパース追加
-15. ~~**SORT INPUT/OUTPUT PROCEDURE**（3-3）~~ ✅ プロシージャ名保持+codegen
-16. ~~**PERFORM THRU セクション横断**（3-4）~~ ✅ セクション名をパラグラフ登録
-17. ~~**SET ADDRESS OF**（3-5）~~ ✅ SetAddressノード追加
-18. ~~**ALLOCATE CHARACTERS**（3-6）~~ ✅ char_count式保持
-19. ~~**組み込み関数文字列戻り値**（3-7）~~ ✅ DISPLAY時の文字列関数対応
-20. ~~**subscripted DISPLAY**（3-12）~~ ✅ 型判定で文字列表示
-21. ~~**SCREEN/REPORT/COMMUNICATION**（3-8）~~ ✅ HIR loweringにscreen/report/communication追加
-22. ~~**XML PARSE**（3-9）~~ ✅ コールバック関数生成+cobol_xml_parse呼び出し
-23. ~~**RAISE 例外**（3-10）~~ ✅ setjmp/longjmpベースの例外伝播実装
-24. ~~**INVOKE OOP**（3-11）~~ ✅ vtableディスパッチ関数生成+ランタイム実装
+- **場所**: パーサは汎用DataItemとしてパース、
+  HIRでは条件名収集のみ
+- **問題**: SCREEN固有の属性（LINE, COLUMN, BLANK,
+  HIGHLIGHT, FOREGROUND-COLOR等）が無視
+- **影響**: ACCEPT/DISPLAYのスクリーン指定が動作しない
+- **修正方針**: ncurses/termios系のランタイム関数を追加し、
+  SCREEN項目を専用HIRノードに変換
+- **規格**: COBOL-85拡張
 
-### 検証用COBOLプログラム
-実装の進捗確認用に、以下のパターンをカバーするテストプログラムを用意すべき：
-- ファイル処理（OPEN/READ/WRITE/CLOSE + FILE STATUS + INVALID KEY）
-- 算術（ADD/SUBTRACT/MULTIPLY/DIVIDE + GIVING + ON SIZE ERROR）
-- 文字列操作（STRING/UNSTRING/INSPECT）
-- 制御フロー（PERFORM THRU, GO TO, EVALUATE ALSO）
-- サブプログラム（CALL + GOBACK）
-- グループ項目（MOVE CORR, グループMOVE, REDEFINES）
+### 3-2. REPORT SECTION — hir, codegen
+
+- **場所**: パーサは汎用DataItemとしてパース、
+  HIRでは条件名収集のみ
+- **問題**: REPORT固有の属性（TYPE, LINE, COLUMN,
+  SOURCE, SUM, GROUP INDICATE等）が無視
+- **影響**: INITIATE/GENERATE/TERMINATEが機能しない
+- **修正方針**: レポートライタのランタイム実装が必要
+- **規格**: COBOL-85+
+
+### 3-3. COMMUNICATION SECTION — hir, codegen
+
+- **場所**: パーサは汎用DataItemとしてパース、
+  HIRでは条件名収集のみ
+- **問題**: COMMUNICATION固有の記述が無視
+- **影響**: SEND/RECEIVE/ENABLE/DISABLE/PURGEが機能しない
+- **備考**: COBOL 2002で廃止。実装優先度は最低
+- **規格**: COBOL-85（COBOL 2002で廃止）
+
+### 3-4. OOP機能のE2E検証不足 — test
+
+- **場所**: `codegen.rs` 4367-4465行 —
+  emit_classes は実装済み
+- **問題**: CLASS-ID/INTERFACE-ID/METHOD-ID/INVOKEの
+  codegenは存在するが、E2E実行検証なし
+- **影響**: 実際のプログラムで動くか不明
+- **修正方針**: OOP COBOLプログラムのE2Eテスト追加
+- **規格**: COBOL 2002+
+
+### 3-5. ユーザ定義関数（FUNCTION-ID）のE2E検証不足 — test
+
+- **場所**: `codegen.rs` 4470-4510行 —
+  emit_functions は実装済み
+- **問題**: FUNCTION-IDのcodegenは存在するが、
+  E2E実行検証なし
+- **影響**: ユーザ定義関数を使うプログラムの動作が不明
+- **規格**: COBOL 2002+
+
+### 3-6. TYPEDEF のE2E検証不足 — test
+
+- **場所**: `codegen.rs` 4513-4522行 —
+  emit_typedefs は実装済み
+- **問題**: codegenは存在するが、E2E実行検証なし
+- **規格**: COBOL 2014+
+
+### 3-7. サブプログラム CALL + GOBACK のE2E検証不足 — test
+
+- **場所**: codegen/runtime はsetjmp/longjmpベースで実装済み
+- **問題**: E2Eネイティブ実行での往復検証が不十分
+- **影響**: 複数プログラムの連携動作が不明
+- **規格**: COBOL-85+
+
+### 3-8. PERFORM THRU のセクション横断 — test
+
+- **場所**: `codegen.rs` —
+  セクション名をパラグラフとして登録済み
+- **問題**: 複数セクションをまたぐ
+  PERFORM THRUのE2E検証が不十分
+- **規格**: COBOL-85+
+
+### 3-9. NATIONAL（日本語/Unicode）データ型 — sema, codegen, runtime
+
+- **場所**: lexer/parser/ASTで部分的に扱われるが、
+  codegen/runtimeで未対応
+- **問題**: PIC N のデータ、NATIONAL-OF/DISPLAY-OF変換、
+  日本語文字列操作が未対応
+- **影響**: 日本語COBOLプログラムのデータ処理が壊れる
+- **修正方針**: UTF-16/UTF-32ベースの
+  NATIONALランタイム関数を実装
+- **規格**: COBOL 2002+
+
+---
+
+## 4. 低：エッジケース / 細かい不足
+
+### 4-1. EXIT文の完全なセマンティクス — parser
+
+- **場所**: `proc_div.rs` 1555行 —
+  `EXIT` 単体が `Statement::Continue` に変換
+- **問題**: EXIT（パラグラフ終了）の正確なセマンティクスが
+  CONTINUEと同一視
+- **規格**: COBOL-85+
+
+### 4-2. 数値編集PICTUREの検証不足 — sema
+
+- **場所**: `picture_analyzer.rs`
+- **問題**: 数値編集ピクチャ
+  （Z, \*, CR, DB, +, -, B, 0, /）のバリデーションが限定的
+- **規格**: COBOL-85+
+
+### 4-3. グループ項目間のMOVEの精度 — codegen
+
+- **場所**: `codegen.rs` — MOVE文のグループ間処理
+- **問題**: グループ→グループのMOVEがバイト単位コピーに
+  なるべきだが、個別変数コピーの可能性
+- **規格**: COBOL-85+
+
+### 4-4. EVALUATE ALSOの複雑なケース — test
+
+- **場所**: パーサ・codegen共に実装済み
+- **問題**: 3つ以上のALSOサブジェクト、
+  ネストした条件のE2E検証不足
+- **規格**: COBOL-85+
+
+### 4-5. 参照変更（Reference Modification）のネスト — codegen
+
+- **場所**: `codegen.rs` 3295-3307行
+- **問題**: `WS-FIELD(1:3)(1:2)` のような
+  多段参照変更が未対応
+- **規格**: COBOL-85+
+
+### 4-6. COPYBOOKの完全対応 — parser
+
+- **場所**: lexerのSourceReaderレベル
+- **問題**: COPY文のREPLACING句、ネストしたCOPY、
+  ライブラリ名指定の完全性が未検証
+- **規格**: COBOL-85+
+
+---
+
+## 5. 完了済み（v1の24項目）
+
+v1で対応した24項目は全て完了済み。
+
+1. GOTOラベル生成（旧1-1）
+2. SORT USINGシグネチャ（旧1-2）
+3. CORRESPONDINGフラット化（旧1-3）
+4. グループ項目の構造体化（旧1-4）
+5. GIVING対応（旧2-1）
+6. INVALID KEY / ON OVERFLOW（旧2-2）
+7. ACCEPT FROM DATE/TIME（旧2-3）
+8. EXIT PARAGRAPH/SECTION（旧2-4）
+9. GOBACK サブプログラム（旧2-5）
+10. ALL figurative constant（旧2-6）
+11. ファイル組織（旧2-7）
+12. CALL ON EXCEPTION（旧2-8）
+13. DECLARATIVES パース（旧3-1）
+14. EVALUATE ALSO（旧3-2）
+15. SORT INPUT/OUTPUT PROCEDURE（旧3-3）
+16. PERFORM THRU セクション横断（旧3-4）
+17. SET ADDRESS OF（旧3-5）
+18. ALLOCATE CHARACTERS（旧3-6）
+19. 組み込み関数文字列戻り値（旧3-7）
+20. subscripted DISPLAY（旧3-12）
+21. SCREEN/REPORT/COMMUNICATION HIR lowering（旧3-8）
+    — 条件名収集のみ。3-1〜3-3で再掲
+22. XML PARSE codegen（旧3-9）
+    — codegenのみ。1-2でパーサ未実装として再掲
+23. RAISE 例外伝播（旧3-10）
+24. INVOKE OOP vtable（旧3-11）
+
+---
+
+## 6. 推奨実装順序
+
+### Phase 1: パーサ修正
+
+全プログラムが少なくともパースできるようにする。
+
+1. JSON GENERATE / JSON PARSE のパーサ追加（1-1）
+2. XML GENERATE / XML PARSE のパーサ追加（1-2）
+3. VALIDATE のパーサ追加（1-3）
+
+### Phase 2: 組み込み関数の充実
+
+COBOL-85互換性の確保。
+
+1. 数学関数の追加（2-1）
+2. 日付関数の追加（2-3）
+3. 文字列関数の追加（2-2）
+
+### Phase 3: データ処理の精度向上
+
+1. RENAMES句の実装（2-4）
+2. 添字付きターゲット算術の修正（2-5）
+3. ファイルI/Oステータスコードの完全化（2-9）
+
+### Phase 4: E2E検証の充実
+
+1. SORT INPUT/OUTPUT PROCEDUREのE2E検証（2-6）
+2. OOP機能のE2E検証（3-4）
+3. ユーザ定義関数のE2E検証（3-5）
+4. サブプログラムCALL+GOBACKのE2E検証（3-7）
+5. DECLARATIVES例外連携の検証（2-7）
+6. 索引・相対ファイルのE2E検証（2-10, 2-11）
+
+### Phase 5: 拡張機能
+
+1. SCREEN SECTION（3-1）
+2. REPORT SECTION（3-2）
+3. NATIONAL データ型（3-9）
+
+### Phase 6: エッジケース・品質向上
+
+1. 残りの低優先度項目（4-1〜4-6）
+2. フレーキーテストの修正（2-12）

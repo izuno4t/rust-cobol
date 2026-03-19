@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "clippy",
+    "cobolc",
+    "codegen",
+    "declaratives",
+    "desugared",
+    "desugars",
+    "goback",
+    "longjmp",
+    "numval",
+    "peekable",
+    "refmod",
+    "sema",
+    "setjmp",
+    "smol",
+    "staticlib",
+    "termios",
+    "thiserror",
+    "vtable",
+    "vtables"
+  ],
+  "dictionaries": ["rust", "cpp", "software-terms"],
+  "dictionaryDefinitions": [
+    {
+      "name": "cobol-terms",
+      "path": "./cspell-cobol.txt",
+      "description": "COBOL language terms"
+    }
+  ],
+  "ignorePaths": [
+    "target/**",
+    "Cargo.lock",
+    "*.svg",
+    "*.png",
+    "*.jpg"
+  ],
+  "overrides": [
+    {
+      "filename": "**/*.rs",
+      "dictionaries": ["rust", "cpp", "cobol-terms"],
+      "ignoreRegExpList": [
+        "/\\b[A-Z]{2,10}TEST\\b/",
+        "/\\b(AABB|ABCABC|XBCABC|XXBABC|XXBBXXCCXX|XBCXBC|CDEFG|EDCBA|AABABC|AAABBC|AABBAACCA|AABBAACCAA|CCCCCAAAAABBBBB|CCCCCBBBBBAAAAA|AAAAABBBBBCCCCC|HELO|helo)\\b/",
+        "/\\b(NOTAKEYWORD|SUBPROG|MULDIV|VARI|DECLTEST|FULLTEST)\\b/",
+        "/\\b(YYYYMMDDHHMMSSFF)\\b/",
+        "/#\\[no_mangle\\]/",
+        "/#!?\\[.*\\]/"
+      ]
+    },
+    {
+      "filename": "**/*.md",
+      "dictionaries": ["cobol-terms"],
+      "ignoreRegExpList": [
+        "/\\b(NOTAKEYWORD|SUBPROG|MULDIV|FULLTEST|DECLTEST)\\b/"
+      ]
+    }
+  ]
+}

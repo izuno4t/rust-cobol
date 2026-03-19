@@ -5,7 +5,7 @@ CARGO := cargo
 BINARY := cobolc
 INSTALL_DIR := $(HOME)/.cargo/bin
 
-.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example help
+.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck help
 
 ## デフォルト: リリースビルド
 all: release
@@ -30,8 +30,8 @@ test-unit:
 test-e2e:
 	$(CARGO) test --package cobol-driver --test e2e_test
 
-## リント (clippy + fmt check)
-lint: clippy fmt-check
+## リント (clippy + fmt check + spellcheck)
+lint: clippy fmt-check spellcheck
 
 ## clippy
 clippy:
@@ -44,6 +44,10 @@ fmt-check:
 ## フォーマット適用
 fmt:
 	$(CARGO) fmt --all
+
+## スペルチェック
+spellcheck:
+	cspell "crates/**/*.rs" "docs/**/*.md" "CLAUDE.md"
 
 ## 型チェック (コンパイルなし)
 check:
@@ -77,9 +81,10 @@ help:
 	@echo "  make test        - 全テスト実行"
 	@echo "  make test-unit   - ユニットテストのみ"
 	@echo "  make test-e2e    - E2Eテストのみ"
-	@echo "  make lint        - clippy + フォーマットチェック"
+	@echo "  make lint        - clippy + フォーマットチェック + スペルチェック"
 	@echo "  make clippy      - clippy のみ"
 	@echo "  make fmt-check   - フォーマットチェックのみ"
+	@echo "  make spellcheck  - スペルチェック"
 	@echo "  make fmt         - フォーマット適用"
 	@echo "  make check       - 型チェック (コンパイルなし)"
 	@echo "  make clean       - ビルド成果物のクリーン"
