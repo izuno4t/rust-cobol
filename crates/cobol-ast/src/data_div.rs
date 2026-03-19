@@ -122,6 +122,22 @@ pub struct DataItem {
     pub is_global: bool,
     /// Condition values for level 88 items.
     pub condition_values: Vec<ConditionValue>,
+    /// SCREEN SECTION: LINE NUMBER clause.
+    pub line_clause: Option<u32>,
+    /// SCREEN SECTION: COLUMN NUMBER clause.
+    pub column_clause: Option<u32>,
+    /// SCREEN SECTION: BLANK SCREEN flag.
+    pub blank_screen: bool,
+    /// SCREEN SECTION: BLANK LINE flag.
+    pub blank_line: bool,
+    /// SCREEN SECTION: HIGHLIGHT flag.
+    pub highlight: bool,
+    /// SCREEN SECTION: REVERSE-VIDEO flag.
+    pub reverse_video: bool,
+    /// SCREEN SECTION: SOURCE field (display value from this field).
+    pub source_field: Option<QualifiedName>,
+    /// SCREEN SECTION: USING field (input/output bound to this field).
+    pub using_field: Option<QualifiedName>,
     /// Subordinate data items (group items contain children).
     pub children: Vec<DataItem>,
     pub span: Span,

@@ -137,14 +137,19 @@ impl<'a> TypeChecker<'a> {
                 if !self.is_move_compatible(src, tgt) {
                     self.reporter.report(
                         Diagnostic::warning(
-                            "W200",
+                            "COBC-W200",
                             format!(
-                                "MOVE from {} to {} may lose data",
-                                src.display_name(),
-                                tgt.display_name()
+                                "MOVE from {} to {} may lose data or truncate",
+                                src.detail_name(),
+                                tgt.detail_name()
                             ),
                         )
-                        .with_label(m.span, "type mismatch in MOVE"),
+                        .with_label(m.span, "incompatible types in MOVE")
+                        .with_note(format!(
+                            "source type: {}, target type: {}",
+                            src.detail_name(),
+                            tgt.detail_name()
+                        )),
                     );
                 }
             }
@@ -161,10 +166,14 @@ impl<'a> TypeChecker<'a> {
                 if !t.is_numeric() && !matches!(t, CobolType::NumericEdited { .. }) {
                     self.reporter.report(
                         Diagnostic::error(
-                            "E200",
-                            format!("COMPUTE target must be numeric, found {}", t.display_name()),
+                            "COBC-E200",
+                            format!("COMPUTE target must be numeric, found {}", t.detail_name()),
                         )
-                        .with_label(target.target.span, "non-numeric target"),
+                        .with_label(target.target.span, "non-numeric target")
+                        .with_note(format!(
+                            "COMPUTE requires a numeric target, but this item is {}",
+                            t.detail_name()
+                        )),
                     );
                 }
             }
@@ -245,10 +254,15 @@ impl<'a> TypeChecker<'a> {
                 let span = self.expr_span(expr);
                 self.reporter.report(
                     Diagnostic::error(
-                        "E201",
-                        format!("{} must be numeric, found {}", context, t.display_name()),
+                        "COBC-E201",
+                        format!("{} must be numeric, found {}", context, t.detail_name()),
                     )
-                    .with_label(span, "non-numeric operand"),
+                    .with_label(span, "non-numeric operand")
+                    .with_note(format!(
+                        "arithmetic operations require numeric operands, \
+                         but this item is {}",
+                        t.detail_name()
+                    )),
                 );
             }
         }
@@ -261,10 +275,15 @@ impl<'a> TypeChecker<'a> {
             if !t.is_numeric() && !matches!(t, CobolType::NumericEdited { .. }) {
                 self.reporter.report(
                     Diagnostic::error(
-                        "E202",
-                        format!("{} must be numeric, found {}", context, t.display_name()),
+                        "COBC-E202",
+                        format!("{} must be numeric, found {}", context, t.detail_name()),
                     )
-                    .with_label(name.span, "non-numeric data item"),
+                    .with_label(name.span, "non-numeric data item")
+                    .with_note(format!(
+                        "arithmetic operations require numeric targets, \
+                         but this item is {}",
+                        t.detail_name()
+                    )),
                 );
             }
         }

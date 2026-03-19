@@ -279,7 +279,7 @@ mod tests {
         unsafe {
             assert_eq!(
                 file_io::cobol_file_open(
-                    500,
+                    900,
                     p1.as_ptr(),
                     p1.len() as u32,
                     file_io::FileOrganization::Sequential,
@@ -289,14 +289,14 @@ mod tests {
                 ),
                 0
             );
-            assert_eq!(file_io::cobol_file_write(500, b"AAAAA".as_ptr(), 5), 0);
-            assert_eq!(file_io::cobol_file_write(500, b"CCCCC".as_ptr(), 5), 0);
-            assert_eq!(file_io::cobol_file_close(500), 0);
+            assert_eq!(file_io::cobol_file_write(900, b"AAAAA".as_ptr(), 5), 0);
+            assert_eq!(file_io::cobol_file_write(900, b"CCCCC".as_ptr(), 5), 0);
+            assert_eq!(file_io::cobol_file_close(900), 0);
 
             // Write sorted input file 2: BBBBB, DDDDD
             assert_eq!(
                 file_io::cobol_file_open(
-                    501,
+                    901,
                     p2.as_ptr(),
                     p2.len() as u32,
                     file_io::FileOrganization::Sequential,
@@ -306,14 +306,14 @@ mod tests {
                 ),
                 0
             );
-            assert_eq!(file_io::cobol_file_write(501, b"BBBBB".as_ptr(), 5), 0);
-            assert_eq!(file_io::cobol_file_write(501, b"DDDDD".as_ptr(), 5), 0);
-            assert_eq!(file_io::cobol_file_close(501), 0);
+            assert_eq!(file_io::cobol_file_write(901, b"BBBBB".as_ptr(), 5), 0);
+            assert_eq!(file_io::cobol_file_write(901, b"DDDDD".as_ptr(), 5), 0);
+            assert_eq!(file_io::cobol_file_close(901), 0);
 
             // Re-open inputs for reading.
             assert_eq!(
                 file_io::cobol_file_open(
-                    510,
+                    910,
                     p1.as_ptr(),
                     p1.len() as u32,
                     file_io::FileOrganization::Sequential,
@@ -325,7 +325,7 @@ mod tests {
             );
             assert_eq!(
                 file_io::cobol_file_open(
-                    511,
+                    911,
                     p2.as_ptr(),
                     p2.len() as u32,
                     file_io::FileOrganization::Sequential,
@@ -339,7 +339,7 @@ mod tests {
             // Open output.
             assert_eq!(
                 file_io::cobol_file_open(
-                    520,
+                    920,
                     po.as_ptr(),
                     po.len() as u32,
                     file_io::FileOrganization::Sequential,
@@ -351,18 +351,18 @@ mod tests {
             );
 
             // Merge.
-            let inputs = [510u32, 511];
+            let inputs = [910u32, 911];
             let keys = [SortKey {
                 offset: 0,
                 length: 5,
                 ascending: true,
             }];
-            let status = cobol_merge(inputs.as_ptr(), 2, 520, keys.as_ptr(), 1, 5);
+            let status = cobol_merge(inputs.as_ptr(), 2, 920, keys.as_ptr(), 1, 5);
             assert_eq!(status, 0);
 
-            assert_eq!(file_io::cobol_file_close(510), 0);
-            assert_eq!(file_io::cobol_file_close(511), 0);
-            assert_eq!(file_io::cobol_file_close(520), 0);
+            assert_eq!(file_io::cobol_file_close(910), 0);
+            assert_eq!(file_io::cobol_file_close(911), 0);
+            assert_eq!(file_io::cobol_file_close(920), 0);
         }
 
         // Verify merged output.

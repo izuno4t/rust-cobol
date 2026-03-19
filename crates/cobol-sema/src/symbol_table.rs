@@ -286,6 +286,46 @@ impl CobolType {
             CobolType::FloatExtended => "FLOAT-EXTENDED",
         }
     }
+
+    /// Returns a detailed human-readable description including PIC-like information.
+    ///
+    /// Example: "NUMERIC PIC 9(5)" or "ALPHANUMERIC PIC X(10)".
+    pub fn detail_name(&self) -> String {
+        match self {
+            CobolType::Alphabetic { size } => format!("ALPHABETIC PIC A({})", size),
+            CobolType::Alphanumeric { size } => format!("ALPHANUMERIC PIC X({})", size),
+            CobolType::Numeric {
+                size,
+                decimal_places,
+                is_signed,
+            } => {
+                let sign = if *is_signed { "S" } else { "" };
+                if *decimal_places > 0 {
+                    let integer_digits = size.saturating_sub(*decimal_places);
+                    format!(
+                        "NUMERIC PIC {}9({})V9({})",
+                        sign, integer_digits, decimal_places
+                    )
+                } else {
+                    format!("NUMERIC PIC {}9({})", sign, size)
+                }
+            }
+            CobolType::NumericEdited { size } => {
+                format!("NUMERIC-EDITED (size {})", size)
+            }
+            CobolType::AlphanumericEdited { size } => {
+                format!("ALPHANUMERIC-EDITED (size {})", size)
+            }
+            CobolType::Group { size } => format!("GROUP (size {})", size),
+            CobolType::Index => "INDEX".to_string(),
+            CobolType::Pointer => "POINTER".to_string(),
+            CobolType::Boolean => "BOOLEAN".to_string(),
+            CobolType::National { size } => format!("NATIONAL PIC N({})", size),
+            CobolType::FloatShort => "FLOAT-SHORT (COMP-1)".to_string(),
+            CobolType::FloatLong => "FLOAT-LONG (COMP-2)".to_string(),
+            CobolType::FloatExtended => "FLOAT-EXTENDED".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -392,5 +432,43 @@ mod tests {
         assert!(CobolType::FloatShort.is_numeric());
         assert!(CobolType::Index.is_numeric());
         assert!(!CobolType::Alphanumeric { size: 10 }.is_numeric());
+    }
+
+    #[test]
+    fn test_detail_name_numeric() {
+        let t = CobolType::Numeric {
+            size: 5,
+            decimal_places: 0,
+            is_signed: false,
+        };
+        assert_eq!(t.detail_name(), "NUMERIC PIC 9(5)");
+    }
+
+    #[test]
+    fn test_detail_name_signed_decimal() {
+        let t = CobolType::Numeric {
+            size: 9,
+            decimal_places: 2,
+            is_signed: true,
+        };
+        assert_eq!(t.detail_name(), "NUMERIC PIC S9(7)V9(2)");
+    }
+
+    #[test]
+    fn test_detail_name_alphanumeric() {
+        let t = CobolType::Alphanumeric { size: 10 };
+        assert_eq!(t.detail_name(), "ALPHANUMERIC PIC X(10)");
+    }
+
+    #[test]
+    fn test_detail_name_group() {
+        let t = CobolType::Group { size: 0 };
+        assert_eq!(t.detail_name(), "GROUP (size 0)");
+    }
+
+    #[test]
+    fn test_detail_name_float() {
+        assert_eq!(CobolType::FloatShort.detail_name(), "FLOAT-SHORT (COMP-1)");
+        assert_eq!(CobolType::FloatLong.detail_name(), "FLOAT-LONG (COMP-2)");
     }
 }

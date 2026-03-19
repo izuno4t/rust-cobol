@@ -6,4 +6,4 @@ pub mod reporter;
 
 pub use diagnostic::{Diagnostic, Label, Severity};
 pub use render::{render_diagnostic, render_diagnostics_to_stderr};
-pub use reporter::DiagnosticReporter;
+pub use reporter::{DiagnosticReporter, WarningLevel};

@@ -636,6 +636,8 @@ impl<'a> NameResolver<'a> {
             Statement::Validate(v) => {
                 self.resolve_qualified_name(&v.target);
             }
+            // Report writer statements — no name resolution needed for now
+            Statement::Initiate(_) | Statement::Generate(_) | Statement::Terminate(_) => {}
         }
     }
 
@@ -806,15 +808,23 @@ impl<'a> NameResolver<'a> {
 
     fn report_undefined_name(&mut self, name: &SmolStr, span: Span) {
         self.reporter.report(
-            Diagnostic::error("E100", format!("undefined data name '{}'", name))
-                .with_label(span, "not found in DATA DIVISION"),
+            Diagnostic::error("COBC-E100", format!("undefined data name '{}'", name))
+                .with_label(span, "not found in DATA DIVISION")
+                .with_note(
+                    "verify the item is defined in WORKING-STORAGE, \
+                        LOCAL-STORAGE, or LINKAGE SECTION",
+                ),
         );
     }
 
     fn report_undefined_procedure(&mut self, name: &SmolStr, span: Span) {
         self.reporter.report(
-            Diagnostic::error("E101", format!("undefined paragraph or section '{}'", name))
-                .with_label(span, "not found in PROCEDURE DIVISION"),
+            Diagnostic::error(
+                "COBC-E101",
+                format!("undefined paragraph or section '{}'", name),
+            )
+            .with_label(span, "not found in PROCEDURE DIVISION")
+            .with_note("verify the paragraph or section name is spelled correctly"),
         );
     }
 }

@@ -77,6 +77,11 @@ pub enum Statement {
     XmlGenerate(Box<XmlGenerateStatement>),
     XmlParse(Box<XmlParseStatement>),
     Validate(ValidateStatement),
+
+    // --- Report writer ---
+    Initiate(InitiateStatement),
+    Generate(GenerateStatement),
+    Terminate(TerminateStatement),
 }
 
 // ---------------------------------------------------------------------------
@@ -883,5 +888,30 @@ pub struct XmlParseStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidateStatement {
     pub target: QualifiedName,
+    pub span: Span,
+}
+
+// ---------------------------------------------------------------------------
+// Report writer statements
+// ---------------------------------------------------------------------------
+
+/// INITIATE statement: initializes one or more reports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InitiateStatement {
+    pub report_names: Vec<SmolStr>,
+    pub span: Span,
+}
+
+/// GENERATE statement: produces a report detail or summary line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenerateStatement {
+    pub report_name: SmolStr,
+    pub span: Span,
+}
+
+/// TERMINATE statement: terminates processing of one or more reports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminateStatement {
+    pub report_names: Vec<SmolStr>,
     pub span: Span,
 }

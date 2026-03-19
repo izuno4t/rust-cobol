@@ -26,9 +26,9 @@ use crate::hir::{
     HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCompareOp,
     HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
     HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
-    HirParagraph, HirParam, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind, HirSortKey,
-    HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirType,
-    HirUnaryOp, HirUnstringDelimiter,
+    HirParagraph, HirParam, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind,
+    HirScreenInfo, HirSortKey, HirSortOrder, HirStartRelation, HirStatement, HirStringSource,
+    HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
 };
 
 /// A single or range value for an 88-level condition.
@@ -246,7 +246,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
         lower_data_item(item, &mut items);
     }
     for item in &data.screen {
-        lower_data_item(item, &mut items);
+        lower_screen_data_item(item, &mut items);
     }
     for item in &data.communication {
         lower_data_item(item, &mut items);
@@ -268,12 +268,19 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
         let initial_value = item.value.as_ref().map(lower_value_clause);
         let occurs = item.occurs.as_ref().map(|o| o.max);
 
+        let renames = item
+            .renames
+            .as_ref()
+            .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
+
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
             initial_value,
             occurs,
             redefines: item.redefines.clone(),
+            renames,
+            screen_info: None,
             span: item.span,
         });
     }
@@ -281,6 +288,72 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
     // Recursively lower child items (group items)
     for child in &item.children {
         lower_data_item(child, out);
+    }
+}
+
+/// Lower a screen section data item, attaching HirScreenInfo.
+fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
+    if item.level == 88 {
+        return;
+    }
+
+    if let Some(name) = &item.name {
+        let data_type = determine_hir_type(item);
+        let initial_value = item.value.as_ref().map(lower_value_clause);
+        let occurs = item.occurs.as_ref().map(|o| o.max);
+
+        let renames = item
+            .renames
+            .as_ref()
+            .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
+
+        let has_screen_attrs = item.line_clause.is_some()
+            || item.column_clause.is_some()
+            || item.blank_screen
+            || item.blank_line
+            || item.highlight
+            || item.reverse_video
+            || item.source_field.is_some()
+            || item.using_field.is_some();
+
+        let screen_info = if has_screen_attrs || !item.children.is_empty() {
+            // Extract VALUE as string for screen display purposes.
+            let value_str = item.value.as_ref().and_then(|v| match &v.value {
+                Literal::String(s) => Some(SmolStr::from(s.as_str())),
+                _ => None,
+            });
+            let pic_str = item.picture.as_ref().map(|p| p.raw_string.clone());
+
+            Some(HirScreenInfo {
+                line: item.line_clause,
+                column: item.column_clause,
+                blank_screen: item.blank_screen,
+                blank_line: item.blank_line,
+                highlight: item.highlight,
+                reverse_video: item.reverse_video,
+                source: item.source_field.as_ref().map(|q| q.name.clone()),
+                using_field: item.using_field.as_ref().map(|q| q.name.clone()),
+                value: value_str,
+                picture: pic_str,
+            })
+        } else {
+            None
+        };
+
+        out.push(HirDataItem {
+            name: name.clone(),
+            data_type,
+            initial_value,
+            occurs,
+            redefines: item.redefines.clone(),
+            renames,
+            screen_info,
+            span: item.span,
+        });
+    }
+
+    for child in &item.children {
+        lower_screen_data_item(child, out);
     }
 }
 
@@ -325,6 +398,9 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                     is_signed: pic.is_signed,
                 }
             }
+            cobol_ast::PictureCategory::National | cobol_ast::PictureCategory::NationalEdited => {
+                HirType::National { size: pic.size }
+            }
             _ => HirType::Alphanumeric { size: pic.size },
         }
     } else if !item.children.is_empty() {
@@ -338,12 +414,18 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 let data_type = determine_hir_type(child);
                 let initial_value = child.value.as_ref().map(lower_value_clause);
                 let occurs = child.occurs.as_ref().map(|o| o.max);
+                let renames = child
+                    .renames
+                    .as_ref()
+                    .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
                 members.push(HirDataItem {
                     name: name.clone(),
                     data_type,
                     initial_value,
                     occurs,
                     redefines: child.redefines.clone(),
+                    renames,
+                    screen_info: None,
                     span: child.span,
                 });
             }
@@ -370,6 +452,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 HirType::FloatShort => 4,
                 HirType::FloatLong => 8,
                 HirType::FloatExtended => 16,
+                HirType::National { size } => *size * 2, // national chars are 2 bytes
             })
             .sum();
         HirType::Group {
@@ -568,6 +651,19 @@ fn lower_statement(
             target: v.target.name.clone(),
             span: v.span,
         }),
+        // --- Report writer statements ---
+        Statement::Initiate(init) => Some(HirStatement::Initiate {
+            report_names: init.report_names.clone(),
+            span: init.span,
+        }),
+        Statement::Generate(gen) => Some(HirStatement::Generate {
+            report_name: gen.report_name.clone(),
+            span: gen.span,
+        }),
+        Statement::Terminate(term) => Some(HirStatement::Terminate {
+            report_names: term.report_names.clone(),
+            span: term.span,
+        }),
     }
 }
 
@@ -708,8 +804,16 @@ fn lower_add(
         };
     }
     let operands = add.operands.iter().map(lower_expr).collect();
-    let to = add.to.iter().map(|t| t.target.name.clone()).collect();
-    let giving = add.giving.iter().map(|t| t.target.name.clone()).collect();
+    let to = add
+        .to
+        .iter()
+        .map(|t| lower_qualified_name_to_expr(&t.target))
+        .collect();
+    let giving = add
+        .giving
+        .iter()
+        .map(|t| lower_qualified_name_to_expr(&t.target))
+        .collect();
     let on_size_error = lower_statements(&add.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&add.not_on_size_error, condition_names);
     HirStatement::Add {
@@ -748,8 +852,16 @@ fn lower_subtract(
         };
     }
     let operands = sub.operands.iter().map(lower_expr).collect();
-    let from = sub.from.iter().map(|t| t.target.name.clone()).collect();
-    let giving = sub.giving.iter().map(|t| t.target.name.clone()).collect();
+    let from = sub
+        .from
+        .iter()
+        .map(|t| lower_qualified_name_to_expr(&t.target))
+        .collect();
+    let giving = sub
+        .giving
+        .iter()
+        .map(|t| lower_qualified_name_to_expr(&t.target))
+        .collect();
     let on_size_error = lower_statements(&sub.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&sub.not_on_size_error, condition_names);
     HirStatement::Subtract {
@@ -1027,8 +1139,16 @@ fn lower_multiply(
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
     let operand = lower_expr(&mul.operand);
-    let by = mul.by.iter().map(|t| t.target.name.clone()).collect();
-    let giving = mul.giving.iter().map(|t| t.target.name.clone()).collect();
+    let by = mul
+        .by
+        .iter()
+        .map(|t| lower_qualified_name_to_expr(&t.target))
+        .collect();
+    let giving = mul
+        .giving
+        .iter()
+        .map(|t| lower_qualified_name_to_expr(&t.target))
+        .collect();
     let on_size_error = lower_statements(&mul.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&mul.not_on_size_error, condition_names);
     HirStatement::Multiply {
@@ -1046,9 +1166,17 @@ fn lower_divide(
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
     let operand = lower_expr(&div.operand);
-    let into = div.into.iter().map(|t| t.target.name.clone()).collect();
-    let giving = div.giving.iter().map(|t| t.target.name.clone()).collect();
-    let remainder = div.remainder.as_ref().map(|r| r.name.clone());
+    let into = div
+        .into
+        .iter()
+        .map(|t| lower_qualified_name_to_expr(&t.target))
+        .collect();
+    let giving = div
+        .giving
+        .iter()
+        .map(|t| lower_qualified_name_to_expr(&t.target))
+        .collect();
+    let remainder = div.remainder.as_ref().map(lower_qualified_name_to_expr);
     let on_size_error = lower_statements(&div.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&div.not_on_size_error, condition_names);
     HirStatement::Divide {
@@ -1207,12 +1335,12 @@ fn lower_set(set: &SetStatement) -> HirStatement {
             value,
         } => {
             // Desugar SET UP/DOWN BY to an arithmetic operation
-            let target_names: Vec<_> = targets.iter().map(|q| q.name.clone()).collect();
+            let target_exprs: Vec<_> = targets.iter().map(lower_qualified_name_to_expr).collect();
             let hir_value = lower_expr(value);
             match direction {
                 cobol_ast::statement::SetDirection::Up => HirStatement::Add {
                     operands: vec![hir_value],
-                    to: target_names,
+                    to: target_exprs,
                     giving: Vec::new(),
                     on_size_error: Vec::new(),
                     not_on_size_error: Vec::new(),
@@ -1220,7 +1348,7 @@ fn lower_set(set: &SetStatement) -> HirStatement {
                 },
                 cobol_ast::statement::SetDirection::Down => HirStatement::Subtract {
                     operands: vec![hir_value],
-                    from: target_names,
+                    from: target_exprs,
                     giving: Vec::new(),
                     on_size_error: Vec::new(),
                     not_on_size_error: Vec::new(),
@@ -1613,6 +1741,25 @@ fn lower_xml_parse(xp: &cobol_ast::statement::XmlParseStatement) -> HirStatement
         source: xp.source.name.clone(),
         processing_procedure: xp.processing_procedure.clone(),
         span: xp.span,
+    }
+}
+
+/// Lower a `QualifiedName` (used as an arithmetic target) to a `HirExpr`.
+/// Handles subscripts so that `TABLE(IDX)` becomes `HirExpr::Subscript`.
+fn lower_qualified_name_to_expr(qname: &cobol_ast::expr::QualifiedName) -> HirExpr {
+    let var_name = if qname.qualifiers.is_empty() {
+        qname.name.clone()
+    } else {
+        let group = qname.qualifiers.last().unwrap();
+        SmolStr::new(format!("{}::{}", group, qname.name))
+    };
+    if qname.subscripts.is_empty() {
+        HirExpr::Variable(var_name)
+    } else {
+        HirExpr::Subscript {
+            variable: var_name,
+            subscripts: qname.subscripts.iter().map(lower_expr).collect(),
+        }
     }
 }
 

@@ -138,6 +138,21 @@ pub struct HirParagraph {
     pub span: Span,
 }
 
+/// Screen section item attributes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirScreenInfo {
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub blank_screen: bool,
+    pub blank_line: bool,
+    pub highlight: bool,
+    pub reverse_video: bool,
+    pub source: Option<SmolStr>,
+    pub using_field: Option<SmolStr>,
+    pub value: Option<SmolStr>,
+    pub picture: Option<SmolStr>,
+}
+
 /// A data item declaration extracted from the DATA DIVISION.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirDataItem {
@@ -148,6 +163,10 @@ pub struct HirDataItem {
     pub occurs: Option<u32>,
     /// REDEFINES clause: the name of the redefined item.
     pub redefines: Option<SmolStr>,
+    /// RENAMES clause (level 66): (from_name, optional thru_name).
+    pub renames: Option<(SmolStr, Option<SmolStr>)>,
+    /// SCREEN SECTION attributes (None for non-screen items).
+    pub screen_info: Option<HirScreenInfo>,
     pub span: Span,
 }
 
@@ -186,6 +205,10 @@ pub enum HirType {
     FloatLong,
     /// COBOL 2014+: IEEE 754 quad precision (16 bytes, approximated as f64).
     FloatExtended,
+    /// COBOL 2002+: National (PIC N) – UTF-16 character data.
+    National {
+        size: u32,
+    },
 }
 
 /// A literal value in the HIR.
@@ -282,33 +305,33 @@ pub enum HirStatement {
     },
     Add {
         operands: Vec<HirExpr>,
-        to: Vec<SmolStr>,
-        giving: Vec<SmolStr>,
+        to: Vec<HirExpr>,
+        giving: Vec<HirExpr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     Subtract {
         operands: Vec<HirExpr>,
-        from: Vec<SmolStr>,
-        giving: Vec<SmolStr>,
+        from: Vec<HirExpr>,
+        giving: Vec<HirExpr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     Multiply {
         operand: HirExpr,
-        by: Vec<SmolStr>,
-        giving: Vec<SmolStr>,
+        by: Vec<HirExpr>,
+        giving: Vec<HirExpr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     Divide {
         operand: HirExpr,
-        into: Vec<SmolStr>,
-        giving: Vec<SmolStr>,
-        remainder: Option<SmolStr>,
+        into: Vec<HirExpr>,
+        giving: Vec<HirExpr>,
+        remainder: Option<HirExpr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
@@ -548,6 +571,22 @@ pub enum HirStatement {
     Release {
         record_name: SmolStr,
         from: Option<HirExpr>,
+        span: Span,
+    },
+    // --- Report writer statements ---
+    /// INITIATE statement: initializes report processing.
+    Initiate {
+        report_names: Vec<SmolStr>,
+        span: Span,
+    },
+    /// GENERATE statement: produces report detail or summary lines.
+    Generate {
+        report_name: SmolStr,
+        span: Span,
+    },
+    /// TERMINATE statement: terminates report processing.
+    Terminate {
+        report_names: Vec<SmolStr>,
         span: Span,
     },
 }
@@ -895,31 +934,35 @@ fn write_stmt(
         }
         HirStatement::Add { operands, to, .. } => {
             let ops: Vec<_> = operands.iter().map(format_expr).collect();
-            writeln!(f, "{pad}ADD {} TO {}", ops.join(" "), to.join(", "))
+            let tos: Vec<_> = to.iter().map(format_expr).collect();
+            writeln!(f, "{pad}ADD {} TO {}", ops.join(" "), tos.join(", "))
         }
         HirStatement::Subtract { operands, from, .. } => {
             let ops: Vec<_> = operands.iter().map(format_expr).collect();
+            let froms: Vec<_> = from.iter().map(format_expr).collect();
             writeln!(
                 f,
                 "{pad}SUBTRACT {} FROM {}",
                 ops.join(" "),
-                from.join(", ")
+                froms.join(", ")
             )
         }
         HirStatement::Multiply { operand, by, .. } => {
+            let bys: Vec<_> = by.iter().map(format_expr).collect();
             writeln!(
                 f,
                 "{pad}MULTIPLY {} BY {}",
                 format_expr(operand),
-                by.join(", ")
+                bys.join(", ")
             )
         }
         HirStatement::Divide { operand, into, .. } => {
+            let intos: Vec<_> = into.iter().map(format_expr).collect();
             writeln!(
                 f,
                 "{pad}DIVIDE {} INTO {}",
                 format_expr(operand),
-                into.join(", ")
+                intos.join(", ")
             )
         }
         HirStatement::If {
@@ -1063,6 +1106,15 @@ fn write_stmt(
         HirStatement::Merge { file_name, .. } => writeln!(f, "{pad}MERGE {file_name}"),
         HirStatement::Release { record_name, .. } => {
             writeln!(f, "{pad}RELEASE {record_name}")
+        }
+        HirStatement::Initiate { report_names, .. } => {
+            writeln!(f, "{pad}INITIATE {}", report_names.join(", "))
+        }
+        HirStatement::Generate { report_name, .. } => {
+            writeln!(f, "{pad}GENERATE {report_name}")
+        }
+        HirStatement::Terminate { report_names, .. } => {
+            writeln!(f, "{pad}TERMINATE {}", report_names.join(", "))
         }
     }
 }

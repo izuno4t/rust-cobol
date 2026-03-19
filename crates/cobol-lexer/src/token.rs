@@ -304,6 +304,12 @@ pub enum TokenKind {
     Property,
     Get,
 
+    // ── SCREEN SECTION ──────────────────────────────────────
+    Column,
+    Highlight,
+    ReverseVideo,
+    SourceField,
+
     // ── COBOL 2014 / 2023 ────────────────────────────────────
     Json,
     Xml,
@@ -619,6 +625,12 @@ impl TokenKind {
             "INHERITS" => Some(TokenKind::Inherits),
             "PROPERTY" => Some(TokenKind::Property),
             "GET" => Some(TokenKind::Get),
+
+            // ── SCREEN SECTION ─────────────────────────────────
+            "COLUMN" | "COL" => Some(TokenKind::Column),
+            "HIGHLIGHT" => Some(TokenKind::Highlight),
+            "REVERSE-VIDEO" => Some(TokenKind::ReverseVideo),
+            "SOURCE" => Some(TokenKind::SourceField),
 
             // ── COBOL 2014 / 2023 ────────────────────────────
             "JSON" => Some(TokenKind::Json),

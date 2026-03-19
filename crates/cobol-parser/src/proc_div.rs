@@ -503,6 +503,10 @@ impl Parser {
             TokenKind::Validate => self.parse_validate_statement(),
             TokenKind::Xml => self.parse_xml_statement(),
             TokenKind::Json => self.parse_json_statement(),
+            // --- Report writer statements ---
+            TokenKind::Initiate => self.parse_initiate_statement(),
+            TokenKind::Generate => self.parse_generate_statement(),
+            TokenKind::Terminate => self.parse_terminate_statement(),
             _ => {
                 let msg = format!("unexpected token: {:?}", self.current().kind);
                 self.error(&msg);
@@ -2978,10 +2982,7 @@ impl Parser {
         }
     }
 
-    fn parse_xml_generate(
-        &mut self,
-        start_span: Span,
-    ) -> Result<Statement, ()> {
+    fn parse_xml_generate(&mut self, start_span: Span) -> Result<Statement, ()> {
         let target = self.parse_qualified_name()?;
 
         // FROM source
@@ -3114,10 +3115,7 @@ impl Parser {
         })))
     }
 
-    fn parse_xml_parse(
-        &mut self,
-        start_span: Span,
-    ) -> Result<Statement, ()> {
+    fn parse_xml_parse(&mut self, start_span: Span) -> Result<Statement, ()> {
         let source = self.parse_qualified_name()?;
 
         // PROCESSING PROCEDURE IS procedure-name [THRU procedure-name]
@@ -3228,10 +3226,7 @@ impl Parser {
         }
     }
 
-    fn parse_json_generate(
-        &mut self,
-        start_span: Span,
-    ) -> Result<Statement, ()> {
+    fn parse_json_generate(&mut self, start_span: Span) -> Result<Statement, ()> {
         use cobol_ast::statement::{JsonGenerateStatement, JsonNameMapping};
 
         let target = self.parse_qualified_name()?;
@@ -3341,10 +3336,7 @@ impl Parser {
         })))
     }
 
-    fn parse_json_parse(
-        &mut self,
-        start_span: Span,
-    ) -> Result<Statement, ()> {
+    fn parse_json_parse(&mut self, start_span: Span) -> Result<Statement, ()> {
         use cobol_ast::statement::{JsonNameMapping, JsonParseStatement};
 
         let source = self.parse_qualified_name()?;
@@ -3432,6 +3424,66 @@ impl Parser {
             not_on_exception,
             span: start_span.merge(&end_span),
         })))
+    }
+
+    // =========================================================================
+    // Report writer statements
+    // =========================================================================
+
+    fn parse_initiate_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Initiate)?;
+        let mut report_names = Vec::new();
+        while !self.at_statement_terminator() && !self.at_eof() {
+            if self.check(TokenKind::Identifier) {
+                report_names.push(self.current().text.clone());
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let end_span = self.span();
+        Ok(Statement::Initiate(InitiateStatement {
+            report_names,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_generate_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Generate)?;
+        let report_name = if self.check(TokenKind::Identifier) {
+            let name = self.current().text.clone();
+            self.advance();
+            name
+        } else {
+            self.error("expected report or group name");
+            return Err(());
+        };
+        let end_span = self.span();
+        Ok(Statement::Generate(GenerateStatement {
+            report_name,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_terminate_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Terminate)?;
+        let mut report_names = Vec::new();
+        while !self.at_statement_terminator() && !self.at_eof() {
+            if self.check(TokenKind::Identifier) {
+                report_names.push(self.current().text.clone());
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let end_span = self.span();
+        Ok(Statement::Terminate(TerminateStatement {
+            report_names,
+            span: start_span.merge(&end_span),
+        }))
     }
 
     // =========================================================================

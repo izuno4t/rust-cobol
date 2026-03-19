@@ -390,11 +390,11 @@ pub extern "C" fn cobol_func_sign(value: i64) -> i64 {
 /// # Safety
 /// `values` must be readable for `count` elements.
 #[no_mangle]
-pub extern "C" fn cobol_func_mean(values: *const f64, count: i32) -> f64 {
+pub unsafe extern "C" fn cobol_func_mean(values: *const f64, count: i32) -> f64 {
     if count <= 0 {
         return 0.0;
     }
-    let slice = unsafe { std::slice::from_raw_parts(values, count as usize) };
+    let slice = std::slice::from_raw_parts(values, count as usize);
     slice.iter().sum::<f64>() / count as f64
 }
 
@@ -403,11 +403,11 @@ pub extern "C" fn cobol_func_mean(values: *const f64, count: i32) -> f64 {
 /// # Safety
 /// `values` must be readable for `count` elements.
 #[no_mangle]
-pub extern "C" fn cobol_func_sum_float(values: *const f64, count: i32) -> f64 {
+pub unsafe extern "C" fn cobol_func_sum_float(values: *const f64, count: i32) -> f64 {
     if count <= 0 {
         return 0.0;
     }
-    let slice = unsafe { std::slice::from_raw_parts(values, count as usize) };
+    let slice = std::slice::from_raw_parts(values, count as usize);
     slice.iter().sum()
 }
 
@@ -430,16 +430,390 @@ pub extern "C" fn cobol_func_annuity(rate: f64, periods: i64) -> f64 {
 /// # Safety
 /// `values` must be readable for `count` elements.
 #[no_mangle]
-pub extern "C" fn cobol_func_present_value(rate: f64, values: *const f64, count: i32) -> f64 {
+pub unsafe extern "C" fn cobol_func_present_value(
+    rate: f64,
+    values: *const f64,
+    count: i32,
+) -> f64 {
     if count <= 0 {
         return 0.0;
     }
-    let slice = unsafe { std::slice::from_raw_parts(values, count as usize) };
+    let slice = std::slice::from_raw_parts(values, count as usize);
     let mut sum = 0.0;
     for (i, &val) in slice.iter().enumerate() {
         sum += val / (1.0 + rate).powf((i + 1) as f64);
     }
     sum
+}
+
+// ---------------------------------------------------------------------------
+// String intrinsic functions
+// ---------------------------------------------------------------------------
+
+/// FUNCTION CONCATENATE -- concatenate multiple strings.
+///
+/// Takes arrays of source pointers and their lengths. Writes the concatenated
+/// result to `dst`, padding remaining space with spaces.
+///
+/// Returns the number of bytes written (always `dst_len`).
+///
+/// # Safety
+/// `dst` must be writable for `dst_len` bytes.
+/// `sources` and `lengths` must each be readable for `count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_concatenate(
+    dst: *mut u8,
+    dst_len: u32,
+    sources: *const *const u8,
+    lengths: *const u32,
+    count: i32,
+) -> u32 {
+    if dst.is_null() || count <= 0 {
+        return 0;
+    }
+    let srcs = std::slice::from_raw_parts(sources, count as usize);
+    let lens = std::slice::from_raw_parts(lengths, count as usize);
+    let mut offset = 0u32;
+    for i in 0..count as usize {
+        if srcs[i].is_null() {
+            continue;
+        }
+        let copy_len = lens[i].min(dst_len.saturating_sub(offset));
+        if copy_len == 0 {
+            break;
+        }
+        std::ptr::copy_nonoverlapping(srcs[i], dst.add(offset as usize), copy_len as usize);
+        offset += copy_len;
+    }
+    // Pad remainder with spaces
+    while offset < dst_len {
+        *dst.add(offset as usize) = b' ';
+        offset += 1;
+    }
+    offset
+}
+
+/// FUNCTION SUBSTITUTE -- replace all occurrences of a pattern in a string.
+///
+/// Simple single-pattern replacement. Writes the result to `dst`, padding
+/// remaining space with spaces.
+///
+/// Returns the number of bytes written (always `dst_len`).
+///
+/// # Safety
+/// `src` must be readable for `src_len` bytes.
+/// `pattern` must be readable for `pat_len` bytes.
+/// `replacement` must be readable for `rep_len` bytes.
+/// `dst` must be writable for `dst_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_substitute(
+    src: *const u8,
+    src_len: u32,
+    pattern: *const u8,
+    pat_len: u32,
+    replacement: *const u8,
+    rep_len: u32,
+    dst: *mut u8,
+    dst_len: u32,
+) -> u32 {
+    if src.is_null() || dst.is_null() || pat_len == 0 {
+        if !src.is_null() && !dst.is_null() {
+            let copy_len = src_len.min(dst_len);
+            std::ptr::copy_nonoverlapping(src, dst, copy_len as usize);
+            return copy_len;
+        }
+        return 0;
+    }
+
+    let src_slice = std::slice::from_raw_parts(src, src_len as usize);
+    let pat_slice = std::slice::from_raw_parts(pattern, pat_len as usize);
+    let rep_slice = std::slice::from_raw_parts(replacement, rep_len as usize);
+
+    let mut offset = 0usize;
+    let mut dst_offset = 0usize;
+    let dst_max = dst_len as usize;
+
+    while offset + pat_len as usize <= src_len as usize {
+        if &src_slice[offset..offset + pat_len as usize] == pat_slice {
+            // Match found: copy replacement
+            let copy_len = rep_len as usize;
+            if dst_offset + copy_len > dst_max {
+                break;
+            }
+            std::ptr::copy_nonoverlapping(rep_slice.as_ptr(), dst.add(dst_offset), copy_len);
+            dst_offset += copy_len;
+            offset += pat_len as usize;
+        } else {
+            if dst_offset >= dst_max {
+                break;
+            }
+            *dst.add(dst_offset) = src_slice[offset];
+            dst_offset += 1;
+            offset += 1;
+        }
+    }
+
+    // Copy remaining source bytes
+    while offset < src_len as usize && dst_offset < dst_max {
+        *dst.add(dst_offset) = src_slice[offset];
+        dst_offset += 1;
+        offset += 1;
+    }
+
+    // Pad with spaces
+    while dst_offset < dst_max {
+        *dst.add(dst_offset) = b' ';
+        dst_offset += 1;
+    }
+
+    dst_offset as u32
+}
+
+/// FUNCTION ORD-MAX -- ordinal position of the argument with the highest value.
+///
+/// Returns a 1-based index.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_ord_max(values: *const i64, count: i32) -> i64 {
+    if count <= 0 {
+        return 0;
+    }
+    let slice = std::slice::from_raw_parts(values, count as usize);
+    let mut max_idx = 0usize;
+    for (i, &val) in slice.iter().enumerate() {
+        if val > slice[max_idx] {
+            max_idx = i;
+        }
+    }
+    (max_idx + 1) as i64 // 1-based
+}
+
+/// FUNCTION ORD-MIN -- ordinal position of the argument with the lowest value.
+///
+/// Returns a 1-based index.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_ord_min(values: *const i64, count: i32) -> i64 {
+    if count <= 0 {
+        return 0;
+    }
+    let slice = std::slice::from_raw_parts(values, count as usize);
+    let mut min_idx = 0usize;
+    for (i, &val) in slice.iter().enumerate() {
+        if val < slice[min_idx] {
+            min_idx = i;
+        }
+    }
+    (min_idx + 1) as i64 // 1-based
+}
+
+/// FUNCTION STORED-CHAR-LENGTH -- length of a string excluding trailing spaces.
+///
+/// # Safety
+/// `ptr` must be readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_stored_char_length(ptr: *const u8, len: u32) -> u32 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let slice = std::slice::from_raw_parts(ptr, len as usize);
+    let mut end = len as usize;
+    while end > 0 && slice[end - 1] == b' ' {
+        end -= 1;
+    }
+    end as u32
+}
+
+// ---------------------------------------------------------------------------
+// Date/time intrinsic functions
+// ---------------------------------------------------------------------------
+
+/// INTEGER-OF-DATE: Converts YYYYMMDD to integer day count from day 1 of COBOL epoch.
+/// COBOL epoch: January 1, 1601 = day 1.
+#[no_mangle]
+pub extern "C" fn cobol_func_integer_of_date(yyyymmdd: i64) -> i64 {
+    let year = (yyyymmdd / 10000) as i32;
+    let month = ((yyyymmdd % 10000) / 100) as u32;
+    let day = (yyyymmdd % 100) as u32;
+
+    let mut total_days: i64 = 0;
+    for y in 1601..year {
+        total_days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    let days_in_months = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for m in 1..month {
+        total_days += days_in_months[m as usize] as i64;
+        if m == 2 && is_leap_year(year) {
+            total_days += 1;
+        }
+    }
+    total_days += day as i64;
+    total_days
+}
+
+/// DATE-OF-INTEGER: Converts integer day count to YYYYMMDD.
+#[no_mangle]
+pub extern "C" fn cobol_func_date_of_integer(day_count: i64) -> i64 {
+    let mut remaining = day_count;
+    let mut year = 1601i32;
+
+    loop {
+        let days_in_year: i64 = if is_leap_year(year) { 366 } else { 365 };
+        if remaining <= days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        year += 1;
+    }
+
+    let days_in_months = if is_leap_year(year) {
+        [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut month = 1u32;
+    while month <= 12 && remaining > days_in_months[month as usize] as i64 {
+        remaining -= days_in_months[month as usize] as i64;
+        month += 1;
+    }
+
+    year as i64 * 10000 + month as i64 * 100 + remaining
+}
+
+/// INTEGER-OF-DAY: Converts YYYYDDD (Julian) to integer day count.
+#[no_mangle]
+pub extern "C" fn cobol_func_integer_of_day(yyyyddd: i64) -> i64 {
+    let year = (yyyyddd / 1000) as i32;
+    let day_of_year = yyyyddd % 1000;
+
+    let mut total_days: i64 = 0;
+    for y in 1601..year {
+        total_days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    total_days + day_of_year
+}
+
+/// DAY-OF-INTEGER: Converts integer day count to YYYYDDD (Julian).
+#[no_mangle]
+pub extern "C" fn cobol_func_day_of_integer(day_count: i64) -> i64 {
+    let mut remaining = day_count;
+    let mut year = 1601i32;
+
+    loop {
+        let days_in_year: i64 = if is_leap_year(year) { 366 } else { 365 };
+        if remaining <= days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        year += 1;
+    }
+
+    year as i64 * 1000 + remaining
+}
+
+/// DATE-TO-YYYYMMDD: Converts 2-digit year date to 4-digit year.
+#[no_mangle]
+pub extern "C" fn cobol_func_date_to_yyyymmdd(yymmdd: i64, pivot: i64) -> i64 {
+    let yy = yymmdd / 10000;
+    let mmdd = yymmdd % 10000;
+    let pivot_yy = pivot % 100;
+    let pivot_century = pivot / 100 * 100;
+
+    let yyyy = if yy <= pivot_yy {
+        pivot_century + yy
+    } else {
+        pivot_century - 100 + yy
+    };
+    yyyy * 10000 + mmdd
+}
+
+/// YEAR-TO-YYYY: Converts 2-digit year to 4-digit year.
+#[no_mangle]
+pub extern "C" fn cobol_func_year_to_yyyy(yy: i64, pivot: i64) -> i64 {
+    let pivot_yy = pivot % 100;
+    let pivot_century = pivot / 100 * 100;
+    if yy <= pivot_yy {
+        pivot_century + yy
+    } else {
+        pivot_century - 100 + yy
+    }
+}
+
+/// DAY-TO-YYYYDDD: Converts 2-digit year Julian date to 4-digit year.
+#[no_mangle]
+pub extern "C" fn cobol_func_day_to_yyyyddd(yyddd: i64, pivot: i64) -> i64 {
+    let yy = yyddd / 1000;
+    let ddd = yyddd % 1000;
+    let yyyy = cobol_func_year_to_yyyy(yy, pivot);
+    yyyy * 1000 + ddd
+}
+
+/// TEST-DATE-YYYYMMDD: Returns 0 if valid date, non-zero otherwise.
+#[no_mangle]
+pub extern "C" fn cobol_func_test_date_yyyymmdd(yyyymmdd: i64) -> i64 {
+    let year = (yyyymmdd / 10000) as i32;
+    let month = ((yyyymmdd % 10000) / 100) as i32;
+    let day = (yyyymmdd % 100) as i32;
+
+    if !(1601..=9999).contains(&year) {
+        return 1;
+    }
+    if !(1..=12).contains(&month) {
+        return 1;
+    }
+
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => return 1,
+    };
+
+    if day < 1 || day > max_day {
+        return 1;
+    }
+    0
+}
+
+/// TEST-DAY-YYYYDDD: Returns 0 if valid Julian date, non-zero otherwise.
+#[no_mangle]
+pub extern "C" fn cobol_func_test_day_yyyyddd(yyyyddd: i64) -> i64 {
+    let year = (yyyyddd / 1000) as i32;
+    let ddd = (yyyyddd % 1000) as i32;
+
+    if !(1601..=9999).contains(&year) {
+        return 1;
+    }
+    let max_ddd = if is_leap_year(year) { 366 } else { 365 };
+    if !(1..=max_ddd).contains(&ddd) {
+        return 1;
+    }
+    0
+}
+
+/// WHEN-COMPILED: Returns compilation timestamp.
+/// For now, returns current time (we don't have compile-time info at runtime).
+///
+/// # Safety
+/// `buf` must be writable for at least `buf_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_when_compiled(buf: *mut u8, buf_len: u32) -> u32 {
+    cobol_func_current_date(buf, buf_len)
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -567,5 +941,263 @@ mod tests {
         assert_eq!(cobol_func_char(66), b'A');
         assert_eq!(cobol_func_char(cobol_func_ord(b'Z')), b'Z');
         assert_eq!(cobol_func_ord(cobol_func_char(1)), 1);
+    }
+
+    #[test]
+    fn test_abs() {
+        assert_eq!(cobol_func_abs(-42), 42);
+        assert_eq!(cobol_func_abs(42), 42);
+        assert_eq!(cobol_func_abs(0), 0);
+    }
+
+    #[test]
+    fn test_abs_float() {
+        assert!((cobol_func_abs_float(-2.75) - 2.75).abs() < 1e-10);
+        assert!((cobol_func_abs_float(2.75) - 2.75).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_sqrt() {
+        assert!((cobol_func_sqrt(4.0) - 2.0).abs() < 1e-10);
+        assert!((cobol_func_sqrt(9.0) - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_exp_log() {
+        assert!((cobol_func_exp(0.0) - 1.0).abs() < 1e-10);
+        assert!((cobol_func_log(1.0)).abs() < 1e-10);
+        assert!((cobol_func_exp(cobol_func_log(5.0)) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_exp10_log10() {
+        assert!((cobol_func_exp10(2.0) - 100.0).abs() < 1e-10);
+        assert!((cobol_func_log10(100.0) - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trig() {
+        assert!((cobol_func_sin(0.0)).abs() < 1e-10);
+        assert!((cobol_func_cos(0.0) - 1.0).abs() < 1e-10);
+        assert!((cobol_func_tan(0.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_inverse_trig() {
+        assert!((cobol_func_asin(0.0)).abs() < 1e-10);
+        assert!((cobol_func_acos(1.0)).abs() < 1e-10);
+        assert!((cobol_func_atan(0.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ceiling_floor() {
+        assert_eq!(cobol_func_ceiling(2.3), 3);
+        assert_eq!(cobol_func_ceiling(-2.3), -2);
+        assert_eq!(cobol_func_floor(2.7), 2);
+        assert_eq!(cobol_func_floor(-2.7), -3);
+    }
+
+    #[test]
+    fn test_factorial() {
+        assert_eq!(cobol_func_factorial(0), 1);
+        assert_eq!(cobol_func_factorial(1), 1);
+        assert_eq!(cobol_func_factorial(5), 120);
+        assert_eq!(cobol_func_factorial(10), 3628800);
+    }
+
+    #[test]
+    fn test_rem() {
+        assert!((cobol_func_rem(10.0, 3.0) - 1.0).abs() < 1e-10);
+        assert!((cobol_func_rem(10.0, 0.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_random() {
+        let r1 = cobol_func_random(42);
+        assert!((0.0..1.0).contains(&r1));
+        let r2 = cobol_func_random(0);
+        assert!((0.0..1.0).contains(&r2));
+    }
+
+    #[test]
+    fn test_sign() {
+        assert_eq!(cobol_func_sign(42), 1);
+        assert_eq!(cobol_func_sign(0), 0);
+        assert_eq!(cobol_func_sign(-42), -1);
+    }
+
+    #[test]
+    fn test_mean() {
+        let vals = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let m = unsafe { cobol_func_mean(vals.as_ptr(), 5) };
+        assert!((m - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_sum_float() {
+        let vals = [1.0, 2.0, 3.0];
+        let s = unsafe { cobol_func_sum_float(vals.as_ptr(), 3) };
+        assert!((s - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_annuity() {
+        // Zero rate: 1/periods
+        assert!((cobol_func_annuity(0.0, 4) - 0.25).abs() < 1e-10);
+        // Non-zero rate
+        let a = cobol_func_annuity(0.1, 10);
+        assert!(a > 0.0);
+    }
+
+    #[test]
+    fn test_present_value() {
+        let vals = [100.0, 100.0, 100.0];
+        let pv = unsafe { cobol_func_present_value(0.1, vals.as_ptr(), 3) };
+        assert!(pv > 0.0);
+        // PV at 0% rate should equal sum
+        let pv0 = unsafe { cobol_func_present_value(0.0, vals.as_ptr(), 3) };
+        assert!((pv0 - 300.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_concatenate() {
+        let s1 = b"HELLO";
+        let s2 = b" WORLD";
+        let sources = [s1.as_ptr(), s2.as_ptr()];
+        let lengths = [5u32, 6u32];
+        let mut dst = [0u8; 20];
+        let written = unsafe {
+            cobol_func_concatenate(dst.as_mut_ptr(), 20, sources.as_ptr(), lengths.as_ptr(), 2)
+        };
+        assert_eq!(written, 20);
+        assert_eq!(&dst[..11], b"HELLO WORLD");
+        assert!(dst[11..].iter().all(|&b| b == b' '));
+    }
+
+    #[test]
+    fn test_substitute() {
+        let src = b"HELLO WORLD";
+        let pat = b"WORLD";
+        let rep = b"COBOL";
+        let mut dst = [0u8; 20];
+        let written = unsafe {
+            cobol_func_substitute(
+                src.as_ptr(),
+                11,
+                pat.as_ptr(),
+                5,
+                rep.as_ptr(),
+                5,
+                dst.as_mut_ptr(),
+                20,
+            )
+        };
+        assert_eq!(written, 20);
+        assert_eq!(&dst[..11], b"HELLO COBOL");
+        assert!(dst[11..].iter().all(|&b| b == b' '));
+    }
+
+    #[test]
+    fn test_stored_char_length() {
+        let data = b"HELLO     ";
+        let result = unsafe { cobol_func_stored_char_length(data.as_ptr(), data.len() as u32) };
+        assert_eq!(result, 5);
+    }
+
+    #[test]
+    fn test_stored_char_length_all_spaces() {
+        let data = b"          ";
+        let result = unsafe { cobol_func_stored_char_length(data.as_ptr(), data.len() as u32) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_ord_max() {
+        let values = [10i64, 30, 20, 5];
+        let result = unsafe { cobol_func_ord_max(values.as_ptr(), 4) };
+        assert_eq!(result, 2); // 30 is at position 2 (1-based)
+    }
+
+    #[test]
+    fn test_ord_min() {
+        let values = [10i64, 30, 20, 5];
+        let result = unsafe { cobol_func_ord_min(values.as_ptr(), 4) };
+        assert_eq!(result, 4); // 5 is at position 4 (1-based)
+    }
+
+    #[test]
+    fn test_integer_of_date() {
+        // 1601-01-01 = day 1
+        assert_eq!(cobol_func_integer_of_date(16010101), 1);
+        // 1601-01-31 = day 31
+        assert_eq!(cobol_func_integer_of_date(16010131), 31);
+        // 1601-02-01 = day 32
+        assert_eq!(cobol_func_integer_of_date(16010201), 32);
+    }
+
+    #[test]
+    fn test_date_of_integer() {
+        assert_eq!(cobol_func_date_of_integer(1), 16010101);
+        assert_eq!(cobol_func_date_of_integer(31), 16010131);
+        assert_eq!(cobol_func_date_of_integer(32), 16010201);
+    }
+
+    #[test]
+    fn test_date_roundtrip() {
+        let date = 20260319i64;
+        let int_val = cobol_func_integer_of_date(date);
+        let back = cobol_func_date_of_integer(int_val);
+        assert_eq!(back, date);
+    }
+
+    #[test]
+    fn test_integer_of_day() {
+        // 1601-001 = day 1
+        assert_eq!(cobol_func_integer_of_day(1601001), 1);
+        // 1601-032 = day 32
+        assert_eq!(cobol_func_integer_of_day(1601032), 32);
+    }
+
+    #[test]
+    fn test_day_of_integer() {
+        assert_eq!(cobol_func_day_of_integer(1), 1601001);
+        assert_eq!(cobol_func_day_of_integer(32), 1601032);
+    }
+
+    #[test]
+    fn test_test_date_yyyymmdd() {
+        assert_eq!(cobol_func_test_date_yyyymmdd(20260319), 0); // valid
+        assert_eq!(cobol_func_test_date_yyyymmdd(20260230), 1); // invalid (Feb 30)
+        assert_eq!(cobol_func_test_date_yyyymmdd(20260001), 1); // invalid month
+        assert_eq!(cobol_func_test_date_yyyymmdd(20261301), 1); // month 13
+    }
+
+    #[test]
+    fn test_test_day_yyyyddd() {
+        assert_eq!(cobol_func_test_day_yyyyddd(2026078), 0); // valid (day 78)
+        assert_eq!(cobol_func_test_day_yyyyddd(2026000), 1); // invalid (day 0)
+        assert_eq!(cobol_func_test_day_yyyyddd(2026366), 1); // invalid (non-leap 366)
+        assert_eq!(cobol_func_test_day_yyyyddd(2024366), 0); // valid (leap year 366)
+    }
+
+    #[test]
+    fn test_year_to_yyyy() {
+        // Pivot 2050: years 00-50 -> 2000-2050, years 51-99 -> 1951-1999
+        assert_eq!(cobol_func_year_to_yyyy(26, 2050), 2026);
+        assert_eq!(cobol_func_year_to_yyyy(99, 2050), 1999);
+        assert_eq!(cobol_func_year_to_yyyy(50, 2050), 2050);
+        assert_eq!(cobol_func_year_to_yyyy(51, 2050), 1951);
+    }
+
+    #[test]
+    fn test_date_to_yyyymmdd() {
+        assert_eq!(cobol_func_date_to_yyyymmdd(260319, 2050), 20260319);
+        assert_eq!(cobol_func_date_to_yyyymmdd(990101, 2050), 19990101);
+    }
+
+    #[test]
+    fn test_day_to_yyyyddd() {
+        assert_eq!(cobol_func_day_to_yyyyddd(26078, 2050), 2026078);
+        assert_eq!(cobol_func_day_to_yyyyddd(99001, 2050), 1999001);
     }
 }

@@ -228,6 +228,14 @@ impl Parser {
         let mut is_external = false;
         let mut is_global = false;
         let mut condition_values = Vec::new();
+        let mut line_clause = None;
+        let mut column_clause = None;
+        let mut blank_screen = false;
+        let mut blank_line = false;
+        let mut highlight = false;
+        let mut reverse_video = false;
+        let mut source_field = None;
+        let mut using_field = None;
 
         while !self.check(TokenKind::Period) && !self.at_eof() {
             if self.check(TokenKind::Pic) {
@@ -265,9 +273,52 @@ impl Parser {
                 justified = true;
             } else if self.check(TokenKind::Blank) {
                 self.advance();
-                self.eat(TokenKind::When);
-                self.eat(TokenKind::Zero);
-                blank_when_zero = true;
+                if self.check(TokenKind::Screen) {
+                    self.advance();
+                    blank_screen = true;
+                } else if self.check(TokenKind::Line) {
+                    self.advance();
+                    blank_line = true;
+                } else {
+                    self.eat(TokenKind::When);
+                    self.eat(TokenKind::Zero);
+                    blank_when_zero = true;
+                }
+            } else if self.check(TokenKind::Line) {
+                self.advance();
+                self.eat_identifier("NUMBER");
+                self.eat_is();
+                if self.check(TokenKind::IntegerLiteral) {
+                    line_clause = Some(self.parse_integer()?);
+                }
+            } else if self.check(TokenKind::Column) {
+                self.advance();
+                self.eat_identifier("NUMBER");
+                self.eat_is();
+                if self.check(TokenKind::IntegerLiteral) {
+                    column_clause = Some(self.parse_integer()?);
+                }
+            } else if self.check(TokenKind::Highlight) {
+                self.advance();
+                highlight = true;
+            } else if self.check(TokenKind::ReverseVideo) {
+                self.advance();
+                reverse_video = true;
+            } else if self.check(TokenKind::SourceField) {
+                self.advance();
+                self.eat_is();
+                source_field = Some(self.parse_qualified_name()?);
+            } else if self.check(TokenKind::Using) && usage.is_none() {
+                // USING in screen section context (not USAGE)
+                // Only treat as screen USING if it looks like a qualified name follows
+                let next = self.peek(1).kind;
+                if next == TokenKind::Identifier || next.is_keyword() {
+                    self.advance();
+                    self.eat_is();
+                    using_field = Some(self.parse_qualified_name()?);
+                } else {
+                    self.advance();
+                }
             } else if self.check(TokenKind::External) {
                 self.advance();
                 is_external = true;
@@ -298,6 +349,14 @@ impl Parser {
             is_external,
             is_global,
             condition_values,
+            line_clause,
+            column_clause,
+            blank_screen,
+            blank_line,
+            highlight,
+            reverse_video,
+            source_field,
+            using_field,
             children: Vec::new(),
             span: start_span.merge(&end_span),
         })
@@ -686,6 +745,7 @@ fn analyze_picture(raw: &str) -> PictureAnalysis {
     let mut has_nine = false;
     let mut has_x = false;
     let mut has_a = false;
+    let mut has_n = false;
     let mut after_v = false;
 
     let bytes = upper.as_bytes();
@@ -724,6 +784,11 @@ fn analyze_picture(raw: &str) -> PictureAnalysis {
                     decimal_positions += count;
                 }
             }
+            b'N' => {
+                has_n = true;
+                let count = parse_repeat_count(bytes, &mut i);
+                size += count;
+            }
             b'Z' | b'*' | b'+' | b'-' | b'$' | b'B' | b'0' | b'/' | b',' | b'.' => {
                 is_edited = true;
                 let count = parse_repeat_count(bytes, &mut i);
@@ -734,7 +799,13 @@ fn analyze_picture(raw: &str) -> PictureAnalysis {
         i += 1;
     }
 
-    let category = if has_x {
+    let category = if has_n {
+        if is_edited {
+            PictureCategory::NationalEdited
+        } else {
+            PictureCategory::National
+        }
+    } else if has_x {
         if is_edited {
             PictureCategory::AlphanumericEdited
         } else {

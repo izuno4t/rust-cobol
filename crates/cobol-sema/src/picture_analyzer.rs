@@ -370,4 +370,144 @@ mod tests {
         assert_eq!(pic.category, PictureCategory::NumericEdited);
         assert!(pic.is_edited);
     }
+
+    // -----------------------------------------------------------------------
+    // Numeric edited PICTURE edge cases (Phase 6, item 4-2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_numeric_edited_z_suppression() {
+        // Z(4)9 = ZZZZ9  -> 4 Z + 1 digit = size 5
+        let pic = analyze_picture("Z(4)9");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert_eq!(pic.size, 5);
+        assert!(pic.is_edited);
+        assert_eq!(pic.decimal_positions, 0);
+    }
+
+    #[test]
+    fn test_numeric_edited_z_with_decimal() {
+        // ZZZ.ZZ -> 3 Z before V, 2 Z after (implicit V at '.')
+        let pic = analyze_picture("ZZZ.ZZ");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        // 5 Z + 1 edit_misc (.) = size 6
+        assert_eq!(pic.size, 6);
+    }
+
+    #[test]
+    fn test_numeric_edited_plus_sign_floating() {
+        // +(4)9.99 -> ++++9.99
+        let pic = analyze_picture("+(4)9.99");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        // 4 + signs + 1 digit + 2 digits + 1 dot = 8
+        // edit_numeric = 4, digit = 3, edit_misc = 1
+        assert_eq!(pic.size, 8);
+    }
+
+    #[test]
+    fn test_numeric_edited_minus_sign_floating() {
+        // --,--9.99
+        let pic = analyze_picture("--,--9.99");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        // 4 minus + 1 digit + 2 digits + 1 comma + 1 dot = 9
+        assert_eq!(pic.size, 9);
+    }
+
+    #[test]
+    fn test_numeric_edited_cr_suffix() {
+        // 9(5)CR -> 5 digits + 2 edit_misc (CR)
+        let pic = analyze_picture("9(5)CR");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        assert_eq!(pic.size, 7);
+    }
+
+    #[test]
+    fn test_numeric_edited_db_suffix() {
+        // 9(5)DB -> 5 digits + 2 edit_misc (DB)
+        let pic = analyze_picture("9(5)DB");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        assert_eq!(pic.size, 7);
+    }
+
+    #[test]
+    fn test_numeric_edited_slash_insertion() {
+        // 99/99/9999 -> date format
+        let pic = analyze_picture("99/99/9999");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        // 8 digits + 2 slashes = 10
+        assert_eq!(pic.size, 10);
+    }
+
+    #[test]
+    fn test_numeric_edited_b_insertion() {
+        // 9(3)B9(3) -> blank insertion
+        let pic = analyze_picture("9(3)B9(3)");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        // 6 digits + 1 B = 7
+        assert_eq!(pic.size, 7);
+    }
+
+    #[test]
+    fn test_numeric_edited_zero_insertion() {
+        // 9(3)09(3) -> zero insertion
+        let pic = analyze_picture("9(3)09(3)");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        // 6 digits + 1 zero = 7
+        assert_eq!(pic.size, 7);
+    }
+
+    #[test]
+    fn test_numeric_edited_dollar_floating() {
+        // $$$$.99 -> 4 dollar + 2 digits + 1 dot = 7
+        let pic = analyze_picture("$$$$.99");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        assert_eq!(pic.size, 7);
+    }
+
+    #[test]
+    fn test_numeric_edited_star_check_protect() {
+        // ***.99 -> 3 stars + 2 digits + 1 dot = 6
+        let pic = analyze_picture("***.99");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        assert_eq!(pic.size, 6);
+    }
+
+    #[test]
+    fn test_alphanumeric_edited_with_b() {
+        // X(3)BX(3) -> alphanumeric with B insertion
+        let pic = analyze_picture("X(3)BX(3)");
+        assert_eq!(pic.category, PictureCategory::AlphanumericEdited);
+        assert!(pic.is_edited);
+        // 6 X + 1 B = 7
+        assert_eq!(pic.size, 7);
+    }
+
+    #[test]
+    fn test_numeric_edited_all_z_no_digits() {
+        // ZZZZZ -> all suppression, no fixed digits
+        let pic = analyze_picture("ZZZZZ");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        assert_eq!(pic.size, 5);
+    }
+
+    #[test]
+    fn test_numeric_edited_complex_format() {
+        // $$$,$$$,$$9.99CR -> complex currency format
+        let pic = analyze_picture("$$$,$$$,$$9.99CR");
+        assert_eq!(pic.category, PictureCategory::NumericEdited);
+        assert!(pic.is_edited);
+        // 8 $ + 1 digit + 2 digits + 2 commas + 1 dot + 2 CR = 16
+        assert_eq!(pic.size, 16);
+    }
 }

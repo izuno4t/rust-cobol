@@ -7,8 +7,6 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 
-use smol_str::SmolStr;
-
 use cobol_hir::{
     HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem, HirExpr,
     HirFileInfo, HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph, HirPerformKind, HirProgram,
@@ -310,6 +308,41 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str("extern int64_t cobol_func_integer(int64_t value, int32_t scale);\n");
     out.push_str("extern uint32_t cobol_func_ord(uint8_t c);\n");
     out.push_str("extern uint8_t cobol_func_char(uint32_t ord);\n");
+    out.push_str("/* Mathematical intrinsic function declarations */\n");
+    out.push_str("extern int64_t cobol_func_abs(int64_t value);\n");
+    out.push_str("extern double cobol_func_abs_float(double value);\n");
+    out.push_str("extern double cobol_func_sqrt(double value);\n");
+    out.push_str("extern double cobol_func_exp(double value);\n");
+    out.push_str("extern double cobol_func_exp10(double value);\n");
+    out.push_str("extern double cobol_func_log(double value);\n");
+    out.push_str("extern double cobol_func_log10(double value);\n");
+    out.push_str("extern double cobol_func_sin(double value);\n");
+    out.push_str("extern double cobol_func_cos(double value);\n");
+    out.push_str("extern double cobol_func_tan(double value);\n");
+    out.push_str("extern double cobol_func_asin(double value);\n");
+    out.push_str("extern double cobol_func_acos(double value);\n");
+    out.push_str("extern double cobol_func_atan(double value);\n");
+    out.push_str("extern int64_t cobol_func_ceiling(double value);\n");
+    out.push_str("extern int64_t cobol_func_floor(double value);\n");
+    out.push_str("extern int64_t cobol_func_factorial(int64_t n);\n");
+    out.push_str("extern double cobol_func_rem(double a, double b);\n");
+    out.push_str("extern double cobol_func_random(int64_t seed);\n");
+    out.push_str("extern int64_t cobol_func_sign(int64_t value);\n");
+    out.push_str("extern double cobol_func_mean(const double* values, int32_t count);\n");
+    out.push_str("extern double cobol_func_sum_float(const double* values, int32_t count);\n");
+    out.push_str("extern double cobol_func_annuity(double rate, int64_t periods);\n");
+    out.push_str("extern double cobol_func_present_value(double rate, const double* values, int32_t count);\n");
+    out.push_str("/* Date/time intrinsic function declarations */\n");
+    out.push_str("extern int64_t cobol_func_integer_of_date(int64_t yyyymmdd);\n");
+    out.push_str("extern int64_t cobol_func_date_of_integer(int64_t day_count);\n");
+    out.push_str("extern int64_t cobol_func_integer_of_day(int64_t yyyyddd);\n");
+    out.push_str("extern int64_t cobol_func_day_of_integer(int64_t day_count);\n");
+    out.push_str("extern int64_t cobol_func_date_to_yyyymmdd(int64_t yymmdd, int64_t pivot);\n");
+    out.push_str("extern int64_t cobol_func_year_to_yyyy(int64_t yy, int64_t pivot);\n");
+    out.push_str("extern int64_t cobol_func_day_to_yyyyddd(int64_t yyddd, int64_t pivot);\n");
+    out.push_str("extern int64_t cobol_func_test_date_yyyymmdd(int64_t yyyymmdd);\n");
+    out.push_str("extern int64_t cobol_func_test_day_yyyyddd(int64_t yyyyddd);\n");
+    out.push_str("extern uint32_t cobol_func_when_compiled(uint8_t* buf, uint32_t buf_len);\n");
     out.push_str("/* COBOL 2002+ runtime declarations */\n");
     out.push_str(
         "extern void cobol_raise(const char* exception_name) __attribute__((noreturn));\n",
@@ -364,6 +397,31 @@ fn emit_runtime_declarations(out: &mut String) {
     );
     out.push_str("extern void cobol_decimal_from_string(const uint8_t* ptr, uint32_t len, CobolDecimal* result);\n");
     out.push_str("extern uint32_t cobol_decimal_to_display(const CobolDecimal* dec, uint8_t* buf, uint32_t buf_len, const uint8_t* pic_ptr, uint32_t pic_len);\n");
+    // Screen section runtime declarations
+    out.push_str("/* Screen section runtime declarations */\n");
+    out.push_str("extern void cobol_screen_position(int32_t line, int32_t col);\n");
+    out.push_str("extern void cobol_screen_clear(void);\n");
+    out.push_str("extern void cobol_screen_clear_line(void);\n");
+    out.push_str("extern void cobol_screen_highlight_on(void);\n");
+    out.push_str("extern void cobol_screen_highlight_off(void);\n");
+    out.push_str("extern void cobol_screen_reverse_on(void);\n");
+    out.push_str("extern void cobol_screen_reverse_off(void);\n");
+    out.push_str("extern void cobol_screen_reset_attrs(void);\n");
+    // NATIONAL (PIC N) runtime declarations
+    out.push_str("/* NATIONAL (PIC N) runtime declarations */\n");
+    out.push_str(
+        "extern uint32_t cobol_func_national_of(const uint8_t* src, uint32_t src_len, uint16_t* dst, uint32_t dst_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_func_display_of(const uint16_t* src, uint32_t src_len, uint8_t* dst, uint32_t dst_len);\n",
+    );
+    out.push_str(
+        "extern void cobol_move_to_national(const uint8_t* src, uint32_t src_len, uint16_t* dst, uint32_t dst_len);\n",
+    );
+    out.push_str("extern void cobol_display_national(const uint16_t* ptr, uint32_t len);\n");
+    out.push_str(
+        "extern void cobol_move_national_to_national(const uint16_t* src, uint32_t src_len, uint16_t* dst, uint32_t dst_len);\n",
+    );
     out.push('\n');
 }
 
@@ -441,6 +499,15 @@ fn emit_single_data_item(
 ) {
     let c_name = sanitize_name(&item.name);
 
+    // RENAMES (level 66): emit a #define alias, no variable declaration
+    if let Some((ref from, ref _thru)) = item.renames {
+        let c_from = sanitize_name(from);
+        out.push_str(&format!(
+            "#define {c_name} {c_from} /* RENAMES {c_from} */\n"
+        ));
+        return;
+    }
+
     // REDEFINES: overlay on another item's memory via pointer cast
     if let Some(ref redef_name) = item.redefines {
         let c_redef = sanitize_name(redef_name);
@@ -465,6 +532,15 @@ fn emit_single_data_item(
                 ));
             } else {
                 out.push_str(&format!("static char {}[{}];\n", c_name, size + 1));
+            }
+        }
+        HirType::National { size } => {
+            if item.occurs.is_some() {
+                out.push_str(&format!(
+                    "static uint16_t {c_name}{array_suffix}[{size}];\n"
+                ));
+            } else {
+                out.push_str(&format!("static uint16_t {c_name}[{size}];\n"));
             }
         }
         HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
@@ -564,6 +640,15 @@ fn emit_group_struct_member(out: &mut String, member: &HirDataItem) {
                 ));
             } else {
                 out.push_str(&format!("    char _m_{c_name}[{}];\n", size + 1));
+            }
+        }
+        HirType::National { size } => {
+            if member.occurs.is_some() {
+                out.push_str(&format!(
+                    "    uint16_t _m_{c_name}{array_suffix}[{size}];\n"
+                ));
+            } else {
+                out.push_str(&format!("    uint16_t _m_{c_name}[{size}];\n"));
             }
         }
         HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
@@ -680,6 +765,7 @@ fn c_type_for_hir_type(ty: &HirType) -> &'static str {
         HirType::FloatShort => "float",
         HirType::FloatLong => "double",
         HirType::FloatExtended => "long double",
+        HirType::National { .. } => "uint16_t",
     }
 }
 
@@ -736,6 +822,11 @@ fn emit_single_data_init_with_prefix(
             HirType::Alphanumeric { size } => {
                 out.push_str(&format!(
                     "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); {c_name}[_i][{size}] = '\\0'; }}\n"
+                ));
+            }
+            HirType::National { size } => {
+                out.push_str(&format!(
+                    "    for (int _i = 0; _i < {n}; _i++) {{ for (uint32_t _j = 0; _j < {size}; _j++) {{ {c_name}[_i][_j] = 0x0020; }} }}\n"
                 ));
             }
             _ => {
@@ -842,6 +933,18 @@ fn emit_single_data_init_with_prefix(
             ) => {
                 out.push_str(&format!("    {c_name} = 0;\n"));
             }
+            (HirType::National { size }, HirLiteral::String(s)) => {
+                let escaped = escape_c_string(s);
+                let src_len = s.len();
+                out.push_str(&format!(
+                    "    cobol_move_to_national((const uint8_t*)\"{escaped}\", {src_len}, {c_name}, {size});\n"
+                ));
+            }
+            (HirType::National { size }, HirLiteral::Space) => {
+                out.push_str(&format!(
+                    "    for (uint32_t _i = 0; _i < {size}; _i++) {{ {c_name}[_i] = 0x0020; }}\n"
+                ));
+            }
             _ => {
                 emit_default_init(out, &item.data_type, &c_name);
             }
@@ -870,6 +973,12 @@ fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &str) {
         }
         HirType::Pointer => {
             out.push_str(&format!("    {c_name} = NULL;\n"));
+        }
+        HirType::National { size } => {
+            // Fill with UTF-16 spaces (0x0020)
+            out.push_str(&format!(
+                "    for (uint32_t _i = 0; _i < {size}; _i++) {{ {c_name}[_i] = 0x0020; }}\n"
+            ));
         }
         HirType::Group { members, .. } => {
             for member in members {
@@ -1032,16 +1141,17 @@ fn emit_statement(
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
             if !giving.is_empty() {
-                // ADD a b GIVING c d → c = a + b, d = a + b
+                // ADD a b GIVING c d -> c = a + b, d = a + b
                 // All operands + TO values are summed, result goes to GIVING targets
                 let mut all_addends: Vec<String> = operands.iter().map(emit_expr).collect();
                 for t in to {
-                    all_addends.push(sanitize_name(t));
+                    all_addends.push(emit_expr(t));
                 }
                 let sum_expr = all_addends.join(" + ");
                 for target in giving {
-                    let c_target = sanitize_name(target);
-                    let target_is_decimal = find_data_item(target, data_items)
+                    let c_target = emit_expr(target);
+                    let var_name = expr_var_name(target);
+                    let target_is_decimal = find_data_item(var_name, data_items)
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         // For decimal GIVING, build a temp sum then assign
@@ -1051,7 +1161,7 @@ fn emit_statement(
                     } else if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                         out.push_str(&format!("{pad}{c_target} = {sum_expr};\n"));
-                        emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                        emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
                         out.push_str(&format!("{pad}{c_target} = {sum_expr};\n"));
@@ -1059,8 +1169,9 @@ fn emit_statement(
                 }
             } else {
                 for target in to {
-                    let c_target = sanitize_name(target);
-                    let target_is_decimal = find_data_item(target, data_items)
+                    let c_target = emit_expr(target);
+                    let var_name = expr_var_name(target);
+                    let target_is_decimal = find_data_item(var_name, data_items)
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         for op in operands {
@@ -1079,7 +1190,7 @@ fn emit_statement(
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                             out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
-                            emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
@@ -1114,21 +1225,22 @@ fn emit_statement(
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
             if !giving.is_empty() {
-                // SUBTRACT a FROM b GIVING c → c = b - a
+                // SUBTRACT a FROM b GIVING c -> c = b - a
                 let sub_vals: Vec<String> = operands.iter().map(emit_expr).collect();
                 let sub_expr = sub_vals.join(" + ");
                 // The FROM value is the minuend
                 let from_val = if let Some(f) = from.first() {
-                    sanitize_name(f)
+                    emit_expr(f)
                 } else {
                     "0".to_string()
                 };
                 for target in giving {
-                    let c_target = sanitize_name(target);
+                    let c_target = emit_expr(target);
+                    let var_name = expr_var_name(target);
                     if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                         out.push_str(&format!("{pad}{c_target} = {from_val} - ({sub_expr});\n"));
-                        emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                        emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
                         out.push_str(&format!("{pad}{c_target} = {from_val} - ({sub_expr});\n"));
@@ -1136,8 +1248,9 @@ fn emit_statement(
                 }
             } else {
                 for target in from {
-                    let c_target = sanitize_name(target);
-                    let target_is_decimal = find_data_item(target, data_items)
+                    let c_target = emit_expr(target);
+                    let var_name = expr_var_name(target);
+                    let target_is_decimal = find_data_item(var_name, data_items)
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         for op in operands {
@@ -1156,7 +1269,7 @@ fn emit_statement(
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                             out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
-                            emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
@@ -1239,14 +1352,15 @@ fn emit_statement(
             if !giving.is_empty() {
                 // MULTIPLY A BY B GIVING C [D ...]:  C = A * B
                 let c_operand = emit_expr(operand);
-                let first_by = by.first().map(|b| sanitize_name(b)).unwrap_or_default();
+                let first_by = by.first().map(emit_expr).unwrap_or_default();
                 let mul_expr = format!("{first_by} * {c_operand}");
                 for target in giving {
-                    let c_target = sanitize_name(target);
+                    let c_target = emit_expr(target);
+                    let var_name = expr_var_name(target);
                     if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                         out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
-                        emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                        emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
                         out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
@@ -1254,8 +1368,9 @@ fn emit_statement(
                 }
             } else {
                 for target in by {
-                    let c_target = sanitize_name(target);
-                    let target_is_decimal = find_data_item(target, data_items)
+                    let c_target = emit_expr(target);
+                    let var_name = expr_var_name(target);
+                    let target_is_decimal = find_data_item(var_name, data_items)
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         emit_decimal_arith(
@@ -1271,7 +1386,7 @@ fn emit_statement(
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                             out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
-                            emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
@@ -1309,11 +1424,12 @@ fn emit_statement(
             let c_operand = emit_expr(operand);
             if !giving.is_empty() {
                 // DIVIDE A INTO B GIVING C: C = B / A
-                let first_into = into.first().map(|b| sanitize_name(b)).unwrap_or_default();
+                let first_into = into.first().map(emit_expr).unwrap_or_default();
                 for target in giving {
-                    let c_target = sanitize_name(target);
+                    let c_target = emit_expr(target);
+                    let var_name = expr_var_name(target);
                     if let Some(rem) = remainder {
-                        let c_rem = sanitize_name(rem);
+                        let c_rem = emit_expr(rem);
                         out.push_str(&format!("{pad}{c_rem} = {first_into} % {c_operand};\n"));
                     }
                     if has_size_error {
@@ -1321,7 +1437,7 @@ fn emit_statement(
                         out.push_str(&format!(
                             "{pad}if ({c_operand} == 0) {{ _size_error = 1; }} else {{ {c_target} = {first_into} / {c_operand}; }}\n"
                         ));
-                        emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                        emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
                         out.push_str(&format!("{pad}{c_target} = {first_into} / {c_operand};\n"));
@@ -1329,8 +1445,9 @@ fn emit_statement(
                 }
             } else {
                 for target in into {
-                    let c_target = sanitize_name(target);
-                    let target_is_decimal = find_data_item(target, data_items)
+                    let c_target = emit_expr(target);
+                    let var_name = expr_var_name(target);
+                    let target_is_decimal = find_data_item(var_name, data_items)
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         emit_decimal_arith(
@@ -1343,7 +1460,7 @@ fn emit_statement(
                         );
                     } else {
                         if let Some(rem) = remainder {
-                            let c_rem = sanitize_name(rem);
+                            let c_rem = emit_expr(rem);
                             out.push_str(&format!("{pad}{c_rem} = {c_target} % {c_operand};\n"));
                         }
                         if has_size_error {
@@ -1351,7 +1468,7 @@ fn emit_statement(
                             out.push_str(&format!(
                                 "{pad}if ({c_operand} == 0) {{ _size_error = 1; }} else {{ {c_target} /= {c_operand}; }}\n"
                             ));
-                            emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             out.push_str(&format!("{pad}{c_target} /= {c_operand};\n"));
@@ -2168,7 +2285,7 @@ fn emit_statement(
             out.push_str(&format!("{pad}cobol_goback();\n"));
         }
         HirStatement::ExitProgram { .. } => {
-            out.push_str(&format!("{pad}return; /* EXIT PROGRAM */\n"));
+            out.push_str(&format!("{pad}exit(0); /* EXIT PROGRAM */\n"));
         }
         HirStatement::ExitParagraph { .. } => {
             out.push_str(&format!("{pad}return; /* EXIT PARAGRAPH */\n"));
@@ -2480,6 +2597,23 @@ fn emit_statement(
                 "{pad}cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
             ));
         }
+        // --- Report writer statements (stub — emit comments) ---
+        HirStatement::Initiate { report_names, .. } => {
+            for name in report_names {
+                let c_name = sanitize_name(name);
+                out.push_str(&format!("{pad}/* INITIATE {c_name} */\n"));
+            }
+        }
+        HirStatement::Generate { report_name, .. } => {
+            let c_name = sanitize_name(report_name);
+            out.push_str(&format!("{pad}/* GENERATE {c_name} */\n"));
+        }
+        HirStatement::Terminate { report_names, .. } => {
+            for name in report_names {
+                let c_name = sanitize_name(name);
+                out.push_str(&format!("{pad}/* TERMINATE {c_name} */\n"));
+            }
+        }
     }
 }
 
@@ -2536,6 +2670,16 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
         HirExpr::Variable(name) => {
             let c_name = sanitize_name(name);
             let item = find_data_item(name, data_items);
+
+            // If this is a screen item, emit positioning and attribute code
+            if let Some(si) = item.and_then(|i| i.screen_info.as_ref()) {
+                emit_screen_display(out, si, data_items, pad);
+                // After screen attributes, also display children recursively
+                // by emitting the screen group content. For leaf items with a
+                // VALUE, the value was already emitted by emit_screen_display.
+                return;
+            }
+
             let is_alphanumeric =
                 item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
             let is_decimal = item.is_some_and(|i| needs_decimal(&i.data_type));
@@ -2557,6 +2701,16 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
                     .unwrap_or(1);
                 out.push_str(&format!(
                     "{pad}cobol_display_string((const uint8_t*){c_name}, {size});\n"
+                ));
+            } else if item.is_some_and(|i| matches!(i.data_type, HirType::National { .. })) {
+                let size = item
+                    .and_then(|i| match &i.data_type {
+                        HirType::National { size } => Some(*size),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                out.push_str(&format!(
+                    "{pad}cobol_display_national((const uint16_t*){c_name}, {size});\n"
                 ));
             } else {
                 out.push_str(&format!("{pad}cobol_display_int({c_name});\n"));
@@ -2605,6 +2759,74 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
                         };
                         out.push_str(&format!(
                             "{pad}{{ uint8_t _fbuf[256]; uint32_t _flen = cobol_func_trim((const uint8_t*){c_arg}, {size}, _fbuf, 256, {mode}); cobol_display_string(_fbuf, _flen); }}\n"
+                        ));
+                    }
+                }
+                "CONCATENATE" => {
+                    // For display: concatenate all args into a temp buffer
+                    // and display the result
+                    let mut total_size = 0u32;
+                    let mut arg_parts: Vec<(String, u32)> = Vec::new();
+                    for arg in args {
+                        let c_arg = emit_expr(arg);
+                        let size: u32 = if let HirExpr::Variable(v) = arg {
+                            find_data_item_size(&sanitize_name(v), data_items)
+                        } else if let HirExpr::Literal(HirLiteral::String(s)) = arg {
+                            s.len() as u32
+                        } else {
+                            64
+                        };
+                        total_size += size;
+                        arg_parts.push((c_arg, size));
+                    }
+                    if !arg_parts.is_empty() {
+                        let buf_size = total_size.max(1);
+                        let mut block =
+                            format!("{pad}{{ uint8_t _cbuf[{buf_size}]; uint32_t _coff = 0;\n");
+                        for (c_arg, size) in &arg_parts {
+                            block.push_str(&format!(
+                                "{pad}  memcpy(_cbuf + _coff, \
+                                 (const uint8_t*){c_arg}, {size}); \
+                                 _coff += {size};\n"
+                            ));
+                        }
+                        block.push_str(&format!(
+                            "{pad}  cobol_display_string(_cbuf, {buf_size}); }}\n"
+                        ));
+                        out.push_str(&block);
+                    }
+                }
+                "NATIONAL-OF" => {
+                    // DISPLAY FUNCTION NATIONAL-OF(var) -- convert and display
+                    if let Some(arg) = args.first() {
+                        let c_arg = emit_expr(arg);
+                        let size: u32 = if let HirExpr::Variable(v) = arg {
+                            find_data_item_size(&sanitize_name(v), data_items)
+                        } else {
+                            64
+                        };
+                        out.push_str(&format!(
+                            "{pad}{{ uint16_t _nbuf[{size}]; \
+                             cobol_func_national_of(\
+                             (const uint8_t*){c_arg}, {size}, _nbuf, {size}); \
+                             cobol_display_national(_nbuf, {size}); }}\n"
+                        ));
+                    }
+                }
+                "DISPLAY-OF" => {
+                    // DISPLAY FUNCTION DISPLAY-OF(var) -- convert and display
+                    if let Some(arg) = args.first() {
+                        let c_arg = emit_expr(arg);
+                        let size: u32 = if let HirExpr::Variable(v) = arg {
+                            find_data_item_size(&sanitize_name(v), data_items)
+                        } else {
+                            64
+                        };
+                        out.push_str(&format!(
+                            "{pad}{{ uint8_t _dbuf[{size}]; \
+                             cobol_func_display_of(\
+                             (const uint16_t*){c_arg}, {size}, _dbuf, {size}); \
+                             cobol_display_string(_dbuf, {size}); }}\n"
                         ));
                     }
                 }
@@ -2667,6 +2889,68 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
     }
 }
 
+/// Emit C code for displaying a screen item with ANSI positioning and attributes.
+fn emit_screen_display(
+    out: &mut String,
+    si: &cobol_hir::HirScreenInfo,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    // BLANK SCREEN: clear the whole terminal
+    if si.blank_screen {
+        out.push_str(&format!("{pad}cobol_screen_clear();\n"));
+    }
+    // BLANK LINE: clear current line
+    if si.blank_line {
+        out.push_str(&format!("{pad}cobol_screen_clear_line();\n"));
+    }
+    // LINE / COLUMN: position cursor
+    if si.line.is_some() || si.column.is_some() {
+        let line = si.line.unwrap_or(1) as i32;
+        let col = si.column.unwrap_or(1) as i32;
+        out.push_str(&format!("{pad}cobol_screen_position({line}, {col});\n"));
+    }
+    // HIGHLIGHT: enable bold
+    if si.highlight {
+        out.push_str(&format!("{pad}cobol_screen_highlight_on();\n"));
+    }
+    // REVERSE-VIDEO
+    if si.reverse_video {
+        out.push_str(&format!("{pad}cobol_screen_reverse_on();\n"));
+    }
+    // Display the VALUE if present
+    if let Some(ref val) = si.value {
+        let escaped = escape_c_string(val);
+        let len = val.len();
+        out.push_str(&format!(
+            "{pad}cobol_display_string((const uint8_t*)\"{escaped}\", {len});\n"
+        ));
+    }
+    // Display the SOURCE field if present
+    if let Some(ref source) = si.source {
+        let c_name = sanitize_name(source);
+        let item = find_data_item(source, data_items);
+        let is_alpha = item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
+        if is_alpha {
+            let size = item
+                .and_then(|i| match &i.data_type {
+                    HirType::Alphanumeric { size } => Some(*size),
+                    _ => None,
+                })
+                .unwrap_or(1);
+            out.push_str(&format!(
+                "{pad}cobol_display_string((const uint8_t*){c_name}, {size});\n"
+            ));
+        } else {
+            out.push_str(&format!("{pad}cobol_display_int({c_name});\n"));
+        }
+    }
+    // Reset attributes if we turned any on
+    if si.highlight || si.reverse_video {
+        out.push_str(&format!("{pad}cobol_screen_reset_attrs();\n"));
+    }
+}
+
 fn emit_move_to(
     out: &mut String,
     from: &HirExpr,
@@ -2678,17 +2962,90 @@ fn emit_move_to(
     let target_type = find_data_item(target_name.as_str(), data_items).map(|item| &item.data_type);
     let is_target_alpha = matches!(target_type, Some(HirType::Alphanumeric { .. }));
     let is_target_group = matches!(target_type, Some(HirType::Group { .. }));
+    let is_target_national = matches!(target_type, Some(HirType::National { .. }));
 
-    // Group-to-group move: use memcpy
+    // NATIONAL target: convert source to national
+    if is_target_national {
+        let tgt_size = match target_type {
+            Some(HirType::National { size }) => *size,
+            _ => 1,
+        };
+        match from {
+            HirExpr::Literal(HirLiteral::String(s)) => {
+                let escaped = escape_c_string(s);
+                let src_len = s.len();
+                out.push_str(&format!(
+                    "{pad}cobol_move_to_national(\
+                     (const uint8_t*)\"{escaped}\", {src_len}, \
+                     {c_target}, {tgt_size});\n"
+                ));
+            }
+            HirExpr::Literal(HirLiteral::Space) => {
+                out.push_str(&format!(
+                    "{pad}for (uint32_t _i = 0; _i < {tgt_size}; _i++) \
+                     {{ {c_target}[_i] = 0x0020; }}\n"
+                ));
+            }
+            HirExpr::Variable(src_name) => {
+                let c_src = sanitize_name(src_name);
+                let src_item = find_data_item(src_name.as_str(), data_items).map(|i| &i.data_type);
+                if matches!(src_item, Some(HirType::National { .. })) {
+                    let src_size = match src_item {
+                        Some(HirType::National { size }) => *size,
+                        _ => 1,
+                    };
+                    out.push_str(&format!(
+                        "{pad}cobol_move_national_to_national(\
+                         (const uint16_t*){c_src}, {src_size}, \
+                         {c_target}, {tgt_size});\n"
+                    ));
+                } else {
+                    let src_size = find_data_item_size(&c_src, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_to_national(\
+                         (const uint8_t*){c_src}, {src_size}, \
+                         {c_target}, {tgt_size});\n"
+                    ));
+                }
+            }
+            _ => {
+                let e = emit_expr(from);
+                out.push_str(&format!("{pad}{c_target}[0] = (uint16_t){e};\n"));
+            }
+        }
+        return;
+    }
+
+    // Group-to-group move: use memcpy with space-padding per COBOL rules.
+    // Use sizeof() for C struct sizes to account for null terminators and padding.
     if is_target_group {
         if let HirExpr::Variable(src_name) = from {
             let c_src = sanitize_name(src_name);
-            let src_size = find_data_item_size(&c_src, data_items);
-            let tgt_size = find_data_item_size(c_target, data_items);
-            let copy_size = src_size.min(tgt_size);
-            out.push_str(&format!(
-                "{pad}memcpy(&{c_target}, &{c_src}, {copy_size});\n"
-            ));
+            let is_source_group = find_data_item(src_name.as_str(), data_items)
+                .is_some_and(|item| matches!(item.data_type, HirType::Group { .. }));
+            if is_source_group {
+                // Both are groups: use sizeof() for correct C-level byte copy
+                out.push_str(&format!(
+                    "{pad}{{\n\
+                     {pad}    size_t _src_sz = sizeof({c_src});\n\
+                     {pad}    size_t _tgt_sz = sizeof({c_target});\n\
+                     {pad}    size_t _cp_sz = _src_sz < _tgt_sz ? _src_sz : _tgt_sz;\n\
+                     {pad}    memcpy(&{c_target}, &{c_src}, _cp_sz);\n\
+                     {pad}    if (_src_sz < _tgt_sz) {{\n\
+                     {pad}        memset((uint8_t*)&{c_target} + _src_sz, ' ', \
+                     _tgt_sz - _src_sz);\n\
+                     {pad}    }}\n\
+                     {pad}}}\n"
+                ));
+            } else {
+                // Non-group source to group target: copy by COBOL data size
+                let src_size = find_data_item_size(&c_src, data_items);
+                let tgt_size = find_data_item_size(c_target, data_items);
+                let copy_size = src_size.min(tgt_size);
+                out.push_str(&format!(
+                    "{pad}memcpy(&{c_target}, &{c_src}, {copy_size});\n"
+                ));
+            }
         } else {
             // Non-variable to group: treat as string
             let e = emit_expr(from);
@@ -2708,6 +3065,29 @@ fn emit_move_to(
     let is_source_alpha_var = matches!(from, HirExpr::Variable(name)
         if find_data_item(name.as_str(), data_items)
             .is_some_and(|item| matches!(item.data_type, HirType::Alphanumeric { .. })));
+
+    let is_source_national_var = matches!(from, HirExpr::Variable(name)
+        if find_data_item(name.as_str(), data_items)
+            .is_some_and(|item| matches!(item.data_type, HirType::National { .. })));
+
+    // National source -> alphanumeric target: use DISPLAY-OF conversion
+    if is_target_alpha && is_source_national_var {
+        if let HirExpr::Variable(name) = from {
+            let c_src = sanitize_name(name);
+            let src_size = match find_data_item(name.as_str(), data_items).map(|i| &i.data_type) {
+                Some(HirType::National { size }) => *size,
+                _ => 1,
+            };
+            let tgt_size = find_data_item_size(c_target, data_items);
+            out.push_str(&format!(
+                "{pad}cobol_func_display_of(\
+                 (const uint16_t*){c_src}, {src_size}, \
+                 (uint8_t*){c_target}, {tgt_size});\n"
+            ));
+            out.push_str(&format!("{pad}{c_target}[{tgt_size}] = '\\0';\n"));
+        }
+        return;
+    }
 
     match from {
         HirExpr::Literal(HirLiteral::String(s)) => {
@@ -3283,6 +3663,261 @@ fn emit_expr(expr: &HirExpr) -> String {
                         "0".to_string()
                     }
                 }
+                "ABS" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_abs({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "SQRT" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_sqrt((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "EXP" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_exp((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "EXP10" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_exp10((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "LOG" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_log((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "LOG10" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_log10((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "SIN" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_sin((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "COS" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_cos((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "TAN" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_tan((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "ASIN" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_asin((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "ACOS" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_acos((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "ATAN" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_atan((double){arg})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "FACTORIAL" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_factorial({arg})")
+                    } else {
+                        "1".to_string()
+                    }
+                }
+                "REM" | "REMAINDER" => {
+                    if c_args.len() >= 2 {
+                        format!(
+                            "cobol_func_rem((double){}, (double){})",
+                            c_args[0], c_args[1]
+                        )
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "RANDOM" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_random({arg})")
+                    } else {
+                        "cobol_func_random(0)".to_string()
+                    }
+                }
+                "SIGN" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_sign({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "CEILING" | "CEIL" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_ceiling((double){arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "FLOOR" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_floor((double){arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "ANNUITY" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_annuity((double){}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "STORED-CHAR-LENGTH" => {
+                    if let Some(arg) = c_args.first() {
+                        format!(
+                            "cobol_func_stored_char_length(\
+                             (const uint8_t*){arg}, sizeof({arg}))"
+                        )
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "ORD-MAX" => {
+                    let arg_list = c_args.join(", ");
+                    format!(
+                        "({{ int64_t _om[] = {{{arg_list}}}; \
+                         cobol_func_ord_max(_om, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "ORD-MIN" => {
+                    let arg_list = c_args.join(", ");
+                    format!(
+                        "({{ int64_t _om[] = {{{arg_list}}}; \
+                         cobol_func_ord_min(_om, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "INTEGER-OF-DATE" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_integer_of_date({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "DATE-OF-INTEGER" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_date_of_integer({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "INTEGER-OF-DAY" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_integer_of_day({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "DAY-OF-INTEGER" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_day_of_integer({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "DATE-TO-YYYYMMDD" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_date_to_yyyymmdd({}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "YEAR-TO-YYYY" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_year_to_yyyy({}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "DAY-TO-YYYYDDD" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_day_to_yyyyddd({}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "TEST-DATE-YYYYMMDD" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_test_date_yyyymmdd({arg})")
+                    } else {
+                        "1".to_string()
+                    }
+                }
+                "TEST-DAY-YYYYDDD" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_test_day_yyyyddd({arg})")
+                    } else {
+                        "1".to_string()
+                    }
+                }
+                "WHEN-COMPILED" => "cobol_func_when_compiled(_when_compiled_buf, 21)".to_string(),
+                "NATIONAL-OF" => {
+                    // FUNCTION NATIONAL-OF(alphanumeric-var)
+                    // Returns a national value; in expression context, emit
+                    // as a statement expression that fills a temp buffer.
+                    if let Some(arg) = c_args.first() {
+                        format!(
+                            "({{ static uint16_t _ntmp[256]; \
+                             cobol_func_national_of(\
+                             (const uint8_t*){arg}, sizeof({arg}), \
+                             _ntmp, 256); _ntmp; }})"
+                        )
+                    } else {
+                        "((uint16_t*)0)".to_string()
+                    }
+                }
+                "DISPLAY-OF" => {
+                    // FUNCTION DISPLAY-OF(national-var)
+                    // Returns an alphanumeric value.
+                    if let Some(arg) = c_args.first() {
+                        format!(
+                            "({{ static char _dtmp[256]; \
+                             cobol_func_display_of(\
+                             (const uint16_t*){arg}, sizeof({arg})/sizeof(uint16_t), \
+                             (uint8_t*)_dtmp, 256); _dtmp; }})"
+                        )
+                    } else {
+                        "((char*)0)".to_string()
+                    }
+                }
                 _ => {
                     // User-defined function: use cobol_func_ prefix convention.
                     let c_name = sanitize_name(name);
@@ -3336,6 +3971,17 @@ fn needs_decimal(data_type: &HirType) -> bool {
         data_type,
         HirType::Numeric { decimal_places, .. } if *decimal_places > 0
     ) || matches!(data_type, HirType::Comp3 { decimal_places, .. } if *decimal_places > 0)
+}
+
+/// Extract the base variable name from a `HirExpr` for data-item lookups.
+/// Returns the variable name for `Variable` and `Subscript` variants,
+/// or an empty string for other expression types.
+fn expr_var_name(expr: &HirExpr) -> &str {
+    match expr {
+        HirExpr::Variable(name) => name.as_str(),
+        HirExpr::Subscript { variable, .. } => variable.as_str(),
+        _ => "",
+    }
 }
 
 /// Look up a data item by name (searching flattened items including group members).
@@ -3490,7 +4136,7 @@ fn get_pic_max(name: &str, data_items: &[HirDataItem]) -> Option<i64> {
 /// Expects `_prev` and `_size_error` to be in scope.
 fn emit_integer_overflow_check(
     out: &mut String,
-    target_name: &smol_str::SmolStr,
+    target_name: &str,
     c_target: &str,
     data_items: &[HirDataItem],
     pad: &str,
@@ -3594,7 +4240,7 @@ fn emit_decimal_arith(
 fn emit_decimal_giving_add(
     out: &mut String,
     operands: &[HirExpr],
-    to: &[SmolStr],
+    to: &[HirExpr],
     c_target: &str,
     data_items: &[HirDataItem],
     pad: &str,
@@ -3625,11 +4271,10 @@ fn emit_decimal_giving_add(
         }
     }
     for t in to {
-        let t_expr = HirExpr::Variable(t.clone());
         if first {
-            let c_t = sanitize_name(t);
-            let t_is_decimal =
-                find_data_item(t, data_items).is_some_and(|i| needs_decimal(&i.data_type));
+            let c_t = emit_expr(t);
+            let t_is_decimal = find_data_item(expr_var_name(t), data_items)
+                .is_some_and(|i| needs_decimal(&i.data_type));
             if t_is_decimal {
                 out.push_str(&format!("{pad}{c_target} = {c_t};\n"));
             } else {
@@ -3639,7 +4284,7 @@ fn emit_decimal_giving_add(
             }
             first = false;
         } else {
-            emit_decimal_arith(out, c_target, &t_expr, "cobol_decimal_add", data_items, pad);
+            emit_decimal_arith(out, c_target, t, "cobol_decimal_add", data_items, pad);
         }
     }
 }
@@ -4314,6 +4959,7 @@ fn data_item_byte_size(data_type: &HirType) -> u32 {
         HirType::FloatShort => 4,
         HirType::FloatLong => 8,
         HirType::FloatExtended => 16,
+        HirType::National { size } => size * 2, // UTF-16: 2 bytes per character
     }
 }
 
@@ -4550,6 +5196,7 @@ fn hir_type_to_c(data_type: &HirType) -> &'static str {
         HirType::FloatShort => "float",
         HirType::FloatLong => "double",
         HirType::FloatExtended => "long double",
+        HirType::National { .. } => "uint16_t*",
     }
 }
 
@@ -4853,6 +5500,8 @@ PROCEDURE DIVISION.
                     initial_value: None,
                     occurs: None,
                     redefines: None,
+                    renames: None,
+                    screen_info: None,
                     span: Span::dummy(),
                 }],
                 span: Span::dummy(),
@@ -5078,6 +5727,8 @@ PROCEDURE DIVISION.
                 initial_value: None,
                 occurs: None,
                 redefines: None,
+                renames: None,
+                screen_info: None,
                 span: Span::dummy(),
             }],
             paragraphs: Vec::new(),

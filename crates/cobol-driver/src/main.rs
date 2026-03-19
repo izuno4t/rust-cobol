@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser as ClapParser;
 use cobol_codegen::{compile_c_to_executable, generate_c};
 use cobol_common::{FileId, SourceFormat};
-use cobol_diagnostics::render_diagnostics_to_stderr;
+use cobol_diagnostics::{render_diagnostics_to_stderr, WarningLevel};
 use cobol_hir::lower_to_hir;
 use cobol_lexer::Lexer;
 use cobol_parser::Parser;
@@ -54,6 +54,14 @@ struct Cli {
     #[arg(long = "copy-path", value_name = "DIR")]
     copy_paths: Vec<String>,
 
+    /// Warning control: all, none, error (default: show warnings)
+    ///
+    /// -Wall    Show all diagnostics including hints and info
+    /// -Wnone   Suppress all warnings
+    /// -Werror  Treat warnings as errors
+    #[arg(short = 'W', long = "warning", default_value = "default")]
+    warning_level: String,
+
     /// Verbose output
     #[arg(short = 'v', long)]
     verbose: bool,
@@ -67,6 +75,20 @@ fn main() {
 
 fn run() -> Result<(), i32> {
     let cli = Cli::parse();
+
+    let warning_level = match cli.warning_level.as_str() {
+        "all" => WarningLevel::All,
+        "none" => WarningLevel::None,
+        "error" => WarningLevel::Error,
+        "default" => WarningLevel::Default,
+        other => {
+            eprintln!(
+                "error: unknown warning level '{}' (use: all, none, error)",
+                other
+            );
+            return Err(1);
+        }
+    };
 
     let source_format = match cli.source_format.as_str() {
         "fixed" => SourceFormat::Fixed,
@@ -107,9 +129,9 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         let preprocessed = preprocess(&source, Path::new(file_path), &pp_config);
 
-        // Report preprocessor diagnostics.
-        for diag in &preprocessed.diagnostics {
-            eprintln!("{:?}: [{}] {}", diag.severity, diag.code, diag.message);
+        // Report preprocessor diagnostics with source-annotated output.
+        if !preprocessed.diagnostics.is_empty() {
+            render_diagnostics_to_stderr(&preprocessed.diagnostics, file_path, &source);
         }
         if preprocessed.diagnostics.iter().any(|d| d.is_error()) {
             eprintln!("error: preprocessing failed for '{}'", file_path);
@@ -139,8 +161,21 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         let mut parser = Parser::new(tokens, file_id);
         let program = match parser.parse_program() {
-            Ok(p) => p,
+            Ok(p) => {
+                // Render any non-fatal parser diagnostics (warnings, etc.)
+                let parser_diags = parser.diagnostics();
+                if parser_diags.error_count() > 0 || parser_diags.warning_count() > 0 {
+                    render_diagnostics_to_stderr(parser_diags.diagnostics(), file_path, &source);
+                }
+                p
+            }
             Err(_) => {
+                // Render parser diagnostics with source-annotated output
+                render_diagnostics_to_stderr(
+                    parser.diagnostics().diagnostics(),
+                    file_path,
+                    &source,
+                );
                 eprintln!("error: parsing failed for '{}'", file_path);
                 return Err(1);
             }
@@ -157,7 +192,7 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         // Phase 3: Semantic analysis
         // ---------------------------------------------------------------
-        let mut analyzer = SemanticAnalyzer::new();
+        let mut analyzer = SemanticAnalyzer::with_warning_level(warning_level);
         let result = analyzer.analyze(&program);
         let diagnostics = analyzer.take_diagnostics();
 

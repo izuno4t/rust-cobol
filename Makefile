@@ -5,7 +5,7 @@ CARGO := cargo
 BINARY := cobolc
 INSTALL_DIR := $(HOME)/.cargo/bin
 
-.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck help
+.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist nist-summary help
 
 ## デフォルト: リリースビルド
 all: release
@@ -73,6 +73,14 @@ example: release
 	@echo "--- Running hello ---"
 	@/tmp/hello
 
+## NIST CCVS 85 テスト実行 (モジュール指定: make nist MODULE=NC)
+nist: release
+	COBOLC="$(CARGO) run --release --package cobol-driver --" tests/nist/run_nist.sh $(or $(MODULE),--all)
+
+## NIST 結果サマリー
+nist-summary:
+	tests/nist/run_nist.sh --summary
+
 ## ヘルプ
 help:
 	@echo "使用可能なターゲット:"
@@ -91,4 +99,7 @@ help:
 	@echo "  make install     - cobolc を ~/.cargo/bin にインストール"
 	@echo "  make uninstall   - cobolc をアンインストール"
 	@echo "  make example     - examples/hello.cob をコンパイル・実行"
+	@echo "  make nist        - NIST CCVS 85 全モジュール実行"
+	@echo "  make nist MODULE=NC - NIST 特定モジュール実行"
+	@echo "  make nist-summary - NIST 結果サマリー表示"
 	@echo "  make help        - このヘルプ表示"

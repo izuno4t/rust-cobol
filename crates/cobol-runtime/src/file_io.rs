@@ -1120,7 +1120,7 @@ mod tests {
             f.write_all(b"REC3xxxx").unwrap(); // record 3
         }
         let path_bytes = path.to_str().unwrap().as_bytes();
-        let fid = 500u32;
+        let fid = 600u32;
         let rec_len = 8u32;
 
         // Open as relative, sequential access, input.
@@ -1169,7 +1169,7 @@ mod tests {
             f.write_all(b"CCCrecord3").unwrap();
         }
         let path_bytes = path.to_str().unwrap().as_bytes();
-        let fid = 501u32;
+        let fid = 601u32;
         let rec_len = 10u32;
 
         // Open as indexed with key at offset 0, length 3.

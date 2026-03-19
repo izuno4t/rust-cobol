@@ -4,7 +4,7 @@
 // and type checking for a parsed COBOL program.
 
 use cobol_ast::CobolProgram;
-use cobol_diagnostics::DiagnosticReporter;
+use cobol_diagnostics::{DiagnosticReporter, WarningLevel};
 
 use crate::name_resolver::NameResolver;
 use crate::symbol_table::SymbolTable;
@@ -30,6 +30,14 @@ impl SemanticAnalyzer {
         Self {
             symbol_table: SymbolTable::new(),
             reporter: DiagnosticReporter::new(),
+        }
+    }
+
+    /// Creates a new semantic analyzer with a specific warning level.
+    pub fn with_warning_level(warning_level: WarningLevel) -> Self {
+        Self {
+            symbol_table: SymbolTable::new(),
+            reporter: DiagnosticReporter::with_warning_level(warning_level),
         }
     }
 

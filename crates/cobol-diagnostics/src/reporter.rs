@@ -1,10 +1,25 @@
 use crate::diagnostic::{Diagnostic, Severity};
 
+/// Controls which warning levels are reported.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WarningLevel {
+    /// Show all diagnostics including hints and info.
+    All,
+    /// Show errors and warnings only (default).
+    #[default]
+    Default,
+    /// Show errors only, suppress all warnings.
+    None,
+    /// Treat warnings as errors.
+    Error,
+}
+
 /// Collects diagnostics emitted during compilation and provides
 /// summary queries (error count, warning count, etc.).
 #[derive(Debug, Default)]
 pub struct DiagnosticReporter {
     diagnostics: Vec<Diagnostic>,
+    warning_level: WarningLevel,
 }
 
 impl DiagnosticReporter {
@@ -13,9 +28,67 @@ impl DiagnosticReporter {
         Self::default()
     }
 
+    /// Creates a reporter with a specific warning level.
+    pub fn with_warning_level(warning_level: WarningLevel) -> Self {
+        Self {
+            diagnostics: Vec::new(),
+            warning_level,
+        }
+    }
+
+    /// Sets the warning level for this reporter.
+    pub fn set_warning_level(&mut self, level: WarningLevel) {
+        self.warning_level = level;
+    }
+
+    /// Returns the current warning level.
+    pub fn warning_level(&self) -> WarningLevel {
+        self.warning_level
+    }
+
     /// Adds a diagnostic to the collection.
+    ///
+    /// If the warning level is `None`, warnings/info/hints are suppressed.
+    /// If the warning level is `Error`, warnings are promoted to errors.
     pub fn report(&mut self, diagnostic: Diagnostic) {
-        self.diagnostics.push(diagnostic);
+        match self.warning_level {
+            WarningLevel::None => {
+                // Only collect errors, suppress everything else.
+                if diagnostic.severity == Severity::Error {
+                    self.diagnostics.push(diagnostic);
+                }
+            }
+            WarningLevel::Error => {
+                // Promote warnings to errors.
+                if diagnostic.severity == Severity::Warning {
+                    let promoted = Diagnostic {
+                        severity: Severity::Error,
+                        code: diagnostic.code,
+                        message: diagnostic.message,
+                        labels: diagnostic.labels,
+                        notes: {
+                            let mut notes = diagnostic.notes;
+                            notes.push(
+                                "this warning is promoted to an error due to -Werror".to_string(),
+                            );
+                            notes
+                        },
+                    };
+                    self.diagnostics.push(promoted);
+                } else {
+                    self.diagnostics.push(diagnostic);
+                }
+            }
+            WarningLevel::Default => {
+                // Suppress hints and info.
+                if diagnostic.severity != Severity::Hint && diagnostic.severity != Severity::Info {
+                    self.diagnostics.push(diagnostic);
+                }
+            }
+            WarningLevel::All => {
+                self.diagnostics.push(diagnostic);
+            }
+        }
     }
 
     /// Returns `true` if any reported diagnostic has error severity.
@@ -78,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_reporter_counts() {
-        let mut reporter = DiagnosticReporter::new();
+        let mut reporter = DiagnosticReporter::with_warning_level(WarningLevel::All);
         reporter.report(Diagnostic::error("E001", "error 1"));
         reporter.report(Diagnostic::error("E002", "error 2"));
         reporter.report(Diagnostic::warning("W001", "warning 1"));
@@ -87,6 +160,40 @@ mod tests {
         assert_eq!(reporter.error_count(), 2);
         assert_eq!(reporter.warning_count(), 1);
         assert_eq!(reporter.diagnostics().len(), 4);
+    }
+
+    #[test]
+    fn test_warning_level_none() {
+        let mut reporter = DiagnosticReporter::with_warning_level(WarningLevel::None);
+        reporter.report(Diagnostic::error("E001", "error"));
+        reporter.report(Diagnostic::warning("W001", "warning"));
+        reporter.report(Diagnostic::info("I001", "info"));
+
+        assert_eq!(reporter.error_count(), 1);
+        assert_eq!(reporter.warning_count(), 0);
+        assert_eq!(reporter.diagnostics().len(), 1);
+    }
+
+    #[test]
+    fn test_warning_level_error() {
+        let mut reporter = DiagnosticReporter::with_warning_level(WarningLevel::Error);
+        reporter.report(Diagnostic::warning("W001", "a warning"));
+
+        // Warning should be promoted to error.
+        assert_eq!(reporter.error_count(), 1);
+        assert_eq!(reporter.warning_count(), 0);
+        assert!(reporter.has_errors());
+    }
+
+    #[test]
+    fn test_warning_level_default_suppresses_info() {
+        let mut reporter = DiagnosticReporter::new(); // Default level
+        reporter.report(Diagnostic::error("E001", "error"));
+        reporter.report(Diagnostic::warning("W001", "warning"));
+        reporter.report(Diagnostic::info("I001", "info"));
+
+        // Default level suppresses info/hint.
+        assert_eq!(reporter.diagnostics().len(), 2);
     }
 
     #[test]

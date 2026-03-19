@@ -2487,6 +2487,8 @@ fn test_c2_move_corresponding() {
                             initial_value: None,
                             occurs: None,
                             redefines: None,
+                            renames: None,
+                            screen_info: None,
                             span: Span::dummy(),
                         },
                         HirDataItem {
@@ -2495,6 +2497,8 @@ fn test_c2_move_corresponding() {
                             initial_value: None,
                             occurs: None,
                             redefines: None,
+                            renames: None,
+                            screen_info: None,
                             span: Span::dummy(),
                         },
                     ],
@@ -2503,6 +2507,8 @@ fn test_c2_move_corresponding() {
                 initial_value: None,
                 occurs: None,
                 redefines: None,
+                renames: None,
+                screen_info: None,
                 span: Span::dummy(),
             },
             HirDataItem {
@@ -2519,6 +2525,8 @@ fn test_c2_move_corresponding() {
                             initial_value: None,
                             occurs: None,
                             redefines: None,
+                            renames: None,
+                            screen_info: None,
                             span: Span::dummy(),
                         },
                         HirDataItem {
@@ -2527,6 +2535,8 @@ fn test_c2_move_corresponding() {
                             initial_value: None,
                             occurs: None,
                             redefines: None,
+                            renames: None,
+                            screen_info: None,
                             span: Span::dummy(),
                         },
                     ],
@@ -2535,6 +2545,8 @@ fn test_c2_move_corresponding() {
                 initial_value: None,
                 occurs: None,
                 redefines: None,
+                renames: None,
+                screen_info: None,
                 span: Span::dummy(),
             },
         ],
@@ -2595,6 +2607,8 @@ fn test_c2_add_corresponding() {
                         initial_value: None,
                         occurs: None,
                         redefines: None,
+                        renames: None,
+                        screen_info: None,
                         span: Span::dummy(),
                     }],
                     size: 9,
@@ -2602,6 +2616,8 @@ fn test_c2_add_corresponding() {
                 initial_value: None,
                 occurs: None,
                 redefines: None,
+                renames: None,
+                screen_info: None,
                 span: Span::dummy(),
             },
             HirDataItem {
@@ -2617,6 +2633,8 @@ fn test_c2_add_corresponding() {
                         initial_value: None,
                         occurs: None,
                         redefines: None,
+                        renames: None,
+                        screen_info: None,
                         span: Span::dummy(),
                     }],
                     size: 9,
@@ -2624,6 +2642,8 @@ fn test_c2_add_corresponding() {
                 initial_value: None,
                 occurs: None,
                 redefines: None,
+                renames: None,
+                screen_info: None,
                 span: Span::dummy(),
             },
         ],
@@ -3728,5 +3748,1066 @@ PROCEDURE DIVISION.
         c_code.contains("cobol_json_parse"),
         "should generate json_parse call: {}",
         c_code
+    );
+}
+
+#[test]
+fn test_native_date_functions() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DATETEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATE PIC 9(8) VALUE 20260319.
+01 WS-INT PIC 9(9).
+01 WS-RESULT PIC 9(8).
+01 WS-VALID PIC 9.
+PROCEDURE DIVISION.
+    COMPUTE WS-INT = FUNCTION INTEGER-OF-DATE(WS-DATE).
+    COMPUTE WS-RESULT = FUNCTION DATE-OF-INTEGER(WS-INT).
+    DISPLAY WS-RESULT.
+    COMPUTE WS-VALID = FUNCTION TEST-DATE-YYYYMMDD(WS-DATE).
+    DISPLAY WS-VALID.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert!(
+        lines[0].contains("20260319"),
+        "DATE-OF-INTEGER roundtrip should return 20260319, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("0"),
+        "TEST-DATE should return 0 for valid date, got: {}",
+        lines[1]
+    );
+}
+
+#[test]
+fn test_native_math_functions() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MATHTEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NUM PIC S9(9) VALUE 42.
+01 WS-RESULT PIC S9(9).
+PROCEDURE DIVISION.
+    COMPUTE WS-RESULT = FUNCTION ABS(WS-NUM).
+    DISPLAY WS-RESULT.
+    COMPUTE WS-RESULT = FUNCTION FACTORIAL(5).
+    DISPLAY WS-RESULT.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert!(
+        lines[0].contains("42"),
+        "ABS(42) should be 42, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("120"),
+        "FACTORIAL(5) should be 120, got: {}",
+        lines[1]
+    );
+}
+
+#[test]
+fn test_renames_clause() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RENTEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-RECORD.
+   05 WS-FIELD-A PIC X(10) VALUE \"HELLO\".
+   05 WS-FIELD-B PIC X(10) VALUE \"WORLD\".
+66 WS-ALIAS RENAMES WS-FIELD-A.
+PROCEDURE DIVISION.
+    DISPLAY WS-ALIAS.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("WS_ALIAS") || c_code.contains("ws_alias"),
+        "should reference RENAMES alias: {}",
+        c_code
+    );
+    // The RENAMES item should generate a #define, not a separate variable
+    assert!(
+        c_code.contains("#define WS_ALIAS"),
+        "RENAMES should generate a #define macro: {}",
+        c_code
+    );
+}
+
+#[test]
+fn test_native_file_status_sequential() {
+    let _ = std::fs::remove_file("/tmp/cobol_fs_test.dat");
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FSTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT TEST-FILE ASSIGN TO '/tmp/cobol_fs_test.dat'
+        ORGANIZATION IS LINE SEQUENTIAL
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD TEST-FILE.
+01 TEST-RECORD PIC X(20).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+01 WS-DATA PIC X(20).
+PROCEDURE DIVISION.
+    OPEN OUTPUT TEST-FILE.
+    DISPLAY WS-STATUS.
+    MOVE 'HELLO COBOL' TO TEST-RECORD.
+    WRITE TEST-RECORD.
+    DISPLAY WS-STATUS.
+    CLOSE TEST-FILE.
+    DISPLAY WS-STATUS.
+    OPEN INPUT TEST-FILE.
+    READ TEST-FILE INTO WS-DATA.
+    DISPLAY WS-STATUS.
+    DISPLAY WS-DATA.
+    READ TEST-FILE INTO WS-DATA.
+    DISPLAY WS-STATUS.
+    CLOSE TEST-FILE.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_fs_test.dat");
+    assert_eq!(code, 0, "stderr: {}", stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    // Status 00 for successful operations
+    assert!(
+        lines[0].starts_with("00"),
+        "OPEN status should be 00, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].starts_with("00"),
+        "WRITE status should be 00, got: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with("00"),
+        "CLOSE status should be 00, got: {}",
+        lines[2]
+    );
+    assert!(
+        lines[3].starts_with("00"),
+        "READ status should be 00, got: {}",
+        lines[3]
+    );
+    // Line 4 should contain "HELLO COBOL"
+    assert!(
+        lines[4].contains("HELLO COBOL"),
+        "read data should contain HELLO COBOL, got: {}",
+        lines[4]
+    );
+    // Status 10 for end-of-file on second read
+    assert!(
+        lines[5].starts_with("10"),
+        "EOF status should be 10, got: {}",
+        lines[5]
+    );
+}
+
+#[test]
+fn test_native_file_write_read() {
+    let _ = std::fs::remove_file("/tmp/cobol_fwr_test.dat");
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FWRTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT TEST-FILE ASSIGN TO '/tmp/cobol_fwr_test.dat'
+        ORGANIZATION IS LINE SEQUENTIAL.
+DATA DIVISION.
+FILE SECTION.
+FD TEST-FILE.
+01 TEST-RECORD PIC X(20).
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(20).
+PROCEDURE DIVISION.
+    OPEN OUTPUT TEST-FILE.
+    MOVE 'FILE IO WORKS' TO TEST-RECORD.
+    WRITE TEST-RECORD.
+    CLOSE TEST-FILE.
+    OPEN INPUT TEST-FILE.
+    READ TEST-FILE INTO WS-DATA.
+    DISPLAY WS-DATA.
+    CLOSE TEST-FILE.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_fwr_test.dat");
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("FILE IO WORKS"),
+        "should read back written data, got: {}",
+        stdout
+    );
+}
+
+/// Test ADD/SUBTRACT/MULTIPLY/DIVIDE with subscripted targets.
+#[test]
+fn test_native_subscripted_arithmetic() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SUBTEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TABLE.
+   05 WS-ITEM PIC 9(3) OCCURS 5 TIMES.
+01 WS-IDX PIC 9 VALUE 3.
+PROCEDURE DIVISION.
+    MOVE 10 TO WS-ITEM(WS-IDX)
+    ADD 5 TO WS-ITEM(WS-IDX)
+    DISPLAY WS-ITEM(WS-IDX)
+    SUBTRACT 3 FROM WS-ITEM(WS-IDX)
+    DISPLAY WS-ITEM(WS-IDX)
+    MULTIPLY 4 BY WS-ITEM(WS-IDX)
+    DISPLAY WS-ITEM(WS-IDX)
+    DIVIDE 6 INTO WS-ITEM(WS-IDX)
+    DISPLAY WS-ITEM(WS-IDX)
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.len() >= 4, "expected 4 output lines, got: {}", stdout);
+    // 10 + 5 = 15
+    assert!(lines[0].contains("15"), "ADD: 10+5=15, got: {}", lines[0]);
+    // 15 - 3 = 12
+    assert!(
+        lines[1].contains("12"),
+        "SUBTRACT: 15-3=12, got: {}",
+        lines[1]
+    );
+    // 12 * 4 = 48
+    assert!(
+        lines[2].contains("48"),
+        "MULTIPLY: 12*4=48, got: {}",
+        lines[2]
+    );
+    // 48 / 6 = 8
+    assert!(lines[3].contains("8"), "DIVIDE: 48/6=8, got: {}", lines[3]);
+}
+
+// -----------------------------------------------------------------------
+// Indexed and relative file operations – codegen tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_indexed_file_codegen() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IXTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_ix_test.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IX-KEY
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 IX-RECORD.
+   05 IX-KEY PIC 9(5).
+   05 IX-DATA PIC X(15).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    OPEN OUTPUT IX-FILE.
+    MOVE 00001 TO IX-KEY.
+    MOVE "FIRST RECORD" TO IX-DATA.
+    WRITE IX-RECORD.
+    CLOSE IX-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_file_open"),
+        "should generate file open call, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_file_write"),
+        "should generate file write call, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_relative_file_codegen() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RLTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT RL-FILE ASSIGN TO "/tmp/cobol_rl_test.dat"
+        ORGANIZATION IS RELATIVE
+        ACCESS MODE IS RANDOM
+        RELATIVE KEY IS WS-REL-KEY
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD RL-FILE.
+01 RL-RECORD PIC X(20).
+WORKING-STORAGE SECTION.
+01 WS-REL-KEY PIC 9(5).
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    OPEN OUTPUT RL-FILE.
+    MOVE 1 TO WS-REL-KEY.
+    MOVE "RELATIVE RECORD 1" TO RL-RECORD.
+    WRITE RL-RECORD.
+    CLOSE RL-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_file_open"),
+        "should generate file open call, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_start_statement_codegen() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STARTTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_start_test.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IX-KEY
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 IX-RECORD.
+   05 IX-KEY PIC 9(5).
+   05 IX-DATA PIC X(15).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    OPEN I-O IX-FILE.
+    MOVE 00005 TO IX-KEY.
+    START IX-FILE KEY IS EQUAL TO IX-KEY
+        INVALID KEY DISPLAY "NOT FOUND"
+        NOT INVALID KEY DISPLAY "FOUND"
+    END-START.
+    CLOSE IX-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_file_start") || c_code.contains("start"),
+        "should generate START statement code, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_delete_statement_codegen() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DELTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_del_test.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IX-KEY
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 IX-RECORD.
+   05 IX-KEY PIC 9(5).
+   05 IX-DATA PIC X(15).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    OPEN I-O IX-FILE.
+    MOVE 00001 TO IX-KEY.
+    DELETE IX-FILE
+        INVALID KEY DISPLAY "DELETE FAILED"
+    END-DELETE.
+    CLOSE IX-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_file_delete") || c_code.contains("delete"),
+        "should generate DELETE statement code, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_rewrite_statement_codegen() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RWTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_rw_test.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IX-KEY
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 IX-RECORD.
+   05 IX-KEY PIC 9(5).
+   05 IX-DATA PIC X(15).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    OPEN I-O IX-FILE.
+    MOVE 00001 TO IX-KEY.
+    READ IX-FILE.
+    MOVE "UPDATED DATA" TO IX-DATA.
+    REWRITE IX-RECORD
+        INVALID KEY DISPLAY "REWRITE FAILED"
+    END-REWRITE.
+    CLOSE IX-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_file_rewrite") || c_code.contains("rewrite"),
+        "should generate REWRITE statement code, got:\n{}",
+        c_code
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SORT with USING/GIVING
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_sort_using_giving() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SORTTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SORT-FILE ASSIGN TO "/tmp/cobol_sort_work.dat".
+    SELECT INPUT-FILE ASSIGN TO "/tmp/cobol_sort_in.dat"
+        ORGANIZATION IS LINE SEQUENTIAL.
+    SELECT OUTPUT-FILE ASSIGN TO "/tmp/cobol_sort_out.dat"
+        ORGANIZATION IS LINE SEQUENTIAL.
+DATA DIVISION.
+FILE SECTION.
+SD SORT-FILE.
+01 SORT-RECORD.
+   05 SORT-KEY PIC 9(3).
+   05 SORT-DATA PIC X(7).
+FD INPUT-FILE.
+01 INPUT-RECORD PIC X(10).
+FD OUTPUT-FILE.
+01 OUTPUT-RECORD PIC X(10).
+WORKING-STORAGE SECTION.
+01 WS-EOF PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+    OPEN OUTPUT INPUT-FILE.
+    MOVE "003CHERRY " TO INPUT-RECORD.
+    WRITE INPUT-RECORD.
+    MOVE "001APPLE  " TO INPUT-RECORD.
+    WRITE INPUT-RECORD.
+    MOVE "002BANANA " TO INPUT-RECORD.
+    WRITE INPUT-RECORD.
+    CLOSE INPUT-FILE.
+    SORT SORT-FILE
+        ON ASCENDING KEY SORT-KEY
+        USING INPUT-FILE
+        GIVING OUTPUT-FILE.
+    OPEN INPUT OUTPUT-FILE.
+    PERFORM UNTIL WS-EOF = 1
+        READ OUTPUT-FILE INTO OUTPUT-RECORD
+            AT END MOVE 1 TO WS-EOF
+            NOT AT END DISPLAY OUTPUT-RECORD
+        END-READ
+    END-PERFORM.
+    CLOSE OUTPUT-FILE.
+    STOP RUN.
+"#;
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("cobol_sort") || c_code.contains("sort"),
+        "should generate sort-related code"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PERFORM THRU across multiple paragraphs (A through C)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_perform_thru_multiple_paragraphs() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. THRUTEST.
+PROCEDURE DIVISION.
+    PERFORM PARA-A THRU PARA-C.
+    STOP RUN.
+PARA-A.
+    DISPLAY \"A\".
+PARA-B.
+    DISPLAY \"B\".
+PARA-C.
+    DISPLAY \"C\".
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("A"), "should execute PARA-A");
+    assert!(stdout.contains("B"), "should execute PARA-B");
+    assert!(stdout.contains("C"), "should execute PARA-C");
+}
+
+// ---------------------------------------------------------------------------
+// GOBACK terminates execution (no AFTER output)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_goback_terminates() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. GOBACKTEST.
+PROCEDURE DIVISION.
+    DISPLAY \"BEFORE\".
+    GOBACK.
+    DISPLAY \"AFTER\".
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("BEFORE"), "should display BEFORE");
+    assert!(!stdout.contains("AFTER"), "should not display AFTER");
+}
+
+// ---------------------------------------------------------------------------
+// DECLARATIVES with USE AFTER (HIR-level, parser doesn't support syntax yet)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_declaratives_codegen() {
+    // Build a basic program and inject a declarative handler manually,
+    // since the parser doesn't yet support DECLARATIVES syntax.
+    let mut hir = parse_and_lower(
+        "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DECLTEST2.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    DISPLAY \"MAIN START\".
+    STOP RUN.
+",
+    );
+
+    hir.declaratives.push(HirDeclarative {
+        name: "ERR-SECTION".into(),
+        file_names: vec!["TEST-FILE".into()],
+        body: vec![HirStatement::Display {
+            operands: vec![cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::String(
+                "FILE ERROR".into(),
+            ))],
+            no_advancing: false,
+            span: Span::dummy(),
+        }],
+    });
+
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("FILE ERROR") || c_code.contains("DECL") || c_code.contains("decl"),
+        "should generate declaratives code"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EVALUATE ALSO with multiple subjects
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_evaluate_also() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. EVALTEST2.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9 VALUE 1.
+01 WS-B PIC 9 VALUE 2.
+PROCEDURE DIVISION.
+    EVALUATE WS-A ALSO WS-B
+        WHEN 1 ALSO 2
+            DISPLAY \"MATCH-1-2\"
+        WHEN 1 ALSO 3
+            DISPLAY \"MATCH-1-3\"
+        WHEN OTHER
+            DISPLAY \"NO-MATCH\"
+    END-EVALUATE.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("MATCH-1-2"),
+        "should match 1 ALSO 2, got: {}",
+        stdout
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TYPEDEF codegen verification
+// ---------------------------------------------------------------------------
+#[test]
+fn test_typedef_codegen() {
+    let c_code_has_typedef = {
+        let hir = cobol_hir::HirProgram {
+            name: "TDTEST".into(),
+            data_items: vec![],
+            paragraphs: vec![],
+            body: vec![],
+            using_params: vec![],
+            classes: vec![],
+            functions: vec![],
+            typedefs: vec![cobol_hir::HirTypedef {
+                name: "MY-TYPE".into(),
+                base_type: cobol_hir::HirType::Numeric {
+                    size: 9,
+                    decimal_places: 0,
+                    is_signed: true,
+                },
+                span: Span::new(0, 0, FileId(0)),
+            }],
+            interfaces: vec![],
+            file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
+            file_status_vars: vec![],
+            declaratives: vec![],
+            span: Span::new(0, 0, FileId(0)),
+        };
+        let c = cobol_codegen::generate_c(&hir);
+        c.contains("typedef") && c.contains("MY_TYPE")
+    };
+    assert!(c_code_has_typedef, "TYPEDEF should generate C typedef");
+}
+
+#[test]
+fn test_report_statements_codegen() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RPTTEST.
+PROCEDURE DIVISION.
+    INITIATE SALES-REPORT.
+    GENERATE DETAIL-LINE.
+    TERMINATE SALES-REPORT.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(c_code.contains("INITIATE"), "should have INITIATE comment");
+    assert!(c_code.contains("GENERATE"), "should have GENERATE comment");
+    assert!(
+        c_code.contains("TERMINATE"),
+        "should have TERMINATE comment"
+    );
+}
+
+#[test]
+fn test_screen_section_codegen() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SCRTEST.
+DATA DIVISION.
+SCREEN SECTION.
+01 MAIN-SCREEN.
+   05 LINE 1 COLUMN 1 VALUE \"HELLO SCREEN\".
+   05 LINE 3 COLUMN 5 HIGHLIGHT VALUE \"BOLD TEXT\".
+   05 LINE 5 COLUMN 1 BLANK SCREEN VALUE \"AFTER CLEAR\".
+PROCEDURE DIVISION.
+    DISPLAY MAIN-SCREEN.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        !c_code.is_empty(),
+        "should generate C code for screen program"
+    );
+    // Should contain screen positioning calls
+    assert!(
+        c_code.contains("cobol_screen_position"),
+        "should have screen position call, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_screen_section_highlight() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SCRTEST2.
+DATA DIVISION.
+SCREEN SECTION.
+01 MY-SCREEN.
+   05 LINE 2 COLUMN 10 HIGHLIGHT VALUE \"HI\".
+PROCEDURE DIVISION.
+    DISPLAY MY-SCREEN.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_screen_highlight_on"),
+        "should have highlight on call, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_screen_reset_attrs"),
+        "should reset attrs after highlight, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_screen_section_blank_screen() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SCRTEST3.
+DATA DIVISION.
+SCREEN SECTION.
+01 CLR-SCREEN.
+   05 BLANK SCREEN LINE 1 COLUMN 1 VALUE \"FRESH START\".
+PROCEDURE DIVISION.
+    DISPLAY CLR-SCREEN.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_screen_clear"),
+        "should have screen clear call, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_screen_section_reverse_video() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SCRTEST4.
+DATA DIVISION.
+SCREEN SECTION.
+01 RV-SCREEN.
+   05 LINE 1 COLUMN 1 REVERSE-VIDEO VALUE \"REVERSED\".
+PROCEDURE DIVISION.
+    DISPLAY RV-SCREEN.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_screen_reverse_on"),
+        "should have reverse video on call, got:\n{}",
+        c_code
+    );
+}
+
+// ===========================================================================
+// Phase 6 edge case tests (production-gaps.md section 4)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 4-1: EXIT statement semantics - bare EXIT acts as CONTINUE (no-op)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_exit_bare() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. EXIT-BARE.
+PROCEDURE DIVISION.
+    PERFORM PARA-A.
+    DISPLAY 'AFTER-PERFORM'.
+    STOP RUN.
+PARA-A.
+    DISPLAY 'BEFORE-EXIT'.
+    EXIT.
+    DISPLAY 'AFTER-EXIT'.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("BEFORE-EXIT"),
+        "should display BEFORE-EXIT, got: {}",
+        stdout.trim()
+    );
+    assert!(
+        stdout.contains("AFTER-EXIT"),
+        "bare EXIT should be a no-op, AFTER-EXIT should appear, got: {}",
+        stdout.trim()
+    );
+    assert!(
+        stdout.contains("AFTER-PERFORM"),
+        "should continue after PERFORM, got: {}",
+        stdout.trim()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4-1: EXIT PROGRAM should end the program
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_exit_program() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. EXIT-PROG.
+PROCEDURE DIVISION.
+    DISPLAY 'BEFORE-EXIT'.
+    EXIT PROGRAM.
+    DISPLAY 'SHOULD-NOT-SHOW'.
+    STOP RUN.
+";
+    let (stdout, _, _code) = compile_and_run_no_sema(src);
+    assert!(
+        stdout.contains("BEFORE-EXIT"),
+        "should display BEFORE-EXIT, got: {}",
+        stdout.trim()
+    );
+    assert!(
+        !stdout.contains("SHOULD-NOT-SHOW"),
+        "EXIT PROGRAM should stop execution, got: {}",
+        stdout.trim()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4-3: Group-to-group MOVE with space-padding
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_group_to_group_move() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. GRP-MOVE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SRC.
+   05 WS-SRC-A PIC X(5) VALUE 'HELLO'.
+   05 WS-SRC-B PIC X(5) VALUE 'WORLD'.
+01 WS-DST.
+   05 WS-DST-A PIC X(5).
+   05 WS-DST-B PIC X(5).
+PROCEDURE DIVISION.
+    MOVE WS-SRC TO WS-DST.
+    DISPLAY WS-DST-A.
+    DISPLAY WS-DST-B.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("HELLO"),
+        "group MOVE should copy first field, got: {}",
+        stdout.trim()
+    );
+    assert!(
+        stdout.contains("WORLD"),
+        "group MOVE should copy second field, got: {}",
+        stdout.trim()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4-3: Group-to-group MOVE with shorter source (padding test)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_group_move_padding() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. GRP-PAD.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SHORT.
+   05 WS-S1 PIC X(3) VALUE 'ABC'.
+01 WS-LONG.
+   05 WS-L1 PIC X(3) VALUE 'XYZ'.
+   05 WS-L2 PIC X(3) VALUE '123'.
+PROCEDURE DIVISION.
+    MOVE WS-SHORT TO WS-LONG.
+    DISPLAY 'L1=[' WS-L1 ']'.
+    DISPLAY 'L2=[' WS-L2 ']'.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("L1=[ABC]"),
+        "first 3 bytes should be ABC, got: {}",
+        stdout.trim()
+    );
+    assert!(
+        stdout.contains("L2=[   ]"),
+        "remaining 3 bytes should be space-padded, got: {}",
+        stdout.trim()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4-4: EVALUATE ALSO with 3 subjects
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_evaluate_also_three_subjects() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. EVAL-3ALSO.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9 VALUE 1.
+01 WS-B PIC 9 VALUE 2.
+01 WS-C PIC 9 VALUE 3.
+PROCEDURE DIVISION.
+    EVALUATE WS-A ALSO WS-B ALSO WS-C
+        WHEN 1 ALSO 2 ALSO 3
+            DISPLAY 'MATCH-123'
+        WHEN 1 ALSO 2 ALSO 4
+            DISPLAY 'MATCH-124'
+        WHEN 1 ALSO 3 ALSO 3
+            DISPLAY 'MATCH-133'
+        WHEN OTHER
+            DISPLAY 'NO-MATCH'
+    END-EVALUATE.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("MATCH-123"),
+        "should match 1 ALSO 2 ALSO 3, got: {}",
+        stdout
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4-4: EVALUATE ALSO with 3 subjects - OTHER path
+// ---------------------------------------------------------------------------
+#[test]
+fn test_native_evaluate_also_three_subjects_other() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. EVAL-3OTHER.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9 VALUE 9.
+01 WS-B PIC 9 VALUE 8.
+01 WS-C PIC 9 VALUE 7.
+PROCEDURE DIVISION.
+    EVALUATE WS-A ALSO WS-B ALSO WS-C
+        WHEN 1 ALSO 2 ALSO 3
+            DISPLAY 'MATCH-123'
+        WHEN 1 ALSO 2 ALSO 4
+            DISPLAY 'MATCH-124'
+        WHEN OTHER
+            DISPLAY 'NO-MATCH'
+    END-EVALUATE.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("NO-MATCH"),
+        "should fall through to OTHER, got: {}",
+        stdout
+    );
+}
+
+// ===========================================================================
+// NATIONAL data type (PIC N) tests
+// ===========================================================================
+
+#[test]
+fn test_national_pic_n_codegen() {
+    // Test that PIC N generates uint16_t arrays and correct runtime calls
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NATTEST1.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NATIONAL PIC N(10).
+01  WS-ALPHA   PIC X(10) VALUE \"HELLO\".
+PROCEDURE DIVISION.
+    MOVE WS-ALPHA TO WS-NATIONAL.
+    DISPLAY WS-NATIONAL.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("uint16_t WS_NATIONAL[10]"),
+        "PIC N should generate uint16_t array, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_move_to_national"),
+        "MOVE to NATIONAL should use cobol_move_to_national, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_display_national"),
+        "DISPLAY NATIONAL should use cobol_display_national, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_native_national_move_and_display() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NATTEST2.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NAT     PIC N(10).
+01  WS-ALPHA   PIC X(10) VALUE \"HELLO\".
+01  WS-RESULT  PIC X(10).
+PROCEDURE DIVISION.
+    MOVE WS-ALPHA TO WS-NAT.
+    DISPLAY WS-NAT.
+    MOVE WS-NAT TO WS-RESULT.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "program should exit with code 0");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines.iter().any(|l| l.contains("HELLO")),
+        "DISPLAY of NATIONAL should show HELLO, got: {}",
+        stdout
+    );
+    assert!(
+        lines.len() >= 2,
+        "should have at least 2 output lines, got: {}",
+        stdout
     );
 }
