@@ -40,15 +40,31 @@ run_program() {
         return
     fi
 
+    # Preprocess (replace XXXXX placeholders)
+    local preprocessed="/tmp/nist_preproc_${program}.cob"
+    "$SCRIPT_DIR/preprocess.sh" "$src" "$preprocessed"
+
     # Compile
     local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
-    if $COBOLC "$src" -o "$bin" --source-format fixed 2>"$compile_log"; then
+    if $COBOLC "$preprocessed" -o "$bin" --source-format fixed 2>"$compile_log"; then
         # Run with timeout (30 seconds)
         if timeout 30 "$bin" > "$log" 2>&1; then
-            # Parse results
-            local pass=$(grep -c "PASS " "$log" 2>/dev/null || echo 0)
-            local fail=$(grep -c "FAIL" "$log" 2>/dev/null || echo 0)
-            local inspect=$(grep -c "INSPECT" "$log" 2>/dev/null || echo 0)
+            # NIST programs write to PRINT-FILE, also check stdout
+            local print_file="/tmp/nist/P"
+            local result_file="$log"
+            if [ -f "$print_file" ] && [ -s "$print_file" ]; then
+                result_file="$print_file"
+                cp "$print_file" "$log"
+            fi
+
+            # Parse results — count PASS/FAIL in output
+            local pass
+            pass=$(grep -c " PASS " "$result_file" 2>/dev/null) || pass=0
+            local fail
+            fail=$(grep -c "FAIL" "$result_file" 2>/dev/null) || fail=0
+
+            # Clean up print file for next test
+            rm -f "$print_file"
 
             if [ "$fail" -eq 0 ] && [ "$pass" -gt 0 ]; then
                 echo "PASS" > "$status_file"
@@ -75,8 +91,8 @@ run_program() {
         echo "  $program: COMPILE ERROR"
     fi
 
-    # Cleanup binary
-    rm -f "$bin"
+    # Cleanup
+    rm -f "$bin" "$preprocessed"
 }
 
 # Run all programs in a module

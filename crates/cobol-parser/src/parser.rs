@@ -191,8 +191,13 @@ impl Parser {
 
     /// Check if the current token is a keyword that starts a new statement.
     pub(crate) fn at_statement_start(&self) -> bool {
+        Self::is_statement_start_keyword(self.current().kind)
+    }
+
+    /// Check if the given `TokenKind` is a statement-starting keyword.
+    pub(crate) fn is_statement_start_keyword(kind: TokenKind) -> bool {
         matches!(
-            self.current().kind,
+            kind,
             TokenKind::Move
                 | TokenKind::Compute
                 | TokenKind::Add

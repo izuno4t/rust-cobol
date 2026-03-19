@@ -1194,7 +1194,9 @@ impl Parser {
                 || self.peek(1).kind == TokenKind::Times
                 || self.peek(1).kind == TokenKind::IntegerLiteral
                 || self.peek(1).kind == TokenKind::With
-                || self.is_end_keyword(self.peek(1).kind))
+                || self.is_end_keyword(self.peek(1).kind)
+                || Self::is_statement_start_keyword(self.peek(1).kind)
+                || self.peek(1).kind == TokenKind::Eof)
         {
             let procedure = self.advance().text;
             let through = if self.eat(TokenKind::Thru).is_some() {

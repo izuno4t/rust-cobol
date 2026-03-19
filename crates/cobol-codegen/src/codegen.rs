@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use cobol_hir::{
     HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem, HirExpr,
@@ -437,6 +438,7 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
     // NOT get unqualified #define macros to avoid redefinition warnings.
     let duplicate_member_names = collect_duplicate_member_names(items);
 
+    let mut emitted_typedefs = HashSet::new();
     out.push_str("/* Data items */\n");
     for item in items {
         let c_name = sanitize_name(&item.name);
@@ -444,7 +446,7 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
         {
             continue; // Already emitted as part of a group struct
         }
-        emit_single_data_item(out, item, &duplicate_member_names);
+        emit_single_data_item(out, item, &duplicate_member_names, &mut emitted_typedefs);
     }
     out.push('\n');
 }
@@ -496,6 +498,7 @@ fn emit_single_data_item(
     out: &mut String,
     item: &HirDataItem,
     duplicate_member_names: &BTreeSet<String>,
+    emitted_typedefs: &mut HashSet<String>,
 ) {
     let c_name = sanitize_name(&item.name);
 
@@ -551,7 +554,7 @@ fn emit_single_data_item(
         }
         HirType::Group { members, .. } => {
             // Emit group as union of struct + byte array for group-level operations
-            emit_group_typedefs(out, &c_name, members);
+            emit_group_typedefs(out, &c_name, members, emitted_typedefs);
             out.push_str("static union {\n");
             out.push_str(&format!("    _grp_{c_name}_t members;\n"));
             out.push_str(&format!("    uint8_t _bytes[sizeof(_grp_{c_name}_t)];\n"));
@@ -601,7 +604,12 @@ fn emit_single_data_item(
 }
 
 /// Emit struct typedef(s) for a group and its nested groups (bottom-up).
-fn emit_group_typedefs(out: &mut String, c_name: &str, members: &[HirDataItem]) {
+fn emit_group_typedefs(
+    out: &mut String,
+    c_name: &str,
+    members: &[HirDataItem],
+    emitted_typedefs: &mut HashSet<String>,
+) {
     // First, recurse into nested groups
     for member in members {
         if member.redefines.is_some() {
@@ -613,8 +621,13 @@ fn emit_group_typedefs(out: &mut String, c_name: &str, members: &[HirDataItem]) 
         } = &member.data_type
         {
             let member_c_name = sanitize_name(&member.name);
-            emit_group_typedefs(out, &member_c_name, sub_members);
+            emit_group_typedefs(out, &member_c_name, sub_members, emitted_typedefs);
         }
+    }
+    // Skip if this typedef name has already been emitted
+    let typedef_name = format!("_grp_{c_name}_t");
+    if !emitted_typedefs.insert(typedef_name.clone()) {
+        return;
     }
     // Emit this level's struct typedef
     out.push_str("typedef struct {\n");
@@ -624,7 +637,7 @@ fn emit_group_typedefs(out: &mut String, c_name: &str, members: &[HirDataItem]) 
         }
         emit_group_struct_member(out, member);
     }
-    out.push_str(&format!("}} _grp_{c_name}_t;\n"));
+    out.push_str(&format!("}} {typedef_name};\n"));
 }
 
 /// Emit a single member within a group struct typedef.

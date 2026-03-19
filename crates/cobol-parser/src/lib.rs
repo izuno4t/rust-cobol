@@ -1048,4 +1048,119 @@ PROCEDURE DIVISION.
             other => panic!("expected Evaluate, got {:?}", std::mem::discriminant(other)),
         }
     }
+
+    #[test]
+    fn test_move_then_perform_same_sentence() {
+        // MOVE X TO Y PERFORM Z — two statements in one sentence (no period between).
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST1.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC X.
+       01 Y PIC X.
+       PROCEDURE DIVISION.
+       PARA-1.
+           MOVE X TO Y PERFORM WRITE-LINE.
+       WRITE-LINE.
+           DISPLAY \"DONE\".
+           STOP RUN.";
+        let program = parse_free(src).unwrap();
+        let proc = program.procedure.unwrap();
+        // PARA-1 should have one sentence with two statements: MOVE and PERFORM
+        let para = &proc.paragraphs[0];
+        let stmts: Vec<_> = para
+            .sentences
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .collect();
+        assert!(
+            stmts.len() >= 2,
+            "expected at least 2 statements in sentence, got {}",
+            stmts.len()
+        );
+        assert!(
+            matches!(stmts[0], statement::Statement::Move(_)),
+            "first statement should be MOVE"
+        );
+        assert!(
+            matches!(stmts[1], statement::Statement::Perform(_)),
+            "second statement should be PERFORM"
+        );
+    }
+
+    #[test]
+    fn test_if_with_perform_then_perform() {
+        // IF cond PERFORM proc1 PERFORM proc2 — two PERFORMs in IF then-body.
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST2.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           IF X EQUAL TO \"Y\"
+               PERFORM WRITE-LINE
+               PERFORM FAIL-ROUTINE
+           END-IF.
+           STOP RUN.
+       WRITE-LINE.
+           DISPLAY \"W\".
+       FAIL-ROUTINE.
+           DISPLAY \"F\".";
+        let program = parse_free(src).unwrap();
+        let proc = program.procedure.unwrap();
+        let stmts: Vec<_> = proc.paragraphs[0]
+            .sentences
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .collect();
+        // First statement should be IF
+        match &stmts[0] {
+            statement::Statement::If(if_stmt) => {
+                assert_eq!(
+                    if_stmt.then_body.len(),
+                    2,
+                    "IF then-body should have 2 PERFORM statements"
+                );
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_perform_proc_followed_by_move() {
+        // PERFORM proc-name MOVE X TO Y — PERFORM followed by MOVE on same line.
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST3.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC X.
+       01 Y PIC X.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           PERFORM WRITE-LINE MOVE X TO Y.
+           STOP RUN.
+       WRITE-LINE.
+           DISPLAY \"W\".";
+        let program = parse_free(src).unwrap();
+        let proc = program.procedure.unwrap();
+        let stmts: Vec<_> = proc.paragraphs[0]
+            .sentences
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .collect();
+        assert!(
+            stmts.len() >= 2,
+            "expected at least 2 statements, got {}",
+            stmts.len()
+        );
+        assert!(
+            matches!(stmts[0], statement::Statement::Perform(_)),
+            "first statement should be PERFORM"
+        );
+        assert!(
+            matches!(stmts[1], statement::Statement::Move(_)),
+            "second statement should be MOVE"
+        );
+    }
 }

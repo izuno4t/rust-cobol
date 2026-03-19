@@ -1,2 +1,24 @@
 /target
 **/*.rs.bk
+
+# NIST CCVS 85 test artifacts
+tests/nist/newcob.val
+tests/nist/newcob.val.*
+tests/nist/programs/
+tests/nist/results/
+
+# Benchmark artifacts
+tests/benchmark/*.out
+
+# Stray files from COBOL compilation (fixed-format parse artifacts)
+/ADD
+/BENCH-RECORD
+/COMPUTE
+/FROM
+/PERFORM
+/TIMES
+/WRITE
+/WS-*
+/TEST-FILE
+/PRINT*
+*.dat

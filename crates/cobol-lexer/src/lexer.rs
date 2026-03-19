@@ -653,9 +653,12 @@ impl Lexer {
                 }
             }
             b'.' => {
-                // Period: decimal point or sentence terminator.
-                // If followed by a digit, it's a decimal point (handled in
-                // lex_number). As an operator, it's always a sentence terminator.
+                // If followed by a digit, lex as a decimal numeric literal
+                // (e.g., `.11111` means `0.11111` in COBOL).
+                if next.is_some_and(|b| b.is_ascii_digit()) {
+                    return Some(self.lex_number());
+                }
+                // Otherwise it's a sentence terminator period.
                 self.pos += 1;
                 self.at_statement_start = true;
                 Some(self.make_token(TokenKind::Period, start, self.pos))
@@ -846,6 +849,21 @@ mod tests {
             .find(|t| t.kind == TokenKind::HexLiteral)
             .unwrap();
         assert!(hex_tok.text.contains("0F"));
+    }
+
+    #[test]
+    fn test_lex_decimal_literal_starting_with_dot() {
+        let src = "       VALUE .11111.\
+                                                              ";
+        let tokens = lex(src);
+        let dec_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::DecimalLiteral)
+            .expect("should lex .11111 as DecimalLiteral");
+        assert_eq!(dec_tok.text.as_str(), ".11111");
+        // The trailing dot should be a period (sentence terminator)
+        let last = tokens.last().unwrap();
+        assert_eq!(last.kind, TokenKind::Period);
     }
 
     #[test]
