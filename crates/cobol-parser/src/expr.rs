@@ -554,7 +554,7 @@ impl Parser {
     }
 
     /// Check if the current token is a comparison operator.
-    fn is_comparison_op(&self) -> bool {
+    pub(crate) fn is_comparison_op(&self) -> bool {
         matches!(
             self.current().kind,
             TokenKind::Equals
@@ -570,7 +570,7 @@ impl Parser {
     }
 
     /// Parse a comparison operator.
-    fn parse_comparison_op(&mut self) -> Result<CompareOp, ()> {
+    pub(crate) fn parse_comparison_op(&mut self) -> Result<CompareOp, ()> {
         match self.current().kind {
             TokenKind::Equals => {
                 self.advance();

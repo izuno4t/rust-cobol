@@ -5,8 +5,9 @@
 // the runtime's static library to produce a native executable.
 
 use std::collections::BTreeSet;
-
 use std::collections::HashMap;
+
+use smol_str::SmolStr;
 
 use cobol_hir::{
     HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem, HirExpr,
@@ -374,6 +375,9 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
     // These should be skipped when they appear as top-level items to avoid
     // redefinition conflicts with the #define macros.
     let group_member_names = collect_group_member_names(items);
+    // Collect member names that appear in multiple groups — these should
+    // NOT get unqualified #define macros to avoid redefinition warnings.
+    let duplicate_member_names = collect_duplicate_member_names(items);
 
     out.push_str("/* Data items */\n");
     for item in items {
@@ -382,7 +386,7 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
         {
             continue; // Already emitted as part of a group struct
         }
-        emit_single_data_item(out, item);
+        emit_single_data_item(out, item, &duplicate_member_names);
     }
     out.push('\n');
 }
@@ -411,7 +415,30 @@ fn collect_member_names_recursive(members: &[HirDataItem], names: &mut BTreeSet<
     }
 }
 
-fn emit_single_data_item(out: &mut String, item: &HirDataItem) {
+/// Collect member names that appear in more than one top-level group.
+/// These names should only get qualified #define macros, not unqualified ones.
+fn collect_duplicate_member_names(items: &[HirDataItem]) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for item in items {
+        if let HirType::Group { members, .. } = &item.data_type {
+            let mut group_names = BTreeSet::new();
+            collect_member_names_recursive(members, &mut group_names);
+            for name in &group_names {
+                if !seen.insert(name.clone()) {
+                    duplicates.insert(name.clone());
+                }
+            }
+        }
+    }
+    duplicates
+}
+
+fn emit_single_data_item(
+    out: &mut String,
+    item: &HirDataItem,
+    duplicate_member_names: &BTreeSet<String>,
+) {
     let c_name = sanitize_name(&item.name);
 
     // REDEFINES: overlay on another item's memory via pointer cast
@@ -453,7 +480,16 @@ fn emit_single_data_item(out: &mut String, item: &HirDataItem) {
             out.push_str(&format!("    _grp_{c_name}_t members;\n"));
             out.push_str(&format!("    uint8_t _bytes[sizeof(_grp_{c_name}_t)];\n"));
             out.push_str(&format!("}} {c_name};\n"));
-            emit_group_macros(out, members, &format!("{c_name}.members"));
+            // Generate macros for group members.
+            // Qualified: #define GROUP__FIELD_A GROUP.members._m_FIELD_A (always unique)
+            // Unqualified: #define FIELD_A ... (only if name is unique across groups)
+            emit_group_macros(
+                out,
+                members,
+                &c_name,
+                &format!("{c_name}.members"),
+                duplicate_member_names,
+            );
             // Emit REDEFINES members as separate static pointers
             emit_group_redefines(out, members);
             out.push('\n');
@@ -572,27 +608,37 @@ fn emit_group_struct_member(out: &mut String, member: &HirDataItem) {
 }
 
 /// Emit #define macros for all elementary members in a group.
-fn emit_group_macros(out: &mut String, members: &[HirDataItem], path_prefix: &str) {
+fn emit_group_macros(
+    out: &mut String,
+    members: &[HirDataItem],
+    group_c_name: &str,
+    path_prefix: &str,
+    duplicate_names: &BTreeSet<String>,
+) {
     for member in members {
         if member.redefines.is_some() {
             continue;
         }
         let c_name = sanitize_name(&member.name);
-        match &member.data_type {
-            HirType::Group {
-                members: sub_members,
-                ..
-            } => {
-                out.push_str(&format!("#define {c_name} {path_prefix}._m_{c_name}\n"));
-                emit_group_macros(
-                    out,
-                    sub_members,
-                    &format!("{path_prefix}._m_{c_name}.members"),
-                );
-            }
-            _ => {
-                out.push_str(&format!("#define {c_name} {path_prefix}._m_{c_name}\n"));
-            }
+        let access_path = format!("{path_prefix}._m_{c_name}");
+        // Unqualified macro: only if name is unique across all groups
+        if !duplicate_names.contains(&c_name) {
+            out.push_str(&format!("#define {c_name} {access_path}\n"));
+        }
+        // Qualified macro: GROUP__FIELD (always unique)
+        out.push_str(&format!("#define {group_c_name}__{c_name} {access_path}\n"));
+        if let HirType::Group {
+            members: sub_members,
+            ..
+        } = &member.data_type
+        {
+            emit_group_macros(
+                out,
+                sub_members,
+                group_c_name,
+                &format!("{access_path}.members"),
+                duplicate_names,
+            );
         }
     }
 }
@@ -652,11 +698,29 @@ fn emit_data_init(out: &mut String, items: &[HirDataItem]) {
 }
 
 fn emit_single_data_init(out: &mut String, item: &HirDataItem) {
-    let c_name = sanitize_name(&item.name);
+    emit_single_data_init_with_prefix(out, item, None);
+}
+
+fn emit_single_data_init_with_prefix(
+    out: &mut String,
+    item: &HirDataItem,
+    group_prefix: Option<&str>,
+) {
+    let base_c_name = sanitize_name(&item.name);
+    let c_name = if let Some(prefix) = group_prefix {
+        format!("{prefix}__{base_c_name}")
+    } else {
+        base_c_name.clone()
+    };
     if let HirType::Group { members, .. } = &item.data_type {
-        // Initialize group members recursively
+        // Initialize group members recursively with this group as prefix
+        let my_prefix = if let Some(prefix) = group_prefix {
+            format!("{prefix}__{base_c_name}")
+        } else {
+            base_c_name.clone()
+        };
         for member in members {
-            emit_single_data_init(out, member);
+            emit_single_data_init_with_prefix(out, member, Some(&my_prefix));
         }
         return;
     }
@@ -922,9 +986,21 @@ fn emit_statement(
             }
             let c_expr = emit_expr(expr);
             for target in targets {
-                let c_target = sanitize_name(target);
+                let c_target = emit_expr(target);
+                let target_name = match target {
+                    HirExpr::Variable(name) => name.as_str(),
+                    HirExpr::Subscript { variable, .. } => variable.as_str(),
+                    _ => "",
+                };
                 if has_size_error {
-                    emit_save_and_check_overflow(out, target, &c_target, &c_expr, data_items, &pad);
+                    emit_save_and_check_overflow(
+                        out,
+                        target_name,
+                        &c_target,
+                        &c_expr,
+                        data_items,
+                        &pad,
+                    );
                 } else {
                     out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
                 }
@@ -946,6 +1022,7 @@ fn emit_statement(
         HirStatement::Add {
             operands,
             to,
+            giving,
             on_size_error,
             not_on_size_error,
             ..
@@ -954,31 +1031,59 @@ fn emit_statement(
             if has_size_error {
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
-            for target in to {
-                let c_target = sanitize_name(target);
-                let target_is_decimal =
-                    find_data_item(target, data_items).is_some_and(|i| needs_decimal(&i.data_type));
-                if target_is_decimal {
-                    for op in operands {
-                        emit_decimal_arith(
-                            out,
-                            &c_target,
-                            op,
-                            "cobol_decimal_add",
-                            data_items,
-                            &pad,
-                        );
-                    }
-                } else {
-                    let sum: Vec<_> = operands.iter().map(emit_expr).collect();
-                    let sum_expr = sum.join(" + ");
-                    if has_size_error {
+            if !giving.is_empty() {
+                // ADD a b GIVING c d → c = a + b, d = a + b
+                // All operands + TO values are summed, result goes to GIVING targets
+                let mut all_addends: Vec<String> = operands.iter().map(emit_expr).collect();
+                for t in to {
+                    all_addends.push(sanitize_name(t));
+                }
+                let sum_expr = all_addends.join(" + ");
+                for target in giving {
+                    let c_target = sanitize_name(target);
+                    let target_is_decimal = find_data_item(target, data_items)
+                        .is_some_and(|i| needs_decimal(&i.data_type));
+                    if target_is_decimal {
+                        // For decimal GIVING, build a temp sum then assign
+                        out.push_str(&format!("{pad}/* ADD GIVING decimal */\n"));
+                        // Use first two addends as decimal add, then chain
+                        emit_decimal_giving_add(out, operands, to, &c_target, data_items, &pad);
+                    } else if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                        out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
+                        out.push_str(&format!("{pad}{c_target} = {sum_expr};\n"));
                         emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
-                        out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
+                        out.push_str(&format!("{pad}{c_target} = {sum_expr};\n"));
+                    }
+                }
+            } else {
+                for target in to {
+                    let c_target = sanitize_name(target);
+                    let target_is_decimal = find_data_item(target, data_items)
+                        .is_some_and(|i| needs_decimal(&i.data_type));
+                    if target_is_decimal {
+                        for op in operands {
+                            emit_decimal_arith(
+                                out,
+                                &c_target,
+                                op,
+                                "cobol_decimal_add",
+                                data_items,
+                                &pad,
+                            );
+                        }
+                    } else {
+                        let sum: Vec<_> = operands.iter().map(emit_expr).collect();
+                        let sum_expr = sum.join(" + ");
+                        if has_size_error {
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
+                            emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                            out.push_str(&format!("{pad}}}\n"));
+                        } else {
+                            out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
+                        }
                     }
                 }
             }
@@ -999,6 +1104,7 @@ fn emit_statement(
         HirStatement::Subtract {
             operands,
             from,
+            giving,
             on_size_error,
             not_on_size_error,
             ..
@@ -1007,31 +1113,54 @@ fn emit_statement(
             if has_size_error {
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
-            for target in from {
-                let c_target = sanitize_name(target);
-                let target_is_decimal =
-                    find_data_item(target, data_items).is_some_and(|i| needs_decimal(&i.data_type));
-                if target_is_decimal {
-                    for op in operands {
-                        emit_decimal_arith(
-                            out,
-                            &c_target,
-                            op,
-                            "cobol_decimal_sub",
-                            data_items,
-                            &pad,
-                        );
-                    }
+            if !giving.is_empty() {
+                // SUBTRACT a FROM b GIVING c → c = b - a
+                let sub_vals: Vec<String> = operands.iter().map(emit_expr).collect();
+                let sub_expr = sub_vals.join(" + ");
+                // The FROM value is the minuend
+                let from_val = if let Some(f) = from.first() {
+                    sanitize_name(f)
                 } else {
-                    let sum: Vec<_> = operands.iter().map(emit_expr).collect();
-                    let sum_expr = sum.join(" + ");
+                    "0".to_string()
+                };
+                for target in giving {
+                    let c_target = sanitize_name(target);
                     if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                        out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
+                        out.push_str(&format!("{pad}{c_target} = {from_val} - ({sub_expr});\n"));
                         emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
-                        out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
+                        out.push_str(&format!("{pad}{c_target} = {from_val} - ({sub_expr});\n"));
+                    }
+                }
+            } else {
+                for target in from {
+                    let c_target = sanitize_name(target);
+                    let target_is_decimal = find_data_item(target, data_items)
+                        .is_some_and(|i| needs_decimal(&i.data_type));
+                    if target_is_decimal {
+                        for op in operands {
+                            emit_decimal_arith(
+                                out,
+                                &c_target,
+                                op,
+                                "cobol_decimal_sub",
+                                data_items,
+                                &pad,
+                            );
+                        }
+                    } else {
+                        let sum: Vec<_> = operands.iter().map(emit_expr).collect();
+                        let sum_expr = sum.join(" + ");
+                        if has_size_error {
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
+                            emit_integer_overflow_check(out, target, &c_target, data_items, &pad);
+                            out.push_str(&format!("{pad}}}\n"));
+                        } else {
+                            out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
+                        }
                     }
                 }
             }
@@ -1185,7 +1314,7 @@ fn emit_statement(
                     let c_target = sanitize_name(target);
                     if let Some(rem) = remainder {
                         let c_rem = sanitize_name(rem);
-                        out.push_str(&format!("{pad}{c_rem} = {first_into} %% {c_operand};\n"));
+                        out.push_str(&format!("{pad}{c_rem} = {first_into} % {c_operand};\n"));
                     }
                     if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
@@ -1215,7 +1344,7 @@ fn emit_statement(
                     } else {
                         if let Some(rem) = remainder {
                             let c_rem = sanitize_name(rem);
-                            out.push_str(&format!("{pad}{c_rem} = {c_target} %% {c_operand};\n"));
+                            out.push_str(&format!("{pad}{c_rem} = {c_target} % {c_operand};\n"));
                         }
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
@@ -1360,9 +1489,14 @@ fn emit_statement(
                 };
                 // Determine record length from data items (default 80)
                 let rec_len = find_record_len(&c_name, data_items);
-                let file_name_str = entry.file_name.as_str();
-                let escaped_name = escape_c_string(file_name_str);
-                let name_len = file_name_str.len();
+                // Use ASSIGN TO path if available, otherwise fall back to file name
+                let file_path_str = if entry.assign_to.is_empty() {
+                    entry.file_name.as_str()
+                } else {
+                    entry.assign_to.as_str()
+                };
+                let escaped_name = escape_c_string(file_path_str);
+                let name_len = file_path_str.len();
                 let org_val = entry.organization;
                 out.push_str(&format!("{pad}/* OPEN {mode_comment} {c_name} */\n"));
                 let has_fs = fs_map.contains_key(&c_name);
@@ -1419,7 +1553,6 @@ fn emit_statement(
             ..
         } => {
             let c_name = sanitize_name(file_name);
-            let rec_len = find_record_len(&c_name, data_items);
             // Determine the target buffer: INTO variable if specified, else
             // use the file name as the record variable.
             let target = if let Some(into_var) = into {
@@ -1427,6 +1560,7 @@ fn emit_statement(
             } else {
                 c_name.clone()
             };
+            let rec_len = find_record_len(&target, data_items);
             out.push_str(&format!("{pad}/* READ {c_name} */\n"));
             out.push_str(&format!(
                 "{pad}{{\n{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*){target}, {rec_len});\n"
@@ -1474,12 +1608,18 @@ fn emit_statement(
         }
         HirStatement::Write {
             record_name,
+            file_name,
             from,
             invalid_key,
             not_invalid_key,
             ..
         } => {
             let c_name = sanitize_name(record_name);
+            let c_file = if file_name.is_empty() {
+                c_name.clone()
+            } else {
+                sanitize_name(file_name)
+            };
             let rec_len = find_record_len(&c_name, data_items);
             let source = if let Some(from_expr) = from {
                 emit_expr(from_expr)
@@ -1491,7 +1631,7 @@ fn emit_statement(
             if needs_rc {
                 out.push_str(&format!("{pad}{{\n"));
                 out.push_str(&format!(
-                    "{pad}    uint32_t _wrc = cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+                    "{pad}    uint32_t _wrc = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*){source}, {rec_len});\n"
                 ));
                 let has_fs = fs_map.contains_key(&c_name);
                 if has_fs {
@@ -1536,15 +1676,15 @@ fn emit_statement(
                 }
                 out.push_str(&format!("{pad}}}\n"));
             } else {
-                let has_fs = fs_map.contains_key(&c_name);
+                let has_fs = fs_map.contains_key(&c_file);
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+                        "{pad}    uint32_t _fs = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*){source}, {rec_len});\n"
                     ));
                     emit_file_status_update(
                         out,
-                        &c_name,
+                        &c_file,
                         "_fs",
                         fs_map,
                         has_declaratives,
@@ -1553,15 +1693,23 @@ fn emit_statement(
                     out.push_str(&format!("{pad}}}\n"));
                 } else {
                     out.push_str(&format!(
-                        "{pad}cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+                        "{pad}cobol_file_write(FILE_ID_{c_file}, (const uint8_t*){source}, {rec_len});\n"
                     ));
                 }
             }
         }
         HirStatement::Rewrite {
-            record_name, from, ..
+            record_name,
+            file_name,
+            from,
+            ..
         } => {
             let c_name = sanitize_name(record_name);
+            let c_file = if file_name.is_empty() {
+                c_name.clone()
+            } else {
+                sanitize_name(file_name)
+            };
             let rec_len = find_record_len(&c_name, data_items);
             let source = if let Some(from_expr) = from {
                 emit_expr(from_expr)
@@ -1570,15 +1718,15 @@ fn emit_statement(
             };
             out.push_str(&format!("{pad}/* REWRITE {c_name} */\n"));
             {
-                let has_fs = fs_map.contains_key(&c_name);
+                let has_fs = fs_map.contains_key(&c_file);
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_rewrite(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+                        "{pad}    uint32_t _fs = cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*){source}, {rec_len});\n"
                     ));
                     emit_file_status_update(
                         out,
-                        &c_name,
+                        &c_file,
                         "_fs",
                         fs_map,
                         has_declaratives,
@@ -1587,7 +1735,7 @@ fn emit_statement(
                     out.push_str(&format!("{pad}}}\n"));
                 } else {
                     out.push_str(&format!(
-                        "{pad}cobol_file_rewrite(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
+                        "{pad}cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*){source}, {rec_len});\n"
                     ));
                 }
             }
@@ -1627,7 +1775,7 @@ fn emit_statement(
                 for (i, target) in targets.iter().enumerate() {
                     let c_target = sanitize_name(target);
                     out.push_str(&format!(
-                        "{pad}    case {}: para_{c_target}(); return;\n",
+                        "{pad}    case {}: para_{c_target}(); cobol_stop_run();\n",
                         i + 1
                     ));
                 }
@@ -1635,7 +1783,7 @@ fn emit_statement(
                 out.push_str(&format!("{pad}}}\n"));
             } else if let Some(target) = targets.first() {
                 let c_target = sanitize_name(target);
-                out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
+                out.push_str(&format!("{pad}para_{c_target}(); cobol_stop_run();\n"));
             }
         }
         HirStatement::Initialize { targets, .. } => {
@@ -1786,6 +1934,17 @@ fn emit_statement(
                     ));
                     out.push_str(&format!(
                         "{pad}    {c_target} = (_tm->tm_year % 100) * 10000 + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
+                    ));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                HirAcceptSource::DateYyyymmdd => {
+                    // ACCEPT FROM DATE YYYYMMDD: 8 digits
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!(
+                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    {c_target} = (_tm->tm_year + 1900) * 10000 + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
                     ));
                     out.push_str(&format!("{pad}}}\n"));
                 }
@@ -2683,6 +2842,24 @@ fn emit_move_to(
                     out.push_str(&format!(
                         "{pad}cobol_move_string((const uint8_t*){c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
+                } else if let HirExpr::ReferenceModification {
+                    variable,
+                    start,
+                    length,
+                } = from
+                {
+                    let c_src = sanitize_name(variable);
+                    let c_start = emit_expr(start);
+                    let src_full_size = find_data_item_size(&c_src, data_items);
+                    let c_len = if let Some(len) = length {
+                        emit_expr(len)
+                    } else {
+                        format!("({src_full_size} - ({c_start} - 1))")
+                    };
+                    let tgt_size = find_data_item_size(c_target, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_string((const uint8_t*){c_src} + ({c_start} - 1), {c_len}, (uint8_t*){c_target}, {tgt_size});\n"
+                    ));
                 } else {
                     let e = emit_expr(from);
                     out.push_str(&format!("{pad}{c_target} = {e};\n"));
@@ -3165,6 +3342,21 @@ fn needs_decimal(data_type: &HirType) -> bool {
 
 /// Look up a data item by name (searching flattened items including group members).
 fn find_data_item<'a>(name: &str, data_items: &'a [HirDataItem]) -> Option<&'a HirDataItem> {
+    // Handle qualified names like "WS-DST::FIELD-A"
+    if let Some(pos) = name.find("::") {
+        let group_name = &name[..pos];
+        let member_name = &name[pos + 2..];
+        // Find the group, then search within it
+        for item in data_items {
+            if item.name.as_str() == group_name {
+                if let HirType::Group { members, .. } = &item.data_type {
+                    return find_data_item(member_name, members);
+                }
+            }
+        }
+        // Fallback: try unqualified search
+        return find_data_item(member_name, data_items);
+    }
     for item in data_items {
         if item.name.as_str() == name {
             return Some(item);
@@ -3178,6 +3370,10 @@ fn find_data_item<'a>(name: &str, data_items: &'a [HirDataItem]) -> Option<&'a H
     None
 }
 
+/// Resolve a variable name to its fully-qualified C name.
+/// If the variable is a group member, returns the qualified path
+/// (e.g., `WS_SRC.members._m_FIELD_A`).
+/// If it's a top-level variable, returns `sanitize_name(name)`.
 /// Get the group members of a data item by COBOL name.
 fn get_group_members<'a>(name: &str, data_items: &'a [HirDataItem]) -> &'a [HirDataItem] {
     if let Some(item) = find_data_item(name, data_items) {
@@ -3208,30 +3404,31 @@ fn emit_corresponding_move(
         for tgt_item in to_members {
             if src_item.name == tgt_item.name {
                 let member_c = sanitize_name(&src_item.name);
+                // Use qualified macros to avoid collision
+                let src_q = format!("{c_from}__{member_c}");
+                let tgt_q = format!("{c_to}__{member_c}");
                 match (&src_item.data_type, &tgt_item.data_type) {
                     (HirType::Numeric { .. }, HirType::Numeric { .. })
                     | (HirType::Binary { .. }, HirType::Binary { .. })
                     | (HirType::Comp3 { .. }, HirType::Comp3 { .. }) => {
-                        out.push_str(&format!("{pad}{member_c} = {member_c};\n"));
+                        out.push_str(&format!("{pad}{tgt_q} = {src_q};\n"));
                     }
                     (
                         HirType::Alphanumeric { size: src_sz },
                         HirType::Alphanumeric { size: tgt_sz },
                     ) => {
                         let copy_len = std::cmp::min(*src_sz, *tgt_sz);
-                        out.push_str(&format!(
-                            "{pad}memcpy({member_c}, {member_c}, {copy_len});\n"
-                        ));
+                        out.push_str(&format!("{pad}memcpy({tgt_q}, {src_q}, {copy_len});\n"));
                         if *tgt_sz > *src_sz {
                             out.push_str(&format!(
-                                "{pad}memset({member_c} + {src_sz}, ' ', {});\n",
+                                "{pad}memset({tgt_q} + {src_sz}, ' ', {});\n",
                                 tgt_sz - src_sz
                             ));
                         }
                     }
                     _ => {
                         out.push_str(&format!(
-                            "{pad}memcpy(&{member_c}, &{member_c}, sizeof({member_c}));\n"
+                            "{pad}memcpy(&{tgt_q}, &{src_q}, sizeof({tgt_q}));\n"
                         ));
                     }
                 }
@@ -3310,7 +3507,7 @@ fn emit_integer_overflow_check(
 /// Emit COMPUTE with overflow check: save, assign, check, restore on overflow.
 fn emit_save_and_check_overflow(
     out: &mut String,
-    target_name: &smol_str::SmolStr,
+    target_name: &str,
     c_target: &str,
     c_expr: &str,
     data_items: &[HirDataItem],
@@ -3392,6 +3589,60 @@ fn emit_decimal_arith(
         out.push_str(&format!(
             "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_int({c_op}, 0, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
         ));
+    }
+}
+
+/// Emit ADD GIVING for decimal: add all operands and TO values, store in GIVING target.
+fn emit_decimal_giving_add(
+    out: &mut String,
+    operands: &[HirExpr],
+    to: &[SmolStr],
+    c_target: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    // Start by copying the first addend to the target
+    let mut first = true;
+    for op in operands {
+        if first {
+            // Initialize target with first operand
+            let op_is_decimal = match op {
+                HirExpr::Variable(name) => {
+                    find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+                }
+                _ => false,
+            };
+            if op_is_decimal {
+                let c_op = emit_expr(op);
+                out.push_str(&format!("{pad}{c_target} = {c_op};\n"));
+            } else {
+                let c_op = emit_expr(op);
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_int({c_op}, 0, &{c_target});\n"
+                ));
+            }
+            first = false;
+        } else {
+            emit_decimal_arith(out, c_target, op, "cobol_decimal_add", data_items, pad);
+        }
+    }
+    for t in to {
+        let t_expr = HirExpr::Variable(t.clone());
+        if first {
+            let c_t = sanitize_name(t);
+            let t_is_decimal =
+                find_data_item(t, data_items).is_some_and(|i| needs_decimal(&i.data_type));
+            if t_is_decimal {
+                out.push_str(&format!("{pad}{c_target} = {c_t};\n"));
+            } else {
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_int({c_t}, 0, &{c_target});\n"
+                ));
+            }
+            first = false;
+        } else {
+            emit_decimal_arith(out, c_target, &t_expr, "cobol_decimal_add", data_items, pad);
+        }
     }
 }
 
@@ -3735,7 +3986,7 @@ fn emit_condition(cond: &HirCondition, data_items: &[HirDataItem]) -> String {
                     HirCompareOp::Ge => ">=",
                     HirCompareOp::Le => "<=",
                 };
-                format!("({l} {op_str} {r})")
+                format!("{l} {op_str} {r}")
             }
         }
         HirCondition::ClassCondition { operand, class } => {
@@ -3760,7 +4011,7 @@ fn emit_condition(cond: &HirCondition, data_items: &[HirDataItem]) -> String {
         }
         HirCondition::Not(inner) => {
             let c = emit_condition(inner, data_items);
-            format!("(!{c})")
+            format!("(!({c}))")
         }
     }
 }
@@ -3843,11 +4094,27 @@ fn collect_file_names_stmt(stmt: &HirStatement, names: &mut BTreeSet<String>) {
                 collect_file_names_stmt(s, names);
             }
         }
-        HirStatement::Write { record_name, .. } => {
-            names.insert(record_name.to_string());
+        HirStatement::Write {
+            file_name,
+            record_name,
+            ..
+        } => {
+            if file_name.is_empty() {
+                names.insert(record_name.to_string());
+            } else {
+                names.insert(file_name.to_string());
+            }
         }
-        HirStatement::Rewrite { record_name, .. } => {
-            names.insert(record_name.to_string());
+        HirStatement::Rewrite {
+            file_name,
+            record_name,
+            ..
+        } => {
+            if file_name.is_empty() {
+                names.insert(record_name.to_string());
+            } else {
+                names.insert(file_name.to_string());
+            }
         }
         HirStatement::Delete { file_name, .. } => {
             names.insert(file_name.to_string());
@@ -3988,6 +4255,21 @@ fn find_record_len(c_name: &str, data_items: &[HirDataItem]) -> u32 {
 /// Find the byte size of a data item by its sanitized C name.
 /// Returns a reasonable default (80) if the item is not found.
 fn find_data_item_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    // Handle qualified C names like "WS_DST__FIELD_B"
+    if let Some(pos) = c_name.find("__") {
+        let group_c = &c_name[..pos];
+        let member_c = &c_name[pos + 2..];
+        for item in data_items {
+            if sanitize_name(&item.name) == group_c {
+                if let HirType::Group { members, .. } = &item.data_type {
+                    let found = find_data_item_size_in(member_c, members);
+                    if found > 0 {
+                        return found;
+                    }
+                }
+            }
+        }
+    }
     for item in data_items {
         let item_c_name = sanitize_name(&item.name);
         if item_c_name == c_name {
@@ -4044,7 +4326,7 @@ fn data_item_byte_size(data_type: &HirType) -> u32 {
 /// are prefixed with `cob_`, and C reserved words are prefixed to
 /// avoid collisions.
 fn sanitize_name(name: &str) -> String {
-    let mut result = name.replace('-', "_");
+    let mut result = name.replace("::", "__").replace('-', "_");
     // C identifiers cannot start with a digit
     if result.starts_with(|c: char| c.is_ascii_digit()) {
         result.insert_str(0, "cob_");
@@ -4582,6 +4864,7 @@ PROCEDURE DIVISION.
             interfaces: Vec::new(),
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4648,6 +4931,7 @@ PROCEDURE DIVISION.
             interfaces: Vec::new(),
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4809,6 +5093,7 @@ PROCEDURE DIVISION.
             interfaces: Vec::new(),
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4840,6 +5125,7 @@ PROCEDURE DIVISION.
             interfaces: Vec::new(),
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4871,6 +5157,7 @@ PROCEDURE DIVISION.
             interfaces: Vec::new(),
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4902,6 +5189,7 @@ PROCEDURE DIVISION.
             interfaces: Vec::new(),
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4933,6 +5221,7 @@ PROCEDURE DIVISION.
             interfaces: Vec::new(),
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -4972,6 +5261,7 @@ PROCEDURE DIVISION.
             interfaces: Vec::new(),
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),
@@ -5010,6 +5300,7 @@ PROCEDURE DIVISION.
             }],
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             span: Span::dummy(),

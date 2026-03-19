@@ -75,6 +75,9 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Extract file organization mappings.
     let file_organizations = extract_file_organizations(program);
 
+    // Extract file assignment (ASSIGN TO) mappings.
+    let file_assignments = extract_file_assignments(program);
+
     // Lower DECLARATIVES sections (USE AFTER EXCEPTION handlers).
     let declaratives = lower_declaratives(program, &condition_names);
 
@@ -116,19 +119,31 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         typedefs: Vec::new(),
         interfaces: Vec::new(),
         file_organizations,
+        file_assignments,
         file_status_vars,
         declaratives,
         span: program.span,
     };
 
-    // Post-process: update Open statements with correct file organization
+    // Post-process: update Open statements with correct file organization and assign_to
     let org_map = hir.file_organizations.clone();
-    patch_open_org(&mut hir.body, &org_map);
+    let assign_map = hir.file_assignments.clone();
+    patch_open_entries(&mut hir.body, &org_map, &assign_map);
     for para in &mut hir.paragraphs {
-        patch_open_org(&mut para.body, &org_map);
+        patch_open_entries(&mut para.body, &org_map, &assign_map);
     }
     for decl in &mut hir.declaratives {
-        patch_open_org(&mut decl.body, &org_map);
+        patch_open_entries(&mut decl.body, &org_map, &assign_map);
+    }
+
+    // Post-process: resolve Write/Rewrite record_name → file_name
+    let rec_to_file = extract_record_to_file_map(program);
+    patch_write_file_names(&mut hir.body, &rec_to_file);
+    for para in &mut hir.paragraphs {
+        patch_write_file_names(&mut para.body, &rec_to_file);
+    }
+    for decl in &mut hir.declaratives {
+        patch_write_file_names(&mut decl.body, &rec_to_file);
     }
 
     hir
@@ -409,12 +424,18 @@ fn lower_procedure_division(
             if para.name.is_empty() {
                 body.extend(stmts);
             } else {
-                // Add statements to body (for sequential execution) and
-                // also record as a named paragraph (for PERFORM references).
-                body.extend(stmts.clone());
+                // Record as named paragraph (for PERFORM references).
+                // Add a procedure call to body for sequential fall-through.
                 paragraphs.push(HirParagraph {
                     name: para.name.clone(),
                     body: stmts,
+                    span: para.span,
+                });
+                body.push(HirStatement::Perform {
+                    kind: HirPerformKind::ProcedureName {
+                        name: para.name.clone(),
+                        through: None,
+                    },
                     span: para.span,
                 });
             }
@@ -629,7 +650,22 @@ fn lower_compute(
     let targets = compute
         .targets
         .iter()
-        .map(|t| t.target.name.clone())
+        .map(|t| {
+            let qname = &t.target;
+            if qname.subscripts.is_empty() {
+                let var_name = if qname.qualifiers.is_empty() {
+                    qname.name.clone()
+                } else {
+                    SmolStr::new(format!("{}::{}", qname.qualifiers[0], qname.name))
+                };
+                HirExpr::Variable(var_name)
+            } else {
+                HirExpr::Subscript {
+                    variable: qname.name.clone(),
+                    subscripts: qname.subscripts.iter().map(lower_expr).collect(),
+                }
+            }
+        })
         .collect();
     let on_size_error = lower_statements(&compute.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&compute.not_on_size_error, condition_names);
@@ -669,11 +705,13 @@ fn lower_add(
     }
     let operands = add.operands.iter().map(lower_expr).collect();
     let to = add.to.iter().map(|t| t.target.name.clone()).collect();
+    let giving = add.giving.iter().map(|t| t.target.name.clone()).collect();
     let on_size_error = lower_statements(&add.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&add.not_on_size_error, condition_names);
     HirStatement::Add {
         operands,
         to,
+        giving,
         on_size_error,
         not_on_size_error,
         span: add.span,
@@ -707,11 +745,13 @@ fn lower_subtract(
     }
     let operands = sub.operands.iter().map(lower_expr).collect();
     let from = sub.from.iter().map(|t| t.target.name.clone()).collect();
+    let giving = sub.giving.iter().map(|t| t.target.name.clone()).collect();
     let on_size_error = lower_statements(&sub.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&sub.not_on_size_error, condition_names);
     HirStatement::Subtract {
         operands,
         from,
+        giving,
         on_size_error,
         not_on_size_error,
         span: sub.span,
@@ -1022,6 +1062,7 @@ fn lower_accept(accept: &AcceptStatement) -> HirStatement {
     use cobol_ast::statement::AcceptSource as AstSource;
     let source = match &accept.from {
         Some(AstSource::Date) => HirAcceptSource::Date,
+        Some(AstSource::DateYyyymmdd) => HirAcceptSource::DateYyyymmdd,
         Some(AstSource::Day) => HirAcceptSource::Day,
         Some(AstSource::DayOfWeek) => HirAcceptSource::DayOfWeek,
         Some(AstSource::Time) => HirAcceptSource::Time,
@@ -1059,7 +1100,8 @@ fn lower_open(open: &cobol_ast::statement::OpenStatement) -> HirStatement {
             HirOpenEntry {
                 mode,
                 file_name: e.file_name.clone(),
-                organization: 1, // default, will be updated post-lowering
+                assign_to: SmolStr::default(), // will be updated post-lowering
+                organization: 1,               // will be updated post-lowering
             }
         })
         .collect();
@@ -1110,6 +1152,7 @@ fn lower_write(
     let not_invalid_key = lower_statements(&write.not_invalid_key, condition_names);
     HirStatement::Write {
         record_name: write.record_name.name.clone(),
+        file_name: SmolStr::default(), // resolved post-lowering
         from,
         invalid_key,
         not_invalid_key,
@@ -1121,6 +1164,7 @@ fn lower_rewrite(rewrite: &cobol_ast::statement::RewriteStatement) -> HirStateme
     let from = rewrite.from.as_ref().map(lower_expr);
     HirStatement::Rewrite {
         record_name: rewrite.record_name.name.clone(),
+        file_name: SmolStr::default(), // resolved post-lowering
         from,
         span: rewrite.span,
     }
@@ -1165,6 +1209,7 @@ fn lower_set(set: &SetStatement) -> HirStatement {
                 cobol_ast::statement::SetDirection::Up => HirStatement::Add {
                     operands: vec![hir_value],
                     to: target_names,
+                    giving: Vec::new(),
                     on_size_error: Vec::new(),
                     not_on_size_error: Vec::new(),
                     span: set.span,
@@ -1172,6 +1217,7 @@ fn lower_set(set: &SetStatement) -> HirStatement {
                 cobol_ast::statement::SetDirection::Down => HirStatement::Subtract {
                     operands: vec![hir_value],
                     from: target_names,
+                    giving: Vec::new(),
                     on_size_error: Vec::new(),
                     not_on_size_error: Vec::new(),
                     span: set.span,
@@ -1574,11 +1620,20 @@ fn lower_expr(expr: &Expr) -> HirExpr {
     match expr {
         Expr::Literal(lit) => HirExpr::Literal(lower_literal(lit)),
         Expr::Identifier(qname) => {
+            // When qualifiers exist (e.g., FIELD-A OF WS-DST), compose a
+            // disambiguated name using the outermost qualifier as prefix.
+            let var_name = if qname.qualifiers.is_empty() {
+                qname.name.clone()
+            } else {
+                // Use outermost qualifier (last element) as prefix
+                let group = qname.qualifiers.last().unwrap();
+                SmolStr::new(format!("{}::{}", group, qname.name))
+            };
             if qname.subscripts.is_empty() {
-                HirExpr::Variable(qname.name.clone())
+                HirExpr::Variable(var_name)
             } else {
                 HirExpr::Subscript {
-                    variable: qname.name.clone(),
+                    variable: var_name,
                     subscripts: qname.subscripts.iter().map(lower_expr).collect(),
                 }
             }
@@ -1774,14 +1829,93 @@ fn extract_file_status_vars(program: &CobolProgram) -> Vec<HirFileInfo> {
         .collect()
 }
 
-fn patch_open_org(stmts: &mut [HirStatement], org_map: &HashMap<SmolStr, u32>) {
+fn extract_file_assignments(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
+    let Some(env) = &program.environment else {
+        return HashMap::new();
+    };
+    let Some(io) = &env.input_output else {
+        return HashMap::new();
+    };
+    io.file_controls
+        .iter()
+        .map(|fc| (fc.file_name.clone(), fc.assign_to.clone()))
+        .collect()
+}
+
+fn patch_open_entries(
+    stmts: &mut [HirStatement],
+    org_map: &HashMap<SmolStr, u32>,
+    assign_map: &HashMap<SmolStr, SmolStr>,
+) {
     for stmt in stmts.iter_mut() {
         if let HirStatement::Open { entries, .. } = stmt {
             for entry in entries.iter_mut() {
                 if let Some(&org) = org_map.get(&entry.file_name) {
                     entry.organization = org;
                 }
+                if let Some(path) = assign_map.get(&entry.file_name) {
+                    entry.assign_to = path.clone();
+                }
             }
+        }
+    }
+}
+
+/// Build a mapping from record names (level-01 items under FD) to file names.
+fn extract_record_to_file_map(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
+    let mut map = HashMap::new();
+    if let Some(data) = &program.data {
+        for fd in &data.file_section {
+            for item in &fd.items {
+                if let Some(ref name) = item.name {
+                    map.insert(name.clone(), fd.file_name.clone());
+                }
+            }
+        }
+    }
+    map
+}
+
+fn patch_write_file_names(stmts: &mut [HirStatement], rec_map: &HashMap<SmolStr, SmolStr>) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            HirStatement::Write {
+                record_name,
+                file_name,
+                ..
+            } => {
+                if let Some(fn_name) = rec_map.get(record_name.as_str()) {
+                    *file_name = fn_name.clone();
+                }
+            }
+            HirStatement::Rewrite {
+                record_name,
+                file_name,
+                ..
+            } => {
+                if let Some(fn_name) = rec_map.get(record_name.as_str()) {
+                    *file_name = fn_name.clone();
+                }
+            }
+            HirStatement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                patch_write_file_names(then_body, rec_map);
+                patch_write_file_names(else_body, rec_map);
+            }
+            HirStatement::Perform { kind, .. } => {
+                let body = match kind {
+                    HirPerformKind::Inline { body } => body.as_mut_slice(),
+                    HirPerformKind::Times { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::Until { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::Varying { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::ProcedureName { .. } => &mut [],
+                };
+                patch_write_file_names(body, rec_map);
+            }
+            _ => {}
         }
     }
 }

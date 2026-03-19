@@ -185,6 +185,7 @@ pub struct AcceptStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcceptSource {
     Date,
+    DateYyyymmdd,
     Day,
     DayOfWeek,
     Time,

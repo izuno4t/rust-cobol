@@ -26,6 +26,8 @@ pub struct HirProgram {
     pub interfaces: Vec<HirInterface>,
     /// File organization mapping: file_name → org value for runtime.
     pub file_organizations: std::collections::HashMap<SmolStr, u32>,
+    /// File assignment mapping: file_name → ASSIGN TO path/name.
+    pub file_assignments: std::collections::HashMap<SmolStr, SmolStr>,
     /// FILE STATUS variable mapping: file_name → status variable name.
     pub file_status_vars: Vec<HirFileInfo>,
     /// DECLARATIVES sections: USE AFTER EXCEPTION handlers for file I/O.
@@ -229,6 +231,7 @@ pub enum HirMoveTarget {
 pub enum HirAcceptSource {
     Console,
     Date,
+    DateYyyymmdd,
     Day,
     DayOfWeek,
     Time,
@@ -271,7 +274,7 @@ pub enum HirStatement {
         span: Span,
     },
     Compute {
-        targets: Vec<SmolStr>,
+        targets: Vec<HirExpr>,
         expr: HirExpr,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
@@ -280,6 +283,7 @@ pub enum HirStatement {
     Add {
         operands: Vec<HirExpr>,
         to: Vec<SmolStr>,
+        giving: Vec<SmolStr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
@@ -287,6 +291,7 @@ pub enum HirStatement {
     Subtract {
         operands: Vec<HirExpr>,
         from: Vec<SmolStr>,
+        giving: Vec<SmolStr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
@@ -362,6 +367,8 @@ pub enum HirStatement {
     /// WRITE statement.
     Write {
         record_name: SmolStr,
+        /// The file name this record belongs to (for FILE_ID resolution).
+        file_name: SmolStr,
         from: Option<HirExpr>,
         invalid_key: Vec<HirStatement>,
         not_invalid_key: Vec<HirStatement>,
@@ -370,6 +377,8 @@ pub enum HirStatement {
     /// REWRITE statement.
     Rewrite {
         record_name: SmolStr,
+        /// The file name this record belongs to (for FILE_ID resolution).
+        file_name: SmolStr,
         from: Option<HirExpr>,
         span: Span,
     },
@@ -669,6 +678,8 @@ pub enum HirPerformKind {
 pub struct HirOpenEntry {
     pub mode: HirOpenMode,
     pub file_name: SmolStr,
+    /// ASSIGN TO path (physical file name or device).
+    pub assign_to: SmolStr,
     /// File organization: 0=Sequential, 1=LineSequential, 2=Indexed, 3=Relative.
     pub organization: u32,
 }
@@ -874,10 +885,11 @@ fn write_stmt(
             writeln!(f, "{pad}SUBTRACT CORRESPONDING {from} FROM {to}")
         }
         HirStatement::Compute { targets, expr, .. } => {
+            let tgt_strs: Vec<_> = targets.iter().map(format_expr).collect();
             writeln!(
                 f,
                 "{pad}COMPUTE {} = {}",
-                targets.join(", "),
+                tgt_strs.join(", "),
                 format_expr(expr)
             )
         }
