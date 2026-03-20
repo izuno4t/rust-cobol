@@ -72,10 +72,7 @@ impl Parser {
 
         // Parse nested programs (before END PROGRAM of the outer program)
         let mut nested_programs = Vec::new();
-        while !self.at_eof()
-            && self.check(TokenKind::Identification)
-            && !self.at_end_program()
-        {
+        while !self.at_eof() && self.check(TokenKind::Identification) && !self.at_end_program() {
             let nested = self.parse_program()?;
             nested_programs.push(nested);
         }
@@ -84,7 +81,7 @@ impl Parser {
         if self.at_end_program() {
             self.advance(); // END
             self.advance(); // PROGRAM
-            // Consume the program-id (may be an identifier or keyword)
+                            // Consume the program-id (may be an identifier or keyword)
             if !self.check(TokenKind::Period) && !self.at_eof() {
                 self.advance(); // program-id
             }
@@ -149,9 +146,7 @@ impl Parser {
             self.pos += 1;
         }
         // Skip semicolons — they are noise separators in COBOL
-        while self.current().kind == TokenKind::Semicolon
-            && self.pos < self.tokens.len() - 1
-        {
+        while self.current().kind == TokenKind::Semicolon && self.pos < self.tokens.len() - 1 {
             self.pos += 1;
         }
         tok

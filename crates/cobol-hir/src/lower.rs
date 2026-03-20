@@ -910,11 +910,12 @@ fn lower_move(mv: &MoveStatement) -> HirStatement {
 fn lower_move_target(expr: &Expr) -> HirMoveTarget {
     match expr {
         Expr::Identifier(qname) => {
+            let var_name = qualified_name_str(qname);
             if qname.subscripts.is_empty() {
-                HirMoveTarget::Variable(qname.name.clone())
+                HirMoveTarget::Variable(var_name)
             } else {
                 HirMoveTarget::Subscript {
-                    variable: qname.name.clone(),
+                    variable: var_name,
                     subscripts: qname.subscripts.iter().map(lower_expr).collect(),
                 }
             }
@@ -925,7 +926,7 @@ fn lower_move_target(expr: &Expr) -> HirMoveTarget {
             length,
             ..
         } => HirMoveTarget::ReferenceModification {
-            variable: variable.name.clone(),
+            variable: qualified_name_str(variable),
             start: lower_expr(start),
             length: length.as_ref().map(|l| lower_expr(l)),
         },
@@ -947,22 +948,7 @@ fn lower_compute(
     let targets = compute
         .targets
         .iter()
-        .map(|t| {
-            let qname = &t.target;
-            if qname.subscripts.is_empty() {
-                let var_name = if qname.qualifiers.is_empty() {
-                    qname.name.clone()
-                } else {
-                    SmolStr::new(format!("{}::{}", qname.qualifiers[0], qname.name))
-                };
-                HirExpr::Variable(var_name)
-            } else {
-                HirExpr::Subscript {
-                    variable: qname.name.clone(),
-                    subscripts: qname.subscripts.iter().map(lower_expr).collect(),
-                }
-            }
-        })
+        .map(|t| lower_qualified_name_to_expr(&t.target))
         .collect();
     let on_size_error = lower_statements(&compute.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&compute.not_on_size_error, condition_names);
@@ -1464,7 +1450,10 @@ fn lower_read(
     read: &cobol_ast::statement::ReadStatement,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
-    let into = read.into.as_ref().map(|q| q.name.clone());
+    let into = read.into.as_ref().map(|q| {
+        let subs: Vec<_> = q.subscripts.iter().map(lower_expr).collect();
+        (q.name.clone(), subs)
+    });
     let at_end: Vec<_> = read
         .at_end
         .iter()
@@ -1828,7 +1817,10 @@ fn lower_return(
     ret: &cobol_ast::statement::ReturnStatement,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
-    let into = ret.into.as_ref().map(|q| q.name.clone());
+    let into = ret.into.as_ref().map(|q| {
+        let subs: Vec<_> = q.subscripts.iter().map(lower_expr).collect();
+        (q.name.clone(), subs)
+    });
     let at_end: Vec<_> = ret
         .at_end
         .iter()
@@ -1995,15 +1987,22 @@ fn lower_xml_parse(xp: &cobol_ast::statement::XmlParseStatement) -> HirStatement
     }
 }
 
-/// Lower a `QualifiedName` (used as an arithmetic target) to a `HirExpr`.
-/// Handles subscripts so that `TABLE(IDX)` becomes `HirExpr::Subscript`.
-fn lower_qualified_name_to_expr(qname: &cobol_ast::expr::QualifiedName) -> HirExpr {
-    let var_name = if qname.qualifiers.is_empty() {
+/// Produce a (possibly qualified) name string from a QualifiedName.
+/// If qualifiers exist, the outermost qualifier is used as a prefix:
+///   `FIELD OF GROUP` becomes `GROUP::FIELD`.
+fn qualified_name_str(qname: &cobol_ast::expr::QualifiedName) -> SmolStr {
+    if qname.qualifiers.is_empty() {
         qname.name.clone()
     } else {
         let group = qname.qualifiers.last().unwrap();
         SmolStr::new(format!("{}::{}", group, qname.name))
-    };
+    }
+}
+
+/// Lower a `QualifiedName` (used as an arithmetic target) to a `HirExpr`.
+/// Handles subscripts so that `TABLE(IDX)` becomes `HirExpr::Subscript`.
+fn lower_qualified_name_to_expr(qname: &cobol_ast::expr::QualifiedName) -> HirExpr {
+    let var_name = qualified_name_str(qname);
     if qname.subscripts.is_empty() {
         HirExpr::Variable(var_name)
     } else {
@@ -2078,7 +2077,7 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             length,
             ..
         } => HirExpr::ReferenceModification {
-            variable: variable.name.clone(),
+            variable: qualified_name_str(variable),
             start: Box::new(lower_expr(start)),
             length: length.as_ref().map(|l| Box::new(lower_expr(l))),
         },

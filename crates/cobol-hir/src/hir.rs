@@ -391,7 +391,8 @@ pub enum HirStatement {
     /// READ statement.
     Read {
         file_name: SmolStr,
-        into: Option<SmolStr>,
+        /// INTO target: (variable_name, subscripts).
+        into: Option<(SmolStr, Vec<HirExpr>)>,
         at_end: Vec<HirStatement>,
         not_at_end: Vec<HirStatement>,
         span: Span,
@@ -570,7 +571,8 @@ pub enum HirStatement {
     /// RETURN statement: retrieves records from a sort/merge file.
     Return {
         file_name: SmolStr,
-        into: Option<SmolStr>,
+        /// INTO target: (variable_name, subscripts).
+        into: Option<(SmolStr, Vec<HirExpr>)>,
         at_end: Vec<HirStatement>,
         not_at_end: Vec<HirStatement>,
         span: Span,

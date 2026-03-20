@@ -136,7 +136,7 @@ fn is_in_comment_line(source: &str, pos: usize) -> bool {
         Some(nl) => nl + 1,
         None => 0,
     };
-    let line_bytes = source[line_start..].as_bytes();
+    let line_bytes = &source.as_bytes()[line_start..];
 
     // Fixed format check: column 7 (index 6) is '*' or '/'
     if line_bytes.len() > 6 && (line_bytes[6] == b'*' || line_bytes[6] == b'/') {
@@ -558,14 +558,20 @@ mod tests {
         // COPY inside a double-quoted string should not be detected.
         let source = "MOVE \"COPY FILE DESCR\" TO FEATURE.\n";
         let stmts = scan_copy_statements(source);
-        assert!(stmts.is_empty(), "COPY inside string literal should be ignored");
+        assert!(
+            stmts.is_empty(),
+            "COPY inside string literal should be ignored"
+        );
     }
 
     #[test]
     fn test_copy_in_single_quoted_string_ignored() {
         let source = "MOVE 'COPY FILE DESCR' TO FEATURE.\n";
         let stmts = scan_copy_statements(source);
-        assert!(stmts.is_empty(), "COPY inside single-quoted string should be ignored");
+        assert!(
+            stmts.is_empty(),
+            "COPY inside single-quoted string should be ignored"
+        );
     }
 
     #[test]
@@ -573,7 +579,10 @@ mod tests {
         // Fixed format: column 7 (index 6) is '*' → comment line.
         let source = "000100*    COPY MYBOOK.\n";
         let stmts = scan_copy_statements(source);
-        assert!(stmts.is_empty(), "COPY in fixed-format comment line should be ignored");
+        assert!(
+            stmts.is_empty(),
+            "COPY in fixed-format comment line should be ignored"
+        );
     }
 
     #[test]
@@ -581,14 +590,20 @@ mod tests {
         // Fixed format: column 7 (index 6) is '/' → comment line.
         let source = "000100/    COPY MYBOOK.\n";
         let stmts = scan_copy_statements(source);
-        assert!(stmts.is_empty(), "COPY in fixed-format '/' comment line should be ignored");
+        assert!(
+            stmts.is_empty(),
+            "COPY in fixed-format '/' comment line should be ignored"
+        );
     }
 
     #[test]
     fn test_copy_in_free_format_comment_ignored() {
         let source = "*> COPY MYBOOK.\n";
         let stmts = scan_copy_statements(source);
-        assert!(stmts.is_empty(), "COPY in free-format comment should be ignored");
+        assert!(
+            stmts.is_empty(),
+            "COPY in free-format comment should be ignored"
+        );
     }
 
     #[test]
@@ -604,6 +619,9 @@ mod tests {
     fn test_replace_in_string_literal_ignored() {
         let source = "MOVE \"REPLACE OLD BY NEW\" TO WS-FIELD.\n";
         let directives = scan_replace_directives(source);
-        assert!(directives.is_empty(), "REPLACE inside string literal should be ignored");
+        assert!(
+            directives.is_empty(),
+            "REPLACE inside string literal should be ignored"
+        );
     }
 }

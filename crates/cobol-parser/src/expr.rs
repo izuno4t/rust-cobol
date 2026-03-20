@@ -460,6 +460,67 @@ impl Parser {
 
         while self.check(TokenKind::Or) {
             self.advance();
+
+            // Handle abbreviated conditions: IF A > B OR < C
+            // Also: IF A > B OR NOT < C, IF A > B OR EQUAL TO C
+            // Skip noise word IS after AND/OR in abbreviated context
+            if self.check_identifier("IS") {
+                let next = self.peek(1).kind;
+                if next == TokenKind::Not || is_comparison_op_kind(next) {
+                    self.advance(); // skip IS
+                }
+            }
+            let is_not = self.check(TokenKind::Not);
+            let has_abbrev = if is_not {
+                // Peek past NOT to see if a comparison op follows
+                is_comparison_op_kind(self.peek(1).kind)
+            } else {
+                self.is_comparison_op()
+            };
+            if has_abbrev {
+                if let Some(ref left_expr) = extract_comparison_left(&left) {
+                    if is_not {
+                        self.advance(); // skip NOT
+                    }
+                    let op = self.parse_comparison_op()?;
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let mut abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    if is_not {
+                        abbreviated = Condition::Not(Box::new(abbreviated));
+                    }
+                    left = Condition::Or(Box::new(left), Box::new(abbreviated));
+                    continue;
+                }
+            }
+
+            // Handle subject-only abbreviated: IF A = B OR 10
+            // The operator and subject are inherited from the previous comparison.
+            // But NOT if the literal is followed by a comparison operator
+            // (e.g. OR 20 LESS THAN X), which is a new full condition.
+            if is_abbreviated_subject_only(self.current().kind)
+                && !is_comparison_op_kind(self.peek(1).kind)
+                && self.peek(1).kind != TokenKind::Not
+            {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    left = Condition::Or(Box::new(left), Box::new(abbreviated));
+                    continue;
+                }
+            }
+
             let right = self.parse_and_condition()?;
             left = Condition::Or(Box::new(left), Box::new(right));
         }
@@ -474,13 +535,49 @@ impl Parser {
             self.advance();
 
             // Handle abbreviated conditions: IF A > B AND < C
-            if self.is_comparison_op() {
-                if let Condition::Comparison {
-                    left: ref left_expr,
-                    ..
-                } = left
-                {
+            // Also: IF A > B AND NOT < C, IF A > B AND IS NOT < C
+            // Skip noise word IS after AND/OR in abbreviated context
+            if self.check_identifier("IS") {
+                // Peek ahead: IS NOT <cmp-op> or IS <cmp-op>
+                let next = self.peek(1).kind;
+                if next == TokenKind::Not || is_comparison_op_kind(next) {
+                    self.advance(); // skip IS
+                }
+            }
+            let is_not = self.check(TokenKind::Not);
+            let has_abbrev = if is_not {
+                is_comparison_op_kind(self.peek(1).kind)
+            } else {
+                self.is_comparison_op()
+            };
+            if has_abbrev {
+                if let Some(ref left_expr) = extract_comparison_left(&left) {
+                    if is_not {
+                        self.advance(); // skip NOT
+                    }
                     let op = self.parse_comparison_op()?;
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let mut abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    if is_not {
+                        abbreviated = Condition::Not(Box::new(abbreviated));
+                    }
+                    left = Condition::And(Box::new(left), Box::new(abbreviated));
+                    continue;
+                }
+            }
+
+            // Handle subject-only abbreviated: IF A = B AND 10
+            if is_abbreviated_subject_only(self.current().kind)
+                && !is_comparison_op_kind(self.peek(1).kind)
+                && self.peek(1).kind != TokenKind::Not
+            {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();
                     let abbreviated = Condition::Comparison {
@@ -720,5 +817,63 @@ fn negate_compare_op(op: CompareOp) -> CompareOp {
         CompareOp::LessThan => CompareOp::GreaterEqual,
         CompareOp::GreaterEqual => CompareOp::LessThan,
         CompareOp::LessEqual => CompareOp::GreaterThan,
+    }
+}
+
+/// Check if the current token could be the start of a subject-only abbreviated
+/// combined relation (a literal or figurative constant, NOT an identifier to avoid
+/// ambiguity with condition-name OR).
+fn is_abbreviated_subject_only(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::IntegerLiteral
+            | TokenKind::DecimalLiteral
+            | TokenKind::StringLiteral
+            | TokenKind::Zero
+            | TokenKind::Space
+            | TokenKind::Quote
+            | TokenKind::LowValue
+            | TokenKind::HighValue
+    )
+}
+
+/// Check if a token kind is a comparison operator (standalone function for peek use).
+fn is_comparison_op_kind(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Equals
+            | TokenKind::GreaterThan
+            | TokenKind::LessThan
+            | TokenKind::GreaterEqual
+            | TokenKind::LessEqual
+            | TokenKind::NotEqual
+            | TokenKind::Greater
+            | TokenKind::Less
+            | TokenKind::Equal
+    )
+}
+
+/// Extract the left-hand expression from the rightmost/deepest comparison
+/// in a condition tree. Used for abbreviated combined relations like:
+/// `IF A > B OR < C` where `A` must be reused as the left operand.
+fn extract_comparison_left(cond: &Condition) -> Option<Expr> {
+    match cond {
+        Condition::Comparison { left, .. } => Some(left.clone()),
+        Condition::And(_, right) | Condition::Or(_, right) => extract_comparison_left(right),
+        Condition::Not(inner) => extract_comparison_left(inner),
+        _ => None,
+    }
+}
+
+/// Extract both the left-hand expression and the comparison operator from
+/// the rightmost/deepest comparison in a condition tree.
+/// Used for subject-only abbreviated combined relations like:
+/// `IF A = B OR 10` where both `A` and `=` must be reused.
+fn extract_comparison_left_and_op(cond: &Condition) -> Option<(Expr, CompareOp)> {
+    match cond {
+        Condition::Comparison { left, op, .. } => Some((left.clone(), *op)),
+        Condition::And(_, right) | Condition::Or(_, right) => extract_comparison_left_and_op(right),
+        Condition::Not(inner) => extract_comparison_left_and_op(inner),
+        _ => None,
     }
 }

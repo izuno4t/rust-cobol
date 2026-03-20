@@ -2686,8 +2686,8 @@ fn test_c2_add_corresponding() {
         c_code
     );
     assert!(
-        c_code.contains("AMT = AMT + AMT"),
-        "Should add matching AMT field, got:\n{}",
+        c_code.contains("GRP_B.members._m_AMT") && c_code.contains("GRP_A.members._m_AMT"),
+        "Should add matching AMT field via qualified member access, got:\n{}",
         c_code
     );
 }

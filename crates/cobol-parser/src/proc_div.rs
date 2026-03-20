@@ -1017,6 +1017,7 @@ impl Parser {
             }
 
             operands.push(self.parse_expr()?);
+            let _ = self.eat(TokenKind::Comma); // Optional comma separator
         }
 
         let end_span = self.span();
@@ -1473,12 +1474,12 @@ impl Parser {
         }
         if self.check_identifier("TEST") {
             self.advance();
-            if self.check_identifier("AFTER") {
+            if self.check_identifier("AFTER") || self.check(TokenKind::After) {
                 self.advance();
                 return PerformTest::After;
             }
             // BEFORE is the default; consume it if present
-            if self.check_identifier("BEFORE") {
+            if self.check_identifier("BEFORE") || self.check(TokenKind::Before) {
                 self.advance();
             }
         }

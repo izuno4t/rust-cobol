@@ -840,10 +840,17 @@ fn emit_single_data_item(
                 emit_group_macros(out, members, &c_name, &c_name, duplicate_member_names);
             }
             _ => {
-                // Scalar types: dereference cast for lvalue semantics
-                out.push_str(&format!(
-                    "#define {c_name} (*({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
-                ));
+                if item.occurs.is_some() {
+                    // REDEFINES + OCCURS: cast to pointer so it acts as an array base
+                    out.push_str(&format!(
+                        "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} OCCURS */\n"
+                    ));
+                } else {
+                    // Scalar types: dereference cast for lvalue semantics
+                    out.push_str(&format!(
+                        "#define {c_name} (*({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                    ));
+                }
             }
         }
         return;
@@ -1082,13 +1089,16 @@ fn emit_group_macros(
             ..
         } = &member.data_type
         {
-            emit_group_macros(
-                out,
-                sub_members,
-                group_c_name,
-                &format!("{access_path}.members"),
-                duplicate_names,
-            );
+            // For OCCURS items, child macros access element [0] (first
+            // element) as a safe default.  Subscripted access is handled
+            // by emit_subscript_access which generates proper indexed
+            // paths at each OCCURS level.
+            let sub_prefix = if member.occurs.is_some() {
+                format!("{access_path}[0].members")
+            } else {
+                format!("{access_path}.members")
+            };
+            emit_group_macros(out, sub_members, group_c_name, &sub_prefix, duplicate_names);
         }
     }
 }
@@ -1124,9 +1134,16 @@ fn emit_group_redefines(
                     emit_group_macros(out, grp_members, &c_name, &c_name, duplicate_names);
                 }
                 _ => {
-                    out.push_str(&format!(
-                        "#define {c_name} (*({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
-                    ));
+                    if member.occurs.is_some() {
+                        // REDEFINES + OCCURS: pointer cast (acts as array base)
+                        out.push_str(&format!(
+                            "#define {c_name} (({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} OCCURS */\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "#define {c_name} (*({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
+                        ));
+                    }
                 }
             }
         }
@@ -1137,10 +1154,15 @@ fn emit_group_redefines(
             } = &member.data_type
             {
                 let c_name = sanitize_name(&member.name);
+                let sub_prefix = if member.occurs.is_some() {
+                    format!("{path_prefix}._m_{c_name}[0].members")
+                } else {
+                    format!("{path_prefix}._m_{c_name}.members")
+                };
                 emit_group_redefines(
                     out,
                     sub_members,
-                    &format!("{path_prefix}._m_{c_name}.members"),
+                    &sub_prefix,
                     duplicate_names,
                     emitted_typedefs,
                 );
@@ -1805,7 +1827,7 @@ fn emit_statement(
             if !giving.is_empty() {
                 // MULTIPLY A BY B GIVING C [D ...]:  C = A * B
                 let op_is_dec = is_decimal_expr(operand, data_items);
-                let by_is_dec = by.first().map_or(false, |b| is_decimal_expr(b, data_items));
+                let by_is_dec = by.first().is_some_and(|b| is_decimal_expr(b, data_items));
                 let any_src_decimal = op_is_dec || by_is_dec;
                 // For decimal operands, get raw expr (struct); for non-decimal, get int-compatible
                 let c_operand_raw = emit_expr(operand);
@@ -1921,9 +1943,7 @@ fn emit_statement(
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
             let op_is_dec = is_decimal_expr(operand, data_items);
-            let into_is_dec = into
-                .first()
-                .map_or(false, |i| is_decimal_expr(i, data_items));
+            let into_is_dec = into.first().is_some_and(|i| is_decimal_expr(i, data_items));
             let any_src_decimal = op_is_dec || into_is_dec;
             let c_operand = emit_expr(operand);
             let c_operand_int = emit_int_compatible_expr(operand, data_items);
@@ -2229,12 +2249,20 @@ fn emit_statement(
             // Determine the target buffer: INTO variable if specified, else
             // look up the FD record name for this file, falling back to the
             // file name itself.
-            let target = if let Some(into_var) = into {
-                sanitize_name(into_var)
+            let (target, target_name) = if let Some((into_var, into_subs)) = into {
+                if into_subs.is_empty() {
+                    let n = sanitize_name(into_var);
+                    (n.clone(), n)
+                } else {
+                    let access = emit_subscript_access(into_var, into_subs);
+                    let n = sanitize_name(into_var);
+                    (access, n)
+                }
             } else {
-                resolve_file_record(&c_name)
+                let r = resolve_file_record(&c_name);
+                (r.clone(), r)
             };
-            let rec_len = find_record_len(&target, data_items);
+            let rec_len = find_record_len(&target_name, data_items);
             out.push_str(&format!("{pad}/* READ {c_name} */\n"));
             out.push_str(&format!(
                 "{pad}{{\n{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{target}, {rec_len});\n"
@@ -3071,8 +3099,12 @@ fn emit_statement(
             let c_name = sanitize_name(file_name);
             let record_var = resolve_file_record(&c_name);
             let rec_len = find_record_len(&record_var, data_items);
-            let target = if let Some(into_var) = into {
-                sanitize_name(into_var)
+            let target = if let Some((into_var, into_subs)) = into {
+                if into_subs.is_empty() {
+                    sanitize_name(into_var)
+                } else {
+                    emit_subscript_access(into_var, into_subs)
+                }
             } else {
                 record_var
             };
@@ -3820,10 +3852,18 @@ fn emit_move_to(
     } else {
         None
     };
-    let is_source_numeric_var = matches!(
-        src_type,
-        Some(HirType::Numeric { .. } | HirType::Binary { .. } | HirType::Comp3 { .. })
-    );
+    let is_source_index =
+        !src_var_name.is_empty() && src_type.is_none() && is_index_name(src_var_name, data_items);
+    let is_source_numeric_var = is_source_index
+        || matches!(
+            src_type,
+            Some(
+                HirType::Numeric { .. }
+                    | HirType::Binary { .. }
+                    | HirType::Comp3 { .. }
+                    | HirType::Index
+            )
+        );
     let is_source_decimal_var = src_type.is_some_and(needs_decimal);
     let is_source_alpha_var = matches!(src_type, Some(HirType::Alphanumeric { .. }));
     let is_source_group_var = matches!(src_type, Some(HirType::Group { .. }));
@@ -5585,6 +5625,23 @@ fn find_data_item<'a>(name: &str, data_items: &'a [HirDataItem]) -> Option<&'a H
     None
 }
 
+/// Check if a name refers to an INDEX variable (declared via INDEXED BY).
+fn is_index_name(name: &str, data_items: &[HirDataItem]) -> bool {
+    for item in data_items {
+        for idx_name in &item.indexed_by {
+            if idx_name.as_str() == name {
+                return true;
+            }
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if is_index_name(name, members) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Check if a sanitized C variable name corresponds to a group item.
 fn is_group_item_c(c_name: &str, data_items: &[HirDataItem]) -> bool {
     is_group_item_c_in(c_name, data_items)
@@ -5689,6 +5746,13 @@ fn emit_corresponding_move(
                 // Use qualified macros to avoid collision
                 let src_q = format!("{c_from}__{member_c}");
                 let tgt_q = format!("{c_to}__{member_c}");
+                // For OCCURS items, use memcpy instead of direct assignment
+                if src_item.occurs.is_some() || tgt_item.occurs.is_some() {
+                    out.push_str(&format!(
+                        "{pad}memcpy(&{tgt_q}, &{src_q}, sizeof({tgt_q}));\n"
+                    ));
+                    continue;
+                }
                 match (&src_item.data_type, &tgt_item.data_type) {
                     (HirType::Numeric { .. }, HirType::Numeric { .. })
                     | (HirType::Binary { .. }, HirType::Binary { .. })
@@ -5741,7 +5805,22 @@ fn emit_corresponding_arith(
         for tgt_item in to_members {
             if src_item.name == tgt_item.name && is_numeric_type(&tgt_item.data_type) {
                 let member_c = sanitize_name(&src_item.name);
-                out.push_str(&format!("{pad}{member_c} = {member_c} {op} {member_c};\n"));
+                // Use qualified names: GROUP.members._m_MEMBER for disambiguation
+                let src_ref = format!("{c_from}.members._m_{member_c}");
+                let tgt_ref = format!("{c_to}.members._m_{member_c}");
+                if needs_decimal(&tgt_item.data_type) {
+                    // CobolDecimal: use runtime functions
+                    let func = if op == "+" {
+                        "cobol_decimal_add"
+                    } else {
+                        "cobol_decimal_subtract"
+                    };
+                    out.push_str(&format!(
+                        "{pad}{func}(&{src_ref}, &{tgt_ref}, &{tgt_ref});\n"
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}{tgt_ref} = {tgt_ref} {op} {src_ref};\n"));
+                }
             }
         }
     }
@@ -6010,11 +6089,11 @@ fn emit_initialize_field(
 /// Emit an INSPECT operand (pattern string) as a C pointer+length pair.
 /// Returns (ptr_expr, len_expr) for use in runtime calls.
 fn emit_inspect_operand(
-    out: &mut String,
+    _out: &mut str,
     expr: &HirExpr,
-    label: &str,
+    _label: &str,
     data_items: &[HirDataItem],
-    pad: &str,
+    _pad: &str,
 ) -> (String, String) {
     match expr {
         HirExpr::Literal(HirLiteral::String(s)) => {

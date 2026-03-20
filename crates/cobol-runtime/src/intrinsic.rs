@@ -189,6 +189,9 @@ pub extern "C" fn cobol_func_min_int(a: i64, b: i64) -> i64 {
 }
 
 /// FUNCTION MAX (N-arg integer variant) -- return the largest of N values.
+///
+/// # Safety
+/// `values` must point to a valid array of at least `count` `i64` elements.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_func_max_int_n(values: *const i64, count: i32) -> i64 {
     if count <= 0 || values.is_null() {
@@ -199,6 +202,9 @@ pub unsafe extern "C" fn cobol_func_max_int_n(values: *const i64, count: i32) ->
 }
 
 /// FUNCTION MIN (N-arg integer variant) -- return the smallest of N values.
+///
+/// # Safety
+/// `values` must point to a valid array of at least `count` `i64` elements.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_func_min_int_n(values: *const i64, count: i32) -> i64 {
     if count <= 0 || values.is_null() {
@@ -743,7 +749,10 @@ pub unsafe extern "C" fn cobol_func_max_alpha(
     let len_slice = core::slice::from_raw_parts(lens, count as usize);
     let mut max_idx = 0i32;
     for i in 1..count as usize {
-        let a = core::slice::from_raw_parts(ptr_slice[max_idx as usize], len_slice[max_idx as usize] as usize);
+        let a = core::slice::from_raw_parts(
+            ptr_slice[max_idx as usize],
+            len_slice[max_idx as usize] as usize,
+        );
         let b = core::slice::from_raw_parts(ptr_slice[i], len_slice[i] as usize);
         if b > a {
             max_idx = i as i32;
@@ -769,7 +778,10 @@ pub unsafe extern "C" fn cobol_func_min_alpha(
     let len_slice = core::slice::from_raw_parts(lens, count as usize);
     let mut min_idx = 0i32;
     for i in 1..count as usize {
-        let a = core::slice::from_raw_parts(ptr_slice[min_idx as usize], len_slice[min_idx as usize] as usize);
+        let a = core::slice::from_raw_parts(
+            ptr_slice[min_idx as usize],
+            len_slice[min_idx as usize] as usize,
+        );
         let b = core::slice::from_raw_parts(ptr_slice[i], len_slice[i] as usize);
         if b < a {
             min_idx = i as i32;
