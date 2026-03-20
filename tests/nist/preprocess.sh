@@ -48,9 +48,24 @@ sed \
     -e "s|XXXXX060|\"${TMPDIR}/O60\"|g" \
     -e "s|XXXXX068|\"${TMPDIR}/O68\"|g" \
     -e "s|XXXXX069|\"${TMPDIR}/O69\"|g" \
-    -e "s|XXXXX081|COMPUTER|g" \
+    -e "s|XXXXX081|\"COMPUTER\"|g" \
     -e "s|XXXXX090|COMPUTER|g" \
     -e "s|XXXXX091|COMPUTER|g" \
+    -e "s|XXXXX027|\"${TMPDIR}/S1\"|g" \
+    -e "s|XXXXX047|COPYLIB|g" \
+    -e "s|XXXXX048|COPYLIB|g" \
+    -e "s|XXXXX008|\"${TMPDIR}/D8\"|g" \
+    -e "s|XXXXX009|\"${TMPDIR}/D9\"|g" \
+    -e "s|XXXXX015|\"${TMPDIR}/D15\"|g" \
+    -e "s|XXXXX016|\"${TMPDIR}/D16\"|g" \
+    -e "s|XXXXX017|\"${TMPDIR}/D17\"|g" \
+    -e "s|XXXXX018|\"${TMPDIR}/D18\"|g" \
+    -e "s|XXXXX019|\"${TMPDIR}/D19\"|g" \
+    -e "s|XXXXX020|\"${TMPDIR}/D20\"|g" \
+    -e "s|XXXXX063|\"${TMPDIR}/D63\"|g" \
+    -e "s|XXXXX064|\"${TMPDIR}/D64\"|g" \
+    -e "s|XXXXX065|00000255|g" \
+    -e "s|XXXXX066|00000128|g" \
     -e "s|XXXXX36[[:space:]]|00000036|g" \
     -e "s|XXXXX38[[:space:]]|00000038|g" \
     -e "s|XXXXX49[[:space:]]|00000049|g" \
@@ -59,4 +74,7 @@ sed \
     "$INPUT" | \
     sed -e 's/^\(.\{6\}\)P/\1*/' \
         -e 's/^\(.\{6\}\)C/\1*/' \
+        -e 's/^\(.\{6\}\)Y/\1 /' \
+        -e 's/^\(.\{6\}\)S/\1 /' \
+        -e 's/^\(.\{6\}\)A/\1 /' \
     > "$OUTPUT"

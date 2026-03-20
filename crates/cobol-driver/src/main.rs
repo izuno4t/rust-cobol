@@ -51,7 +51,7 @@ struct Cli {
     c_only: bool,
 
     /// Additional directories to search for COPY copybooks
-    #[arg(long = "copy-path", value_name = "DIR")]
+    #[arg(short = 'I', long = "copy-path", value_name = "DIR")]
     copy_paths: Vec<String>,
 
     /// Warning control: all, none, error (default: show warnings)

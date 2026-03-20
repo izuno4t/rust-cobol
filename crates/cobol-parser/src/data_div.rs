@@ -106,15 +106,25 @@ impl Parser {
 
         let mut block_contains = None;
         let mut record_contains = None;
+        let mut record_varying = None;
         let mut label_records = None;
         let data_records = Vec::new();
         let mut recording_mode = None;
+        let mut linage = None;
 
         while !self.check(TokenKind::Period) && !self.at_eof() {
             if self.check(TokenKind::Block) {
                 self.advance();
                 self.eat(TokenKind::Contains);
-                let size = self.parse_integer()?;
+                let first = self.parse_integer()?;
+                // BLOCK CONTAINS n TO m RECORDS/CHARACTERS
+                let (min, max) = if self.check(TokenKind::To) {
+                    self.advance();
+                    let second = self.parse_integer()?;
+                    (Some(first), second)
+                } else {
+                    (None, first)
+                };
                 let unit = if self.check(TokenKind::Records) {
                     self.advance();
                     BlockUnit::Records
@@ -122,20 +132,58 @@ impl Parser {
                     self.eat(TokenKind::Characters);
                     BlockUnit::Characters
                 };
-                block_contains = Some(BlockContains {
-                    min: None,
-                    max: size,
-                    unit,
-                });
+                block_contains = Some(BlockContains { min, max, unit });
             } else if self.check(TokenKind::Record) {
                 self.advance();
-                self.eat(TokenKind::Contains);
-                let size = self.parse_integer()?;
-                self.eat(TokenKind::Characters);
-                record_contains = Some(RecordContains {
-                    min: None,
-                    max: size,
-                });
+                if self.check(TokenKind::Contains) {
+                    // RECORD CONTAINS n [TO m] CHARACTERS
+                    self.advance();
+                    let first = self.parse_integer()?;
+                    let (min, max) = if self.check(TokenKind::To) {
+                        self.advance();
+                        let second = self.parse_integer()?;
+                        (Some(first), second)
+                    } else {
+                        (None, first)
+                    };
+                    self.eat(TokenKind::Characters);
+                    record_contains = Some(RecordContains { min, max });
+                } else {
+                    // RECORD [IS] VARYING [IN SIZE] [FROM n] [TO m]
+                    //   [CHARACTERS] [DEPENDING [ON] data-name]
+                    // Also: RECORD VARYING n TO m [DEPENDING [ON] data-name]
+                    self.eat_is();
+                    self.eat(TokenKind::Varying);
+                    self.eat_identifier("IN");
+                    self.eat(TokenKind::SizeKw);
+                    let min = if self.check(TokenKind::From) {
+                        self.advance();
+                        Some(self.parse_integer()?)
+                    } else if self.check(TokenKind::IntegerLiteral) {
+                        Some(self.parse_integer()?)
+                    } else {
+                        None
+                    };
+                    let max = if self.check(TokenKind::To) {
+                        self.advance();
+                        Some(self.parse_integer()?)
+                    } else {
+                        None
+                    };
+                    self.eat(TokenKind::Characters);
+                    let depending_on = if self.check(TokenKind::Depending) {
+                        self.advance();
+                        self.eat(TokenKind::OnKw);
+                        Some(self.expect_identifier()?)
+                    } else {
+                        None
+                    };
+                    record_varying = Some(RecordVarying {
+                        min,
+                        max,
+                        depending_on,
+                    });
+                }
             } else if self.check(TokenKind::Label) {
                 self.advance();
                 self.eat(TokenKind::Records);
@@ -154,6 +202,48 @@ impl Parser {
                 self.eat_is();
                 let mode = self.expect_identifier()?;
                 recording_mode = Some(mode);
+            } else if self.check(TokenKind::Linage) {
+                // LINAGE IS n LINES [WITH FOOTING AT n]
+                //   [LINES AT TOP n] [LINES AT BOTTOM n]
+                self.advance();
+                self.eat_is();
+                let lines = self.parse_linage_value()?;
+                self.eat(TokenKind::Lines);
+                let mut footing_val = None;
+                let mut top_val = None;
+                let mut bottom_val = None;
+                // Parse optional sub-clauses
+                loop {
+                    if self.check(TokenKind::With)
+                        || self.check(TokenKind::Footing)
+                    {
+                        // WITH FOOTING AT n
+                        self.eat(TokenKind::With);
+                        self.eat(TokenKind::Footing);
+                        self.eat(TokenKind::At);
+                        footing_val = Some(self.parse_linage_value()?);
+                    } else if self.check(TokenKind::Lines) {
+                        self.advance();
+                        self.eat(TokenKind::At);
+                        if self.check(TokenKind::Top) {
+                            self.advance();
+                            top_val = Some(self.parse_linage_value()?);
+                        } else if self.check(TokenKind::Bottom) {
+                            self.advance();
+                            bottom_val = Some(self.parse_linage_value()?);
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                linage = Some(LinageClause {
+                    lines,
+                    footing: footing_val,
+                    top: top_val,
+                    bottom: bottom_val,
+                });
             } else if self.check(TokenKind::Data) {
                 // DATA RECORD IS / DATA RECORDS ARE — obsolete clause, skip
                 self.advance();
@@ -181,6 +271,7 @@ impl Parser {
                     && !self.check(TokenKind::Record)
                     && !self.check(TokenKind::Label)
                     && !self.check(TokenKind::Recording)
+                    && !self.check(TokenKind::Linage)
                     && !self.at_eof()
                 {
                     self.advance();
@@ -201,9 +292,11 @@ impl Parser {
             file_name,
             block_contains,
             record_contains,
+            record_varying,
             label_records,
             data_records,
             recording_mode,
+            linage,
             items,
             span: start_span.merge(&end_span),
         })
@@ -587,18 +680,29 @@ impl Parser {
                 self.advance();
                 self.eat(TokenKind::Key);
                 self.eat_is();
-                ascending_keys.push(self.parse_qualified_name()?);
+                loop {
+                    ascending_keys.push(self.parse_qualified_name()?);
+                    if !self.check(TokenKind::Identifier) {
+                        break;
+                    }
+                }
             } else if self.check(TokenKind::Descending) {
                 self.advance();
                 self.eat(TokenKind::Key);
                 self.eat_is();
-                descending_keys.push(self.parse_qualified_name()?);
+                loop {
+                    descending_keys.push(self.parse_qualified_name()?);
+                    if !self.check(TokenKind::Identifier) {
+                        break;
+                    }
+                }
             } else if self.check(TokenKind::Indexed) {
                 self.advance();
                 self.eat(TokenKind::By);
                 loop {
                     let idx = self.expect_identifier()?;
                     indexed_by.push(idx);
+                    let _ = self.eat(TokenKind::Comma);
                     if !self.check(TokenKind::Identifier) {
                         break;
                     }
@@ -675,6 +779,20 @@ impl Parser {
             })
         } else {
             self.error("expected integer");
+            Err(())
+        }
+    }
+
+    /// Parse a LINAGE value: either an integer literal or a data-name.
+    fn parse_linage_value(&mut self) -> Result<LinageValue, ()> {
+        if self.check(TokenKind::IntegerLiteral) {
+            let v = self.parse_integer()?;
+            Ok(LinageValue::Integer(v))
+        } else if self.check(TokenKind::Identifier) {
+            let name = self.expect_identifier()?;
+            Ok(LinageValue::DataName(name))
+        } else {
+            self.error("expected integer or data-name for LINAGE value");
             Err(())
         }
     }

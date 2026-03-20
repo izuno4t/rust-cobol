@@ -1725,10 +1725,10 @@ PROCEDURE DIVISION.
 
     let c_code = generate_c(&hir);
 
-    // OPEN should capture return value and set FILE STATUS
+    // OPEN should capture return value and set FILE STATUS via intermediate buffer
     assert!(
-        c_code.contains("snprintf((char*)WS_FS"),
-        "OPEN should update FILE STATUS variable, got:\n{}",
+        c_code.contains("memcpy(&WS_FS, _fs_buf, 2)"),
+        "OPEN should update FILE STATUS variable via memcpy, got:\n{}",
         c_code
     );
 }
@@ -2486,6 +2486,7 @@ fn test_c2_move_corresponding() {
                             },
                             initial_value: None,
                             occurs: None,
+                            indexed_by: Vec::new(),
                             redefines: None,
                             renames: None,
                             screen_info: None,
@@ -2496,6 +2497,7 @@ fn test_c2_move_corresponding() {
                             data_type: HirType::Alphanumeric { size: 10 },
                             initial_value: None,
                             occurs: None,
+                            indexed_by: Vec::new(),
                             redefines: None,
                             renames: None,
                             screen_info: None,
@@ -2506,6 +2508,7 @@ fn test_c2_move_corresponding() {
                 },
                 initial_value: None,
                 occurs: None,
+                indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
                 screen_info: None,
@@ -2524,6 +2527,7 @@ fn test_c2_move_corresponding() {
                             },
                             initial_value: None,
                             occurs: None,
+                            indexed_by: Vec::new(),
                             redefines: None,
                             renames: None,
                             screen_info: None,
@@ -2534,6 +2538,7 @@ fn test_c2_move_corresponding() {
                             data_type: HirType::Alphanumeric { size: 10 },
                             initial_value: None,
                             occurs: None,
+                            indexed_by: Vec::new(),
                             redefines: None,
                             renames: None,
                             screen_info: None,
@@ -2544,6 +2549,7 @@ fn test_c2_move_corresponding() {
                 },
                 initial_value: None,
                 occurs: None,
+                indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
                 screen_info: None,
@@ -2607,6 +2613,7 @@ fn test_c2_add_corresponding() {
                         },
                         initial_value: None,
                         occurs: None,
+                        indexed_by: Vec::new(),
                         redefines: None,
                         renames: None,
                         screen_info: None,
@@ -2616,6 +2623,7 @@ fn test_c2_add_corresponding() {
                 },
                 initial_value: None,
                 occurs: None,
+                indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
                 screen_info: None,
@@ -2633,6 +2641,7 @@ fn test_c2_add_corresponding() {
                         },
                         initial_value: None,
                         occurs: None,
+                        indexed_by: Vec::new(),
                         redefines: None,
                         renames: None,
                         screen_info: None,
@@ -2642,6 +2651,7 @@ fn test_c2_add_corresponding() {
                 },
                 initial_value: None,
                 occurs: None,
+                indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
                 screen_info: None,

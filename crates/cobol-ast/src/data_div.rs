@@ -40,12 +40,16 @@ pub struct FileDescription {
     pub block_contains: Option<BlockContains>,
     /// RECORD CONTAINS clause.
     pub record_contains: Option<RecordContains>,
+    /// RECORD IS VARYING clause.
+    pub record_varying: Option<RecordVarying>,
     /// LABEL RECORDS clause (deprecated in COBOL 2002).
     pub label_records: Option<LabelRecords>,
     /// DATA RECORDS clause (deprecated in COBOL 2002).
     pub data_records: Vec<SmolStr>,
     /// RECORDING MODE clause (implementation-specific).
     pub recording_mode: Option<SmolStr>,
+    /// LINAGE clause.
+    pub linage: Option<LinageClause>,
     /// The record description entries under this FD/SD.
     pub items: Vec<DataItem>,
     pub span: Span,
@@ -85,6 +89,35 @@ pub struct RecordContains {
 pub enum LabelRecords {
     Standard,
     Omitted,
+}
+
+/// RECORD IS VARYING IN SIZE clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordVarying {
+    pub min: Option<u32>,
+    pub max: Option<u32>,
+    /// DEPENDING ON data-name.
+    pub depending_on: Option<SmolStr>,
+}
+
+/// LINAGE IS clause for logical page layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinageClause {
+    /// Number of lines in the page body.
+    pub lines: LinageValue,
+    /// WITH FOOTING AT line-number.
+    pub footing: Option<LinageValue>,
+    /// LINES AT TOP count.
+    pub top: Option<LinageValue>,
+    /// LINES AT BOTTOM count.
+    pub bottom: Option<LinageValue>,
+}
+
+/// A LINAGE value can be an integer literal or a data-name reference.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinageValue {
+    Integer(u32),
+    DataName(SmolStr),
 }
 
 /// A data item (record description entry) in the DATA DIVISION.

@@ -188,6 +188,26 @@ pub extern "C" fn cobol_func_min_int(a: i64, b: i64) -> i64 {
     a.min(b)
 }
 
+/// FUNCTION MAX (N-arg integer variant) -- return the largest of N values.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_max_int_n(values: *const i64, count: i32) -> i64 {
+    if count <= 0 || values.is_null() {
+        return 0;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(values, count as usize) };
+    slice.iter().copied().max().unwrap_or(0)
+}
+
+/// FUNCTION MIN (N-arg integer variant) -- return the smallest of N values.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_min_int_n(values: *const i64, count: i32) -> i64 {
+    if count <= 0 || values.is_null() {
+        return 0;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(values, count as usize) };
+    slice.iter().copied().min().unwrap_or(0)
+}
+
 /// FUNCTION MOD -- remainder (COBOL MOD semantics: result has the sign
 /// of the divisor).
 ///
@@ -419,6 +439,29 @@ pub unsafe extern "C" fn cobol_func_median(values: *const f64, count: i32) -> f6
     } else {
         (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
     }
+}
+
+/// FUNCTION RANGE -- max - min of an array of f64 values.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_range(values: *const f64, count: i32) -> f64 {
+    if count <= 0 {
+        return 0.0;
+    }
+    let slice = std::slice::from_raw_parts(values, count as usize);
+    let mut min = slice[0];
+    let mut max = slice[0];
+    for &v in &slice[1..] {
+        if v < min {
+            min = v;
+        }
+        if v > max {
+            max = v;
+        }
+    }
+    max - min
 }
 
 /// FUNCTION MIDRANGE -- (min + max) / 2 of an array of f64 values.
@@ -679,6 +722,86 @@ pub unsafe extern "C" fn cobol_func_ord_min(values: *const i64, count: i32) -> i
         }
     }
     (min_idx + 1) as i64 // 1-based
+}
+
+/// FUNCTION MAX (alphanumeric variant) -- return buffer index of the greatest value.
+/// `ptrs` is an array of (ptr, len) pairs packed as (ptr: *const u8, len: u32) structs.
+/// Returns the index (0-based) of the maximum element.
+///
+/// # Safety
+/// All pointers in the array must be valid for their respective lengths.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_max_alpha(
+    ptrs: *const *const u8,
+    lens: *const u32,
+    count: i32,
+) -> i32 {
+    if count <= 0 {
+        return 0;
+    }
+    let ptr_slice = core::slice::from_raw_parts(ptrs, count as usize);
+    let len_slice = core::slice::from_raw_parts(lens, count as usize);
+    let mut max_idx = 0i32;
+    for i in 1..count as usize {
+        let a = core::slice::from_raw_parts(ptr_slice[max_idx as usize], len_slice[max_idx as usize] as usize);
+        let b = core::slice::from_raw_parts(ptr_slice[i], len_slice[i] as usize);
+        if b > a {
+            max_idx = i as i32;
+        }
+    }
+    max_idx
+}
+
+/// FUNCTION MIN (alphanumeric variant) -- return buffer index of the smallest value.
+///
+/// # Safety
+/// All pointers in the array must be valid for their respective lengths.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_min_alpha(
+    ptrs: *const *const u8,
+    lens: *const u32,
+    count: i32,
+) -> i32 {
+    if count <= 0 {
+        return 0;
+    }
+    let ptr_slice = core::slice::from_raw_parts(ptrs, count as usize);
+    let len_slice = core::slice::from_raw_parts(lens, count as usize);
+    let mut min_idx = 0i32;
+    for i in 1..count as usize {
+        let a = core::slice::from_raw_parts(ptr_slice[min_idx as usize], len_slice[min_idx as usize] as usize);
+        let b = core::slice::from_raw_parts(ptr_slice[i], len_slice[i] as usize);
+        if b < a {
+            min_idx = i as i32;
+        }
+    }
+    min_idx
+}
+
+/// FUNCTION ORD-MAX (alphanumeric variant) -- 1-based ordinal position of the max.
+///
+/// # Safety
+/// All pointers in the array must be valid for their respective lengths.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_ord_max_alpha(
+    ptrs: *const *const u8,
+    lens: *const u32,
+    count: i32,
+) -> i64 {
+    (cobol_func_max_alpha(ptrs, lens, count) + 1) as i64
+}
+
+/// FUNCTION ORD-MIN (alphanumeric variant) -- 1-based ordinal position of the min.
+///
+/// # Safety
+/// All pointers in the array must be valid for their respective lengths.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_ord_min_alpha(
+    ptrs: *const *const u8,
+    lens: *const u32,
+    count: i32,
+) -> i64 {
+    (cobol_func_min_alpha(ptrs, lens, count) + 1) as i64
 }
 
 /// FUNCTION STORED-CHAR-LENGTH -- length of a string excluding trailing spaces.
@@ -1193,6 +1316,13 @@ mod tests {
         let vals = [4.0, 1.0, 3.0, 2.0];
         let m = unsafe { cobol_func_median(vals.as_ptr(), 4) };
         assert!((m - 2.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_range() {
+        let vals = [1.0, 5.0, 3.0, 2.0];
+        let r = unsafe { cobol_func_range(vals.as_ptr(), 4) };
+        assert!((r - 4.0).abs() < 1e-10); // 5 - 1 = 4
     }
 
     #[test]

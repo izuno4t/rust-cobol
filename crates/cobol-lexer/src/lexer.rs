@@ -344,6 +344,35 @@ impl Lexer {
         }
     }
 
+    /// Like `make_token`, but normalises the text to uppercase.
+    /// Used for identifiers and keywords since COBOL is case-insensitive.
+    fn make_token_upper(&self, kind: TokenKind, start: usize, end: usize) -> Token {
+        if start >= self.offset_map.len() {
+            return self.make_eof();
+        }
+        let raw = &self.content[start..end];
+        let text: SmolStr = if raw.bytes().any(|b| b.is_ascii_lowercase()) {
+            SmolStr::from(raw.to_ascii_uppercase())
+        } else {
+            SmolStr::from(raw)
+        };
+        let global_start = self.offset_map[start];
+        let global_end = if end > 0 && end <= self.offset_map.len() {
+            if end < self.offset_map.len() {
+                self.offset_map[end]
+            } else {
+                self.offset_map.last().unwrap_or(&0) + 1
+            }
+        } else {
+            global_start
+        };
+        Token {
+            kind,
+            text,
+            span: Span::new(global_start, global_end, self.file_id),
+        }
+    }
+
     /// Determines whether a `+` or `-` should be treated as a sign prefix
     /// (part of a numeric literal) rather than an operator.
     ///
@@ -395,11 +424,12 @@ impl Lexer {
             if kind == TokenKind::Pic {
                 self.picture_mode = true;
             }
-            return self.make_token(kind, start, self.pos);
+            return self.make_token_upper(kind, start, self.pos);
         }
 
         self.at_statement_start = false;
-        self.make_token(TokenKind::Identifier, start, self.pos)
+        // COBOL is case-insensitive; normalise identifiers to uppercase.
+        self.make_token_upper(TokenKind::Identifier, start, self.pos)
     }
 
     /// Tries to lex a level number at the current position.

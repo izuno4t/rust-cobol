@@ -547,7 +547,15 @@ pub unsafe extern "C" fn cobol_file_write(
     if record_ptr.is_null() || record_len == 0 {
         return FS_IO_ERROR;
     }
-    let data = std::slice::from_raw_parts(record_ptr, record_len as usize);
+    let raw_data = std::slice::from_raw_parts(record_ptr, record_len as usize);
+    // Replace NUL bytes with spaces to avoid binary output in text files
+    let mut data_buf: Vec<u8> = raw_data.to_vec();
+    for b in data_buf.iter_mut() {
+        if *b == 0 {
+            *b = b' ';
+        }
+    }
+    let data = &data_buf[..];
 
     with_file_table(|table| {
         let file = match table.get_mut(&file_id) {

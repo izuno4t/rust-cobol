@@ -409,50 +409,66 @@ GnuCOBOLはv2.2で99.79%通過（9,688/9,708）。
 - Makefile統合（`make nist MODULE=NC`）
 - newcob.val取得・展開済み（12モジュール、全プログラム抽出済み）
 
-**初回実行結果（2026-03-19）:**
+**初回実行結果（2026-03-19）:** PASS 0 / 250テスト（4モジュールのみ）
 
-| モジュール | 総数 | PASS | INSPECT | COMPILE_ERROR | FAIL | SKIP |
+**最新実行結果（2026-03-20 Round 8）:** 全12モジュール実行
+
+| モジュール | 総数 | PASS | FAIL | CErr | RErr | Rate |
 |---|---|---|---|---|---|---|
-| NC (Nucleus) | 96 | 0 | 48 | 46 | 1 | 1 |
-| IF (Intrinsic Functions) | 45 | 0 | 0 | 45 | 0 | 0 |
-| IC (Inter-program Comm.) | 25 | 0 | 5 | 20 | 0 | 0 |
-| SQ (Sequential I/O) | 84 | 0 | 2 | 82 | 0 | 0 |
-| SM (Source Manip.) | 13 | — | — | — | — | — |
-| IX (Indexed I/O) | 29 | — | — | — | — | — |
-| RL (Relative I/O) | 26 | — | — | — | — | — |
-| ST (SORT/MERGE) | 25 | — | — | — | — | — |
-| RW (Report Writer) | 6 | — | — | — | — | — |
-| DB (Debugging) | 15 | — | — | — | — | — |
-| SG (Segmentation) | 13 | — | — | — | — | — |
-| OB (Obsolete) | 5 | — | — | — | — | — |
+| NC (Nucleus) | 95 | 53 | 0 | 37 | 2 | 55% |
+| SM (Source Manip.) | 13 | 4 | 0 | 7 | 0 | 30% |
+| IC (Inter-program Comm.) | 25 | 0 | 0 | 12 | 0 | 0% |
+| SQ (Sequential I/O) | 84 | 70 | 0 | 5 | 0 | 83% |
+| IF (Intrinsic Functions) | 45 | 30 | 0 | 1 | 5 | 66% |
+| IX (Indexed I/O) | 29 | 13 | 0 | 10 | 0 | 44% |
+| RL (Relative I/O) | 26 | 22 | 0 | 1 | 0 | 84% |
+| ST (SORT/MERGE) | 25 | 11 | 0 | 6 | 2 | 44% |
+| RW (Report Writer) | 6 | 0 | 0 | 4 | 0 | 0% |
+| DB (Debugging) | 15 | 3 | 0 | 3 | 0 | 20% |
+| SG (Segmentation) | 13 | 0 | 0 | 10 | 0 | 0% |
+| OB (Obsolete) | 5 | 2 | 0 | 2 | 0 | 40% |
+| **TOTAL** | **381** | **208** | **0** | **98** | **9** | **54%** |
 
-（SM〜OBは未実行。OBはサンプルコンパイル成功確認済み）
+**進捗推移:**
+- 初回(3/19): PASS 0/250 (0%) — 4モジュールのみ
+- Round 2: PASS 49/381 (12%) — 全モジュール実行開始
+- Round 7: PASS 158/381 (41%)
+- Round 8: PASS 208/381 (54%) — 現在
 
-**コンパイルエラーの主要原因（影響プログラム数順）:**
+**第2回で実施した修正:**
 
-1. **`DATA RECORD IS` 句パーサー未対応** — SQ 74件 + ST/RW/DB/SG全件。廃止予定句だがNISTで広く使用
-2. **lexer.rs:659 型不一致** — IF全45件。`lex_number()`の戻り値型エラー。1行修正で解消
-3. **NC sema: 未定義データ名** — NC 14件。修飾名解決、INDEXED BY、CORRESPONDING、RENAMES等
-4. **NC codegen: C型不一致** — NC 18件。OCCURS配列、REDEFINES union、混合型演算
-5. **IC: コンマ区切り識別子リスト** — IC 8件。`MOVE TO a, b` / `USING a, b`
-6. **NC parser: 参照変更・クラス条件** — NC 6件。`(start:length)`、`IS NUMERIC`
-7. **IC: 複数プログラム構成** — IC 5件。`END PROGRAM` + 次の `IDENTIFICATION DIVISION`
-8. **IX: DECLARATIVES節** — IX全件。`USE AFTER ERROR` のパース
-9. **SM: COPYライブラリパス** — SM全件。`COPY ... OF library-name`
-10. **RL: RELATIVEファイルcodegen** — RL全件。レコードバッファ変数宣言欠落
+1. ~~`DATA RECORD IS` / `VALUE OF` 句パーサー~~ — FD/SD廃止予定句のスキップ対応
+2. ~~preprocess.sh列7 P/C/Y/S 対応~~ — NISTテスト固有のインジケータ文字をコメント/空白化
+3. ~~PERFORM TEST BEFORE/AFTER~~ — WITH省略時の対応
+4. ~~参照変更 `(start:length)` パーサー~~ — QualifiedName に ref_mod フィールド追加
+5. ~~PERFORM proc data-name TIMES~~ — データ名によるTIMES回数指定
+6. ~~ALTER文パーサー + codegen~~ — 廃止予定のGO TO変更文
+7. ~~STOP "literal" パーサー~~ — STOP RUN以外のSTOP文
+8. ~~カンマ区切り識別子リスト~~ — CALL USING, PROCEDURE DIVISION USING
+9. ~~複数プログラム構成パーサー~~ — END PROGRAM後の次のプログラム
+10. ~~USE GLOBAL AFTER ERROR PROCEDURE~~ — USEのGLOBALキーワード
+11. ~~FDレコードバッファ変数のcodegen~~ — READ/RETURN/SORTで正しいレコード変数を使用
+12. ~~CobolDecimal型演算codegen~~ — パック10進数の型変換関数挿入
+13. ~~統計系組込関数の実装~~ — MEAN, MEDIAN, MIDRANGE, VARIANCE, STANDARD-DEVIATION, PRESENT-VALUE
+14. ~~FILLER項目のHIR包含~~ — グループ構造体にFILLER子要素を含める
+15. ~~GO TO codegen~~ — Cラベル+dispatch tableによるセクション間ジャンプ
+16. ~~ファイルWRITEのNULバイト除去~~ — 出力ファイルのバイナリ混入防止
+17. ~~run_nist.sh PASS/FAIL判定改善~~ — バイナリ対応(-a)、FAIL*パターン修正
 
-**修正優先順位（最大影響順）:**
+**残りのCOMPILE_ERROR主要原因（影響プログラム数順）:**
 
-| 優先度 | 修正内容 | 解消見込み |
-|---|---|---|
-| P1 | lexer.rs 型修正 | IF 45件 |
-| P2 | `DATA RECORD IS` パーサー | SQ 74件 + ST 25 + RW 6 + DB 15 + SG 13 = 133件 |
-| P3 | NC sema/codegen修正群 | NC 46件 |
-| P4 | IC パーサー修正群 | IC 20件 |
-| P5 | DECLARATIVES パーサー | IX 29件 |
-| P6 | COPY OF ライブラリ対応 | SM 13件 |
-| P7 | RELATIVE ファイルcodegen | RL 26件 |
-| P8 | INSPECT結果の検証・修正 | NC 48件 + IC 5件 + SQ 2件 |
+1. **SQ/IX/RL/ST/DB/SG/RW: ファイルI/O関連codegen不備** — レコード変数型不一致、REDEFINES union、OCCURS配列
+2. **NC sema: 未定義データ名** — 修飾名解決、INDEXED BY、CORRESPONDING、SPECIAL-NAMES
+3. **NC codegen: 配列・union型不一致** — OCCURS、REDEFINES
+4. **IF: 組込関数codegen不備** — 関数名の大文字/小文字不一致、引数渡し方法
+5. **IC: preprocess後の新規エラー** — Y/S行有効化による新たなパース/codegen問題
+6. **IX: DECLARATIVES節** — DECLARATIVES/END DECLARATIVES パース未対応
+7. **SM: COPY ... OF library-name** — ライブラリパス解決
+
+**RuntimeError主要原因:**
+
+1. **GO TO dispatch 伝播の不具合** — PERFORM内のGO TOがbodyに正しく伝播しないケース
+2. **STOP RUNの不意な到達** — セクション構造のフォールスルー制御
 
 製品版の基準: NC + IF + SQ + IC で95%以上通過。
 

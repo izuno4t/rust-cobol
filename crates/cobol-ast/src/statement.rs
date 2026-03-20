@@ -87,6 +87,11 @@ pub enum Statement {
     Initiate(InitiateStatement),
     Generate(GenerateStatement),
     Terminate(TerminateStatement),
+
+    // --- Legacy ---
+    /// NEXT SENTENCE — transfers control to the implicit continuation
+    /// point after the next period-terminated sentence.
+    NextSentence,
 }
 
 // ---------------------------------------------------------------------------

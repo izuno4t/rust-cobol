@@ -127,19 +127,20 @@ impl Parser {
 
         let file_name = self.expect_identifier()?;
 
-        self.expect(TokenKind::Assign)?;
-        self.eat(TokenKind::To);
-
-        let assign_to = self.expect_identifier_or_literal()?;
-
+        let mut assign_to = None;
         let mut organization = None;
         let mut access_mode = None;
         let mut record_key = None;
         let mut alternate_keys = Vec::new();
         let mut file_status = None;
 
+        // COBOL SELECT clauses are order-independent; loop until period or EOF.
         while !self.check(TokenKind::Period) && !self.at_eof() {
-            if self.check(TokenKind::Organization) {
+            if self.check(TokenKind::Assign) {
+                self.advance();
+                self.eat(TokenKind::To);
+                assign_to = Some(self.expect_identifier_or_literal()?);
+            } else if self.check(TokenKind::Organization) {
                 self.advance();
                 self.eat_is();
                 organization = Some(self.parse_file_organization()?);
@@ -178,6 +179,9 @@ impl Parser {
                 self.advance();
             }
         }
+
+        // ASSIGN TO is required; default to file name if not specified.
+        let assign_to = assign_to.unwrap_or_else(|| file_name.clone());
 
         self.expect(TokenKind::Period)?;
         let end_span = self.span();

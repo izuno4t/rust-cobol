@@ -106,9 +106,85 @@ pub fn scan_replace_directives(source: &str) -> Vec<ReplaceDirective> {
 
 /// Finds the next occurrence of a keyword (case-insensitive) starting from `pos`.
 /// Returns the byte offset of the start of the keyword, or None.
+///
+/// Skips occurrences that appear inside string literals (single or double quotes)
+/// or inside comment lines (fixed format: column 7 is '*' or '/'; free format: `*>`).
 fn find_keyword(source: &str, start: usize, keyword: &str) -> Option<usize> {
     let source_upper = source[start..].to_ascii_uppercase();
-    source_upper.find(keyword).map(|offset| start + offset)
+    let mut search_from = 0;
+    while let Some(offset) = source_upper[search_from..].find(keyword) {
+        let abs_pos = start + search_from + offset;
+
+        // Check if this position is inside a comment line or string literal.
+        if is_in_comment_line(source, abs_pos) || is_in_string_literal(source, abs_pos) {
+            search_from = search_from + offset + 1;
+            continue;
+        }
+
+        return Some(abs_pos);
+    }
+    None
+}
+
+/// Returns true if `pos` falls on a comment line.
+///
+/// Fixed format: column 7 (0-indexed byte 6) of the line is '*' or '/'.
+/// Free format: the line (after leading spaces) starts with `*>`.
+fn is_in_comment_line(source: &str, pos: usize) -> bool {
+    // Find the start of the current line.
+    let line_start = match source[..pos].rfind('\n') {
+        Some(nl) => nl + 1,
+        None => 0,
+    };
+    let line_bytes = source[line_start..].as_bytes();
+
+    // Fixed format check: column 7 (index 6) is '*' or '/'
+    if line_bytes.len() > 6 && (line_bytes[6] == b'*' || line_bytes[6] == b'/') {
+        return true;
+    }
+
+    // Free format check: line starts with optional whitespace then `*>`
+    let trimmed = source[line_start..].trim_start();
+    if trimmed.starts_with("*>") {
+        return true;
+    }
+
+    false
+}
+
+/// Returns true if `pos` is inside a string literal on the same line.
+///
+/// Scans from the start of the line up to `pos`, tracking open/close quotes.
+fn is_in_string_literal(source: &str, pos: usize) -> bool {
+    let line_start = match source[..pos].rfind('\n') {
+        Some(nl) => nl + 1,
+        None => 0,
+    };
+
+    let bytes = source.as_bytes();
+    let mut in_string = false;
+    let mut quote_char: u8 = 0;
+    let mut i = line_start;
+
+    while i < pos {
+        let b = bytes[i];
+        if in_string {
+            if b == quote_char {
+                // Check for doubled quote (escape): e.g. "" or ''
+                if i + 1 < bytes.len() && bytes[i + 1] == quote_char {
+                    i += 2; // skip the escaped quote
+                    continue;
+                }
+                in_string = false;
+            }
+        } else if b == b'"' || b == b'\'' {
+            in_string = true;
+            quote_char = b;
+        }
+        i += 1;
+    }
+
+    in_string
 }
 
 /// Checks whether the positions `start` and `end` form a word boundary:
@@ -475,5 +551,59 @@ mod tests {
         assert!(result.is_some());
         let (text, _) = result.unwrap();
         assert_eq!(text, "HELLO WORLD");
+    }
+
+    #[test]
+    fn test_copy_in_string_literal_ignored() {
+        // COPY inside a double-quoted string should not be detected.
+        let source = "MOVE \"COPY FILE DESCR\" TO FEATURE.\n";
+        let stmts = scan_copy_statements(source);
+        assert!(stmts.is_empty(), "COPY inside string literal should be ignored");
+    }
+
+    #[test]
+    fn test_copy_in_single_quoted_string_ignored() {
+        let source = "MOVE 'COPY FILE DESCR' TO FEATURE.\n";
+        let stmts = scan_copy_statements(source);
+        assert!(stmts.is_empty(), "COPY inside single-quoted string should be ignored");
+    }
+
+    #[test]
+    fn test_copy_in_fixed_format_comment_ignored() {
+        // Fixed format: column 7 (index 6) is '*' → comment line.
+        let source = "000100*    COPY MYBOOK.\n";
+        let stmts = scan_copy_statements(source);
+        assert!(stmts.is_empty(), "COPY in fixed-format comment line should be ignored");
+    }
+
+    #[test]
+    fn test_copy_in_fixed_format_comment_slash_ignored() {
+        // Fixed format: column 7 (index 6) is '/' → comment line.
+        let source = "000100/    COPY MYBOOK.\n";
+        let stmts = scan_copy_statements(source);
+        assert!(stmts.is_empty(), "COPY in fixed-format '/' comment line should be ignored");
+    }
+
+    #[test]
+    fn test_copy_in_free_format_comment_ignored() {
+        let source = "*> COPY MYBOOK.\n";
+        let stmts = scan_copy_statements(source);
+        assert!(stmts.is_empty(), "COPY in free-format comment should be ignored");
+    }
+
+    #[test]
+    fn test_copy_after_string_still_found() {
+        // COPY after a string literal should still be found.
+        let source = "MOVE \"HELLO\" TO WS-FIELD.\nCOPY mybook.\n";
+        let stmts = scan_copy_statements(source);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0].copybook_name, "mybook");
+    }
+
+    #[test]
+    fn test_replace_in_string_literal_ignored() {
+        let source = "MOVE \"REPLACE OLD BY NEW\" TO WS-FIELD.\n";
+        let directives = scan_replace_directives(source);
+        assert!(directives.is_empty(), "REPLACE inside string literal should be ignored");
     }
 }

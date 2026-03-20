@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROGRAMS_DIR="$SCRIPT_DIR/programs"
 RESULTS_DIR="$SCRIPT_DIR/results"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
+COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
 
 # Module execution order (by priority)
 ALL_MODULES=(NC SM IC SQ IF IX RL ST RW DB SG OB)
@@ -46,7 +47,7 @@ run_program() {
 
     # Compile
     local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
-    if $COBOLC "$preprocessed" -o "$bin" --source-format fixed 2>"$compile_log"; then
+    if $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" 2>"$compile_log"; then
         # Run with timeout (30 seconds)
         if timeout 30 "$bin" > "$log" 2>&1; then
             # NIST programs write to PRINT-FILE, also check stdout
@@ -59,9 +60,9 @@ run_program() {
 
             # Parse results — count PASS/FAIL in output
             local pass
-            pass=$(grep -c " PASS " "$result_file" 2>/dev/null) || pass=0
+            pass=$(grep -ca " PASS " "$result_file" 2>/dev/null) || pass=0
             local fail
-            fail=$(grep -c "FAIL" "$result_file" 2>/dev/null) || fail=0
+            fail=$(grep -ca "FAIL\*" "$result_file" 2>/dev/null) || fail=0
 
             # Clean up print file for next test
             rm -f "$print_file"

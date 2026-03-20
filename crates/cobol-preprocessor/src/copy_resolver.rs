@@ -54,6 +54,8 @@ impl CopyResolver {
     ///
     /// Tries multiple extensions for each candidate directory.
     pub fn resolve(&self, copybook_name: &str, library_name: Option<&str>) -> Option<PathBuf> {
+        // First pass: search with the library name (as a subdirectory) if given,
+        // or directly in each search path.
         for base_dir in &self.search_paths {
             let dir = if let Some(lib) = library_name {
                 base_dir.join(lib)
@@ -63,6 +65,19 @@ impl CopyResolver {
 
             if let Some(path) = self.try_resolve_in_dir(&dir, copybook_name) {
                 return Some(path);
+            }
+        }
+
+        // Fallback: when a library name was specified but no subdirectory matched,
+        // try resolving the copybook directly in each search path (ignoring the
+        // library name). This handles environments where copybooks live in a flat
+        // directory rather than being organised into library subdirectories (e.g.
+        // NIST CCVS 85 COPYLIB).
+        if library_name.is_some() {
+            for base_dir in &self.search_paths {
+                if let Some(path) = self.try_resolve_in_dir(base_dir, copybook_name) {
+                    return Some(path);
+                }
             }
         }
 
@@ -195,6 +210,29 @@ mod tests {
         let resolver = CopyResolver::new(&config, &source_file);
         let result = resolver.resolve("libbook", Some("mylib"));
         assert!(result.is_some(), "should find libbook in mylib");
+    }
+
+    #[test]
+    fn test_resolve_library_fallback_to_flat() {
+        // When a library name is specified but no matching subdirectory exists,
+        // the resolver should fall back to searching the flat directory.
+        let dir = tempfile::tempdir().unwrap();
+        let source_file = dir.path().join("test.cob");
+        fs::write(&source_file, "").unwrap();
+
+        // Copybook lives directly in the search path (no "mylib" subdirectory).
+        fs::write(dir.path().join("ALTLB.cpy"), "content").unwrap();
+
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            ..Default::default()
+        };
+        let resolver = CopyResolver::new(&config, &source_file);
+        let result = resolver.resolve("ALTLB", Some("mylib"));
+        assert!(
+            result.is_some(),
+            "should find ALTLB.cpy via flat-directory fallback"
+        );
     }
 
     #[test]

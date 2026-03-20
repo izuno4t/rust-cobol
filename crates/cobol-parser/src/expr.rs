@@ -98,6 +98,42 @@ impl Parser {
         }
     }
 
+    /// Look ahead from a `(` to determine whether the matching `)` is
+    /// followed by a comparison operator (=, >, <, etc.).  If so, the
+    /// parentheses group an arithmetic expression, not a condition.
+    fn is_paren_followed_by_comparison(&self) -> bool {
+        let mut offset = 1; // skip the '('
+        let mut depth = 1i32;
+        loop {
+            let tok = self.peek(offset);
+            match tok.kind {
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Check what follows ')'
+                        let after = self.peek(offset + 1);
+                        return matches!(
+                            after.kind,
+                            TokenKind::Equals
+                                | TokenKind::GreaterThan
+                                | TokenKind::LessThan
+                                | TokenKind::GreaterEqual
+                                | TokenKind::LessEqual
+                                | TokenKind::NotEqual
+                                | TokenKind::Greater
+                                | TokenKind::Less
+                                | TokenKind::Equal
+                        );
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            offset += 1;
+        }
+    }
+
     /// Parse reference modification: `(start : length)` or `(start :)`.
     ///
     /// Called when the current token is `(` and we already know this is
@@ -476,12 +512,17 @@ impl Parser {
     }
 
     fn parse_primary_condition(&mut self) -> Result<Condition, ()> {
-        // Parenthesized condition
+        // Parenthesized condition or parenthesized expression
         if self.check(TokenKind::LeftParen) {
-            self.advance();
-            let cond = self.parse_condition()?;
-            self.expect(TokenKind::RightParen)?;
-            return Ok(Condition::Paren(Box::new(cond)));
+            // Look ahead past the matching ')' to see if a comparison operator
+            // follows. If so, the parens group an expression (e.g. (A + B) = C),
+            // not a condition. Fall through to parse_expr which will handle it.
+            if !self.is_paren_followed_by_comparison() {
+                self.advance();
+                let cond = self.parse_condition()?;
+                self.expect(TokenKind::RightParen)?;
+                return Ok(Condition::Paren(Box::new(cond)));
+            }
         }
 
         // Parse an expression, then check for comparison/class/sign

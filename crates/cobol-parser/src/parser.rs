@@ -148,6 +148,12 @@ impl Parser {
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
         }
+        // Skip semicolons — they are noise separators in COBOL
+        while self.current().kind == TokenKind::Semicolon
+            && self.pos < self.tokens.len() - 1
+        {
+            self.pos += 1;
+        }
         tok
     }
 

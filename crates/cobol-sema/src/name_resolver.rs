@@ -118,6 +118,25 @@ impl<'a> NameResolver<'a> {
             parent_name: None,
         });
 
+        // When a LINAGE clause is present, register the implicit
+        // LINAGE-COUNTER special register as a numeric data item.
+        if fd.linage.is_some() {
+            self.table.define(Symbol {
+                name: SmolStr::new("LINAGE-COUNTER"),
+                kind: SymbolKind::DataItem {
+                    level: 1,
+                    is_group: false,
+                },
+                data_type: Some(CobolType::Numeric {
+                    size: 6,
+                    decimal_places: 0,
+                    is_signed: false,
+                }),
+                span: fd.span,
+                parent_name: None,
+            });
+        }
+
         // Register record items under the file.
         for item in &fd.items {
             self.register_data_item(item, Some(&fd.file_name));
@@ -666,7 +685,7 @@ impl<'a> NameResolver<'a> {
             // Report writer statements — no name resolution needed for now
             Statement::Initiate(_) | Statement::Generate(_) | Statement::Terminate(_) => {}
             // Obsolete statements — minimal name resolution
-            Statement::StopLiteral(_) | Statement::Alter(_) => {}
+            Statement::StopLiteral(_) | Statement::Alter(_) | Statement::NextSentence => {}
         }
     }
 

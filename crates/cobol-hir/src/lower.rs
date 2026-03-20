@@ -57,13 +57,36 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         .map(collect_condition_names)
         .unwrap_or_default();
 
-    let data_items = program
+    let mut data_items = program
         .data
         .as_ref()
         .map(lower_data_division)
         .unwrap_or_default();
 
-    let (body, paragraphs) = program
+    // When any FD has a LINAGE clause, inject the implicit LINAGE-COUNTER
+    // special register as a top-level numeric data item so codegen declares it.
+    if let Some(data) = &program.data {
+        let has_linage = data.file_section.iter().any(|fd| fd.linage.is_some());
+        if has_linage {
+            data_items.push(HirDataItem {
+                name: SmolStr::new("LINAGE-COUNTER"),
+                data_type: HirType::Numeric {
+                    size: 6,
+                    decimal_places: 0,
+                    is_signed: false,
+                },
+                initial_value: None,
+                redefines: None,
+                renames: None,
+                occurs: None,
+                indexed_by: Vec::new(),
+                screen_info: None,
+                span: program.span,
+            });
+        }
+    }
+
+    let (body, mut paragraphs) = program
         .procedure
         .as_ref()
         .map(|proc| lower_procedure_division(proc, &condition_names))
@@ -79,7 +102,21 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let file_assignments = extract_file_assignments(program);
 
     // Lower DECLARATIVES sections (USE AFTER EXCEPTION handlers).
-    let declaratives = lower_declaratives(program, &condition_names);
+    // Also collect individual paragraphs defined inside declarative sections
+    // so they get proper forward declarations and function definitions in codegen.
+    let (declaratives, decl_paragraphs) = lower_declaratives(program, &condition_names);
+    // Only add declarative paragraphs that don't already exist in the main
+    // paragraph list (some COBOL programs reuse paragraph names across
+    // DECLARATIVES and normal procedure sections).
+    {
+        let existing: std::collections::HashSet<SmolStr> =
+            paragraphs.iter().map(|p| p.name.clone()).collect();
+        for dp in decl_paragraphs {
+            if !existing.contains(&dp.name) {
+                paragraphs.push(dp);
+            }
+        }
+    }
 
     // Extract FD/SD file-name → first record name mapping.
     let file_records = extract_file_records(program);
@@ -291,11 +328,18 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             .as_ref()
             .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
 
+        let indexed_by = item
+            .occurs
+            .as_ref()
+            .map(|o| o.indexed_by.clone())
+            .unwrap_or_default();
+
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
             initial_value,
             occurs,
+            indexed_by: indexed_by.clone(),
             redefines: item.redefines.clone(),
             renames,
             screen_info: None,
@@ -311,6 +355,7 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
                 data_type: HirType::Index,
                 initial_value: None,
                 occurs: None,
+                indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
                 screen_info: None,
@@ -379,6 +424,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             data_type,
             initial_value,
             occurs,
+            indexed_by: Vec::new(),
             redefines: item.redefines.clone(),
             renames,
             screen_info,
@@ -444,49 +490,63 @@ fn determine_hir_type(item: &DataItem) -> HirType {
             if child.level == 88 {
                 continue;
             }
-            if let Some(name) = &child.name {
-                let data_type = determine_hir_type(child);
-                let initial_value = child.value.as_ref().map(lower_value_clause);
-                let occurs = child.occurs.as_ref().map(|o| o.max);
-                let renames = child
-                    .renames
-                    .as_ref()
-                    .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
-                members.push(HirDataItem {
-                    name: name.clone(),
-                    data_type,
-                    initial_value,
-                    occurs,
-                    redefines: child.redefines.clone(),
-                    renames,
-                    screen_info: None,
-                    span: child.span,
-                });
-            }
+            let member_name = child
+                .name
+                .clone()
+                .unwrap_or_else(|| SmolStr::from("FILLER"));
+            let data_type = determine_hir_type(child);
+            let initial_value = child.value.as_ref().map(lower_value_clause);
+            let occurs = child.occurs.as_ref().map(|o| o.max);
+            let renames = child
+                .renames
+                .as_ref()
+                .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
+            let indexed_by_child = child
+                .occurs
+                .as_ref()
+                .map(|o| o.indexed_by.clone())
+                .unwrap_or_default();
+            members.push(HirDataItem {
+                name: member_name,
+                data_type,
+                initial_value,
+                occurs,
+                indexed_by: indexed_by_child,
+                redefines: child.redefines.clone(),
+                renames,
+                screen_info: None,
+                span: child.span,
+            });
         }
         let total: u32 = members
             .iter()
-            .map(|m| match &m.data_type {
-                HirType::Alphanumeric { size } => *size,
-                HirType::Numeric { size, .. } => *size,
-                HirType::Group { size, .. } => *size,
-                HirType::Comp3 { size, .. } => (*size + 2) / 2, // packed decimal byte size
-                HirType::Binary { size } => {
-                    if *size <= 4 {
-                        2
-                    } else if *size <= 9 {
-                        4
-                    } else {
-                        8
+            .filter(|m| m.redefines.is_none()) // REDEFINES overlay same storage
+            .map(|m| {
+                let element_size = match &m.data_type {
+                    HirType::Alphanumeric { size } => *size,
+                    HirType::Numeric { size, .. } => *size,
+                    HirType::Group { size, .. } => *size,
+                    HirType::Comp3 { size, .. } => (*size + 2) / 2, // packed decimal byte size
+                    HirType::Binary { size } => {
+                        if *size <= 4 {
+                            2
+                        } else if *size <= 9 {
+                            4
+                        } else {
+                            8
+                        }
                     }
-                }
-                HirType::Index => 4,
-                HirType::Pointer => 8,
-                HirType::Boolean => 1,
-                HirType::FloatShort => 4,
-                HirType::FloatLong => 8,
-                HirType::FloatExtended => 16,
-                HirType::National { size } => *size * 2, // national chars are 2 bytes
+                    HirType::Index => 4,
+                    HirType::Pointer => 8,
+                    HirType::Boolean => 1,
+                    HirType::FloatShort => 4,
+                    HirType::FloatLong => 8,
+                    HirType::FloatExtended => 16,
+                    HirType::National { size } => *size * 2, // national chars are 2 bytes
+                };
+                // OCCURS multiplies the element size
+                let count = m.occurs.unwrap_or(1);
+                element_size * count
             })
             .sum();
         HirType::Group {
@@ -535,27 +595,27 @@ fn lower_procedure_division(
     // Lower top-level paragraphs
     for para in &proc.paragraphs {
         let stmts = lower_paragraph(para, condition_names);
-        if !stmts.is_empty() {
-            // If the paragraph has a generated or empty name, inline its statements
-            // into the body. Otherwise, keep it as a named paragraph.
-            if para.name.is_empty() {
-                body.extend(stmts);
-            } else {
-                // Record as named paragraph (for PERFORM references).
-                // Add a procedure call to body for sequential fall-through.
-                paragraphs.push(HirParagraph {
+        if para.name.is_empty() {
+            // Unnamed paragraphs: inline their statements into the body.
+            body.extend(stmts);
+        } else {
+            // Named paragraphs are always registered, even if empty,
+            // because they may be targets of GO TO or PERFORM THRU.
+            paragraphs.push(HirParagraph {
+                name: para.name.clone(),
+                body: stmts,
+                span: para.span,
+            });
+            body.push(HirStatement::Label {
+                name: para.name.clone(),
+            });
+            body.push(HirStatement::Perform {
+                kind: HirPerformKind::ProcedureName {
                     name: para.name.clone(),
-                    body: stmts,
-                    span: para.span,
-                });
-                body.push(HirStatement::Perform {
-                    kind: HirPerformKind::ProcedureName {
-                        name: para.name.clone(),
-                        through: None,
-                    },
-                    span: para.span,
-                });
-            }
+                    through: None,
+                },
+                span: para.span,
+            });
         }
     }
 
@@ -563,26 +623,37 @@ fn lower_procedure_division(
     for section in &proc.sections {
         // Collect all statements in this section for the section-level paragraph
         let mut section_stmts = Vec::new();
+        // Add a label for the section itself (for GO TO section-name)
+        body.push(HirStatement::Label {
+            name: section.name.clone(),
+        });
         for para in &section.paragraphs {
             let stmts = lower_paragraph(para, condition_names);
-            if !stmts.is_empty() {
-                body.extend(stmts.clone());
-                section_stmts.extend(stmts.clone());
-                paragraphs.push(HirParagraph {
+            // Always register named paragraphs, even if empty, because they
+            // may be targets of GO TO or PERFORM THRU.
+            body.push(HirStatement::Label {
+                name: para.name.clone(),
+            });
+            body.push(HirStatement::Perform {
+                kind: HirPerformKind::ProcedureName {
                     name: para.name.clone(),
-                    body: stmts,
-                    span: para.span,
-                });
-            }
-        }
-        // Register section name as a callable paragraph (for PERFORM section-name)
-        if !section_stmts.is_empty() {
+                    through: None,
+                },
+                span: para.span,
+            });
+            section_stmts.extend(stmts.clone());
             paragraphs.push(HirParagraph {
-                name: section.name.clone(),
-                body: section_stmts,
-                span: section.span,
+                name: para.name.clone(),
+                body: stmts,
+                span: para.span,
             });
         }
+        // Register section name as a callable paragraph (for PERFORM section-name)
+        paragraphs.push(HirParagraph {
+            name: section.name.clone(),
+            body: section_stmts,
+            span: section.span,
+        });
     }
 
     (body, paragraphs)
@@ -640,7 +711,7 @@ fn lower_statement(
         Statement::Rewrite(rewrite) => Some(lower_rewrite(rewrite)),
         Statement::Delete(delete) => Some(lower_delete(delete)),
         Statement::Initialize(init) => Some(lower_initialize(init)),
-        Statement::Set(set) => Some(lower_set(set)),
+        Statement::Set(set) => Some(lower_set(set, condition_names)),
         Statement::String(string_stmt) => Some(lower_string_stmt(string_stmt, condition_names)),
         Statement::Unstring(unstring_stmt) => {
             Some(lower_unstring_stmt(unstring_stmt, condition_names))
@@ -712,6 +783,13 @@ fn lower_statement(
             // ALTER changes a GO TO target at runtime; not supported in HIR.
             // Emit nothing; the codegen cannot implement this obsolete feature.
             None
+        }
+        Statement::NextSentence => {
+            // NEXT SENTENCE is an obsolete COBOL-85 construct.
+            // Lower to CONTINUE (no-op) as an approximation.
+            Some(HirStatement::Continue {
+                span: Span::dummy(),
+            })
         }
     }
 }
@@ -1378,7 +1456,10 @@ fn lower_initialize(init: &InitializeStatement) -> HirStatement {
     }
 }
 
-fn lower_set(set: &SetStatement) -> HirStatement {
+fn lower_set(
+    set: &SetStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     use cobol_ast::statement::SetKind;
     match &set.kind {
         SetKind::To { targets, value } => {
@@ -1417,17 +1498,34 @@ fn lower_set(set: &SetStatement) -> HirStatement {
                 },
             }
         }
-        SetKind::ConditionTrue { conditions, value } => {
-            // SET condition-name TO TRUE/FALSE
-            let target_names = conditions.iter().map(|q| q.name.clone()).collect();
-            let hir_value = if *value {
-                HirExpr::Literal(HirLiteral::Integer(1))
-            } else {
-                HirExpr::Literal(HirLiteral::Integer(0))
-            };
-            HirStatement::Set {
-                targets: target_names,
-                value: hir_value,
+        SetKind::ConditionTrue { conditions, value: _ } => {
+            // SET condition-name TO TRUE:
+            // For each condition name, find its parent data item and the
+            // first VALUE, then emit MOVE value TO parent.
+            let mut targets: Vec<HirMoveTarget> = Vec::new();
+            let mut hir_value = HirExpr::Literal(HirLiteral::Integer(1));
+            for cond_qn in conditions {
+                let cond_name = &cond_qn.name;
+                if let Some(info) = condition_names.get(cond_name) {
+                    targets.push(HirMoveTarget::Variable(info.parent_name.clone()));
+                    // Use the first value of the condition-name
+                    if let Some(first_cv) = info.values.first() {
+                        hir_value = match first_cv {
+                            ConditionValue::Single(lit) => {
+                                HirExpr::Literal(lit.clone())
+                            }
+                            ConditionValue::Range { from, .. } => {
+                                HirExpr::Literal(from.clone())
+                            }
+                        };
+                    }
+                } else {
+                    targets.push(HirMoveTarget::Variable(cond_name.clone()));
+                }
+            }
+            HirStatement::Move {
+                from: hir_value,
+                to: targets,
                 span: set.span,
             }
         }
@@ -2196,32 +2294,47 @@ fn extract_file_organizations(program: &CobolProgram) -> HashMap<SmolStr, u32> {
 
 /// Lower DECLARATIVES sections from the PROCEDURE DIVISION.
 /// Only USE AFTER EXCEPTION sections are lowered; other USE types are ignored.
+///
+/// Returns `(declaratives, extra_paragraphs)` where `extra_paragraphs` are the
+/// individual paragraphs defined inside each declarative section.  These must be
+/// appended to the program's `paragraphs` list so that PERFORM references from
+/// the declarative body (e.g. `PERFORM DECL-PASS`) can be resolved at C level.
 fn lower_declaratives(
     program: &CobolProgram,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> Vec<HirDeclarative> {
+) -> (Vec<HirDeclarative>, Vec<HirParagraph>) {
     let Some(proc) = &program.procedure else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    proc.declaratives
-        .iter()
-        .filter_map(|decl| {
-            if let UseStatement::AfterException { file_names } = &decl.use_statement {
-                let body: Vec<HirStatement> = decl
-                    .paragraphs
-                    .iter()
-                    .flat_map(|para| lower_paragraph(para, condition_names))
-                    .collect();
-                Some(HirDeclarative {
-                    name: decl.name.clone(),
-                    file_names: file_names.clone(),
-                    body,
-                })
-            } else {
-                None
+    let mut decls = Vec::new();
+    let mut extra_paras = Vec::new();
+    for decl in &proc.declaratives {
+        if let UseStatement::AfterException { file_names } = &decl.use_statement {
+            let body: Vec<HirStatement> = decl
+                .paragraphs
+                .iter()
+                .flat_map(|para| lower_paragraph(para, condition_names))
+                .collect();
+            decls.push(HirDeclarative {
+                name: decl.name.clone(),
+                file_names: file_names.clone(),
+                body,
+            });
+            // Also register each named paragraph inside the declarative section
+            // so that codegen emits forward declarations and function definitions.
+            for para in &decl.paragraphs {
+                if !para.name.is_empty() {
+                    let stmts = lower_paragraph(para, condition_names);
+                    extra_paras.push(HirParagraph {
+                        name: para.name.clone(),
+                        body: stmts,
+                        span: para.span,
+                    });
+                }
             }
-        })
-        .collect()
+        }
+    }
+    (decls, extra_paras)
 }
 
 // ---------------------------------------------------------------------------

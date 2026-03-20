@@ -164,6 +164,8 @@ pub struct HirDataItem {
     pub initial_value: Option<HirLiteral>,
     /// OCCURS clause: number of repetitions (None = scalar).
     pub occurs: Option<u32>,
+    /// INDEXED BY names from OCCURS clause.
+    pub indexed_by: Vec<SmolStr>,
     /// REDEFINES clause: the name of the redefined item.
     pub redefines: Option<SmolStr>,
     /// RENAMES clause (level 66): (from_name, optional thru_name).
@@ -371,6 +373,10 @@ pub enum HirStatement {
     },
     Continue {
         span: Span,
+    },
+    /// A label marker for a paragraph in the body (used for GO TO targets).
+    Label {
+        name: SmolStr,
     },
     /// OPEN statement.
     Open {
@@ -1017,6 +1023,7 @@ fn write_stmt(
         HirStatement::ExitParagraph { .. } => writeln!(f, "{pad}EXIT PARAGRAPH"),
         HirStatement::Goback { .. } => writeln!(f, "{pad}GOBACK"),
         HirStatement::Continue { .. } => writeln!(f, "{pad}CONTINUE"),
+        HirStatement::Label { name } => writeln!(f, "{pad}{name}."),
         HirStatement::Open { entries, .. } => {
             let names: Vec<_> = entries.iter().map(|e| e.file_name.to_string()).collect();
             writeln!(f, "{pad}OPEN {}", names.join(", "))
