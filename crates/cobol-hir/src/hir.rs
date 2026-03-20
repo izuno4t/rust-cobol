@@ -32,6 +32,9 @@ pub struct HirProgram {
     pub file_status_vars: Vec<HirFileInfo>,
     /// DECLARATIVES sections: USE AFTER EXCEPTION handlers for file I/O.
     pub declaratives: Vec<HirDeclarative>,
+    /// FD/SD file name → first record name mapping.
+    /// Used by codegen to determine the record buffer for READ without INTO.
+    pub file_records: std::collections::HashMap<SmolStr, SmolStr>,
     pub span: Span,
 }
 

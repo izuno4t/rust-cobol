@@ -398,6 +398,76 @@ pub unsafe extern "C" fn cobol_func_mean(values: *const f64, count: i32) -> f64 
     slice.iter().sum::<f64>() / count as f64
 }
 
+/// FUNCTION MEDIAN -- median of an array of f64 values.
+///
+/// Sorts a copy of the values and returns the middle element (or the
+/// average of the two middle elements for even counts).
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_median(values: *const f64, count: i32) -> f64 {
+    if count <= 0 {
+        return 0.0;
+    }
+    let slice = std::slice::from_raw_parts(values, count as usize);
+    let mut sorted: Vec<f64> = slice.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    }
+}
+
+/// FUNCTION MIDRANGE -- (min + max) / 2 of an array of f64 values.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_midrange(values: *const f64, count: i32) -> f64 {
+    if count <= 0 {
+        return 0.0;
+    }
+    let slice = std::slice::from_raw_parts(values, count as usize);
+    let mut min = slice[0];
+    let mut max = slice[0];
+    for &v in &slice[1..] {
+        if v < min {
+            min = v;
+        }
+        if v > max {
+            max = v;
+        }
+    }
+    (min + max) / 2.0
+}
+
+/// FUNCTION VARIANCE -- population variance of an array of f64 values.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_variance(values: *const f64, count: i32) -> f64 {
+    if count <= 0 {
+        return 0.0;
+    }
+    let slice = std::slice::from_raw_parts(values, count as usize);
+    let mean = slice.iter().sum::<f64>() / count as f64;
+    let sum_sq: f64 = slice.iter().map(|&v| (v - mean) * (v - mean)).sum();
+    sum_sq / count as f64
+}
+
+/// FUNCTION STANDARD-DEVIATION -- population standard deviation of an array of f64 values.
+///
+/// # Safety
+/// `values` must be readable for `count` elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_standard_deviation(values: *const f64, count: i32) -> f64 {
+    cobol_func_variance(values, count).sqrt()
+}
+
 /// FUNCTION SUM (float variant) -- sum of an array of f64 values.
 ///
 /// # Safety
@@ -1109,6 +1179,41 @@ mod tests {
         let data = b"          ";
         let result = unsafe { cobol_func_stored_char_length(data.as_ptr(), data.len() as u32) };
         assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_median_odd() {
+        let vals = [3.0, 1.0, 2.0];
+        let m = unsafe { cobol_func_median(vals.as_ptr(), 3) };
+        assert!((m - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_median_even() {
+        let vals = [4.0, 1.0, 3.0, 2.0];
+        let m = unsafe { cobol_func_median(vals.as_ptr(), 4) };
+        assert!((m - 2.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_midrange() {
+        let vals = [1.0, 5.0, 3.0, 2.0];
+        let m = unsafe { cobol_func_midrange(vals.as_ptr(), 4) };
+        assert!((m - 3.0).abs() < 1e-10); // (1+5)/2 = 3
+    }
+
+    #[test]
+    fn test_variance() {
+        let vals = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let v = unsafe { cobol_func_variance(vals.as_ptr(), 8) };
+        assert!((v - 4.0).abs() < 1e-10); // population variance = 4.0
+    }
+
+    #[test]
+    fn test_standard_deviation() {
+        let vals = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let sd = unsafe { cobol_func_standard_deviation(vals.as_ptr(), 8) };
+        assert!((sd - 2.0).abs() < 1e-10); // sqrt(4) = 2
     }
 
     #[test]

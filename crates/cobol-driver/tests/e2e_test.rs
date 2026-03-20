@@ -2565,6 +2565,7 @@ fn test_c2_move_corresponding() {
         file_assignments: std::collections::HashMap::new(),
         file_status_vars: Vec::new(),
         declaratives: Vec::new(),
+        file_records: std::collections::HashMap::new(),
         span: Span::dummy(),
     };
 
@@ -2664,6 +2665,7 @@ fn test_c2_add_corresponding() {
         file_assignments: std::collections::HashMap::new(),
         file_status_vars: Vec::new(),
         declaratives: Vec::new(),
+        file_records: std::collections::HashMap::new(),
         span: Span::dummy(),
     };
 
@@ -4408,6 +4410,7 @@ fn test_typedef_codegen() {
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: vec![],
             declaratives: vec![],
+            file_records: std::collections::HashMap::new(),
             span: Span::new(0, 0, FileId(0)),
         };
         let c = cobol_codegen::generate_c(&hir);

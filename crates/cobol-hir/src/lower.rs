@@ -81,6 +81,9 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Lower DECLARATIVES sections (USE AFTER EXCEPTION handlers).
     let declaratives = lower_declaratives(program, &condition_names);
 
+    // Extract FD/SD file-name → first record name mapping.
+    let file_records = extract_file_records(program);
+
     // Extract USING parameters from PROCEDURE DIVISION.
     let using_params = program
         .procedure
@@ -122,6 +125,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         file_assignments,
         file_status_vars,
         declaratives,
+        file_records,
         span: program.span,
     };
 
@@ -2071,6 +2075,23 @@ fn extract_file_assignments(program: &CobolProgram) -> HashMap<SmolStr, SmolStr>
         .iter()
         .map(|fc| (fc.file_name.clone(), fc.assign_to.clone()))
         .collect()
+}
+
+/// Extract FD/SD file name → first record name mapping from the DATA DIVISION's
+/// FILE SECTION.  Each `FileDescription` contributes a mapping from its file name
+/// to the name of its first 01-level record entry.
+fn extract_file_records(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
+    let Some(data) = &program.data else {
+        return HashMap::new();
+    };
+    let mut map = HashMap::new();
+    for fd in &data.file_section {
+        // Find the first named 01-level record item under this FD/SD.
+        if let Some(first_item) = fd.items.iter().find_map(|item| item.name.clone()) {
+            map.insert(fd.file_name.clone(), first_item);
+        }
+    }
+    map
 }
 
 fn patch_open_entries(

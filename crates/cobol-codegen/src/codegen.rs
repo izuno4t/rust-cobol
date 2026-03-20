@@ -18,6 +18,9 @@ use cobol_hir::{
 /// Maps sanitized file name -> sanitized FILE STATUS variable name.
 type FileStatusMap = HashMap<String, String>;
 
+/// Maps sanitized file name -> sanitized FD/SD first-record variable name.
+type FileRecordMap = HashMap<String, String>;
+
 /// Describes the path segments from a top-level group root to a data item,
 /// recording which segments carry an OCCURS dimension.
 /// Used by `emit_subscript_access` to generate correct multi-dimensional C access.
@@ -36,6 +39,11 @@ thread_local! {
     /// Pre-computed map from sanitized variable name to its subscript path info.
     /// Populated at the start of `generate_c` and used by `emit_subscript_access`.
     static SUBSCRIPT_PATHS: RefCell<HashMap<String, SubscriptPathInfo>> =
+        RefCell::new(HashMap::new());
+
+    /// Pre-computed map from sanitized file name to sanitized FD/SD record name.
+    /// Used by READ/SORT codegen to resolve the correct record buffer variable.
+    static FILE_RECORD_MAP: RefCell<FileRecordMap> =
         RefCell::new(HashMap::new());
 }
 
@@ -139,6 +147,16 @@ pub fn generate_c(program: &HirProgram) -> String {
     let paths = build_subscript_paths(&program.data_items);
     SUBSCRIPT_PATHS.with(|cell| {
         *cell.borrow_mut() = paths;
+    });
+
+    // Build sanitized file-name → record-name map and store in thread-local.
+    let fr_map: FileRecordMap = program
+        .file_records
+        .iter()
+        .map(|(f, r)| (sanitize_name(f), sanitize_name(r)))
+        .collect();
+    FILE_RECORD_MAP.with(|cell| {
+        *cell.borrow_mut() = fr_map;
     });
 
     // Header
@@ -1338,11 +1356,7 @@ fn emit_statement(
                 let target_is_decimal = find_data_item(target_name, data_items)
                     .is_some_and(|i| needs_decimal(&i.data_type));
                 if has_size_error {
-                    let c_expr = if target_is_decimal {
-                        emit_expr(expr)
-                    } else {
-                        emit_int_compatible_expr(expr, data_items)
-                    };
+                    let c_expr = emit_int_compatible_expr(expr, data_items);
                     emit_save_and_check_overflow(
                         out,
                         target_name,
@@ -1615,13 +1629,19 @@ fn emit_statement(
             }
             if !giving.is_empty() {
                 // MULTIPLY A BY B GIVING C [D ...]:  C = A * B
-                let c_operand = emit_expr(operand);
-                let first_by = by.first().map(emit_expr).unwrap_or_default();
                 let op_is_dec = is_decimal_expr(operand, data_items);
                 let by_is_dec = by
                     .first()
                     .map_or(false, |b| is_decimal_expr(b, data_items));
                 let any_src_decimal = op_is_dec || by_is_dec;
+                // For decimal operands, get raw expr (struct); for non-decimal, get int-compatible
+                let c_operand_raw = emit_expr(operand);
+                let c_operand_int = emit_int_compatible_expr(operand, data_items);
+                let first_by_raw = by.first().map(emit_expr).unwrap_or_default();
+                let first_by_int = by
+                    .first()
+                    .map(|b| emit_int_compatible_expr(b, data_items))
+                    .unwrap_or_default();
                 for target in giving {
                     let c_target = emit_expr(target);
                     let var_name = expr_var_name(target);
@@ -1630,17 +1650,17 @@ fn emit_statement(
                     if target_is_decimal || any_src_decimal {
                         // Decimal path: convert operands to CobolDecimal
                         let init_a = if op_is_dec {
-                            format!("CobolDecimal _ma = {c_operand};")
+                            format!("CobolDecimal _ma = {c_operand_raw};")
                         } else {
                             format!(
-                                "CobolDecimal _ma; cobol_decimal_from_int({c_operand}, 0, &_ma);"
+                                "CobolDecimal _ma; cobol_decimal_from_int({c_operand_int}, 0, &_ma);"
                             )
                         };
                         let init_b = if by_is_dec {
-                            format!("CobolDecimal _mb = {first_by};")
+                            format!("CobolDecimal _mb = {first_by_raw};")
                         } else {
                             format!(
-                                "CobolDecimal _mb; cobol_decimal_from_int({first_by}, 0, &_mb);"
+                                "CobolDecimal _mb; cobol_decimal_from_int({first_by_int}, 0, &_mb);"
                             )
                         };
                         out.push_str(&format!("{pad}{{ {init_a} {init_b} "));
@@ -1653,7 +1673,7 @@ fn emit_statement(
                             ));
                         }
                     } else {
-                        let mul_expr = format!("{first_by} * {c_operand}");
+                        let mul_expr = format!("{first_by_int} * {c_operand_int}");
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                             out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
@@ -1764,14 +1784,14 @@ fn emit_statement(
                             format!("CobolDecimal _da = {first_into};")
                         } else {
                             format!(
-                                "CobolDecimal _da; cobol_decimal_from_int({first_into}, 0, &_da);"
+                                "CobolDecimal _da; cobol_decimal_from_int({first_into_int}, 0, &_da);"
                             )
                         };
                         let init_b = if op_is_dec {
                             format!("CobolDecimal _db = {c_operand};")
                         } else {
                             format!(
-                                "CobolDecimal _db; cobol_decimal_from_int({c_operand}, 0, &_db);"
+                                "CobolDecimal _db; cobol_decimal_from_int({c_operand_int}, 0, &_db);"
                             )
                         };
                         out.push_str(&format!(
@@ -1779,9 +1799,9 @@ fn emit_statement(
                         ));
                     } else if target_is_decimal {
                         out.push_str(&format!(
-                            "{pad}if ({c_operand} != 0) {{ \
+                            "{pad}if ({c_operand_int} != 0) {{ \
                              cobol_decimal_from_int(\
-                             {first_into} / {c_operand}, 0, &{c_target}); }}\n"
+                             {first_into_int} / {c_operand_int}, 0, &{c_target}); }}\n"
                         ));
                     } else if any_src_decimal {
                         out.push_str(&format!(
@@ -1790,13 +1810,15 @@ fn emit_statement(
                     } else if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                         out.push_str(&format!(
-                            "{pad}if ({c_operand} == 0) {{ _size_error = 1; }} \
-                             else {{ {c_target} = {first_into} / {c_operand}; }}\n"
+                            "{pad}if ({c_operand_int} == 0) {{ _size_error = 1; }} \
+                             else {{ {c_target} = {first_into_int} / {c_operand_int}; }}\n"
                         ));
                         emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
-                        out.push_str(&format!("{pad}{c_target} = {first_into} / {c_operand};\n"));
+                        out.push_str(&format!(
+                            "{pad}{c_target} = {first_into_int} / {c_operand_int};\n"
+                        ));
                     }
                 }
             } else {
@@ -1824,17 +1846,19 @@ fn emit_statement(
                     } else {
                         if let Some(rem) = remainder {
                             let c_rem = emit_expr(rem);
-                            out.push_str(&format!("{pad}{c_rem} = {c_target} % {c_operand};\n"));
+                            out.push_str(&format!(
+                                "{pad}{c_rem} = {c_target} % {c_operand_int};\n"
+                            ));
                         }
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                             out.push_str(&format!(
-                                "{pad}if ({c_operand} == 0) {{ _size_error = 1; }} else {{ {c_target} /= {c_operand}; }}\n"
+                                "{pad}if ({c_operand_int} == 0) {{ _size_error = 1; }} else {{ {c_target} /= {c_operand_int}; }}\n"
                             ));
                             emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
-                            out.push_str(&format!("{pad}{c_target} /= {c_operand};\n"));
+                            out.push_str(&format!("{pad}{c_target} /= {c_operand_int};\n"));
                         }
                     }
                 }
@@ -1905,8 +1929,10 @@ fn emit_statement(
                             param_values.push(format!("&{arg}"));
                         }
                         cobol_hir::HirParamMode::ByValue => {
+                            let arg_int =
+                                emit_int_compatible_expr(&p.expr, data_items);
                             param_types.push("int64_t".to_string());
-                            param_values.push(arg);
+                            param_values.push(arg_int);
                         }
                         cobol_hir::HirParamMode::ByContent => {
                             // BY CONTENT: create a copy and pass address of the copy
@@ -1967,8 +1993,9 @@ fn emit_statement(
                     HirOpenMode::IoMode => "I-O",
                     HirOpenMode::Extend => "EXTEND",
                 };
-                // Determine record length from data items (default 80)
-                let rec_len = find_record_len(&c_name, data_items);
+                // Determine record length from data items via FD record (default 80)
+                let record_var = resolve_file_record(&c_name);
+                let rec_len = find_record_len(&record_var, data_items);
                 // Use ASSIGN TO path if available, otherwise fall back to file name
                 let file_path_str = if entry.assign_to.is_empty() {
                     entry.file_name.as_str()
@@ -2034,11 +2061,12 @@ fn emit_statement(
         } => {
             let c_name = sanitize_name(file_name);
             // Determine the target buffer: INTO variable if specified, else
-            // use the file name as the record variable.
+            // look up the FD record name for this file, falling back to the
+            // file name itself.
             let target = if let Some(into_var) = into {
                 sanitize_name(into_var)
             } else {
-                c_name.clone()
+                resolve_file_record(&c_name)
             };
             let rec_len = find_record_len(&target, data_items);
             out.push_str(&format!("{pad}/* READ {c_name} */\n"));
@@ -2280,7 +2308,8 @@ fn emit_statement(
                 if target_is_decimal {
                     emit_assign_to_decimal(out, value, &c_target, data_items, &pad);
                 } else {
-                    let c_value = emit_expr(value);
+                    let c_value =
+                        emit_int_compatible_expr(value, data_items);
                     out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
                 }
             }
@@ -2498,7 +2527,8 @@ fn emit_statement(
             ..
         } => {
             let c_name = sanitize_name(file_name);
-            let rec_len = find_record_len(&c_name, data_items);
+            let record_var = resolve_file_record(&c_name);
+            let rec_len = find_record_len(&record_var, data_items);
             out.push_str(&format!("{pad}/* SORT {c_name} */\n"));
             let key_count = if keys.is_empty() { 1 } else { keys.len() };
             out.push_str(&format!("{pad}{{\n"));
@@ -2590,7 +2620,7 @@ fn emit_statement(
                 }
                 // Sort the accumulated records
                 out.push_str(&format!(
-                    "{pad}    cobol_sort((uint8_t*){c_name}, 0, {rec_len}, _sort_keys, {key_count});\n"
+                    "{pad}    cobol_sort((uint8_t*){record_var}, 0, {rec_len}, _sort_keys, {key_count});\n"
                 ));
                 if let Some((proc_name, thru)) = output_procedure {
                     let c_proc = sanitize_name(proc_name);
@@ -2604,7 +2634,7 @@ fn emit_statement(
             } else {
                 // No USING: sort in-place (record_count must be managed externally)
                 out.push_str(&format!(
-                    "{pad}    cobol_sort((uint8_t*){c_name}, 0, {rec_len}, _sort_keys, {key_count});\n"
+                    "{pad}    cobol_sort((uint8_t*){record_var}, 0, {rec_len}, _sort_keys, {key_count});\n"
                 ));
             }
             out.push_str(&format!("{pad}}}\n"));
@@ -2710,7 +2740,7 @@ fn emit_statement(
         } => {
             let c_target = sanitize_name(target);
             let size_expr = if let Some(count_expr) = char_count {
-                emit_expr(count_expr)
+                emit_int_compatible_expr(count_expr, data_items)
             } else {
                 format!("sizeof({c_target})")
             };
@@ -2844,11 +2874,12 @@ fn emit_statement(
             ..
         } => {
             let c_name = sanitize_name(file_name);
-            let rec_len = find_record_len(&c_name, data_items);
+            let record_var = resolve_file_record(&c_name);
+            let rec_len = find_record_len(&record_var, data_items);
             let target = if let Some(into_var) = into {
                 sanitize_name(into_var)
             } else {
-                c_name.clone()
+                record_var
             };
             out.push_str(&format!("{pad}/* RETURN {c_name} */\n"));
             out.push_str(&format!(
@@ -3161,7 +3192,7 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
             }
         }
         HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. } => {
-            let e = emit_expr(expr);
+            let e = emit_int_compatible_expr(expr, data_items);
             out.push_str(&format!("{pad}cobol_display_int({e});\n"));
         }
         HirExpr::FunctionCall { name, args } => {
@@ -3454,7 +3485,7 @@ fn emit_move_to(
                 }
             }
             _ => {
-                let e = emit_expr(from);
+                let e = emit_int_compatible_expr(from, data_items);
                 out.push_str(&format!("{pad}{c_target}[0] = (uint16_t){e};\n"));
             }
         }
@@ -3524,7 +3555,7 @@ fn emit_move_to(
                     ));
                 }
                 _ => {
-                    let e = emit_expr(from);
+                    let e = emit_int_compatible_expr(from, data_items);
                     out.push_str(&format!(
                         "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
                          {pad}{{ int64_t _v = {e}; memcpy(&{c_target}, &_v, \
@@ -3764,19 +3795,19 @@ fn emit_move_to(
                         "{pad}cobol_move_string((const uint8_t*){e}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
                 } else {
-                    let e = emit_expr(from);
+                    let e = emit_int_compatible_expr(from, data_items);
                     out.push_str(&format!("{pad}{c_target} = {e};\n"));
                 }
             } else if is_source_decimal_var {
-                // CobolDecimal variable → integer target: extract integer value
+                // CobolDecimal variable → integer target: use cobol_decimal_to_int64
                 let e = emit_expr(from);
                 out.push_str(&format!(
-                    "{pad}{{ int64_t _sv = {e}.value; int32_t _ss = {e}.scale; \
-                     while (_ss > 0) {{ _sv /= 10; _ss--; }} \
-                     {c_target} = _sv; }}\n"
+                    "{pad}{c_target} = cobol_decimal_to_int64(&{e});\n"
                 ));
             } else {
-                let e = emit_expr(from);
+                // Use emit_int_compatible_expr to handle compound expressions
+                // that may contain CobolDecimal sub-expressions.
+                let e = emit_int_compatible_expr(from, data_items);
                 out.push_str(&format!("{pad}{c_target} = {e};\n"));
             }
         }
@@ -3890,7 +3921,7 @@ fn emit_perform(
             out.push_str(&format!("{pad}}}\n"));
         }
         HirPerformKind::Times { count, body } => {
-            let c_count = emit_expr(count);
+            let c_count = emit_int_compatible_expr(count, data_items);
             out.push_str(&format!(
                 "{pad}for (int64_t _cobol_i = 0; _cobol_i < ({c_count}); _cobol_i++) {{\n"
             ));
@@ -3931,8 +3962,8 @@ fn emit_perform(
             body,
         } => {
             let c_var = sanitize_name(var);
-            let c_from = emit_expr(from);
-            let c_by = emit_expr(by);
+            let c_from = emit_int_compatible_expr(from, data_items);
+            let c_by = emit_int_compatible_expr(by, data_items);
             let cond = emit_condition(until, data_items);
             out.push_str(&format!(
                 "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
@@ -4695,7 +4726,9 @@ fn emit_assign_to_decimal(
                 out.push_str(&format!("{pad}{c_target} = {c_src};\n"));
             } else {
                 // Integer variable or expression -> CobolDecimal
-                let e = emit_expr(from);
+                // Use emit_int_compatible_expr to handle BinaryOp/UnaryOp
+                // that may contain CobolDecimal sub-expressions.
+                let e = emit_int_compatible_expr(from, data_items);
                 out.push_str(&format!(
                     "{pad}cobol_decimal_from_int({e}, 0, &{c_target});\n"
                 ));
@@ -5442,10 +5475,21 @@ fn emit_condition(cond: &HirCondition, data_items: &[HirDataItem]) -> String {
                 format!("({cmp} {op_str})")
             } else if is_decimal_expr(left, data_items) || is_decimal_expr(right, data_items) {
                 // CobolDecimal comparison via runtime function
-                let l = emit_expr(left);
-                let r = emit_expr(right);
                 let left_is_dec = is_decimal_expr(left, data_items);
                 let right_is_dec = is_decimal_expr(right, data_items);
+                // For decimal sides, use emit_expr to get the struct;
+                // for non-decimal sides, use emit_int_compatible_expr to
+                // ensure CobolDecimal sub-expressions are converted to int64.
+                let l = if left_is_dec {
+                    emit_expr(left)
+                } else {
+                    emit_int_compatible_expr(left, data_items)
+                };
+                let r = if right_is_dec {
+                    emit_expr(right)
+                } else {
+                    emit_int_compatible_expr(right, data_items)
+                };
                 let op_str = match op {
                     HirCompareOp::Eq => "== 0",
                     HirCompareOp::Ne => "!= 0",
@@ -5472,8 +5516,8 @@ fn emit_condition(cond: &HirCondition, data_items: &[HirDataItem]) -> String {
                     )
                 }
             } else {
-                let l = emit_expr(left);
-                let r = emit_expr(right);
+                let l = emit_int_compatible_expr(left, data_items);
+                let r = emit_int_compatible_expr(right, data_items);
                 let op_str = match op {
                     HirCompareOp::Eq => "==",
                     HirCompareOp::Ne => "!=",
@@ -5886,6 +5930,18 @@ fn sanitize_name(name: &str) -> String {
         _ => {}
     }
     result
+}
+
+/// Resolve the FD/SD record buffer variable name for a file.
+/// Returns the first record name from the FILE_RECORD_MAP if available,
+/// otherwise falls back to the file name itself.
+fn resolve_file_record(sanitized_file_name: &str) -> String {
+    FILE_RECORD_MAP.with(|cell| {
+        let map = cell.borrow();
+        map.get(sanitized_file_name)
+            .cloned()
+            .unwrap_or_else(|| sanitized_file_name.to_string())
+    })
 }
 
 /// Escape special characters for use in a C string literal.
@@ -6413,6 +6469,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
@@ -6480,6 +6537,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
@@ -6644,6 +6702,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
@@ -6676,6 +6735,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
@@ -6708,6 +6768,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
@@ -6740,6 +6801,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
@@ -6772,6 +6834,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
@@ -6812,6 +6875,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
@@ -6851,6 +6915,7 @@ PROCEDURE DIVISION.
             file_assignments: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
             span: Span::dummy(),
         };
 
