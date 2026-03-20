@@ -1759,7 +1759,29 @@ impl Parser {
             self.expect(TokenKind::To)?;
         }
         let to = self.expect_identifier()?;
-        let end_span = self.span();
+        let mut end_span = self.span();
+        // COBOL allows multiple ALTER pairs separated by optional commas:
+        // ALTER proc-1 TO proc-2, proc-3 TO proc-4 ...
+        // Since ALTER is obsolete and lowered to a no-op, we just consume them.
+        loop {
+            let _ = self.eat(TokenKind::Comma);
+            if !self.check(TokenKind::Identifier) {
+                break;
+            }
+            // Peek ahead: next identifier should be followed by TO
+            // to distinguish from the next statement.
+            if self.peek(1).kind != TokenKind::To {
+                break;
+            }
+            let _extra_from = self.expect_identifier()?;
+            self.expect(TokenKind::To)?;
+            if self.check_identifier("PROCEED") {
+                self.advance();
+                self.expect(TokenKind::To)?;
+            }
+            let _extra_to = self.expect_identifier()?;
+            end_span = self.span();
+        }
         Ok(Statement::Alter(AlterStatement {
             from,
             to,
@@ -2734,6 +2756,7 @@ impl Parser {
                 && !self.check(TokenKind::Output)
                 && !self.check(TokenKind::Duplicates)
                 && !self.check(TokenKind::With)
+                && !self.check_identifier("COLLATING")
                 && !self.at_eof()
             {
                 fields.push(self.parse_qualified_name()?);
@@ -2752,16 +2775,31 @@ impl Parser {
             false
         };
 
+        // COLLATING SEQUENCE (skip — we don't use it yet)
+        if self.check_identifier("COLLATING") {
+            self.advance(); // COLLATING
+            self.eat_identifier("SEQUENCE");
+            self.eat_is();
+            if self.check(TokenKind::Identifier) {
+                self.advance(); // alphabet-name
+            }
+        }
+
         // Input: USING file-names or INPUT PROCEDURE procedure
         let input = if self.check(TokenKind::Using) {
             self.advance();
             let mut files = Vec::new();
-            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            while (self.check(TokenKind::Identifier)
+                || self.current().kind.is_keyword()
+                || self.check(TokenKind::Comma))
                 && !self.at_statement_terminator()
                 && !self.check(TokenKind::Giving)
                 && !self.check(TokenKind::Output)
                 && !self.at_eof()
             {
+                if self.eat(TokenKind::Comma).is_some() {
+                    continue;
+                }
                 files.push(self.advance().text);
             }
             SortInput::Using(files)
@@ -2784,10 +2822,15 @@ impl Parser {
         let output = if self.check(TokenKind::Giving) {
             self.advance();
             let mut files = Vec::new();
-            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            while (self.check(TokenKind::Identifier)
+                || self.current().kind.is_keyword()
+                || self.check(TokenKind::Comma))
                 && !self.at_statement_terminator()
                 && !self.at_eof()
             {
+                if self.eat(TokenKind::Comma).is_some() {
+                    continue;
+                }
                 files.push(self.advance().text);
             }
             SortOutput::Giving(files)
@@ -2850,6 +2893,7 @@ impl Parser {
                 && !self.check(TokenKind::Using)
                 && !self.check(TokenKind::Giving)
                 && !self.check(TokenKind::Output)
+                && !self.check_identifier("COLLATING")
                 && !self.at_eof()
             {
                 fields.push(self.parse_qualified_name()?);
@@ -2857,15 +2901,30 @@ impl Parser {
             keys.push(SortKey { order, fields });
         }
 
+        // COLLATING SEQUENCE (skip — we don't use it yet)
+        if self.check_identifier("COLLATING") {
+            self.advance(); // COLLATING
+            self.eat_identifier("SEQUENCE");
+            self.eat_is();
+            if self.check(TokenKind::Identifier) {
+                self.advance(); // alphabet-name
+            }
+        }
+
         // USING file-names
         let mut using = Vec::new();
         if self.eat(TokenKind::Using).is_some() {
-            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            while (self.check(TokenKind::Identifier)
+                || self.current().kind.is_keyword()
+                || self.check(TokenKind::Comma))
                 && !self.at_statement_terminator()
                 && !self.check(TokenKind::Giving)
                 && !self.check(TokenKind::Output)
                 && !self.at_eof()
             {
+                if self.eat(TokenKind::Comma).is_some() {
+                    continue;
+                }
                 using.push(self.advance().text);
             }
         }
@@ -2874,10 +2933,15 @@ impl Parser {
         let output = if self.check(TokenKind::Giving) {
             self.advance();
             let mut files = Vec::new();
-            while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            while (self.check(TokenKind::Identifier)
+                || self.current().kind.is_keyword()
+                || self.check(TokenKind::Comma))
                 && !self.at_statement_terminator()
                 && !self.at_eof()
             {
+                if self.eat(TokenKind::Comma).is_some() {
+                    continue;
+                }
                 files.push(self.advance().text);
             }
             SortOutput::Giving(files)

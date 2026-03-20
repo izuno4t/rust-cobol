@@ -184,14 +184,7 @@ fn collect_subscript_paths(
             ..
         } = &member.data_type
         {
-            collect_subscript_paths(
-                map,
-                sub_members,
-                root,
-                &segments,
-                root_has_occurs,
-                false,
-            );
+            collect_subscript_paths(map, sub_members, root, &segments, root_has_occurs, false);
         }
     }
 }
@@ -294,15 +287,10 @@ pub fn generate_c(program: &HirProgram) -> String {
             // simplification we treat them as unconditional catch-alls.
             let is_mode_based = decl.file_names.iter().any(|f| {
                 let upper = f.to_uppercase();
-                matches!(
-                    upper.as_str(),
-                    "I-O" | "INPUT" | "OUTPUT" | "EXTEND"
-                )
+                matches!(upper.as_str(), "I-O" | "INPUT" | "OUTPUT" | "EXTEND")
             });
             if is_mode_based {
-                out.push_str(&format!(
-                    "    decl_{c_decl}(); return;\n"
-                ));
+                out.push_str(&format!("    decl_{c_decl}(); return;\n"));
             } else {
                 for fname in &decl.file_names {
                     let c_file = sanitize_name(fname);
@@ -1246,12 +1234,7 @@ fn emit_single_data_init_with_prefix(
             } else {
                 member_base
             };
-            emit_single_data_init_with_prefix(
-                out,
-                member,
-                Some(&my_prefix),
-                Some(&deduped),
-            );
+            emit_single_data_init_with_prefix(out, member, Some(&my_prefix), Some(&deduped));
         }
         return;
     }
@@ -1822,9 +1805,7 @@ fn emit_statement(
             if !giving.is_empty() {
                 // MULTIPLY A BY B GIVING C [D ...]:  C = A * B
                 let op_is_dec = is_decimal_expr(operand, data_items);
-                let by_is_dec = by
-                    .first()
-                    .map_or(false, |b| is_decimal_expr(b, data_items));
+                let by_is_dec = by.first().map_or(false, |b| is_decimal_expr(b, data_items));
                 let any_src_decimal = op_is_dec || by_is_dec;
                 // For decimal operands, get raw expr (struct); for non-decimal, get int-compatible
                 let c_operand_raw = emit_expr(operand);
@@ -1869,13 +1850,7 @@ fn emit_statement(
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                             out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
-                            emit_integer_overflow_check(
-                                out,
-                                var_name,
-                                &c_target,
-                                data_items,
-                                &pad,
-                            );
+                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
@@ -2121,8 +2096,7 @@ fn emit_statement(
                             param_values.push(format!("&{arg}"));
                         }
                         cobol_hir::HirParamMode::ByValue => {
-                            let arg_int =
-                                emit_int_compatible_expr(&p.expr, data_items);
+                            let arg_int = emit_int_compatible_expr(&p.expr, data_items);
                             param_types.push("int64_t".to_string());
                             param_values.push(arg_int);
                         }
@@ -2476,13 +2450,10 @@ fn emit_statement(
                 for (i, target) in targets.iter().enumerate() {
                     let c_target = sanitize_name(target);
                     if in_body {
-                        out.push_str(&format!(
-                            "{pad}    case {}: goto lbl_{c_target};\n",
-                            i + 1
-                        ));
+                        out.push_str(&format!("{pad}    case {}: goto lbl_{c_target};\n", i + 1));
                     } else {
-                        let label_id = GOTO_LABEL_MAP
-                            .with(|map| map.borrow().get(&c_target).copied());
+                        let label_id =
+                            GOTO_LABEL_MAP.with(|map| map.borrow().get(&c_target).copied());
                         if let Some(id) = label_id {
                             out.push_str(&format!(
                                 "{pad}    case {}: _goto_target = {id}; return;\n",
@@ -2503,16 +2474,11 @@ fn emit_statement(
                 if in_body {
                     out.push_str(&format!("{pad}goto lbl_{c_target};\n"));
                 } else {
-                    let label_id = GOTO_LABEL_MAP
-                        .with(|map| map.borrow().get(&c_target).copied());
+                    let label_id = GOTO_LABEL_MAP.with(|map| map.borrow().get(&c_target).copied());
                     if let Some(id) = label_id {
-                        out.push_str(&format!(
-                            "{pad}_goto_target = {id}; return;\n"
-                        ));
+                        out.push_str(&format!("{pad}_goto_target = {id}; return;\n"));
                     } else {
-                        out.push_str(&format!(
-                            "{pad}para_{c_target}(); return;\n"
-                        ));
+                        out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
                     }
                 }
             }
@@ -2531,8 +2497,7 @@ fn emit_statement(
                 if target_is_decimal {
                     emit_assign_to_decimal(out, value, &c_target, data_items, &pad);
                 } else {
-                    let c_value =
-                        emit_int_compatible_expr(value, data_items);
+                    let c_value = emit_int_compatible_expr(value, data_items);
                     out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
                 }
             }
@@ -3052,7 +3017,10 @@ fn emit_statement(
             let start_call = if let Some(key_name) = key {
                 let c_key = sanitize_name(key_name);
                 let key_size = find_data_item_size(&c_key, data_items);
-                format!("cobol_file_start(FILE_ID_{c_name}, (const uint8_t*){c_key}, {key_size}, {mode_val})")
+                let is_key_group = find_data_item(key_name.as_str(), data_items)
+                    .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
+                let addr_prefix = if is_key_group { "&" } else { "" };
+                format!("cobol_file_start(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, {mode_val})")
             } else {
                 format!("cobol_file_start(FILE_ID_{c_name}, NULL, 0, {mode_val})")
             };
@@ -3751,6 +3719,31 @@ fn emit_move_to(
                     "{pad}memcpy(&{c_target}, &{c_src}, {copy_size});\n"
                 ));
             }
+        } else if let HirExpr::Subscript { variable, .. } = from {
+            // Subscripted source to group target: check type and use memcpy
+            let c_src = emit_expr(from);
+            let src_item = find_data_item(variable.as_str(), data_items);
+            let is_src_alpha =
+                src_item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
+            let is_src_group =
+                src_item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
+            if is_src_alpha || is_src_group {
+                let src_size = find_data_item_size(&sanitize_name(variable), data_items);
+                let tgt_size = find_data_item_size(c_target, data_items);
+                let copy_size = src_size.min(tgt_size);
+                let addr_prefix = if is_src_group { "&" } else { "" };
+                out.push_str(&format!(
+                    "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
+                     {pad}memcpy(&{c_target}, {addr_prefix}{c_src}, {copy_size});\n"
+                ));
+            } else {
+                let e = emit_int_compatible_expr(from, data_items);
+                out.push_str(&format!(
+                    "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
+                     {pad}{{ int64_t _v = {e}; memcpy(&{c_target}, &_v, \
+                     sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
+                ));
+            }
         } else {
             // Non-variable to group: handle figurative constants
             match from {
@@ -3784,12 +3777,30 @@ fn emit_move_to(
                     ));
                 }
                 _ => {
-                    let e = emit_int_compatible_expr(from, data_items);
-                    out.push_str(&format!(
-                        "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
-                         {pad}{{ int64_t _v = {e}; memcpy(&{c_target}, &_v, \
-                         sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
-                    ));
+                    // Check if source expr refers to an alpha/group field
+                    if is_alpha_expr(from, data_items) || is_group_expr(from, data_items) {
+                        let e = emit_expr(from);
+                        let src_name = expr_var_name(from);
+                        let src_size = find_data_item_size(&sanitize_name(src_name), data_items);
+                        let tgt_size = find_data_item_size(c_target, data_items);
+                        let copy_size = src_size.min(tgt_size);
+                        let addr_prefix = if is_group_expr(from, data_items) {
+                            "&"
+                        } else {
+                            ""
+                        };
+                        out.push_str(&format!(
+                            "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
+                             {pad}memcpy(&{c_target}, {addr_prefix}{e}, {copy_size});\n"
+                        ));
+                    } else {
+                        let e = emit_int_compatible_expr(from, data_items);
+                        out.push_str(&format!(
+                            "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
+                             {pad}{{ int64_t _v = {e}; memcpy(&{c_target}, &_v, \
+                             sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
+                        ));
+                    }
                 }
             }
         }
@@ -3984,9 +3995,9 @@ fn emit_move_to(
                         return;
                     }
                     "MAX" | "MIN" => {
-                        let has_alpha = args.iter().any(|a| {
-                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
-                        });
+                        let has_alpha = args
+                            .iter()
+                            .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
                         if has_alpha && is_target_alpha {
                             let func = if upper_fn == "MAX" {
                                 "cobol_func_max_alpha"
@@ -4043,12 +4054,18 @@ fn emit_move_to(
                     "{pad}cobol_move_numeric_to_display({e}, 0, (uint8_t*){c_target}, {tgt_size});\n"
                 ));
             } else if !is_target_alpha && is_source_alpha_var {
-                // Alphanumeric variable → numeric: use cobol_func_numval
+                // Alphanumeric variable/subscript → numeric: use cobol_func_numval
                 if let HirExpr::Variable(name) = from {
                     let c_src = sanitize_name(name);
                     let src_size = find_data_item_size(&c_src, data_items);
                     out.push_str(&format!(
                         "{pad}{c_target} = cobol_func_numval((const uint8_t*){c_src}, {src_size});\n"
+                    ));
+                } else if let HirExpr::Subscript { variable, .. } = from {
+                    let e = emit_expr(from);
+                    let src_size = find_data_item_size(&sanitize_name(variable), data_items);
+                    out.push_str(&format!(
+                        "{pad}{c_target} = cobol_func_numval((const uint8_t*){e}, {src_size});\n"
                     ));
                 } else {
                     let e = emit_expr(from);
@@ -4094,8 +4111,7 @@ fn emit_move_to(
                 } else if is_source_alpha_var || is_source_group_var {
                     // Subscripted or other alphanumeric/group source
                     let e = emit_expr(from);
-                    let src_size =
-                        find_data_item_size(&sanitize_name(src_var_name), data_items);
+                    let src_size = find_data_item_size(&sanitize_name(src_var_name), data_items);
                     let tgt_size = find_data_item_size(c_target, data_items);
                     // When source is a subscript expression the result of
                     // emit_expr is an element value (e.g. char), not a
@@ -4318,8 +4334,7 @@ fn emit_perform(
         HirPerformKind::ProcedureName { name, through } => {
             let c_name = sanitize_name(name);
             let in_body = IN_BODY_CONTEXT.with(|flag| *flag.borrow());
-            let has_labels =
-                GOTO_LABEL_MAP.with(|map| !map.borrow().is_empty());
+            let has_labels = GOTO_LABEL_MAP.with(|map| !map.borrow().is_empty());
             let need_body_dispatch = in_body && has_labels;
             if let Some(thru) = through {
                 // PERFORM name THRU through: call all paragraphs from name to through
@@ -4385,9 +4400,7 @@ fn emit_perform(
                         }
                         // Not in range: propagate
                         if need_body_dispatch {
-                            out.push_str(&format!(
-                                "{pad}  goto _goto_dispatch;\n"
-                            ));
+                            out.push_str(&format!("{pad}  goto _goto_dispatch;\n"));
                         } else {
                             out.push_str(&format!("{pad}  return;\n"));
                         }
@@ -4407,22 +4420,16 @@ fn emit_perform(
                     // Fallback: just call the named paragraph
                     out.push_str(&format!("{pad}para_{c_name}();\n"));
                     if need_body_dispatch {
-                        out.push_str(&format!(
-                            "{pad}if (_goto_target) goto _goto_dispatch;\n"
-                        ));
+                        out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
                     }
                 }
             } else {
                 out.push_str(&format!("{pad}para_{c_name}();\n"));
                 if need_body_dispatch {
-                    out.push_str(&format!(
-                        "{pad}if (_goto_target) goto _goto_dispatch;\n"
-                    ));
+                    out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
                 } else if has_labels {
                     // In paragraph function: propagate _goto_target via return
-                    out.push_str(&format!(
-                        "{pad}if (_goto_target) return;\n"
-                    ));
+                    out.push_str(&format!("{pad}if (_goto_target) return;\n"));
                 }
             }
         }
@@ -4560,9 +4567,7 @@ fn emit_expr_as_numeric(expr: &HirExpr) -> String {
                 HirBinOp::Sub => "-",
                 HirBinOp::Mul => "*",
                 HirBinOp::Div => "/",
-                HirBinOp::Pow => {
-                    return format!("((int64_t)pow((double){l}, (double){r}))")
-                }
+                HirBinOp::Pow => return format!("((int64_t)pow((double){l}, (double){r}))"),
             };
             format!("({l} {op_str} {r})")
         }
@@ -4769,15 +4774,14 @@ fn emit_expr(expr: &HirExpr) -> String {
                             match inner_upper.as_str() {
                                 "UPPER-CASE" | "LOWER-CASE" | "REVERSE" => {
                                     if let Some(inner_arg) = inner_args.first() {
-                                        let size =
-                                            if let HirExpr::Literal(HirLiteral::String(s)) =
-                                                inner_arg
-                                            {
-                                                format!("{}", s.len())
-                                            } else {
-                                                let c_arg = emit_expr(inner_arg);
-                                                format!("sizeof({c_arg})")
-                                            };
+                                        let size = if let HirExpr::Literal(HirLiteral::String(s)) =
+                                            inner_arg
+                                        {
+                                            format!("{}", s.len())
+                                        } else {
+                                            let c_arg = emit_expr(inner_arg);
+                                            format!("sizeof({c_arg})")
+                                        };
                                         return format!("((int64_t){size})");
                                     }
                                 }
@@ -5062,8 +5066,10 @@ fn emit_expr(expr: &HirExpr) -> String {
                     }
                 }
                 "MEAN" => {
-                    let arg_list =
-                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -5072,8 +5078,10 @@ fn emit_expr(expr: &HirExpr) -> String {
                     )
                 }
                 "MEDIAN" => {
-                    let arg_list =
-                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -5082,8 +5090,10 @@ fn emit_expr(expr: &HirExpr) -> String {
                     )
                 }
                 "RANGE" => {
-                    let arg_list =
-                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _rv[] = {{{joined}}}; \
@@ -5092,8 +5102,10 @@ fn emit_expr(expr: &HirExpr) -> String {
                     )
                 }
                 "MIDRANGE" => {
-                    let arg_list =
-                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -5102,8 +5114,10 @@ fn emit_expr(expr: &HirExpr) -> String {
                     )
                 }
                 "STANDARD-DEVIATION" => {
-                    let arg_list =
-                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -5112,8 +5126,10 @@ fn emit_expr(expr: &HirExpr) -> String {
                     )
                 }
                 "VARIANCE" => {
-                    let arg_list =
-                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -5124,10 +5140,8 @@ fn emit_expr(expr: &HirExpr) -> String {
                 "PRESENT-VALUE" => {
                     if c_args.len() >= 2 {
                         let rate = &c_args[0];
-                        let rest: Vec<_> = c_args[1..]
-                            .iter()
-                            .map(|a| format!("(double){a}"))
-                            .collect();
+                        let rest: Vec<_> =
+                            c_args[1..].iter().map(|a| format!("(double){a}")).collect();
                         let joined = rest.join(", ");
                         format!(
                             "({{ double _pv[] = {{{joined}}}; \
@@ -5139,8 +5153,10 @@ fn emit_expr(expr: &HirExpr) -> String {
                     }
                 }
                 "SUM" => {
-                    let arg_list =
-                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _sv[] = {{{joined}}}; \
@@ -5242,10 +5258,12 @@ fn emit_expr(expr: &HirExpr) -> String {
                     }
                 }
                 "CURRENT-DATE" => {
-                    "({ static uint8_t _cdbuf[22]; cobol_func_current_date(_cdbuf, 21); _cdbuf; })".to_string()
+                    "({ static uint8_t _cdbuf[22]; cobol_func_current_date(_cdbuf, 21); _cdbuf; })"
+                        .to_string()
                 }
                 "WHEN-COMPILED" => {
-                    "({ static uint8_t _wcbuf[22]; cobol_func_when_compiled(_wcbuf, 21); _wcbuf; })".to_string()
+                    "({ static uint8_t _wcbuf[22]; cobol_func_when_compiled(_wcbuf, 21); _wcbuf; })"
+                        .to_string()
                 }
                 "NATIONAL-OF" => {
                     // FUNCTION NATIONAL-OF(alphanumeric-var)
@@ -5374,8 +5392,17 @@ fn is_group_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     if name.is_empty() {
         return false;
     }
+    find_data_item(name, data_items).is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
+}
+
+/// Check whether an expression refers to an alphanumeric variable (emitted as `char[]`).
+fn is_alpha_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+    let name = expr_var_name(expr);
+    if name.is_empty() {
+        return false;
+    }
     find_data_item(name, data_items)
-        .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
+        .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }))
 }
 
 /// Check whether an expression tree contains any decimal variable or decimal
@@ -5409,8 +5436,15 @@ fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> Strin
                 // Group variables are C unions; convert via cobol_func_numval
                 // (treat group bytes as alphanumeric and parse as a number).
                 let c = emit_expr(expr);
-                let size = find_data_item_size(&c, data_items);
+                let var_name = expr_var_name(expr);
+                let size = find_data_item_size(&sanitize_name(var_name), data_items);
                 format!("cobol_func_numval((const uint8_t*)&{c}, {size})")
+            } else if is_alpha_expr(expr, data_items) {
+                // Alphanumeric fields are char[] in C; convert to int via numval.
+                let c = emit_expr(expr);
+                let var_name = expr_var_name(expr);
+                let size = find_data_item_size(&sanitize_name(var_name), data_items);
+                format!("cobol_func_numval((const uint8_t*){c}, {size})")
             } else {
                 emit_expr(expr)
             }
@@ -5470,9 +5504,7 @@ fn emit_assign_to_decimal(
             // Only zero the value; preserve scale/size/is_signed so that
             // subsequent double-precision arithmetic (cobol_decimal_to_double,
             // cobol_decimal_from_double) still knows the field's precision.
-            out.push_str(&format!(
-                "{pad}{c_target}.value = 0;\n"
-            ));
+            out.push_str(&format!("{pad}{c_target}.value = 0;\n"));
         }
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
@@ -6192,12 +6224,7 @@ fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
             let upper_fn = name.to_uppercase();
             matches!(
                 upper_fn.as_str(),
-                "CHAR"
-                    | "CURRENT-DATE"
-                    | "WHEN-COMPILED"
-                    | "UPPER-CASE"
-                    | "LOWER-CASE"
-                    | "REVERSE"
+                "CHAR" | "CURRENT-DATE" | "WHEN-COMPILED" | "UPPER-CASE" | "LOWER-CASE" | "REVERSE"
             )
         }
         _ => false,
@@ -6318,10 +6345,7 @@ fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (Str
             } else {
                 format!("({src_full_size} - ({c_start} - 1))")
             };
-            (
-                format!("(const uint8_t*){c_src} + ({c_start} - 1)"),
-                c_len,
-            )
+            (format!("(const uint8_t*){c_src} + ({c_start} - 1)"), c_len)
         }
         _ => {
             // Fallback for non-alphanumeric expressions used in mixed comparisons
@@ -6337,9 +6361,7 @@ fn emit_decimal_init_expr(expr: &HirExpr, c_expr: &str) -> String {
     match expr {
         HirExpr::Literal(HirLiteral::Decimal(d)) => {
             let len = d.len();
-            format!(
-                "cobol_decimal_from_string((const uint8_t*)\"{d}\", {len}, &_tcmp);"
-            )
+            format!("cobol_decimal_from_string((const uint8_t*)\"{d}\", {len}, &_tcmp);")
         }
         _ => {
             format!("cobol_decimal_from_int({c_expr}, 0, &_tcmp);")
