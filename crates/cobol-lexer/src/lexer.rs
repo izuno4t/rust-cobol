@@ -443,20 +443,58 @@ impl Lexer {
     }
 
     /// Lexes a numeric literal (integer or decimal).
+    ///
+    /// Also handles COBOL words that start with digits (e.g., `25COUNT`,
+    /// `3-DEM-TBL`). After consuming digits, if the next character is a
+    /// letter or a hyphen followed by an alphanumeric character, the token
+    /// is treated as an identifier instead of a number.
     fn lex_number(&mut self) -> Token {
         let start = self.pos;
 
         // Optional sign
-        if self.pos < self.content.len() {
+        let has_sign = if self.pos < self.content.len() {
             let ch = self.content.as_bytes()[self.pos];
             if ch == b'+' || ch == b'-' {
                 self.pos += 1;
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
 
         // Integer part
         while self.pos < self.content.len() && self.content.as_bytes()[self.pos].is_ascii_digit() {
             self.pos += 1;
+        }
+
+        // Check if this is actually a COBOL word starting with digits
+        // (e.g., "25COUNT", "3-DEM-TBL"). Only applies when there is no
+        // sign prefix — signed tokens are always numeric literals.
+        if !has_sign && self.pos < self.content.len() {
+            let next_ch = self.content.as_bytes()[self.pos];
+            let is_cobol_word = next_ch.is_ascii_alphabetic()
+                || (next_ch == b'-'
+                    && self.pos + 1 < self.content.len()
+                    && self.content.as_bytes()[self.pos + 1].is_ascii_alphanumeric());
+            if is_cobol_word {
+                // Continue consuming as a COBOL word (letters, digits, hyphens)
+                while self.pos < self.content.len() {
+                    let ch = self.content.as_bytes()[self.pos];
+                    if ch.is_ascii_alphanumeric() || ch == b'-' {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // COBOL words cannot end with a hyphen; trim trailing hyphens
+                while self.pos > start && self.content.as_bytes()[self.pos - 1] == b'-' {
+                    self.pos -= 1;
+                }
+                self.at_statement_start = false;
+                return self.make_token(TokenKind::Identifier, start, self.pos);
+            }
         }
 
         // Check for decimal point: period followed by a digit
@@ -1083,6 +1121,66 @@ mod tests {
             "VERY-LONG-VARIABLE-NAME",
             "identifier should be merged across continuation"
         );
+    }
+
+    #[test]
+    fn test_lex_digit_starting_identifier() {
+        // COBOL allows data names starting with digits like "25COUNT"
+        let src = "MOVE 25COUNT TO WS-A.";
+        let tokens = lex_free(src);
+        let ident = tokens
+            .iter()
+            .find(|t| t.text.as_str() == "25COUNT")
+            .expect("should lex 25COUNT as a single token");
+        assert_eq!(ident.kind, TokenKind::Identifier);
+    }
+
+    #[test]
+    fn test_lex_digit_hyphen_identifier() {
+        // COBOL allows data names like "3-DEM-TBL"
+        let src = "MOVE 3-DEM-TBL TO WS-A.";
+        let tokens = lex_free(src);
+        let ident = tokens
+            .iter()
+            .find(|t| t.text.as_str() == "3-DEM-TBL")
+            .expect("should lex 3-DEM-TBL as a single token");
+        assert_eq!(ident.kind, TokenKind::Identifier);
+    }
+
+    #[test]
+    fn test_lex_digit_identifier_does_not_break_numbers() {
+        // Plain numbers should still be lexed as IntegerLiteral
+        let src = "MOVE 42 TO WS-A.";
+        let tokens = lex_free(src);
+        let num = tokens
+            .iter()
+            .find(|t| t.text.as_str() == "42")
+            .expect("should lex 42");
+        assert_eq!(num.kind, TokenKind::IntegerLiteral);
+    }
+
+    #[test]
+    fn test_lex_digit_identifier_does_not_break_decimals() {
+        // Decimal literals should still work
+        let src = "COMPUTE X = 3.14.";
+        let tokens = lex_free(src);
+        let dec = tokens
+            .iter()
+            .find(|t| t.text.as_str() == "3.14")
+            .expect("should lex 3.14");
+        assert_eq!(dec.kind, TokenKind::DecimalLiteral);
+    }
+
+    #[test]
+    fn test_lex_digit_identifier_signed_number_not_affected() {
+        // Signed numbers should remain as numeric literals
+        let src = "COMPUTE X = (+5).";
+        let tokens = lex_free(src);
+        let num = tokens
+            .iter()
+            .find(|t| t.text.as_str() == "+5")
+            .expect("should lex +5");
+        assert_eq!(num.kind, TokenKind::IntegerLiteral);
     }
 
     #[test]

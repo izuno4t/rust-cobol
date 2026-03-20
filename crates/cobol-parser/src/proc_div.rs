@@ -486,6 +486,7 @@ impl Parser {
             TokenKind::String => self.parse_string_statement(),
             TokenKind::Unstring => self.parse_unstring_statement(),
             TokenKind::Inspect => self.parse_inspect_statement(),
+            TokenKind::Search => self.parse_search_statement(),
             TokenKind::Sort => self.parse_sort_statement(),
             TokenKind::Merge => self.parse_merge_statement(),
             TokenKind::Release => self.parse_release_statement(),
@@ -543,6 +544,7 @@ impl Parser {
                     Expr::Identifier(qn)
                 };
             to.push(target_expr);
+            let _ = self.eat(TokenKind::Comma); // Optional comma separator
             if !self.check(TokenKind::Identifier) || self.at_statement_terminator() {
                 break;
             }
@@ -567,6 +569,7 @@ impl Parser {
             let target = self.parse_qualified_name()?;
             let rounded = self.eat(TokenKind::Rounded).is_some();
             targets.push(RoundedTarget { target, rounded });
+            let _ = self.eat(TokenKind::Comma); // Optional comma separator
             if self.check(TokenKind::Equals) {
                 break;
             }
@@ -598,6 +601,7 @@ impl Parser {
         let mut operands = Vec::new();
         while !self.check(TokenKind::To) && !self.check(TokenKind::Giving) && !self.at_eof() {
             operands.push(self.parse_expr()?);
+            let _ = self.eat(TokenKind::Comma); // Optional comma separator
         }
 
         let mut to = Vec::new();
@@ -608,6 +612,7 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 to.push(RoundedTarget { target, rounded });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
                 if self.at_statement_terminator()
                     || self.at_statement_start()
                     || self.check(TokenKind::Giving)
@@ -626,6 +631,7 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 giving.push(RoundedTarget { target, rounded });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
                 if self.at_statement_terminator()
                     || self.at_statement_start()
                     || self.check(TokenKind::OnKw)
@@ -663,26 +669,42 @@ impl Parser {
         let mut operands = Vec::new();
         while !self.check(TokenKind::From) && !self.at_eof() {
             operands.push(self.parse_expr()?);
+            let _ = self.eat(TokenKind::Comma); // Optional comma separator
         }
 
         self.expect(TokenKind::From)?;
 
         let mut from = Vec::new();
+        let mut from_expr = None;
         let mut giving = Vec::new();
 
-        loop {
-            let target = self.parse_qualified_name()?;
-            let rounded = self.eat(TokenKind::Rounded).is_some();
-            from.push(RoundedTarget { target, rounded });
-            if self.at_statement_terminator()
-                || self.at_statement_start()
-                || self.check(TokenKind::Giving)
-                || self.check(TokenKind::OnKw)
-                || self.check(TokenKind::SizeKw)
-                || self.check(TokenKind::Not)
-                || self.check(TokenKind::EndSubtract)
-            {
-                break;
+        // Check if FROM operand is a literal or figurative constant
+        // (Format 2: SUBTRACT ... FROM lit GIVING ...)
+        if self.check(TokenKind::IntegerLiteral)
+            || self.check(TokenKind::DecimalLiteral)
+            || self.check(TokenKind::Zero)
+            || self.check(TokenKind::Space)
+            || ((self.check(TokenKind::Plus) || self.check(TokenKind::Minus))
+                && (self.peek(1).kind == TokenKind::IntegerLiteral
+                    || self.peek(1).kind == TokenKind::DecimalLiteral))
+        {
+            from_expr = Some(self.parse_expr()?);
+        } else {
+            loop {
+                let target = self.parse_qualified_name()?;
+                let rounded = self.eat(TokenKind::Rounded).is_some();
+                from.push(RoundedTarget { target, rounded });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
+                if self.at_statement_terminator()
+                    || self.at_statement_start()
+                    || self.check(TokenKind::Giving)
+                    || self.check(TokenKind::OnKw)
+                    || self.check(TokenKind::SizeKw)
+                    || self.check(TokenKind::Not)
+                    || self.check(TokenKind::EndSubtract)
+                {
+                    break;
+                }
             }
         }
 
@@ -691,6 +713,7 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 giving.push(RoundedTarget { target, rounded });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
                 if self.at_statement_terminator()
                     || self.at_statement_start()
                     || self.check(TokenKind::OnKw)
@@ -710,6 +733,7 @@ impl Parser {
         Ok(Statement::Subtract(Box::new(SubtractStatement {
             operands,
             from,
+            from_expr,
             giving,
             corresponding,
             on_size_error,
@@ -727,21 +751,35 @@ impl Parser {
         self.expect(TokenKind::By)?;
 
         let mut by = Vec::new();
+        let mut by_expr = None;
         let mut giving = Vec::new();
 
-        loop {
-            let target = self.parse_qualified_name()?;
-            let rounded = self.eat(TokenKind::Rounded).is_some();
-            by.push(RoundedTarget { target, rounded });
-            if self.at_statement_terminator()
-                || self.at_statement_start()
-                || self.check(TokenKind::Giving)
-                || self.check(TokenKind::OnKw)
-                || self.check(TokenKind::SizeKw)
-                || self.check(TokenKind::Not)
-                || self.check(TokenKind::EndMultiply)
-            {
-                break;
+        // Check if BY operand is a literal or figurative constant
+        // (Format 2: MULTIPLY x BY lit GIVING y)
+        if self.check(TokenKind::IntegerLiteral)
+            || self.check(TokenKind::DecimalLiteral)
+            || self.check(TokenKind::Zero)
+            || ((self.check(TokenKind::Plus) || self.check(TokenKind::Minus))
+                && (self.peek(1).kind == TokenKind::IntegerLiteral
+                    || self.peek(1).kind == TokenKind::DecimalLiteral))
+        {
+            by_expr = Some(self.parse_expr()?);
+        } else {
+            loop {
+                let target = self.parse_qualified_name()?;
+                let rounded = self.eat(TokenKind::Rounded).is_some();
+                by.push(RoundedTarget { target, rounded });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
+                if self.at_statement_terminator()
+                    || self.at_statement_start()
+                    || self.check(TokenKind::Giving)
+                    || self.check(TokenKind::OnKw)
+                    || self.check(TokenKind::SizeKw)
+                    || self.check(TokenKind::Not)
+                    || self.check(TokenKind::EndMultiply)
+                {
+                    break;
+                }
             }
         }
 
@@ -750,6 +788,7 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 giving.push(RoundedTarget { target, rounded });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
                 if self.at_statement_terminator()
                     || self.at_statement_start()
                     || self.check(TokenKind::OnKw)
@@ -769,6 +808,7 @@ impl Parser {
         Ok(Statement::Multiply(Box::new(MultiplyStatement {
             operand,
             by,
+            by_expr,
             giving,
             on_size_error,
             not_on_size_error,
@@ -789,17 +829,18 @@ impl Parser {
             let by_value = self.parse_expr()?;
             let dividend = operand;
             operand = by_value;
-            // Put dividend into the 'into' list; parser continues to GIVING
-            let into = vec![RoundedTarget {
-                target: match dividend {
-                    Expr::Identifier(ref qname) => qname.clone(),
-                    _ => {
-                        self.error("DIVIDE BY requires identifier operand");
-                        return Err(());
-                    }
-                },
-                rounded: false,
-            }];
+            // Put dividend into the 'into' list if it's an identifier
+            let into = match dividend {
+                Expr::Identifier(ref qname) => vec![RoundedTarget {
+                    target: qname.clone(),
+                    rounded: false,
+                }],
+                _ => Vec::new(),
+            };
+            let into_expr = match &dividend {
+                Expr::Identifier(_) => None,
+                _ => Some(dividend),
+            };
             let mut giving = Vec::new();
             let mut remainder = None;
 
@@ -808,6 +849,7 @@ impl Parser {
                     let target = self.parse_qualified_name()?;
                     let rounded = self.eat(TokenKind::Rounded).is_some();
                     giving.push(RoundedTarget { target, rounded });
+                    let _ = self.eat(TokenKind::Comma); // Optional comma separator
                     if self.at_statement_terminator()
                         || self.at_statement_start()
                         || self.check(TokenKind::Remainder)
@@ -829,6 +871,7 @@ impl Parser {
             return Ok(Statement::Divide(Box::new(DivideStatement {
                 operand,
                 into,
+                into_expr,
                 giving,
                 remainder,
                 on_size_error,
@@ -840,23 +883,37 @@ impl Parser {
         self.expect(TokenKind::Into)?;
 
         let mut into = Vec::new();
+        let mut into_expr = None;
         let mut giving = Vec::new();
         let mut remainder = None;
 
-        loop {
-            let target = self.parse_qualified_name()?;
-            let rounded = self.eat(TokenKind::Rounded).is_some();
-            into.push(RoundedTarget { target, rounded });
-            if self.at_statement_terminator()
-                || self.at_statement_start()
-                || self.check(TokenKind::Giving)
-                || self.check(TokenKind::Remainder)
-                || self.check(TokenKind::OnKw)
-                || self.check(TokenKind::SizeKw)
-                || self.check(TokenKind::Not)
-                || self.check(TokenKind::EndDivide)
-            {
-                break;
+        // Check if INTO operand is a literal or figurative constant
+        // (Format 2: DIVIDE x INTO lit GIVING y)
+        if self.check(TokenKind::IntegerLiteral)
+            || self.check(TokenKind::DecimalLiteral)
+            || self.check(TokenKind::Zero)
+            || ((self.check(TokenKind::Plus) || self.check(TokenKind::Minus))
+                && (self.peek(1).kind == TokenKind::IntegerLiteral
+                    || self.peek(1).kind == TokenKind::DecimalLiteral))
+        {
+            into_expr = Some(self.parse_expr()?);
+        } else {
+            loop {
+                let target = self.parse_qualified_name()?;
+                let rounded = self.eat(TokenKind::Rounded).is_some();
+                into.push(RoundedTarget { target, rounded });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
+                if self.at_statement_terminator()
+                    || self.at_statement_start()
+                    || self.check(TokenKind::Giving)
+                    || self.check(TokenKind::Remainder)
+                    || self.check(TokenKind::OnKw)
+                    || self.check(TokenKind::SizeKw)
+                    || self.check(TokenKind::Not)
+                    || self.check(TokenKind::EndDivide)
+                {
+                    break;
+                }
             }
         }
 
@@ -865,6 +922,7 @@ impl Parser {
                 let target = self.parse_qualified_name()?;
                 let rounded = self.eat(TokenKind::Rounded).is_some();
                 giving.push(RoundedTarget { target, rounded });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
                 if self.at_statement_terminator()
                     || self.at_statement_start()
                     || self.check(TokenKind::Remainder)
@@ -889,6 +947,7 @@ impl Parser {
         Ok(Statement::Divide(Box::new(DivideStatement {
             operand,
             into,
+            into_expr,
             giving,
             remainder,
             on_size_error,
@@ -1881,6 +1940,7 @@ impl Parser {
             && !self.at_eof()
         {
             targets.push(self.parse_qualified_name()?);
+            let _ = self.eat(TokenKind::Comma); // Optional comma separator
         }
 
         let kind = if self.check(TokenKind::To) {
@@ -2358,6 +2418,69 @@ impl Parser {
             into,
             at_end,
             not_at_end,
+            span: start_span.merge(&end_span),
+        })))
+    }
+
+    // --- SEARCH ---
+    fn parse_search_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Search)?;
+
+        // SEARCH ALL = binary search
+        let all = self.eat(TokenKind::All).is_some();
+
+        let table_name = self.parse_qualified_name()?;
+
+        // VARYING clause (only for serial SEARCH, not SEARCH ALL)
+        let varying = if !all && self.eat(TokenKind::Varying).is_some() {
+            Some(self.parse_qualified_name()?)
+        } else {
+            None
+        };
+
+        // AT END clause
+        let mut at_end = Vec::new();
+        if self.check(TokenKind::At) {
+            let next = self.peek(1).kind;
+            if next == TokenKind::End {
+                self.advance(); // AT
+                self.advance(); // END
+                while !self.at_eof()
+                    && !self.check(TokenKind::When)
+                    && !self.check(TokenKind::EndSearch)
+                    && !self.check(TokenKind::Period)
+                {
+                    at_end.push(self.parse_statement()?);
+                }
+            }
+        }
+
+        // WHEN clauses
+        let mut when_clauses = Vec::new();
+        while self.check(TokenKind::When) {
+            self.advance(); // WHEN
+            let condition = self.parse_condition()?;
+            let mut body = Vec::new();
+            while !self.at_eof()
+                && !self.check(TokenKind::When)
+                && !self.check(TokenKind::EndSearch)
+                && !self.check(TokenKind::Period)
+            {
+                body.push(self.parse_statement()?);
+            }
+            when_clauses.push(SearchWhenClause { condition, body });
+        }
+
+        self.eat(TokenKind::EndSearch);
+
+        let end_span = self.span();
+        Ok(Statement::Search(Box::new(SearchStatement {
+            table_name,
+            all,
+            varying,
+            at_end,
+            when_clauses,
             span: start_span.merge(&end_span),
         })))
     }
@@ -3537,6 +3660,7 @@ impl Parser {
                 | TokenKind::EndSubtract
                 | TokenKind::EndMultiply
                 | TokenKind::EndDivide
+                | TokenKind::EndSearch
                 | TokenKind::EndSort
                 | TokenKind::EndMerge
                 | TokenKind::Else

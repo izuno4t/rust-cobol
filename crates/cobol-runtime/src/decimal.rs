@@ -246,6 +246,20 @@ pub unsafe extern "C" fn cobol_decimal_from_int(value: i64, scale: i32, result: 
     r.is_signed = value < 0;
 }
 
+/// Convert a COBOL decimal to an integer by truncating fractional digits.
+///
+/// # Safety
+/// `d` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_decimal_to_int64(d: *const CobolDecimal) -> i64 {
+    let d = &*d;
+    if d.scale <= 0 {
+        d.value
+    } else {
+        d.value / 10_i64.pow(d.scale as u32)
+    }
+}
+
 /// Parse a decimal number from a UTF-8 string (e.g. "123.45" or "-0.5").
 ///
 /// # Safety

@@ -172,6 +172,22 @@ impl<'a> NameResolver<'a> {
                 parent_name: parent_name.cloned(),
             });
 
+            // Register INDEXED BY names from the OCCURS clause as index data items.
+            if let Some(ref occurs) = item.occurs {
+                for idx_name in &occurs.indexed_by {
+                    self.table.define(Symbol {
+                        name: idx_name.clone(),
+                        kind: SymbolKind::DataItem {
+                            level: 1,
+                            is_group: false,
+                        },
+                        data_type: Some(CobolType::Index),
+                        span: occurs.span,
+                        parent_name: Some(name.clone()),
+                    });
+                }
+            }
+
             // Register children with this item as parent.
             for child in &item.children {
                 self.register_data_item(child, Some(&name));
@@ -635,6 +651,17 @@ impl<'a> NameResolver<'a> {
             }
             Statement::Validate(v) => {
                 self.resolve_qualified_name(&v.target);
+            }
+            Statement::Search(s) => {
+                self.resolve_qualified_name(&s.table_name);
+                if let Some(ref v) = s.varying {
+                    self.resolve_qualified_name(v);
+                }
+                self.resolve_statements(&s.at_end);
+                for w in &s.when_clauses {
+                    self.resolve_condition(&w.condition);
+                    self.resolve_statements(&w.body);
+                }
             }
             // Report writer statements — no name resolution needed for now
             Statement::Initiate(_) | Statement::Generate(_) | Statement::Terminate(_) => {}

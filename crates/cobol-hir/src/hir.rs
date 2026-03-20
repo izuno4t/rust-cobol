@@ -472,6 +472,20 @@ pub enum HirStatement {
         kind: HirInspectKind,
         span: Span,
     },
+    // --- Table handling ---
+    /// SEARCH statement: serial or binary table search.
+    Search {
+        table_name: SmolStr,
+        /// True for SEARCH ALL (binary search).
+        all: bool,
+        /// VARYING clause: the index to vary.
+        varying: Option<SmolStr>,
+        /// AT END statements.
+        at_end: Vec<HirStatement>,
+        /// WHEN clauses: (condition, body).
+        when_clauses: Vec<HirSearchWhen>,
+        span: Span,
+    },
     // --- COBOL 2002+ statements ---
     /// INVOKE statement: method invocation on an object.
     Invoke {
@@ -759,6 +773,13 @@ pub struct HirStringSource {
 pub struct HirUnstringDelimiter {
     pub all: bool,
     pub value: HirExpr,
+}
+
+/// A WHEN clause in a SEARCH statement.
+#[derive(Debug, Clone)]
+pub struct HirSearchWhen {
+    pub condition: HirCondition,
+    pub body: Vec<HirStatement>,
 }
 
 /// Relational operator for START key comparison.
@@ -1054,6 +1075,15 @@ fn write_stmt(
         HirStatement::Accept { target, .. } => writeln!(f, "{pad}ACCEPT {target}"),
         HirStatement::Sort { file_name, .. } => writeln!(f, "{pad}SORT {file_name}"),
         HirStatement::Inspect { target, .. } => writeln!(f, "{pad}INSPECT {target}"),
+        HirStatement::Search {
+            table_name, all, ..
+        } => {
+            if *all {
+                writeln!(f, "{pad}SEARCH ALL {table_name}")
+            } else {
+                writeln!(f, "{pad}SEARCH {table_name}")
+            }
+        }
         HirStatement::Invoke { object, method, .. } => {
             writeln!(f, "{pad}INVOKE {} \"{}\"", format_expr(object), method)
         }

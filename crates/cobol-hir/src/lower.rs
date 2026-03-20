@@ -27,8 +27,8 @@ use crate::hir::{
     HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
     HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
     HirParagraph, HirParam, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind,
-    HirScreenInfo, HirSortKey, HirSortOrder, HirStartRelation, HirStatement, HirStringSource,
-    HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
+    HirScreenInfo, HirSearchWhen, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
+    HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
 };
 
 /// A single or range value for an 88-level condition.
@@ -144,6 +144,20 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     }
     for decl in &mut hir.declaratives {
         patch_write_file_names(&mut decl.body, &rec_to_file);
+    }
+
+    // Post-process: fix subscript dimensions.
+    // The parser cannot distinguish `TABLE(IDX + 1)` (one subscript with
+    // arithmetic) from `TABLE(+10 +10)` (two subscripts merged into one
+    // expression).  We resolve this ambiguity using OCCURS dimensionality
+    // from data definitions.
+    let occurs_dims = build_occurs_dimension_map(&hir.data_items);
+    fix_subscript_dimensions(&mut hir.body, &occurs_dims);
+    for para in &mut hir.paragraphs {
+        fix_subscript_dimensions(&mut para.body, &occurs_dims);
+    }
+    for decl in &mut hir.declaratives {
+        fix_subscript_dimensions(&mut decl.body, &occurs_dims);
     }
 
     hir
@@ -283,6 +297,22 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             screen_info: None,
             span: item.span,
         });
+    }
+
+    // Emit INDEXED BY names as Index-typed data items.
+    if let Some(ref occurs) = item.occurs {
+        for idx_name in &occurs.indexed_by {
+            out.push(HirDataItem {
+                name: idx_name.clone(),
+                data_type: HirType::Index,
+                initial_value: None,
+                occurs: None,
+                redefines: None,
+                renames: None,
+                screen_info: None,
+                span: occurs.span,
+            });
+        }
     }
 
     // Recursively lower child items (group items)
@@ -611,6 +641,7 @@ fn lower_statement(
         Statement::Unstring(unstring_stmt) => {
             Some(lower_unstring_stmt(unstring_stmt, condition_names))
         }
+        Statement::Search(search) => Some(lower_search(search, condition_names)),
         Statement::Sort(sort) => Some(lower_sort(sort)),
         Statement::Inspect(inspect) => Some(lower_inspect(inspect)),
         // --- File I/O: additional statements ---
@@ -852,11 +883,15 @@ fn lower_subtract(
         };
     }
     let operands = sub.operands.iter().map(lower_expr).collect();
-    let from = sub
-        .from
-        .iter()
-        .map(|t| lower_qualified_name_to_expr(&t.target))
-        .collect();
+    let from: Vec<HirExpr> = if let Some(ref from_e) = sub.from_expr {
+        // Format 2: SUBTRACT ... FROM literal GIVING ...
+        vec![lower_expr(from_e)]
+    } else {
+        sub.from
+            .iter()
+            .map(|t| lower_qualified_name_to_expr(&t.target))
+            .collect()
+    };
     let giving = sub
         .giving
         .iter()
@@ -1139,11 +1174,15 @@ fn lower_multiply(
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
     let operand = lower_expr(&mul.operand);
-    let by = mul
-        .by
-        .iter()
-        .map(|t| lower_qualified_name_to_expr(&t.target))
-        .collect();
+    let by: Vec<HirExpr> = if let Some(ref by_e) = mul.by_expr {
+        // Format 2: MULTIPLY ... BY literal GIVING ...
+        vec![lower_expr(by_e)]
+    } else {
+        mul.by
+            .iter()
+            .map(|t| lower_qualified_name_to_expr(&t.target))
+            .collect()
+    };
     let giving = mul
         .giving
         .iter()
@@ -1166,11 +1205,15 @@ fn lower_divide(
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
     let operand = lower_expr(&div.operand);
-    let into = div
-        .into
-        .iter()
-        .map(|t| lower_qualified_name_to_expr(&t.target))
-        .collect();
+    let into: Vec<HirExpr> = if let Some(ref into_e) = div.into_expr {
+        // Format 2: DIVIDE ... INTO literal GIVING ...
+        vec![lower_expr(into_e)]
+    } else {
+        div.into
+            .iter()
+            .map(|t| lower_qualified_name_to_expr(&t.target))
+            .collect()
+    };
     let giving = div
         .giving
         .iter()
@@ -1430,6 +1473,29 @@ fn lower_unstring_stmt(
         into,
         on_overflow,
         span: unstring_stmt.span,
+    }
+}
+
+fn lower_search(
+    search: &cobol_ast::statement::SearchStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
+    let at_end = lower_statements(&search.at_end, condition_names);
+    let when_clauses = search
+        .when_clauses
+        .iter()
+        .map(|w| HirSearchWhen {
+            condition: lower_condition(&w.condition, condition_names),
+            body: lower_statements(&w.body, condition_names),
+        })
+        .collect();
+    HirStatement::Search {
+        table_name: search.table_name.name.clone(),
+        all: search.all,
+        varying: search.varying.as_ref().map(|v| v.name.clone()),
+        at_end,
+        when_clauses,
+        span: search.span,
     }
 }
 
@@ -2121,6 +2187,322 @@ fn lower_declaratives(
             }
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Post-processing: fix subscript dimensions
+// ---------------------------------------------------------------------------
+
+/// Build a map from (uppercased, trimmed) variable name to the number of
+/// OCCURS dimensions that must be subscripted when accessing it.
+///
+/// For example, given:
+///   01 TABLE-1.  02 GRP OCCURS 3.  03 ITEM OCCURS 4.
+/// The map contains: { "GRP" => 1, "ITEM" => 2 }.
+fn build_occurs_dimension_map(data_items: &[HirDataItem]) -> HashMap<SmolStr, usize> {
+    let mut map = HashMap::new();
+    for item in data_items {
+        let depth = if item.occurs.is_some() { 1 } else { 0 };
+        if let HirType::Group { members, .. } = &item.data_type {
+            collect_occurs_dimensions(&mut map, members, depth);
+        }
+        if depth > 0 {
+            // Keep the maximum depth (flat data_items may re-process items
+            // that already have a higher depth from their group ancestors).
+            let entry = map.entry(item.name.clone()).or_insert(0);
+            if depth > *entry {
+                *entry = depth;
+            }
+        }
+    }
+    map
+}
+
+fn collect_occurs_dimensions(
+    map: &mut HashMap<SmolStr, usize>,
+    members: &[HirDataItem],
+    ancestor_depth: usize,
+) {
+    for member in members {
+        let depth = ancestor_depth + if member.occurs.is_some() { 1 } else { 0 };
+        if depth > 0 {
+            let entry = map.entry(member.name.clone()).or_insert(0);
+            if depth > *entry {
+                *entry = depth;
+            }
+        }
+        if let HirType::Group { members: sub, .. } = &member.data_type {
+            collect_occurs_dimensions(map, sub, depth);
+        }
+    }
+}
+
+/// Split a chain of `BinaryOp(Add/Sub)` into `target_count` subscript parts.
+///
+/// Works by peeling off the rightmost operand from a top-level Add/Sub one
+/// level at a time.  For example, with target_count=2:
+///   `(IN1 + 4) + 2`  →  `[IN1 + 4, 2]`
+/// With target_count=3:
+///   `((+8) + (+1)) + (+3)`  →  `[+8, +1, +3]`
+///
+/// This preserves legitimate intra-subscript arithmetic while splitting
+/// inter-subscript boundaries merged by the parser.
+fn split_subscript_expr(expr: &HirExpr, target_count: usize) -> Vec<HirExpr> {
+    let mut parts = vec![expr.clone()];
+    while parts.len() < target_count {
+        // Find the first part (from the left) that is a splittable BinaryOp
+        let split_idx = parts.iter().position(|p| {
+            matches!(
+                p,
+                HirExpr::BinaryOp {
+                    op: HirBinOp::Add | HirBinOp::Sub,
+                    ..
+                }
+            )
+        });
+        let Some(idx) = split_idx else {
+            break; // No more splittable expressions
+        };
+        let removed = parts.remove(idx);
+        if let HirExpr::BinaryOp { op, left, right } = removed {
+            parts.insert(idx, *left);
+            let right_expr = if op == HirBinOp::Sub {
+                HirExpr::UnaryOp {
+                    op: HirUnaryOp::Neg,
+                    operand: right,
+                }
+            } else {
+                *right
+            };
+            parts.insert(idx + 1, right_expr);
+        }
+    }
+    parts
+}
+
+/// Walk all statements and fix `HirExpr::Subscript` / `HirMoveTarget::Subscript`
+/// nodes whose subscript count doesn't match the expected OCCURS dimensionality.
+fn fix_subscript_dimensions(
+    stmts: &mut [HirStatement],
+    occurs_dims: &HashMap<SmolStr, usize>,
+) {
+    for stmt in stmts.iter_mut() {
+        fix_subscripts_in_statement(stmt, occurs_dims);
+    }
+}
+
+fn fix_subscripts_in_expr(expr: &mut HirExpr, occurs_dims: &HashMap<SmolStr, usize>) {
+    match expr {
+        HirExpr::Subscript {
+            variable,
+            subscripts,
+        } => {
+            // First, recursively fix inner subscript expressions
+            for sub in subscripts.iter_mut() {
+                fix_subscripts_in_expr(sub, occurs_dims);
+            }
+            // Check if we need to split subscripts
+            let var_upper = SmolStr::new(variable.to_uppercase());
+            let expected = occurs_dims
+                .get(&var_upper)
+                .or_else(|| occurs_dims.get(variable.as_str()))
+                .copied()
+                .unwrap_or(0);
+            if expected > subscripts.len() {
+                // Split BinaryOp(Add/Sub) expressions to reach the
+                // expected dimension count.  Each subscript that is a
+                // BinaryOp is split one level at a time, distributing
+                // the missing dimensions across all splittable subscripts.
+                let missing = expected - subscripts.len();
+                let mut new_subs = Vec::new();
+                let mut remaining = missing;
+                for sub in subscripts.iter() {
+                    if remaining > 0 {
+                        let need = remaining + 1; // this sub should yield need parts
+                        let parts = split_subscript_expr(sub, need);
+                        let actually_added = parts.len().saturating_sub(1);
+                        remaining = remaining.saturating_sub(actually_added);
+                        new_subs.extend(parts);
+                    } else {
+                        new_subs.push(sub.clone());
+                    }
+                }
+                if new_subs.len() == expected {
+                    *subscripts = new_subs;
+                }
+            }
+        }
+        HirExpr::BinaryOp { left, right, .. } => {
+            fix_subscripts_in_expr(left, occurs_dims);
+            fix_subscripts_in_expr(right, occurs_dims);
+        }
+        HirExpr::UnaryOp { operand, .. } => {
+            fix_subscripts_in_expr(operand, occurs_dims);
+        }
+        _ => {}
+    }
+}
+
+fn fix_subscripts_in_move_target(
+    target: &mut HirMoveTarget,
+    occurs_dims: &HashMap<SmolStr, usize>,
+) {
+    if let HirMoveTarget::Subscript {
+        variable,
+        subscripts,
+    } = target
+    {
+        for sub in subscripts.iter_mut() {
+            fix_subscripts_in_expr(sub, occurs_dims);
+        }
+        let var_upper = SmolStr::new(variable.to_uppercase());
+        let expected = occurs_dims
+            .get(&var_upper)
+            .or_else(|| occurs_dims.get(variable.as_str()))
+            .copied()
+            .unwrap_or(0);
+        if expected > subscripts.len() {
+            let missing = expected - subscripts.len();
+            let mut new_subs = Vec::new();
+            let mut remaining = missing;
+            for sub in subscripts.iter() {
+                if remaining > 0 {
+                    let need = remaining + 1;
+                    let parts = split_subscript_expr(sub, need);
+                    let actually_added = parts.len().saturating_sub(1);
+                    remaining = remaining.saturating_sub(actually_added);
+                    new_subs.extend(parts);
+                } else {
+                    new_subs.push(sub.clone());
+                }
+            }
+            if new_subs.len() == expected {
+                *subscripts = new_subs;
+            }
+        }
+    }
+}
+
+fn fix_subscripts_in_condition(
+    cond: &mut HirCondition,
+    occurs_dims: &HashMap<SmolStr, usize>,
+) {
+    match cond {
+        HirCondition::Compare { left, right, .. } => {
+            fix_subscripts_in_expr(left, occurs_dims);
+            fix_subscripts_in_expr(right, occurs_dims);
+        }
+        HirCondition::ClassCondition { operand, .. } => {
+            fix_subscripts_in_expr(operand, occurs_dims);
+        }
+        HirCondition::And(a, b) | HirCondition::Or(a, b) => {
+            fix_subscripts_in_condition(a, occurs_dims);
+            fix_subscripts_in_condition(b, occurs_dims);
+        }
+        HirCondition::Not(inner) => fix_subscripts_in_condition(inner, occurs_dims),
+    }
+}
+
+fn fix_subscripts_in_perform_kind(
+    kind: &mut HirPerformKind,
+    occurs_dims: &HashMap<SmolStr, usize>,
+) {
+    match kind {
+        HirPerformKind::Inline { body }
+        | HirPerformKind::Times { body, .. }
+        | HirPerformKind::Until { body, .. } => {
+            fix_subscript_dimensions(body, occurs_dims);
+        }
+        HirPerformKind::Varying {
+            from,
+            by,
+            until,
+            body,
+            ..
+        } => {
+            fix_subscripts_in_expr(from, occurs_dims);
+            fix_subscripts_in_expr(by, occurs_dims);
+            fix_subscripts_in_condition(until, occurs_dims);
+            fix_subscript_dimensions(body, occurs_dims);
+        }
+        HirPerformKind::ProcedureName { .. } => {}
+    }
+}
+
+fn fix_subscripts_in_statement(
+    stmt: &mut HirStatement,
+    occurs_dims: &HashMap<SmolStr, usize>,
+) {
+    match stmt {
+        HirStatement::Move { from, to, .. } => {
+            fix_subscripts_in_expr(from, occurs_dims);
+            for t in to.iter_mut() {
+                fix_subscripts_in_move_target(t, occurs_dims);
+            }
+        }
+        HirStatement::If {
+            condition,
+            then_body,
+            else_body,
+            ..
+        } => {
+            fix_subscripts_in_condition(condition, occurs_dims);
+            fix_subscript_dimensions(then_body, occurs_dims);
+            fix_subscript_dimensions(else_body, occurs_dims);
+        }
+        HirStatement::Compute { targets, expr, .. } => {
+            fix_subscripts_in_expr(expr, occurs_dims);
+            for t in targets.iter_mut() {
+                fix_subscripts_in_expr(t, occurs_dims);
+            }
+        }
+        HirStatement::Add { operands, to, giving, on_size_error, not_on_size_error, .. } => {
+            for op in operands.iter_mut() { fix_subscripts_in_expr(op, occurs_dims); }
+            for t in to.iter_mut() { fix_subscripts_in_expr(t, occurs_dims); }
+            for g in giving.iter_mut() { fix_subscripts_in_expr(g, occurs_dims); }
+            fix_subscript_dimensions(on_size_error, occurs_dims);
+            fix_subscript_dimensions(not_on_size_error, occurs_dims);
+        }
+        HirStatement::Subtract { operands, from, giving, on_size_error, not_on_size_error, .. } => {
+            for op in operands.iter_mut() { fix_subscripts_in_expr(op, occurs_dims); }
+            for f in from.iter_mut() { fix_subscripts_in_expr(f, occurs_dims); }
+            for g in giving.iter_mut() { fix_subscripts_in_expr(g, occurs_dims); }
+            fix_subscript_dimensions(on_size_error, occurs_dims);
+            fix_subscript_dimensions(not_on_size_error, occurs_dims);
+        }
+        HirStatement::Multiply { operand, by, giving, on_size_error, not_on_size_error, .. } => {
+            fix_subscripts_in_expr(operand, occurs_dims);
+            for b in by.iter_mut() { fix_subscripts_in_expr(b, occurs_dims); }
+            for g in giving.iter_mut() { fix_subscripts_in_expr(g, occurs_dims); }
+            fix_subscript_dimensions(on_size_error, occurs_dims);
+            fix_subscript_dimensions(not_on_size_error, occurs_dims);
+        }
+        HirStatement::Divide { operand, into, giving, remainder, on_size_error, not_on_size_error, .. } => {
+            fix_subscripts_in_expr(operand, occurs_dims);
+            for i in into.iter_mut() { fix_subscripts_in_expr(i, occurs_dims); }
+            for g in giving.iter_mut() { fix_subscripts_in_expr(g, occurs_dims); }
+            if let Some(r) = remainder { fix_subscripts_in_expr(r, occurs_dims); }
+            fix_subscript_dimensions(on_size_error, occurs_dims);
+            fix_subscript_dimensions(not_on_size_error, occurs_dims);
+        }
+        HirStatement::Display { operands, .. } => {
+            for v in operands.iter_mut() {
+                fix_subscripts_in_expr(v, occurs_dims);
+            }
+        }
+        HirStatement::Perform { kind, .. } => {
+            fix_subscripts_in_perform_kind(kind, occurs_dims);
+        }
+        HirStatement::Search { at_end, when_clauses, .. } => {
+            fix_subscript_dimensions(at_end, occurs_dims);
+            for wc in when_clauses.iter_mut() {
+                fix_subscripts_in_condition(&mut wc.condition, occurs_dims);
+                fix_subscript_dimensions(&mut wc.body, occurs_dims);
+            }
+        }
+        // Statements without subscript expressions or already handled
+        _ => {}
+    }
 }
 
 #[cfg(test)]

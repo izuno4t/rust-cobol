@@ -35,7 +35,10 @@ impl Parser {
                 loop {
                     let expr = self.parse_expr()?;
                     subscripts.push(expr);
-                    if self.eat(TokenKind::Comma).is_none() {
+                    // COBOL subscripts can be separated by comma or space
+                    let _ = self.eat(TokenKind::Comma);
+                    // Stop if we hit ')' or end of input
+                    if self.check(TokenKind::RightParen) || self.at_eof() {
                         break;
                     }
                 }
@@ -340,6 +343,26 @@ impl Parser {
                     Some(Literal::FigurativeConstant(FigurativeConstant::All(
                         " ".into(),
                     )))
+                }
+            }
+            // Signed numeric literals: +NNN or -NNN
+            TokenKind::Plus | TokenKind::Minus => {
+                let sign = self.current().kind;
+                let sign_char = if sign == TokenKind::Minus { "-" } else { "+" };
+                self.advance();
+                match self.current().kind {
+                    TokenKind::IntegerLiteral => {
+                        let tok = self.advance();
+                        let text = format!("{}{}", sign_char, tok.text);
+                        let val: i64 = text.parse().unwrap_or(0);
+                        Some(Literal::Integer(val))
+                    }
+                    TokenKind::DecimalLiteral => {
+                        let tok = self.advance();
+                        let text = format!("{}{}", sign_char, tok.text);
+                        Some(Literal::Decimal(text))
+                    }
+                    _ => None,
                 }
             }
             _ => None,

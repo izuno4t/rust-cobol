@@ -4,6 +4,7 @@
 // The generated C code is then compiled with clang/cc and linked against
 // the runtime's static library to produce a native executable.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -14,12 +15,131 @@ use cobol_hir::{
     HirStartRelation, HirStatement, HirType, HirUnaryOp,
 };
 
-/// Maps sanitized file name → sanitized FILE STATUS variable name.
+/// Maps sanitized file name -> sanitized FILE STATUS variable name.
 type FileStatusMap = HashMap<String, String>;
+
+/// Describes the path segments from a top-level group root to a data item,
+/// recording which segments carry an OCCURS dimension.
+/// Used by `emit_subscript_access` to generate correct multi-dimensional C access.
+#[derive(Debug, Clone)]
+struct SubscriptPathInfo {
+    /// Ordered list of path segments from the root group to the item.
+    /// Each entry: (segment_suffix, has_occurs)
+    /// - `segment_suffix`: e.g. `.members._m_GRP_ENTRY`
+    /// - `has_occurs`: if true, a subscript `[(idx)-1]` must be inserted after this segment
+    segments: Vec<(String, bool)>,
+    /// The root group's C name (e.g., `TABLE_1`)
+    root: String,
+}
+
+thread_local! {
+    /// Pre-computed map from sanitized variable name to its subscript path info.
+    /// Populated at the start of `generate_c` and used by `emit_subscript_access`.
+    static SUBSCRIPT_PATHS: RefCell<HashMap<String, SubscriptPathInfo>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Build the subscript path map for all data items inside groups with OCCURS.
+fn build_subscript_paths(data_items: &[HirDataItem]) -> HashMap<String, SubscriptPathInfo> {
+    let mut map = HashMap::new();
+    for item in data_items {
+        if let HirType::Group { members, .. } = &item.data_type {
+            let root = sanitize_name(&item.name);
+            let root_has_occurs = item.occurs.is_some();
+            // REDEFINES groups are plain structs (no union/.members wrapper),
+            // so their immediate children use `._m_CHILD` not `.members._m_CHILD`.
+            let root_is_redefines = item.redefines.is_some();
+            collect_subscript_paths(
+                &mut map,
+                members,
+                &root,
+                &[],
+                root_has_occurs,
+                root_is_redefines,
+            );
+        }
+    }
+    map
+}
+
+/// Recursively walk group members and build path info for each leaf/member
+/// that is reachable through at least one OCCURS ancestor (or has OCCURS itself).
+fn collect_subscript_paths(
+    map: &mut HashMap<String, SubscriptPathInfo>,
+    members: &[HirDataItem],
+    root: &str,
+    ancestor_segments: &[(String, bool)],
+    root_has_occurs: bool,
+    parent_is_redefines: bool,
+) {
+    for member in members {
+        if member.redefines.is_some() {
+            continue;
+        }
+        let c_name = sanitize_name(&member.name);
+        let member_has_occurs = member.occurs.is_some();
+        // REDEFINES groups are plain structs without union wrapper,
+        // so skip `.members` for direct children of a REDEFINES root.
+        let segment_suffix = if parent_is_redefines {
+            format!("._m_{c_name}")
+        } else {
+            format!(".members._m_{c_name}")
+        };
+        let mut segments: Vec<(String, bool)> = ancestor_segments.to_vec();
+        segments.push((segment_suffix, member_has_occurs));
+
+        let any_occurs = root_has_occurs || segments.iter().any(|(_, has)| *has);
+        if any_occurs {
+            let new_occurs_count = segments.iter().filter(|(_, has)| *has).count();
+            // Only insert if this path has more OCCURS levels than any existing entry.
+            // The flat data_items list may produce the same item via multiple group
+            // roots; we want the deepest path (most OCCURS dimensions).
+            let should_insert = match map.get(&c_name) {
+                Some(existing) => {
+                    let existing_count = existing.segments.iter().filter(|(_, has)| *has).count();
+                    new_occurs_count > existing_count
+                }
+                None => true,
+            };
+            if should_insert {
+                map.insert(
+                    c_name.clone(),
+                    SubscriptPathInfo {
+                        segments: segments.clone(),
+                        root: root.to_string(),
+                    },
+                );
+            }
+        }
+
+        if let HirType::Group {
+            members: sub_members,
+            ..
+        } = &member.data_type
+        {
+            collect_subscript_paths(
+                map,
+                sub_members,
+                root,
+                &segments,
+                root_has_occurs,
+                false,
+            );
+        }
+    }
+}
 
 /// Generates C source code from a HIR program.
 pub fn generate_c(program: &HirProgram) -> String {
     let mut out = String::new();
+
+    // Pre-compute subscript path info for nested OCCURS groups.
+    // This allows emit_subscript_access to generate correct multi-dimensional
+    // C struct access paths without needing data_items at every call site.
+    let paths = build_subscript_paths(&program.data_items);
+    SUBSCRIPT_PATHS.with(|cell| {
+        *cell.borrow_mut() = paths;
+    });
 
     // Header
     emit_header(&mut out);
@@ -396,6 +516,7 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str(
         "extern void cobol_decimal_from_int(int64_t value, int32_t scale, CobolDecimal* result);\n",
     );
+    out.push_str("extern int64_t cobol_decimal_to_int64(const CobolDecimal* d);\n");
     out.push_str("extern void cobol_decimal_from_string(const uint8_t* ptr, uint32_t len, CobolDecimal* result);\n");
     out.push_str("extern uint32_t cobol_decimal_to_display(const CobolDecimal* dec, uint8_t* buf, uint32_t buf_len, const uint8_t* pic_ptr, uint32_t pic_len);\n");
     // Screen section runtime declarations
@@ -442,8 +563,7 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
     out.push_str("/* Data items */\n");
     for item in items {
         let c_name = sanitize_name(&item.name);
-        if group_member_names.contains(&c_name) && !matches!(&item.data_type, HirType::Group { .. })
-        {
+        if group_member_names.contains(&c_name) {
             continue; // Already emitted as part of a group struct
         }
         emit_single_data_item(out, item, &duplicate_member_names, &mut emitted_typedefs);
@@ -477,10 +597,17 @@ fn collect_member_names_recursive(members: &[HirDataItem], names: &mut BTreeSet<
 
 /// Collect member names that appear in more than one top-level group.
 /// These names should only get qualified #define macros, not unqualified ones.
+/// Sub-groups that are members of other groups are excluded to avoid false duplicates.
 fn collect_duplicate_member_names(items: &[HirDataItem]) -> BTreeSet<String> {
+    let group_member_names = collect_group_member_names(items);
     let mut seen = BTreeSet::new();
     let mut duplicates = BTreeSet::new();
     for item in items {
+        let c_name = sanitize_name(&item.name);
+        // Skip sub-groups that are members of other groups
+        if group_member_names.contains(&c_name) {
+            continue;
+        }
         if let HirType::Group { members, .. } = &item.data_type {
             let mut group_names = BTreeSet::new();
             collect_member_names_recursive(members, &mut group_names);
@@ -511,13 +638,34 @@ fn emit_single_data_item(
         return;
     }
 
-    // REDEFINES: overlay on another item's memory via pointer cast
+    // REDEFINES: overlay on another item's memory via #define with cast
     if let Some(ref redef_name) = item.redefines {
         let c_redef = sanitize_name(redef_name);
         let c_type = c_type_for_hir_type(&item.data_type);
-        out.push_str(&format!(
-            "static {c_type}* {c_name} = ({c_type}*)&{c_redef}; /* REDEFINES {c_redef} */\n"
-        ));
+        match &item.data_type {
+            HirType::Alphanumeric { .. } | HirType::National { .. } => {
+                // Array types: cast to pointer (acts as array base for memset/strncpy)
+                out.push_str(&format!(
+                    "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                ));
+            }
+            HirType::Group { members, .. } => {
+                // Group REDEFINES: reinterpret as the group's struct type
+                emit_group_typedefs(out, &c_name, members, emitted_typedefs);
+                out.push_str(&format!(
+                    "#define {c_name} (*(_grp_{c_name}_t*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                ));
+                // Emit #define macros for children of this REDEFINES group
+                // Note: REDEFINES group is a struct, not a union, so no .members wrapper
+                emit_group_macros(out, members, &c_name, &c_name, duplicate_member_names);
+            }
+            _ => {
+                // Scalar types: dereference cast for lvalue semantics
+                out.push_str(&format!(
+                    "#define {c_name} (*({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                ));
+            }
+        }
         return;
     }
 
@@ -570,7 +718,13 @@ fn emit_single_data_item(
                 duplicate_member_names,
             );
             // Emit REDEFINES members as separate static pointers
-            emit_group_redefines(out, members);
+            emit_group_redefines(
+                out,
+                members,
+                &format!("{c_name}.members"),
+                duplicate_member_names,
+                emitted_typedefs,
+            );
             out.push('\n');
         }
         HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
@@ -631,18 +785,31 @@ fn emit_group_typedefs(
     }
     // Emit this level's struct typedef
     out.push_str("typedef struct {\n");
+    let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
         if member.redefines.is_some() {
             continue; // REDEFINES handled separately
         }
-        emit_group_struct_member(out, member);
+        emit_group_struct_member(out, member, &mut member_name_counts);
     }
     out.push_str(&format!("}} {typedef_name};\n"));
 }
 
 /// Emit a single member within a group struct typedef.
-fn emit_group_struct_member(out: &mut String, member: &HirDataItem) {
-    let c_name = sanitize_name(&member.name);
+fn emit_group_struct_member(
+    out: &mut String,
+    member: &HirDataItem,
+    member_name_counts: &mut HashMap<String, u32>,
+) {
+    let base_c_name = sanitize_name(&member.name);
+    // Track member names to avoid duplicates (common with FILLER and implicit FILLER items)
+    let count = member_name_counts.entry(base_c_name.clone()).or_insert(0);
+    *count += 1;
+    let c_name = if *count > 1 {
+        format!("{}_{}", base_c_name, count)
+    } else {
+        base_c_name
+    };
     let array_suffix = member.occurs.map_or(String::new(), |n| format!("[{n}]"));
     match &member.data_type {
         HirType::Alphanumeric { size } => {
@@ -672,7 +839,7 @@ fn emit_group_struct_member(out: &mut String, member: &HirDataItem) {
         }
         HirType::Group { .. } => {
             out.push_str(&format!(
-                "    union {{ _grp_{c_name}_t members; uint8_t _bytes[sizeof(_grp_{c_name}_t)]; }} _m_{c_name};\n"
+                "    union {{ _grp_{c_name}_t members; uint8_t _bytes[sizeof(_grp_{c_name}_t)]; }} _m_{c_name}{array_suffix};\n"
             ));
         }
         HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
@@ -717,6 +884,11 @@ fn emit_group_macros(
         if member.redefines.is_some() {
             continue;
         }
+        // FILLER items (and items misnamed "PIC" from implicit FILLER) are unnamed
+        // padding; skip macro generation to avoid duplicate #define errors
+        if member.name == "FILLER" || member.name == "PIC" {
+            continue;
+        }
         let c_name = sanitize_name(&member.name);
         let access_path = format!("{path_prefix}._m_{c_name}");
         // Unqualified macro: only if name is unique across all groups
@@ -741,23 +913,58 @@ fn emit_group_macros(
     }
 }
 
-/// Emit REDEFINES members within a group as separate static pointers.
-fn emit_group_redefines(out: &mut String, members: &[HirDataItem]) {
+/// Emit REDEFINES members within a group as #define macros with qualified paths.
+fn emit_group_redefines(
+    out: &mut String,
+    members: &[HirDataItem],
+    path_prefix: &str,
+    duplicate_names: &BTreeSet<String>,
+    emitted_typedefs: &mut HashSet<String>,
+) {
     for member in members {
         if let Some(ref redef_name) = member.redefines {
             let c_name = sanitize_name(&member.name);
             let c_redef = sanitize_name(redef_name);
             let c_type = c_type_for_hir_type(&member.data_type);
-            out.push_str(&format!(
-                "static {c_type}* {c_name} = ({c_type}*)&{c_redef}; /* REDEFINES {c_redef} */\n"
-            ));
+            let qualified_target = format!("{path_prefix}._m_{c_redef}");
+            match &member.data_type {
+                HirType::Alphanumeric { .. } | HirType::National { .. } => {
+                    out.push_str(&format!(
+                        "#define {c_name} (({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
+                    ));
+                }
+                HirType::Group {
+                    members: grp_members,
+                    ..
+                } => {
+                    emit_group_typedefs(out, &c_name, grp_members, emitted_typedefs);
+                    out.push_str(&format!(
+                        "#define {c_name} (*(_grp_{c_name}_t*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
+                    ));
+                    emit_group_macros(out, grp_members, &c_name, &c_name, duplicate_names);
+                }
+                _ => {
+                    out.push_str(&format!(
+                        "#define {c_name} (*({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
+                    ));
+                }
+            }
         }
-        if let HirType::Group {
-            members: sub_members,
-            ..
-        } = &member.data_type
-        {
-            emit_group_redefines(out, sub_members);
+        if member.redefines.is_none() {
+            if let HirType::Group {
+                members: sub_members,
+                ..
+            } = &member.data_type
+            {
+                let c_name = sanitize_name(&member.name);
+                emit_group_redefines(
+                    out,
+                    sub_members,
+                    &format!("{path_prefix}._m_{c_name}.members"),
+                    duplicate_names,
+                    emitted_typedefs,
+                );
+            }
         }
     }
 }
@@ -788,8 +995,11 @@ fn emit_data_init(out: &mut String, items: &[HirDataItem]) {
     let group_member_names = collect_group_member_names(items);
     for item in items {
         let c_name = sanitize_name(&item.name);
-        if group_member_names.contains(&c_name) && !matches!(&item.data_type, HirType::Group { .. })
-        {
+        if group_member_names.contains(&c_name) {
+            continue;
+        }
+        // Skip REDEFINES items — they share memory with the redefined item
+        if item.redefines.is_some() {
             continue;
         }
         emit_single_data_init(out, item);
@@ -806,19 +1016,31 @@ fn emit_single_data_init_with_prefix(
     group_prefix: Option<&str>,
 ) {
     let base_c_name = sanitize_name(&item.name);
+    // Use C struct access path when inside a group, not macro names
     let c_name = if let Some(prefix) = group_prefix {
-        format!("{prefix}__{base_c_name}")
+        format!("{prefix}._m_{base_c_name}")
     } else {
         base_c_name.clone()
     };
     if let HirType::Group { members, .. } = &item.data_type {
-        // Initialize group members recursively with this group as prefix
+        // If this group itself has OCCURS, zero-init the entire array of structs
+        // rather than recursing into members (which would fail because we can't
+        // access .members on an array element without a subscript).
+        if item.occurs.is_some() {
+            out.push_str(&format!("    memset(&{c_name}, 0, sizeof({c_name}));\n"));
+            return;
+        }
+        // Initialize group members recursively with C struct access path
         let my_prefix = if let Some(prefix) = group_prefix {
-            format!("{prefix}__{base_c_name}")
+            format!("{prefix}._m_{base_c_name}.members")
         } else {
-            base_c_name.clone()
+            format!("{base_c_name}.members")
         };
         for member in members {
+            // Skip REDEFINES members — they share memory with the redefined item
+            if member.redefines.is_some() {
+                continue;
+            }
             emit_single_data_init_with_prefix(out, member, Some(&my_prefix));
         }
         return;
@@ -1106,7 +1328,6 @@ fn emit_statement(
             if has_size_error {
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
-            let c_expr = emit_expr(expr);
             for target in targets {
                 let c_target = emit_expr(target);
                 let target_name = match target {
@@ -1114,7 +1335,14 @@ fn emit_statement(
                     HirExpr::Subscript { variable, .. } => variable.as_str(),
                     _ => "",
                 };
+                let target_is_decimal = find_data_item(target_name, data_items)
+                    .is_some_and(|i| needs_decimal(&i.data_type));
                 if has_size_error {
+                    let c_expr = if target_is_decimal {
+                        emit_expr(expr)
+                    } else {
+                        emit_int_compatible_expr(expr, data_items)
+                    };
                     emit_save_and_check_overflow(
                         out,
                         target_name,
@@ -1123,7 +1351,10 @@ fn emit_statement(
                         data_items,
                         &pad,
                     );
+                } else if target_is_decimal {
+                    emit_assign_to_decimal(out, expr, &c_target, data_items, &pad);
                 } else {
+                    let c_expr = emit_int_compatible_expr(expr, data_items);
                     out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
                 }
             }
@@ -1156,9 +1387,12 @@ fn emit_statement(
             if !giving.is_empty() {
                 // ADD a b GIVING c d -> c = a + b, d = a + b
                 // All operands + TO values are summed, result goes to GIVING targets
-                let mut all_addends: Vec<String> = operands.iter().map(emit_expr).collect();
+                let mut all_addends: Vec<String> = operands
+                    .iter()
+                    .map(|o| emit_int_compatible_expr(o, data_items))
+                    .collect();
                 for t in to {
-                    all_addends.push(emit_expr(t));
+                    all_addends.push(emit_int_compatible_expr(t, data_items));
                 }
                 let sum_expr = all_addends.join(" + ");
                 for target in giving {
@@ -1198,7 +1432,10 @@ fn emit_statement(
                             );
                         }
                     } else {
-                        let sum: Vec<_> = operands.iter().map(emit_expr).collect();
+                        let sum: Vec<_> = operands
+                            .iter()
+                            .map(|o| emit_int_compatible_expr(o, data_items))
+                            .collect();
                         let sum_expr = sum.join(" + ");
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
@@ -1239,18 +1476,29 @@ fn emit_statement(
             }
             if !giving.is_empty() {
                 // SUBTRACT a FROM b GIVING c -> c = b - a
-                let sub_vals: Vec<String> = operands.iter().map(emit_expr).collect();
+                let sub_vals: Vec<String> = operands
+                    .iter()
+                    .map(|o| emit_int_compatible_expr(o, data_items))
+                    .collect();
                 let sub_expr = sub_vals.join(" + ");
                 // The FROM value is the minuend
                 let from_val = if let Some(f) = from.first() {
-                    emit_expr(f)
+                    emit_int_compatible_expr(f, data_items)
                 } else {
                     "0".to_string()
                 };
                 for target in giving {
                     let c_target = emit_expr(target);
                     let var_name = expr_var_name(target);
-                    if has_size_error {
+                    let target_is_decimal = find_data_item(var_name, data_items)
+                        .is_some_and(|i| needs_decimal(&i.data_type));
+                    if target_is_decimal {
+                        // SUBTRACT GIVING decimal: result = from - sub
+                        out.push_str(&format!(
+                            "{pad}cobol_decimal_from_int(\
+                             {from_val} - ({sub_expr}), 0, &{c_target});\n"
+                        ));
+                    } else if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                         out.push_str(&format!("{pad}{c_target} = {from_val} - ({sub_expr});\n"));
                         emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
@@ -1277,7 +1525,10 @@ fn emit_statement(
                             );
                         }
                     } else {
-                        let sum: Vec<_> = operands.iter().map(emit_expr).collect();
+                        let sum: Vec<_> = operands
+                            .iter()
+                            .map(|o| emit_int_compatible_expr(o, data_items))
+                            .collect();
                         let sum_expr = sum.join(" + ");
                         if has_size_error {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
@@ -1366,17 +1617,57 @@ fn emit_statement(
                 // MULTIPLY A BY B GIVING C [D ...]:  C = A * B
                 let c_operand = emit_expr(operand);
                 let first_by = by.first().map(emit_expr).unwrap_or_default();
-                let mul_expr = format!("{first_by} * {c_operand}");
+                let op_is_dec = is_decimal_expr(operand, data_items);
+                let by_is_dec = by
+                    .first()
+                    .map_or(false, |b| is_decimal_expr(b, data_items));
+                let any_src_decimal = op_is_dec || by_is_dec;
                 for target in giving {
                     let c_target = emit_expr(target);
                     let var_name = expr_var_name(target);
-                    if has_size_error {
-                        out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                        out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
-                        emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
-                        out.push_str(&format!("{pad}}}\n"));
+                    let target_is_decimal = find_data_item(var_name, data_items)
+                        .is_some_and(|i| needs_decimal(&i.data_type));
+                    if target_is_decimal || any_src_decimal {
+                        // Decimal path: convert operands to CobolDecimal
+                        let init_a = if op_is_dec {
+                            format!("CobolDecimal _ma = {c_operand};")
+                        } else {
+                            format!(
+                                "CobolDecimal _ma; cobol_decimal_from_int({c_operand}, 0, &_ma);"
+                            )
+                        };
+                        let init_b = if by_is_dec {
+                            format!("CobolDecimal _mb = {first_by};")
+                        } else {
+                            format!(
+                                "CobolDecimal _mb; cobol_decimal_from_int({first_by}, 0, &_mb);"
+                            )
+                        };
+                        out.push_str(&format!("{pad}{{ {init_a} {init_b} "));
+                        out.push_str("CobolDecimal _mr; cobol_decimal_mul(&_ma, &_mb, &_mr); ");
+                        if target_is_decimal {
+                            out.push_str(&format!("{c_target} = _mr; }}\n"));
+                        } else {
+                            out.push_str(&format!(
+                                "{c_target} = cobol_decimal_to_int64(&_mr); }}\n"
+                            ));
+                        }
                     } else {
-                        out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
+                        let mul_expr = format!("{first_by} * {c_operand}");
+                        if has_size_error {
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
+                            emit_integer_overflow_check(
+                                out,
+                                var_name,
+                                &c_target,
+                                data_items,
+                                &pad,
+                            );
+                            out.push_str(&format!("{pad}}}\n"));
+                        } else {
+                            out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
+                        }
                     }
                 }
             } else {
@@ -1394,6 +1685,14 @@ fn emit_statement(
                             data_items,
                             &pad,
                         );
+                    } else if is_decimal_expr(operand, data_items) {
+                        // int64 target *= CobolDecimal operand: use decimal path
+                        let c_operand = emit_expr(operand);
+                        out.push_str(&format!(
+                            "{pad}{{ CobolDecimal _td; cobol_decimal_from_int({c_target}, 0, &_td); \
+                             cobol_decimal_mul(&_td, &{c_operand}, &_td); \
+                             {c_target} = cobol_decimal_to_int64(&_td); }}\n"
+                        ));
                     } else {
                         let c_operand = emit_expr(operand);
                         if has_size_error {
@@ -1434,21 +1733,65 @@ fn emit_statement(
             if has_size_error {
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
+            let op_is_dec = is_decimal_expr(operand, data_items);
+            let into_is_dec = into
+                .first()
+                .map_or(false, |i| is_decimal_expr(i, data_items));
+            let any_src_decimal = op_is_dec || into_is_dec;
             let c_operand = emit_expr(operand);
+            let c_operand_int = emit_int_compatible_expr(operand, data_items);
             if !giving.is_empty() {
                 // DIVIDE A INTO B GIVING C: C = B / A
                 let first_into = into.first().map(emit_expr).unwrap_or_default();
+                let first_into_int = into
+                    .first()
+                    .map(|i| emit_int_compatible_expr(i, data_items))
+                    .unwrap_or_default();
                 for target in giving {
                     let c_target = emit_expr(target);
                     let var_name = expr_var_name(target);
                     if let Some(rem) = remainder {
                         let c_rem = emit_expr(rem);
-                        out.push_str(&format!("{pad}{c_rem} = {first_into} % {c_operand};\n"));
+                        out.push_str(&format!(
+                            "{pad}{c_rem} = {first_into_int} % {c_operand_int};\n"
+                        ));
                     }
-                    if has_size_error {
+                    let target_is_decimal = find_data_item(var_name, data_items)
+                        .is_some_and(|i| needs_decimal(&i.data_type));
+                    if target_is_decimal && any_src_decimal {
+                        // Use decimal division
+                        let init_a = if into_is_dec {
+                            format!("CobolDecimal _da = {first_into};")
+                        } else {
+                            format!(
+                                "CobolDecimal _da; cobol_decimal_from_int({first_into}, 0, &_da);"
+                            )
+                        };
+                        let init_b = if op_is_dec {
+                            format!("CobolDecimal _db = {c_operand};")
+                        } else {
+                            format!(
+                                "CobolDecimal _db; cobol_decimal_from_int({c_operand}, 0, &_db);"
+                            )
+                        };
+                        out.push_str(&format!(
+                            "{pad}{{ {init_a} {init_b} cobol_decimal_div(&_da, &_db, &{c_target}); }}\n"
+                        ));
+                    } else if target_is_decimal {
+                        out.push_str(&format!(
+                            "{pad}if ({c_operand} != 0) {{ \
+                             cobol_decimal_from_int(\
+                             {first_into} / {c_operand}, 0, &{c_target}); }}\n"
+                        ));
+                    } else if any_src_decimal {
+                        out.push_str(&format!(
+                            "{pad}{c_target} = {first_into_int} / {c_operand_int};\n"
+                        ));
+                    } else if has_size_error {
                         out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                         out.push_str(&format!(
-                            "{pad}if ({c_operand} == 0) {{ _size_error = 1; }} else {{ {c_target} = {first_into} / {c_operand}; }}\n"
+                            "{pad}if ({c_operand} == 0) {{ _size_error = 1; }} \
+                             else {{ {c_target} = {first_into} / {c_operand}; }}\n"
                         ));
                         emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
@@ -1471,6 +1814,13 @@ fn emit_statement(
                             data_items,
                             &pad,
                         );
+                    } else if is_decimal_expr(operand, data_items) {
+                        // int64 target /= CobolDecimal operand
+                        out.push_str(&format!(
+                            "{pad}{{ CobolDecimal _td; cobol_decimal_from_int({c_target}, 0, &_td); \
+                             cobol_decimal_div(&_td, &{c_operand}, &_td); \
+                             {c_target} = cobol_decimal_to_int64(&_td); }}\n"
+                        ));
                     } else {
                         if let Some(rem) = remainder {
                             let c_rem = emit_expr(rem);
@@ -1923,10 +2273,16 @@ fn emit_statement(
             }
         }
         HirStatement::Set { targets, value, .. } => {
-            let c_value = emit_expr(value);
             for target in targets {
                 let c_target = sanitize_name(target);
-                out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
+                let target_is_decimal = find_data_item(target.as_str(), data_items)
+                    .is_some_and(|i| needs_decimal(&i.data_type));
+                if target_is_decimal {
+                    emit_assign_to_decimal(out, value, &c_target, data_items, &pad);
+                } else {
+                    let c_value = emit_expr(value);
+                    out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
+                }
             }
         }
         HirStatement::SetAddress { target, source, .. } => {
@@ -1961,9 +2317,10 @@ fn emit_statement(
                     "{pad}    _sources[{i}].ptr = (const uint8_t*)_src_ptr_{i}; _sources[{i}].len = _src_len_{i}; _sources[{i}].delim_ptr = _delim_ptr_{i}; _sources[{i}].delim_len = _delim_len_{i};\n"
                 ));
             }
+            let into_ptr = c_ptr_expr(&c_into, data_items);
             out.push_str(&format!("{pad}    uint32_t _pointer = 1;\n"));
             out.push_str(&format!(
-                "{pad}    int32_t _str_rc = cobol_string_concat(_sources, {src_count}, (uint8_t*){c_into}, {into_size}, &_pointer);\n"
+                "{pad}    int32_t _str_rc = cobol_string_concat(_sources, {src_count}, (uint8_t*){into_ptr}, {into_size}, &_pointer);\n"
             ));
             if !on_overflow.is_empty() {
                 out.push_str(&format!("{pad}    if (_str_rc != 0) {{\n"));
@@ -2003,8 +2360,9 @@ fn emit_statement(
             ));
             for (i, tgt) in targets.iter().enumerate() {
                 let tgt_size = find_data_item_size(tgt, data_items);
+                let tgt_ptr = c_ptr_expr(tgt, data_items);
                 out.push_str(&format!(
-                    "{pad}    _targets[{i}].ptr = (uint8_t*){tgt}; _targets[{i}].len = {tgt_size}; _targets[{i}].delimiter_ptr = NULL; _targets[{i}].delimiter_len = 0; _targets[{i}].count_ptr = NULL;\n"
+                    "{pad}    _targets[{i}].ptr = (uint8_t*){tgt_ptr}; _targets[{i}].len = {tgt_size}; _targets[{i}].delimiter_ptr = NULL; _targets[{i}].delimiter_len = 0; _targets[{i}].count_ptr = NULL;\n"
                 ));
             }
             out.push_str(&format!(
@@ -2024,15 +2382,17 @@ fn emit_statement(
                     HirExpr::Variable(name) => {
                         let c_d = sanitize_name(name);
                         let d_size = find_data_item_size(&c_d, data_items);
-                        (format!("(const uint8_t*){c_d}"), format!("{d_size}"))
+                        let d_ptr = c_ptr_expr(&c_d, data_items);
+                        (format!("(const uint8_t*){d_ptr}"), format!("{d_size}"))
                     }
                     _ => ("(const uint8_t*)\" \"".to_string(), "1".to_string()),
                 }
             } else {
                 ("(const uint8_t*)\" \"".to_string(), "1".to_string())
             };
+            let src_ptr = c_ptr_expr(&c_source, data_items);
             out.push_str(&format!(
-                "{pad}    int32_t _ustr_rc = cobol_unstring((const uint8_t*){c_source}, {src_size}, {delim_ptr}, {delim_len}, _targets, {tgt_count}, &_pointer, &_tallying);\n"
+                "{pad}    int32_t _ustr_rc = cobol_unstring((const uint8_t*){src_ptr}, {src_size}, {delim_ptr}, {delim_len}, _targets, {tgt_count}, &_pointer, &_tallying);\n"
             ));
             if !on_overflow.is_empty() {
                 out.push_str(&format!("{pad}    if (_ustr_rc != 0) {{\n"));
@@ -2284,8 +2644,9 @@ fn emit_statement(
                 cobol_hir::HirInspectKind::Converting { from, to } => {
                     let c_from = emit_inspect_operand(out, from, "conv_from", data_items, &pad);
                     let c_to = emit_inspect_operand(out, to, "conv_to", data_items, &pad);
+                    let insp_tgt_ptr = c_ptr_expr(&c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}cobol_inspect_converting((uint8_t*){c_target}, {target_size}, {}, {}, {}, {});\n",
+                        "{pad}cobol_inspect_converting((uint8_t*){insp_tgt_ptr}, {target_size}, {}, {}, {}, {});\n",
                         c_from.0, c_from.1, c_to.0, c_to.1
                     ));
                 }
@@ -2610,6 +2971,66 @@ fn emit_statement(
                 "{pad}cobol_file_write(FILE_ID_{c_name}, (const uint8_t*){source}, {rec_len});\n"
             ));
         }
+        // --- Table handling: SEARCH ---
+        HirStatement::Search {
+            table_name,
+            all: _,
+            varying,
+            at_end,
+            when_clauses,
+            ..
+        } => {
+            let c_table = sanitize_name(table_name);
+            let c_idx = if let Some(ref v) = varying {
+                sanitize_name(v)
+            } else {
+                format!("{c_table}_IDX")
+            };
+            let max_occurs = find_occurs_count(&c_table, data_items);
+            let inner_pad = "    ".repeat(indent + 1);
+            let inner2_pad = "    ".repeat(indent + 2);
+            out.push_str(&format!("{pad}/* SEARCH {c_table} */\n"));
+            out.push_str(&format!("{pad}{{\n"));
+            out.push_str(&format!("{inner_pad}int _search_found = 0;\n"));
+            out.push_str(&format!(
+                "{inner_pad}for (; {c_idx} <= {max_occurs}; {c_idx}++) {{\n"
+            ));
+            for when in when_clauses {
+                let cond = emit_condition(&when.condition, data_items);
+                out.push_str(&format!("{inner2_pad}if ({cond}) {{\n"));
+                let body_pad_level = indent + 3;
+                for s in &when.body {
+                    emit_statement(
+                        out,
+                        s,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        body_pad_level,
+                    );
+                }
+                out.push_str(&format!("{inner2_pad}    _search_found = 1; break;\n"));
+                out.push_str(&format!("{inner2_pad}}}\n"));
+            }
+            out.push_str(&format!("{inner_pad}}}\n"));
+            if !at_end.is_empty() {
+                out.push_str(&format!("{inner_pad}if (!_search_found) {{\n"));
+                for s in at_end {
+                    emit_statement(
+                        out,
+                        s,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 2,
+                    );
+                }
+                out.push_str(&format!("{inner_pad}}}\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
         // --- Report writer statements (stub — emit comments) ---
         HirStatement::Initiate { report_names, .. } => {
             for name in report_names {
@@ -2695,6 +3116,7 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
 
             let is_alphanumeric =
                 item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
+            let is_group = item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
             let is_decimal = item.is_some_and(|i| needs_decimal(&i.data_type));
             if is_decimal {
                 // Display decimal using cobol_decimal_to_display
@@ -2704,6 +3126,15 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
                 let pic_len = pic_str.len();
                 out.push_str(&format!(
                     "{pad}{{ char _dbuf[64]; uint32_t _dlen = cobol_decimal_to_display(&{c_name}, (uint8_t*)_dbuf, 64, (const uint8_t*)\"{pic_str}\", {pic_len}); cobol_display_string((const uint8_t*)_dbuf, _dlen); }}\n"
+                ));
+            } else if is_group {
+                // Group items are C unions; display their raw bytes
+                let size = match &item.unwrap().data_type {
+                    HirType::Group { size, .. } => *size,
+                    _ => 1,
+                };
+                out.push_str(&format!(
+                    "{pad}cobol_display_string((const uint8_t*)&{c_name}, {size});\n"
                 ));
             } else if is_alphanumeric {
                 let size = item
@@ -2976,6 +3407,7 @@ fn emit_move_to(
     let is_target_alpha = matches!(target_type, Some(HirType::Alphanumeric { .. }));
     let is_target_group = matches!(target_type, Some(HirType::Group { .. }));
     let is_target_national = matches!(target_type, Some(HirType::National { .. }));
+    let is_target_decimal = target_type.is_some_and(needs_decimal);
 
     // NATIONAL target: convert source to national
     if is_target_national {
@@ -3060,28 +3492,71 @@ fn emit_move_to(
                 ));
             }
         } else {
-            // Non-variable to group: treat as string
-            let e = emit_expr(from);
-            out.push_str(&format!(
-                "{pad}memcpy(&{c_target}, &{e}, sizeof({c_target}));\n"
-            ));
+            // Non-variable to group: handle figurative constants
+            match from {
+                HirExpr::Literal(HirLiteral::Space) => {
+                    out.push_str(&format!(
+                        "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n"
+                    ));
+                }
+                HirExpr::Literal(HirLiteral::Zero) => {
+                    out.push_str(&format!(
+                        "{pad}memset(&{c_target}, '0', sizeof({c_target}));\n"
+                    ));
+                }
+                HirExpr::Literal(HirLiteral::HighValue) => {
+                    out.push_str(&format!(
+                        "{pad}memset(&{c_target}, 0xFF, sizeof({c_target}));\n"
+                    ));
+                }
+                HirExpr::Literal(HirLiteral::LowValue) => {
+                    out.push_str(&format!(
+                        "{pad}memset(&{c_target}, 0x00, sizeof({c_target}));\n"
+                    ));
+                }
+                HirExpr::Literal(HirLiteral::String(s)) => {
+                    let escaped = escape_c_string(s);
+                    let src_len = s.len();
+                    out.push_str(&format!(
+                        "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
+                         {pad}memcpy(&{c_target}, \"{escaped}\", \
+                         {src_len} < sizeof({c_target}) ? {src_len} : sizeof({c_target}));\n"
+                    ));
+                }
+                _ => {
+                    let e = emit_expr(from);
+                    out.push_str(&format!(
+                        "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
+                         {pad}{{ int64_t _v = {e}; memcpy(&{c_target}, &_v, \
+                         sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
+                    ));
+                }
+            }
         }
         return;
     }
 
-    // Detect source type for cross-type moves
-    let is_source_numeric_var = matches!(from, HirExpr::Variable(name)
-        if find_data_item(name.as_str(), data_items)
-            .is_some_and(|item| matches!(item.data_type,
-                HirType::Numeric { .. } | HirType::Binary { .. } | HirType::Comp3 { .. })));
+    // CobolDecimal target: use proper conversion functions
+    if is_target_decimal {
+        emit_assign_to_decimal(out, from, c_target, data_items, pad);
+        return;
+    }
 
-    let is_source_alpha_var = matches!(from, HirExpr::Variable(name)
-        if find_data_item(name.as_str(), data_items)
-            .is_some_and(|item| matches!(item.data_type, HirType::Alphanumeric { .. })));
-
-    let is_source_national_var = matches!(from, HirExpr::Variable(name)
-        if find_data_item(name.as_str(), data_items)
-            .is_some_and(|item| matches!(item.data_type, HirType::National { .. })));
+    // Detect source type for cross-type moves (handles Variable and Subscript)
+    let src_var_name = expr_var_name(from);
+    let src_type = if !src_var_name.is_empty() {
+        find_data_item(src_var_name, data_items).map(|i| &i.data_type)
+    } else {
+        None
+    };
+    let is_source_numeric_var = matches!(
+        src_type,
+        Some(HirType::Numeric { .. } | HirType::Binary { .. } | HirType::Comp3 { .. })
+    );
+    let is_source_decimal_var = src_type.is_some_and(needs_decimal);
+    let is_source_alpha_var = matches!(src_type, Some(HirType::Alphanumeric { .. }));
+    let is_source_group_var = matches!(src_type, Some(HirType::Group { .. }));
+    let is_source_national_var = matches!(src_type, Some(HirType::National { .. }));
 
     // National source -> alphanumeric target: use DISPLAY-OF conversion
     if is_target_alpha && is_source_national_var {
@@ -3205,7 +3680,25 @@ fn emit_move_to(
             }
         }
         _ => {
-            if is_target_alpha && is_source_numeric_var {
+            if is_target_alpha && is_source_decimal_var {
+                // CobolDecimal variable → alphanumeric: use cobol_decimal_to_display
+                if let HirExpr::Variable(name) = from {
+                    let c_src = sanitize_name(name);
+                    let tgt_size = find_data_item_size(c_target, data_items);
+                    let src_type = find_data_item(name.as_str(), data_items).map(|i| &i.data_type);
+                    let pic_str = src_type
+                        .map(generate_pic_string)
+                        .unwrap_or_else(|| "9".to_string());
+                    let pic_len = pic_str.len();
+                    out.push_str(&format!(
+                        "{pad}{{ char _dbuf[64]; uint32_t _dlen = cobol_decimal_to_display(\
+                         &{c_src}, (uint8_t*)_dbuf, 64, \
+                         (const uint8_t*)\"{pic_str}\", {pic_len}); \
+                         cobol_move_string((const uint8_t*)_dbuf, _dlen, \
+                         (uint8_t*){c_target}, {tgt_size}); }}\n"
+                    ));
+                }
+            } else if is_target_alpha && is_source_numeric_var {
                 // Numeric variable → alphanumeric: use cobol_move_numeric_to_display
                 let e = emit_expr(from);
                 let tgt_size = find_data_item_size(c_target, data_items);
@@ -3223,6 +3716,16 @@ fn emit_move_to(
                 } else {
                     let e = emit_expr(from);
                     out.push_str(&format!("{pad}{c_target} = {e};\n"));
+                }
+            } else if is_target_alpha && is_source_group_var {
+                // Group variable → alphanumeric: copy bytes with & prefix (group is a C union)
+                if let HirExpr::Variable(name) = from {
+                    let c_src = sanitize_name(name);
+                    let src_size = find_data_item_size(&c_src, data_items);
+                    let tgt_size = find_data_item_size(c_target, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_string((const uint8_t*)&{c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
+                    ));
                 }
             } else if is_target_alpha {
                 // Alphanumeric → alphanumeric: use cobol_move_string
@@ -3251,10 +3754,27 @@ fn emit_move_to(
                     out.push_str(&format!(
                         "{pad}cobol_move_string((const uint8_t*){c_src} + ({c_start} - 1), {c_len}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
+                } else if is_source_alpha_var || is_source_group_var {
+                    // Subscripted or other alphanumeric/group source
+                    let e = emit_expr(from);
+                    let src_size =
+                        find_data_item_size(&sanitize_name(src_var_name), data_items);
+                    let tgt_size = find_data_item_size(c_target, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_string((const uint8_t*){e}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
+                    ));
                 } else {
                     let e = emit_expr(from);
                     out.push_str(&format!("{pad}{c_target} = {e};\n"));
                 }
+            } else if is_source_decimal_var {
+                // CobolDecimal variable → integer target: extract integer value
+                let e = emit_expr(from);
+                out.push_str(&format!(
+                    "{pad}{{ int64_t _sv = {e}.value; int32_t _ss = {e}.scale; \
+                     while (_ss > 0) {{ _sv /= 10; _ss--; }} \
+                     {c_target} = _sv; }}\n"
+                ));
             } else {
                 let e = emit_expr(from);
                 out.push_str(&format!("{pad}{c_target} = {e};\n"));
@@ -3958,16 +4478,42 @@ fn emit_expr(expr: &HirExpr) -> String {
     }
 }
 
-/// Generates C code for subscripted table access: `name[(idx - 1)]`.
+/// Generates C code for subscripted table access.
 /// COBOL subscripts are 1-based; C arrays are 0-based.
+///
+/// For items inside groups with nested OCCURS, generates proper C struct
+/// access paths with subscripts at each OCCURS level.  For example:
+///   01 TABLE-1. 05 GRP OCCURS 3. 10 ITEM PIC 9 OCCURS 4.
+/// `ITEM(I, J)` becomes:
+///   `TABLE_1.members._m_GRP[(I)-1].members._m_ITEM[(J)-1]`
 fn emit_subscript_access(variable: &smol_str::SmolStr, subscripts: &[HirExpr]) -> String {
     let c_name = sanitize_name(variable);
-    // For single-dimensional OCCURS (most common case)
+    // Check if we have pre-computed path info for this variable (nested OCCURS)
+    let path_info = SUBSCRIPT_PATHS.with(|cell| cell.borrow().get(&c_name).cloned());
+
+    if let Some(ref info) = path_info {
+        let occurs_count = info.segments.iter().filter(|(_, has)| *has).count();
+        if occurs_count > 0 && subscripts.len() >= occurs_count {
+            // Build the full struct access path, inserting subscripts at OCCURS levels
+            let mut access = info.root.clone();
+            let mut sub_idx = 0;
+            for (segment_suffix, has_occurs) in &info.segments {
+                access.push_str(segment_suffix);
+                if *has_occurs && sub_idx < subscripts.len() {
+                    let idx = emit_expr(&subscripts[sub_idx]);
+                    access.push_str(&format!("[({idx}) - 1]"));
+                    sub_idx += 1;
+                }
+            }
+            return access;
+        }
+    }
+
+    // Fallback: simple flat array subscript (top-level OCCURS without group nesting)
     if subscripts.len() == 1 {
         let idx = emit_expr(&subscripts[0]);
         format!("{c_name}[({idx}) - 1]")
     } else {
-        // Multi-dimensional: chain subscripts (simplified, assumes uniform sizing)
         let mut access = c_name;
         for sub in subscripts {
             let idx = emit_expr(sub);
@@ -3984,6 +4530,101 @@ fn needs_decimal(data_type: &HirType) -> bool {
         data_type,
         HirType::Numeric { decimal_places, .. } if *decimal_places > 0
     ) || matches!(data_type, HirType::Comp3 { decimal_places, .. } if *decimal_places > 0)
+}
+
+/// Returns true if the given expression refers to a CobolDecimal variable.
+fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+    let name = expr_var_name(expr);
+    if name.is_empty() {
+        return false;
+    }
+    find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+}
+
+/// Emit an expression as int64, converting CobolDecimal to int64 if needed.
+/// For simple variable/subscript expressions, wraps with cobol_decimal_to_int64.
+/// For compound expressions (BinaryOp etc), recursively converts sub-expressions.
+fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> String {
+    match expr {
+        HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+            if is_decimal_expr(expr, data_items) {
+                let c = emit_expr(expr);
+                format!("cobol_decimal_to_int64(&{c})")
+            } else {
+                emit_expr(expr)
+            }
+        }
+        HirExpr::BinaryOp { op, left, right } => {
+            let l = emit_int_compatible_expr(left, data_items);
+            let r = emit_int_compatible_expr(right, data_items);
+            let op_str = match op {
+                HirBinOp::Add => "+",
+                HirBinOp::Sub => "-",
+                HirBinOp::Mul => "*",
+                HirBinOp::Div => "/",
+                HirBinOp::Pow => return format!("((int64_t)pow((double){l}, (double){r}))"),
+            };
+            format!("({l} {op_str} {r})")
+        }
+        HirExpr::UnaryOp { op, operand } => {
+            let o = emit_int_compatible_expr(operand, data_items);
+            match op {
+                HirUnaryOp::Neg => format!("(-{o})"),
+            }
+        }
+        _ => emit_expr(expr),
+    }
+}
+
+/// Emit code to assign a value to a CobolDecimal target.
+/// Handles integer literals, decimal literals, Zero, CobolDecimal sources,
+/// and integer variable sources.
+fn emit_assign_to_decimal(
+    out: &mut String,
+    from: &HirExpr,
+    c_target: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    match from {
+        HirExpr::Literal(HirLiteral::Integer(n)) => {
+            out.push_str(&format!(
+                "{pad}cobol_decimal_from_int({n}, 0, &{c_target});\n"
+            ));
+        }
+        HirExpr::Literal(HirLiteral::Decimal(d)) => {
+            let (scaled, scale) = parse_decimal_literal(d);
+            out.push_str(&format!(
+                "{pad}cobol_decimal_from_int({scaled}, {scale}, &{c_target});\n"
+            ));
+        }
+        HirExpr::Literal(HirLiteral::Zero) | HirExpr::Literal(HirLiteral::Null) => {
+            out.push_str(&format!(
+                "{pad}cobol_decimal_from_int(0, 0, &{c_target});\n"
+            ));
+        }
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            let len = s.len();
+            out.push_str(&format!(
+                "{pad}cobol_decimal_from_string(\
+                 (const uint8_t*)\"{escaped}\", {len}, &{c_target});\n"
+            ));
+        }
+        _ => {
+            if is_decimal_expr(from, data_items) {
+                // CobolDecimal to CobolDecimal: struct copy
+                let c_src = emit_expr(from);
+                out.push_str(&format!("{pad}{c_target} = {c_src};\n"));
+            } else {
+                // Integer variable or expression -> CobolDecimal
+                let e = emit_expr(from);
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_int({e}, 0, &{c_target});\n"
+                ));
+            }
+        }
+    }
 }
 
 /// Extract the base variable name from a `HirExpr` for data-item lookups.
@@ -4025,6 +4666,37 @@ fn find_data_item<'a>(name: &str, data_items: &'a [HirDataItem]) -> Option<&'a H
         }
     }
     None
+}
+
+/// Check if a sanitized C variable name corresponds to a group item.
+fn is_group_item_c(c_name: &str, data_items: &[HirDataItem]) -> bool {
+    is_group_item_c_in(c_name, data_items)
+}
+
+fn is_group_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool {
+    for item in items {
+        let item_c = sanitize_name(&item.name);
+        if item_c == c_name {
+            return matches!(&item.data_type, HirType::Group { .. });
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if is_group_item_c_in(c_name, members) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Return a C expression suitable for use in pointer casts.
+/// For group items (C unions), returns `&name` since unions cannot be cast
+/// to pointers directly. For elementary items (arrays/scalars), returns `name`.
+fn c_ptr_expr(c_name: &str, data_items: &[HirDataItem]) -> String {
+    if is_group_item_c(c_name, data_items) {
+        format!("&{c_name}")
+    } else {
+        c_name.to_string()
+    }
 }
 
 /// Resolve a variable name to its fully-qualified C name.
@@ -4170,14 +4842,32 @@ fn emit_save_and_check_overflow(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-    out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
-    if let Some(max_val) = get_pic_max(target_name, data_items) {
+    let target_is_decimal =
+        find_data_item(target_name, data_items).is_some_and(|i| needs_decimal(&i.data_type));
+    if target_is_decimal {
+        // CobolDecimal target: save/restore struct, convert expression
+        out.push_str(&format!("{pad}{{ CobolDecimal _prev = {c_target};\n"));
         out.push_str(&format!(
-            "{pad}if (llabs({c_target}) > {max_val}) {{ _size_error = 1; {c_target} = _prev; }}\n"
+            "{pad}cobol_decimal_from_int((int64_t)({c_expr}), 0, &{c_target});\n"
         ));
+        if let Some(max_val) = get_pic_max(target_name, data_items) {
+            out.push_str(&format!(
+                "{pad}if (llabs({c_target}.value) > {max_val}) \
+                 {{ _size_error = 1; {c_target} = _prev; }}\n"
+            ));
+        }
+        out.push_str(&format!("{pad}}}\n"));
+    } else {
+        out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+        out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
+        if let Some(max_val) = get_pic_max(target_name, data_items) {
+            out.push_str(&format!(
+                "{pad}if (llabs({c_target}) > {max_val}) \
+                 {{ _size_error = 1; {c_target} = _prev; }}\n"
+            ));
+        }
+        out.push_str(&format!("{pad}}}\n"));
     }
-    out.push_str(&format!("{pad}}}\n"));
 }
 
 /// Generate a PICTURE string for use with cobol_decimal_to_display.
@@ -4228,12 +4918,7 @@ fn emit_decimal_arith(
     pad: &str,
 ) {
     // Check if operand is already a decimal variable
-    let op_is_decimal = match operand {
-        HirExpr::Variable(name) => {
-            find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
-        }
-        _ => false,
-    };
+    let op_is_decimal = is_decimal_expr(operand, data_items);
 
     if op_is_decimal {
         let c_op = emit_expr(operand);
@@ -4241,8 +4926,8 @@ fn emit_decimal_arith(
             "{pad}{func}(&{c_target}, &{c_op}, &{c_target});\n"
         ));
     } else {
-        // Convert integer operand to a temporary CobolDecimal
-        let c_op = emit_expr(operand);
+        // Convert operand to a temporary CobolDecimal (use int-compatible for mixed exprs)
+        let c_op = emit_int_compatible_expr(operand, data_items);
         out.push_str(&format!(
             "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_int({c_op}, 0, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
         ));
@@ -4352,8 +5037,14 @@ fn emit_initialize_field(
                     emit_initialize_field(out, &member.name, &member_c, data_items, pad);
                 }
             }
+            dt if needs_decimal(dt) => {
+                // CobolDecimal → zero via runtime
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_int(0, 0, &{c_name}); /* INITIALIZE */\n"
+                ));
+            }
             _ => {
-                // Numeric, Binary, Comp3, Index, etc. → zero
+                // Numeric, Binary, Index, etc. → zero
                 out.push_str(&format!("{pad}{c_name} = 0; /* INITIALIZE */\n"));
             }
         }
@@ -4376,10 +5067,7 @@ fn emit_inspect_operand(
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
             let len = s.len();
-            out.push_str(&format!(
-                "{pad}static const uint8_t _{label}[] = \"{escaped}\";\n"
-            ));
-            (format!("(const uint8_t*)_{label}"), format!("{len}"))
+            (format!("(const uint8_t*)\"{escaped}\""), format!("{len}"))
         }
         HirExpr::Literal(HirLiteral::Space) => {
             ("(const uint8_t*)\" \"".to_string(), "1".to_string())
@@ -4390,7 +5078,8 @@ fn emit_inspect_operand(
         HirExpr::Variable(name) => {
             let c_name = sanitize_name(name);
             let size = find_data_item_size(&c_name, data_items);
-            (format!("(const uint8_t*){c_name}"), format!("{size}"))
+            let ptr = c_ptr_expr(&c_name, data_items);
+            (format!("(const uint8_t*){ptr}"), format!("{size}"))
         }
         _ => ("NULL".to_string(), "0".to_string()),
     }
@@ -4405,10 +5094,11 @@ fn emit_inspect_tallying(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
+    let tgt_ptr = c_ptr_expr(c_target, data_items);
     if tallying.is_empty() {
         // Fallback: count all characters
         out.push_str(&format!(
-            "{pad}cobol_inspect_tallying((const uint8_t*){c_target}, {target_size}, NULL, 0, 0);\n"
+            "{pad}cobol_inspect_tallying((const uint8_t*){tgt_ptr}, {target_size}, NULL, 0, 0);\n"
         ));
         return;
     }
@@ -4428,7 +5118,7 @@ fn emit_inspect_tallying(
             }
         };
         out.push_str(&format!(
-            "{pad}{counter} += cobol_inspect_tallying((const uint8_t*){c_target}, {target_size}, {search_ptr}, {search_len}, {mode});\n"
+            "{pad}{counter} += cobol_inspect_tallying((const uint8_t*){tgt_ptr}, {target_size}, {search_ptr}, {search_len}, {mode});\n"
         ));
     }
 }
@@ -4442,10 +5132,11 @@ fn emit_inspect_replacing(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
+    let tgt_ptr = c_ptr_expr(c_target, data_items);
     if replacing.is_empty() {
         // Fallback: replace all characters with space
         out.push_str(&format!(
-            "{pad}cobol_inspect_replacing((uint8_t*){c_target}, {target_size}, NULL, 0, (const uint8_t*)\" \", 1, 0);\n"
+            "{pad}cobol_inspect_replacing((uint8_t*){tgt_ptr}, {target_size}, NULL, 0, (const uint8_t*)\" \", 1, 0);\n"
         ));
         return;
     }
@@ -4479,7 +5170,7 @@ fn emit_inspect_replacing(
             }
         };
         out.push_str(&format!(
-            "{pad}cobol_inspect_replacing((uint8_t*){c_target}, {target_size}, {search_ptr}, {search_len}, {replace_ptr}, {replace_len}, {mode});\n"
+            "{pad}cobol_inspect_replacing((uint8_t*){tgt_ptr}, {target_size}, {search_ptr}, {search_len}, {replace_ptr}, {replace_len}, {mode});\n"
         ));
     }
 }
@@ -4497,17 +5188,15 @@ fn emit_string_source_value(
             let escaped = escape_c_string(s);
             let len = s.len();
             out.push_str(&format!(
-                "{pad}    static const uint8_t _str_src_{i}[] = \"{escaped}\";\n"
-            ));
-            out.push_str(&format!(
-                "{pad}    const void* _src_ptr_{i} = _str_src_{i}; uint32_t _src_len_{i} = {len};\n"
+                "{pad}    const void* _src_ptr_{i} = \"{escaped}\"; uint32_t _src_len_{i} = {len};\n"
             ));
         }
         HirExpr::Variable(name) => {
             let c_var = sanitize_name(name);
             let var_size = find_data_item_size(&c_var, data_items);
+            let ptr = c_ptr_expr(&c_var, data_items);
             out.push_str(&format!(
-                "{pad}    const void* _src_ptr_{i} = {c_var}; uint32_t _src_len_{i} = {var_size};\n"
+                "{pad}    const void* _src_ptr_{i} = {ptr}; uint32_t _src_len_{i} = {var_size};\n"
             ));
         }
         _ => {
@@ -4533,17 +5222,15 @@ fn emit_string_source_delimiter(
             let escaped = escape_c_string(s);
             let len = s.len();
             out.push_str(&format!(
-                "{pad}    static const uint8_t _str_delim_{i}[] = \"{escaped}\";\n"
-            ));
-            out.push_str(&format!(
-                "{pad}    const uint8_t* _delim_ptr_{i} = _str_delim_{i}; uint32_t _delim_len_{i} = {len};\n"
+                "{pad}    const uint8_t* _delim_ptr_{i} = (const uint8_t*)\"{escaped}\"; uint32_t _delim_len_{i} = {len};\n"
             ));
         }
         Some(HirExpr::Variable(name)) => {
             let c_var = sanitize_name(name);
             let var_size = find_data_item_size(&c_var, data_items);
+            let ptr = c_ptr_expr(&c_var, data_items);
             out.push_str(&format!(
-                "{pad}    const uint8_t* _delim_ptr_{i} = (const uint8_t*){c_var}; uint32_t _delim_len_{i} = {var_size};\n"
+                "{pad}    const uint8_t* _delim_ptr_{i} = (const uint8_t*){ptr}; uint32_t _delim_len_{i} = {var_size};\n"
             ));
         }
         _ => {
@@ -4560,7 +5247,10 @@ fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
         HirExpr::Variable(name) => {
             if let Some(item) = find_data_item(name.as_str(), data_items) {
-                matches!(item.data_type, HirType::Alphanumeric { .. })
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. }
+                )
             } else {
                 false
             }
@@ -4587,7 +5277,8 @@ fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (Str
         HirExpr::Variable(name) => {
             let c_name = sanitize_name(name);
             let size = find_data_item_size(&c_name, data_items);
-            (format!("(const uint8_t*){c_name}"), format!("{size}"))
+            let ptr = c_ptr_expr(&c_name, data_items);
+            (format!("(const uint8_t*){ptr}"), format!("{size}"))
         }
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
@@ -4606,10 +5297,51 @@ fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (Str
         HirExpr::Literal(HirLiteral::Quote) => {
             ("(const uint8_t*)\"\\\"\"".to_string(), "1".to_string())
         }
+        HirExpr::Literal(HirLiteral::Integer(n)) => {
+            // Numeric literal compared with alphanumeric: convert to string
+            let s = n.to_string();
+            let len = s.len();
+            (format!("(const uint8_t*)\"{}\"", s), format!("{len}"))
+        }
+        HirExpr::Literal(HirLiteral::Zero) => {
+            ("(const uint8_t*)\"0\"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::Decimal(d)) => {
+            let len = d.len();
+            (format!("(const uint8_t*)\"{}\"", d), format!("{len}"))
+        }
+        HirExpr::Subscript { .. } => {
+            let c_name = emit_expr(expr);
+            let var_name = expr_var_name(expr);
+            let size = if !var_name.is_empty() {
+                let sz = find_data_item_size(&sanitize_name(var_name), data_items);
+                format!("{sz}")
+            } else {
+                format!("sizeof({c_name})")
+            };
+            let ptr = format!("(const uint8_t*)&{c_name}");
+            (ptr, size)
+        }
         _ => {
             // Fallback for non-alphanumeric expressions used in mixed comparisons
             let e = emit_expr(expr);
             (format!("(const uint8_t*)&{e}"), format!("sizeof({e})"))
+        }
+    }
+}
+
+/// Generate code to initialize a CobolDecimal _tcmp from a non-decimal expression.
+/// Handles decimal literals properly via cobol_decimal_from_string.
+fn emit_decimal_init_expr(expr: &HirExpr, c_expr: &str) -> String {
+    match expr {
+        HirExpr::Literal(HirLiteral::Decimal(d)) => {
+            let len = d.len();
+            format!(
+                "cobol_decimal_from_string((const uint8_t*)\"{d}\", {len}, &_tcmp);"
+            )
+        }
+        _ => {
+            format!("cobol_decimal_from_int({c_expr}, 0, &_tcmp);")
         }
     }
 }
@@ -4631,6 +5363,37 @@ fn emit_condition(cond: &HirCondition, data_items: &[HirDataItem]) -> String {
                     HirCompareOp::Le => "<= 0",
                 };
                 format!("({cmp} {op_str})")
+            } else if is_decimal_expr(left, data_items) || is_decimal_expr(right, data_items) {
+                // CobolDecimal comparison via runtime function
+                let l = emit_expr(left);
+                let r = emit_expr(right);
+                let left_is_dec = is_decimal_expr(left, data_items);
+                let right_is_dec = is_decimal_expr(right, data_items);
+                let op_str = match op {
+                    HirCompareOp::Eq => "== 0",
+                    HirCompareOp::Ne => "!= 0",
+                    HirCompareOp::Gt => "> 0",
+                    HirCompareOp::Lt => "< 0",
+                    HirCompareOp::Ge => ">= 0",
+                    HirCompareOp::Le => "<= 0",
+                };
+                if left_is_dec && right_is_dec {
+                    format!("(cobol_decimal_cmp(&{l}, &{r}) {op_str})")
+                } else if left_is_dec {
+                    // left is decimal, right is not: convert right to temp
+                    let init = emit_decimal_init_expr(right, &r);
+                    format!(
+                        "(({{ CobolDecimal _tcmp; {init} \
+                         cobol_decimal_cmp(&{l}, &_tcmp); }}) {op_str})"
+                    )
+                } else {
+                    // right is decimal, left is not: convert left to temp
+                    let init = emit_decimal_init_expr(left, &l);
+                    format!(
+                        "(({{ CobolDecimal _tcmp; {init} \
+                         cobol_decimal_cmp(&_tcmp, &{r}); }}) {op_str})"
+                    )
+                }
             } else {
                 let l = emit_expr(left);
                 let r = emit_expr(right);
@@ -4778,6 +5541,20 @@ fn collect_file_names_stmt(stmt: &HirStatement, names: &mut BTreeSet<String>) {
         HirStatement::Sort { file_name, .. } => {
             names.insert(file_name.to_string());
         }
+        HirStatement::Search {
+            at_end,
+            when_clauses,
+            ..
+        } => {
+            for s in at_end {
+                collect_file_names_stmt(s, names);
+            }
+            for w in when_clauses {
+                for s in &w.body {
+                    collect_file_names_stmt(s, names);
+                }
+            }
+        }
         HirStatement::If {
             then_body,
             else_body,
@@ -4906,6 +5683,38 @@ fn collect_xml_parse_stmt(stmt: &HirStatement, procs: &mut BTreeSet<String>) {
 /// size in bytes (default 80 if not found).
 fn find_record_len(c_name: &str, data_items: &[HirDataItem]) -> u32 {
     find_data_item_size(c_name, data_items)
+}
+
+/// Find the OCCURS count for a table by its sanitized C name.
+/// Returns a reasonable default (10) if the item is not found.
+fn find_occurs_count(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    for item in data_items {
+        if sanitize_name(&item.name) == c_name {
+            return item.occurs.unwrap_or(10);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            let found = find_occurs_count_in(c_name, members);
+            if found > 0 {
+                return found;
+            }
+        }
+    }
+    10
+}
+
+fn find_occurs_count_in(c_name: &str, members: &[HirDataItem]) -> u32 {
+    for item in members {
+        if sanitize_name(&item.name) == c_name {
+            return item.occurs.unwrap_or(0);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            let found = find_occurs_count_in(c_name, members);
+            if found > 0 {
+                return found;
+            }
+        }
+    }
+    0
 }
 
 /// Find the byte size of a data item by its sanitized C name.

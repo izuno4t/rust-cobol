@@ -19,7 +19,7 @@ pub struct SymbolTable {
 pub struct Scope {
     pub name: SmolStr,
     pub kind: ScopeKind,
-    pub symbols: HashMap<SmolStr, Symbol>,
+    pub symbols: HashMap<SmolStr, Vec<Symbol>>,
     pub parent: Option<usize>,
 }
 
@@ -137,16 +137,20 @@ impl SymbolTable {
     pub fn define(&mut self, symbol: Symbol) {
         self.scopes[self.current_scope]
             .symbols
-            .insert(symbol.name.clone(), symbol);
+            .entry(symbol.name.clone())
+            .or_default()
+            .push(symbol);
     }
 
     /// Looks up a symbol by name, searching from the current scope up to
-    /// ancestor scopes.
+    /// ancestor scopes. Returns the first match (or the unique one if only one exists).
     pub fn lookup(&self, name: &SmolStr) -> Option<&Symbol> {
         let mut scope_idx = self.current_scope;
         loop {
-            if let Some(sym) = self.scopes[scope_idx].symbols.get(name) {
-                return Some(sym);
+            if let Some(syms) = self.scopes[scope_idx].symbols.get(name) {
+                if let Some(first) = syms.first() {
+                    return Some(first);
+                }
             }
             match self.scopes[scope_idx].parent {
                 Some(parent) => scope_idx = parent,
@@ -173,6 +177,7 @@ impl SymbolTable {
             .scopes
             .iter()
             .filter_map(|scope| scope.symbols.get(name))
+            .flat_map(|syms| syms.iter())
             .collect();
 
         // Find the candidate whose parent chain matches all qualifiers.
@@ -214,16 +219,20 @@ impl SymbolTable {
     // TODO: Normalize symbol names to uppercase at registration time to avoid 2-pass lookup
     fn find_symbol_anywhere(&self, name: &SmolStr) -> Option<&Symbol> {
         for scope in &self.scopes {
-            if let Some(sym) = scope.symbols.get(name) {
-                return Some(sym);
+            if let Some(syms) = scope.symbols.get(name) {
+                if let Some(first) = syms.first() {
+                    return Some(first);
+                }
             }
         }
         // Fall back to case-insensitive search.
         let upper = name.to_ascii_uppercase();
         for scope in &self.scopes {
-            for (key, sym) in &scope.symbols {
+            for (key, syms) in &scope.symbols {
                 if key.to_ascii_uppercase() == upper {
-                    return Some(sym);
+                    if let Some(first) = syms.first() {
+                        return Some(first);
+                    }
                 }
             }
         }

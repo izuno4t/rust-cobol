@@ -56,6 +56,9 @@ pub enum Statement {
     Initialize(Box<InitializeStatement>),
     Set(Box<SetStatement>),
 
+    // --- Table handling ---
+    Search(Box<SearchStatement>),
+
     // --- Sort/merge ---
     Sort(Box<SortStatement>),
     Merge(Box<MergeStatement>),
@@ -134,6 +137,9 @@ pub struct AddStatement {
 pub struct SubtractStatement {
     pub operands: Vec<Expr>,
     pub from: Vec<RoundedTarget>,
+    /// Format 2: SUBTRACT ... FROM literal GIVING ...
+    /// When present, the FROM clause is a literal/expr rather than a target.
+    pub from_expr: Option<Expr>,
     pub giving: Vec<RoundedTarget>,
     /// True for SUBTRACT CORRESPONDING.
     pub corresponding: bool,
@@ -147,6 +153,9 @@ pub struct SubtractStatement {
 pub struct MultiplyStatement {
     pub operand: Expr,
     pub by: Vec<RoundedTarget>,
+    /// Format 2: MULTIPLY ... BY literal GIVING ...
+    /// When present, the BY clause is a literal/expr rather than a target.
+    pub by_expr: Option<Expr>,
     pub giving: Vec<RoundedTarget>,
     pub on_size_error: Vec<Statement>,
     pub not_on_size_error: Vec<Statement>,
@@ -158,6 +167,9 @@ pub struct MultiplyStatement {
 pub struct DivideStatement {
     pub operand: Expr,
     pub into: Vec<RoundedTarget>,
+    /// Format 2: DIVIDE ... INTO literal GIVING ...
+    /// When present, the INTO clause is a literal/expr rather than a target.
+    pub into_expr: Option<Expr>,
     pub giving: Vec<RoundedTarget>,
     pub remainder: Option<QualifiedName>,
     pub on_size_error: Vec<Statement>,
@@ -671,6 +683,33 @@ pub enum SetKind {
 pub enum SetDirection {
     Up,
     Down,
+}
+
+// ---------------------------------------------------------------------------
+// Table handling statements
+// ---------------------------------------------------------------------------
+
+/// SEARCH statement: serial or binary table lookup.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchStatement {
+    /// The table name to search.
+    pub table_name: QualifiedName,
+    /// True for SEARCH ALL (binary search).
+    pub all: bool,
+    /// VARYING clause: the index to vary during serial search.
+    pub varying: Option<QualifiedName>,
+    /// Statements executed when no WHEN condition is satisfied.
+    pub at_end: Vec<Statement>,
+    /// One or more WHEN clauses.
+    pub when_clauses: Vec<SearchWhenClause>,
+    pub span: Span,
+}
+
+/// A WHEN clause within a SEARCH statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchWhenClause {
+    pub condition: Condition,
+    pub body: Vec<Statement>,
 }
 
 // ---------------------------------------------------------------------------

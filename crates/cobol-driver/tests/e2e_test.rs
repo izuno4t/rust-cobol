@@ -4811,3 +4811,163 @@ PROCEDURE DIVISION.
         stdout
     );
 }
+
+#[test]
+fn test_nested_occurs_codegen() {
+    // Verify that nested OCCURS generates multi-dimensional struct access,
+    // not flat array subscripts that would fail with "subscripted value is not an array".
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NESTED-OCCURS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  TABLE-1.
+    05  GRP-ENTRY OCCURS 3 TIMES.
+        10  TABLE-ITEM PIC 9(3).
+PROCEDURE DIVISION.
+    MOVE 42 TO TABLE-ITEM(2).
+    DISPLAY TABLE-ITEM(1).
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    // The generated C should contain struct-based access for the subscripted item,
+    // e.g., TABLE_1.members._m_GRP_ENTRY[(idx)-1].members._m_TABLE_ITEM
+    // It should NOT contain TABLE_ITEM[...][...] (flat multi-dimensional subscript)
+    assert!(
+        c_code.contains("_m_GRP_ENTRY["),
+        "nested OCCURS should generate struct subscript at group level, got:\n{}",
+        c_code
+    );
+    // The group struct member should have array dimension for OCCURS
+    assert!(
+        c_code.contains("_m_GRP_ENTRY[3]") || c_code.contains("_m_GRP_ENTRY[3];"),
+        "group with OCCURS should have array dimension in struct, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_nested_occurs_2d_codegen() {
+    // Two levels of OCCURS: TABLE-ITEM(I, J) should produce 2D struct access
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NESTED-2D.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  TABLE-1.
+    05  GRP-ENTRY OCCURS 3 TIMES.
+        10  SUB-ENTRY OCCURS 4 TIMES.
+            15  TABLE-ITEM PIC 9(3).
+PROCEDURE DIVISION.
+    MOVE 99 TO TABLE-ITEM(2, 3).
+    DISPLAY TABLE-ITEM(2, 3).
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    // Should have subscript at GRP-ENTRY level and SUB-ENTRY level
+    assert!(
+        c_code.contains("_m_GRP_ENTRY["),
+        "should have GRP_ENTRY subscript, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("_m_SUB_ENTRY["),
+        "should have SUB_ENTRY subscript, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_native_nested_occurs() {
+    // Nested OCCURS: compile, link, and execute with clang
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NESTED-OCCURS-EXEC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  TABLE-1.
+    05  GRP-ENTRY OCCURS 3 TIMES.
+        10  TABLE-ITEM PIC 9(3).
+01  WS-I PIC 9 VALUE 1.
+PROCEDURE DIVISION.
+    MOVE 42 TO TABLE-ITEM(1).
+    MOVE 99 TO TABLE-ITEM(2).
+    MOVE 77 TO TABLE-ITEM(3).
+    DISPLAY TABLE-ITEM(1).
+    DISPLAY TABLE-ITEM(2).
+    DISPLAY TABLE-ITEM(3).
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "program should exit with code 0");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines.iter().any(|l| l.contains("42")),
+        "TABLE-ITEM(1) should be 42, got: {}",
+        stdout
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("99")),
+        "TABLE-ITEM(2) should be 99, got: {}",
+        stdout
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("77")),
+        "TABLE-ITEM(3) should be 77, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_native_nested_occurs_2d() {
+    // Two-level nested OCCURS: compile, link, and execute with clang
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NESTED-2D-EXEC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  TABLE-1.
+    05  GRP-ENTRY OCCURS 3 TIMES.
+        10  SUB-ENTRY OCCURS 4 TIMES.
+            15  TABLE-ITEM PIC 9(3).
+PROCEDURE DIVISION.
+    MOVE 11 TO TABLE-ITEM(1, 1).
+    MOVE 12 TO TABLE-ITEM(1, 2).
+    MOVE 23 TO TABLE-ITEM(2, 3).
+    MOVE 34 TO TABLE-ITEM(3, 4).
+    DISPLAY TABLE-ITEM(1, 1).
+    DISPLAY TABLE-ITEM(1, 2).
+    DISPLAY TABLE-ITEM(2, 3).
+    DISPLAY TABLE-ITEM(3, 4).
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "program should exit with code 0");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        4,
+        "should have 4 output lines, got: {}",
+        stdout
+    );
+    assert!(
+        lines[0].contains("11"),
+        "line 1 should be 11, got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("12"),
+        "line 2 should be 12, got: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].contains("23"),
+        "line 3 should be 23, got: {}",
+        lines[2]
+    );
+    assert!(
+        lines[3].contains("34"),
+        "line 4 should be 34, got: {}",
+        lines[3]
+    );
+}
