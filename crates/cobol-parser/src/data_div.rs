@@ -21,7 +21,7 @@ impl Parser {
         let mut linkage = Vec::new();
         let mut screen = Vec::new();
         let communication = Vec::new();
-        let report = Vec::new();
+        let mut report = Vec::new();
 
         loop {
             if self.at_division_header() || self.at_eof() {
@@ -53,10 +53,42 @@ impl Parser {
                 self.expect(TokenKind::Section)?;
                 self.expect(TokenKind::Period)?;
                 screen = self.parse_data_items()?;
-            } else if self.check(TokenKind::Communication) || self.check(TokenKind::Report) {
+            } else if self.check(TokenKind::Communication) {
                 self.advance();
                 self.expect(TokenKind::Section)?;
                 self.expect(TokenKind::Period)?;
+                self.skip_section_content();
+            } else if self.check(TokenKind::Report) {
+                let rpt_span = self.span();
+                self.advance();
+                self.expect(TokenKind::Section)?;
+                self.expect(TokenKind::Period)?;
+                report = vec![DataItem {
+                    level: 1,
+                    name: Some(smol_str::SmolStr::new("RW-DUMMY-MARKER")),
+                    picture: None,
+                    usage: None,
+                    value: None,
+                    occurs: None,
+                    redefines: None,
+                    renames: None,
+                    sign_clause: None,
+                    justified: false,
+                    blank_when_zero: false,
+                    is_external: false,
+                    is_global: false,
+                    condition_values: Vec::new(),
+                    line_clause: None,
+                    column_clause: None,
+                    blank_screen: false,
+                    blank_line: false,
+                    highlight: false,
+                    reverse_video: false,
+                    source_field: None,
+                    using_field: None,
+                    children: Vec::new(),
+                    span: rpt_span,
+                }];
                 self.skip_section_content();
             } else {
                 self.advance();
@@ -214,9 +246,7 @@ impl Parser {
                 let mut bottom_val = None;
                 // Parse optional sub-clauses
                 loop {
-                    if self.check(TokenKind::With)
-                        || self.check(TokenKind::Footing)
-                    {
+                    if self.check(TokenKind::With) || self.check(TokenKind::Footing) {
                         // WITH FOOTING AT n
                         self.eat(TokenKind::With);
                         self.eat(TokenKind::Footing);
@@ -254,9 +284,7 @@ impl Parser {
                 if self.check_identifier("ARE") {
                     self.advance();
                 }
-                while self.check(TokenKind::Identifier)
-                    || self.check(TokenKind::LevelNumber)
-                {
+                while self.check(TokenKind::Identifier) || self.check(TokenKind::LevelNumber) {
                     self.advance();
                     // skip comma separators between record names
                     self.eat(TokenKind::Comma);
@@ -831,11 +859,30 @@ impl Parser {
                 continue;
             }
 
-            if level == 88 {
-                if let Some(parent) = stack.last_mut() {
-                    parent.children.push(item);
-                } else if let Some(parent) = result.last_mut() {
-                    parent.children.push(item);
+            if level == 88 || level == 66 {
+                // Level 88 (condition names) and level 66 (RENAMES) attach
+                // to the nearest enclosing record (01-level).
+                if level == 66 {
+                    // Flush the stack back to the 01-level parent, then
+                    // attach the level 66 item there.
+                    while stack.len() > 1 {
+                        let completed = stack.pop().unwrap();
+                        if let Some(parent) = stack.last_mut() {
+                            parent.children.push(completed);
+                        }
+                    }
+                    if let Some(parent) = stack.last_mut() {
+                        parent.children.push(item);
+                    } else if let Some(parent) = result.last_mut() {
+                        parent.children.push(item);
+                    }
+                } else {
+                    // Level 88 — attach to the immediately preceding item.
+                    if let Some(parent) = stack.last_mut() {
+                        parent.children.push(item);
+                    } else if let Some(parent) = result.last_mut() {
+                        parent.children.push(item);
+                    }
                 }
                 continue;
             }

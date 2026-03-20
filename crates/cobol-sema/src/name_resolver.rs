@@ -54,6 +54,49 @@ impl<'a> NameResolver<'a> {
             parent_name: None,
         });
 
+        // Register SPECIAL-NAMES condition names (ON/OFF STATUS).
+        if let Some(ref env) = program.environment {
+            if let Some(ref config) = env.configuration {
+                for entry in &config.special_names {
+                    if let Some(ref on_name) = entry.on_condition {
+                        self.table.define(Symbol {
+                            name: on_name.clone(),
+                            kind: SymbolKind::ConditionName {
+                                values: vec!["ON".to_string()],
+                            },
+                            data_type: Some(CobolType::Boolean),
+                            span: entry.span,
+                            parent_name: entry.user_name.clone(),
+                        });
+                    }
+                    if let Some(ref off_name) = entry.off_condition {
+                        self.table.define(Symbol {
+                            name: off_name.clone(),
+                            kind: SymbolKind::ConditionName {
+                                values: vec!["OFF".to_string()],
+                            },
+                            data_type: Some(CobolType::Boolean),
+                            span: entry.span,
+                            parent_name: entry.user_name.clone(),
+                        });
+                    }
+                    // Register the mnemonic name itself.
+                    if let Some(ref user_name) = entry.user_name {
+                        self.table.define(Symbol {
+                            name: user_name.clone(),
+                            kind: SymbolKind::DataItem {
+                                level: 1,
+                                is_group: false,
+                            },
+                            data_type: Some(CobolType::Boolean),
+                            span: entry.span,
+                            parent_name: None,
+                        });
+                    }
+                }
+            }
+        }
+
         // Register data items.
         if let Some(ref data) = program.data {
             self.register_data_division(data);
@@ -102,6 +145,40 @@ impl<'a> NameResolver<'a> {
         }
 
         // Report section.
+        if !data.report.is_empty() {
+            // Register implicit Report Writer special registers.
+            // LINE-COUNTER and PAGE-COUNTER are automatically created
+            // when a REPORT SECTION is present.
+            let dummy_span = data.report.first().map_or(Span::dummy(), |item| item.span);
+            self.table.define(Symbol {
+                name: SmolStr::new("LINE-COUNTER"),
+                kind: SymbolKind::DataItem {
+                    level: 1,
+                    is_group: false,
+                },
+                data_type: Some(CobolType::Numeric {
+                    size: 6,
+                    decimal_places: 0,
+                    is_signed: false,
+                }),
+                span: dummy_span,
+                parent_name: None,
+            });
+            self.table.define(Symbol {
+                name: SmolStr::new("PAGE-COUNTER"),
+                kind: SymbolKind::DataItem {
+                    level: 1,
+                    is_group: false,
+                },
+                data_type: Some(CobolType::Numeric {
+                    size: 6,
+                    decimal_places: 0,
+                    is_signed: false,
+                }),
+                span: dummy_span,
+                parent_name: None,
+            });
+        }
         for item in &data.report {
             self.register_data_item(item, None);
         }
@@ -146,7 +223,15 @@ impl<'a> NameResolver<'a> {
     fn register_data_item(&mut self, item: &DataItem, parent_name: Option<&SmolStr>) {
         let name = match &item.name {
             Some(n) => n.clone(),
-            None => return, // FILLER items are not registered.
+            None => {
+                // FILLER items are not registered themselves, but their
+                // children must still be registered (using the FILLER's
+                // parent as the effective parent).
+                for child in &item.children {
+                    self.register_data_item(child, parent_name);
+                }
+                return;
+            }
         };
 
         // Determine if this is a group item (has children or no PICTURE).
@@ -217,6 +302,13 @@ impl<'a> NameResolver<'a> {
     fn determine_data_type(&self, item: &DataItem, is_group: bool) -> Option<CobolType> {
         if is_group {
             return Some(CobolType::Group { size: 0 });
+        }
+
+        // Level 66 (RENAMES) items act as alphanumeric overlays of one or
+        // more data items. They have no PICTURE of their own but must be
+        // usable in statements that expect a typed data item.
+        if item.level == 66 {
+            return Some(CobolType::Alphanumeric { size: 0 });
         }
 
         // Check USAGE clause for special types.

@@ -184,30 +184,36 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Checks ADD statement: all operands must be numeric.
+    /// When CORRESPONDING is used, group items are valid operands.
     fn check_add(&mut self, a: &AddStatement) {
-        for op in &a.operands {
-            self.check_expr_is_numeric(op, "ADD operand");
-        }
-        for t in &a.to {
-            self.check_target_is_numeric(&t.target, "ADD TO target");
-        }
-        for g in &a.giving {
-            self.check_target_is_numeric(&g.target, "ADD GIVING target");
+        if !a.corresponding {
+            for op in &a.operands {
+                self.check_expr_is_numeric(op, "ADD operand");
+            }
+            for t in &a.to {
+                self.check_target_is_numeric(&t.target, "ADD TO target");
+            }
+            for g in &a.giving {
+                self.check_target_is_numeric(&g.target, "ADD GIVING target");
+            }
         }
         self.check_statements(&a.on_size_error);
         self.check_statements(&a.not_on_size_error);
     }
 
     /// Checks SUBTRACT statement: all operands must be numeric.
+    /// When CORRESPONDING is used, group items are valid operands.
     fn check_subtract(&mut self, s: &SubtractStatement) {
-        for op in &s.operands {
-            self.check_expr_is_numeric(op, "SUBTRACT operand");
-        }
-        for t in &s.from {
-            self.check_target_is_numeric(&t.target, "SUBTRACT FROM target");
-        }
-        for g in &s.giving {
-            self.check_target_is_numeric(&g.target, "SUBTRACT GIVING target");
+        if !s.corresponding {
+            for op in &s.operands {
+                self.check_expr_is_numeric(op, "SUBTRACT operand");
+            }
+            for t in &s.from {
+                self.check_target_is_numeric(&t.target, "SUBTRACT FROM target");
+            }
+            for g in &s.giving {
+                self.check_target_is_numeric(&g.target, "SUBTRACT GIVING target");
+            }
         }
         self.check_statements(&s.on_size_error);
         self.check_statements(&s.not_on_size_error);

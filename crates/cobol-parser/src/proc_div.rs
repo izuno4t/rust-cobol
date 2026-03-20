@@ -107,8 +107,7 @@ impl Parser {
         // Parse sections until END DECLARATIVES
         while !self.at_eof() {
             // Check for END DECLARATIVES
-            if self.check(TokenKind::End)
-                && self.peek(1).text.eq_ignore_ascii_case("DECLARATIVES")
+            if self.check(TokenKind::End) && self.peek(1).text.eq_ignore_ascii_case("DECLARATIVES")
             {
                 self.advance(); // END
                 self.advance(); // DECLARATIVES
@@ -120,6 +119,10 @@ impl Parser {
             let section_start = self.span();
             let section_name = self.expect_identifier()?;
             self.expect(TokenKind::Section)?;
+            // Optional segment/priority number (e.g., SECTION 00.)
+            if self.check(TokenKind::IntegerLiteral) {
+                self.advance();
+            }
             self.expect(TokenKind::Period)?;
 
             // Parse USE statement
@@ -231,6 +234,10 @@ impl Parser {
             while !self.check(TokenKind::Period) && !self.at_eof() {
                 let name = self.expect_identifier()?;
                 file_names.push(name);
+                // Optional comma separator between file names
+                if self.check(TokenKind::Comma) {
+                    self.advance();
+                }
             }
             UseStatement::AfterException { file_names }
         } else if self.check(TokenKind::Before) {
@@ -293,6 +300,10 @@ impl Parser {
 
                     let section_name = self.advance().text;
                     self.advance(); // SECTION
+                                    // Optional segment/priority number (e.g., SECTION 00.)
+                    if self.check(TokenKind::IntegerLiteral) {
+                        self.advance();
+                    }
                     self.expect(TokenKind::Period)?;
 
                     let section_start = self.span();
@@ -516,7 +527,7 @@ impl Parser {
             TokenKind::Terminate => self.parse_terminate_statement(),
             _ if self.check_identifier("NEXT") => {
                 self.advance(); // NEXT
-                // Consume SENTENCE if present
+                                // Consume SENTENCE if present
                 if self.check_identifier("SENTENCE") {
                     self.advance();
                 }
@@ -2202,7 +2213,16 @@ impl Parser {
         self.expect(TokenKind::Into)?;
         let into = self.parse_qualified_name()?;
 
-        let pointer = if self.check(TokenKind::Pointer) || self.check_identifier("POINTER") {
+        // Optional WITH before POINTER
+        let pointer = if self.check(TokenKind::With) || self.check_identifier("WITH") {
+            self.advance(); // WITH
+            if self.check(TokenKind::Pointer) || self.check_identifier("POINTER") {
+                self.advance();
+                Some(self.parse_qualified_name()?)
+            } else {
+                None
+            }
+        } else if self.check(TokenKind::Pointer) || self.check_identifier("POINTER") {
             self.advance();
             Some(self.parse_qualified_name()?)
         } else {
@@ -2253,6 +2273,7 @@ impl Parser {
                 && !self.at_statement_terminator()
                 && !self.check(TokenKind::EndUnstring)
                 && !self.check(TokenKind::Pointer)
+                && !self.check(TokenKind::With)
                 && !self.check(TokenKind::Tallying)
                 && !self.check(TokenKind::OnKw)
                 && !self.check(TokenKind::Overflow)
@@ -2285,6 +2306,13 @@ impl Parser {
             }
         }
 
+        // Optional WITH before POINTER
+        if self.check(TokenKind::With) || self.check_identifier("WITH") {
+            let next = self.peek(1);
+            if next.kind == TokenKind::Pointer || next.text.eq_ignore_ascii_case("POINTER") {
+                self.advance(); // consume WITH
+            }
+        }
         let pointer = if self.check(TokenKind::Pointer) || self.check_identifier("POINTER") {
             self.advance();
             Some(self.parse_qualified_name()?)
@@ -2553,8 +2581,12 @@ impl Parser {
                 }
             } else if self.check(TokenKind::Not) {
                 self.advance();
-                self.eat(TokenKind::Less);
-                self.eat(TokenKind::Than);
+                if self.check(TokenKind::LessThan) {
+                    self.advance();
+                } else {
+                    self.eat(TokenKind::Less);
+                    self.eat(TokenKind::Than);
+                }
                 StartRelation::NotLessThan
             } else {
                 StartRelation::Equal

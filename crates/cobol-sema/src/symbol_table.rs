@@ -192,24 +192,48 @@ impl SymbolTable {
     }
 
     /// Checks whether a symbol's parent chain matches the given qualifier list.
+    ///
+    /// In COBOL, qualifiers do not need to be direct parents — they can be any
+    /// ancestor.  For example, `FIELD OF GRANDPARENT` is valid even when
+    /// FIELD's immediate parent is PARENT (a child of GRANDPARENT).  We walk
+    /// up the ancestor chain for each qualifier, searching for a match at any
+    /// level.
     fn matches_qualifiers(&self, symbol: &Symbol, qualifiers: &[SmolStr]) -> bool {
         let mut current_parent = &symbol.parent_name;
         for qualifier in qualifiers {
-            match current_parent {
-                Some(parent_name) => {
-                    if !parent_name.eq_ignore_ascii_case(qualifier) {
-                        return false;
-                    }
-                    // Find the parent symbol to continue the chain.
-                    if let Some(parent_sym) = self.find_symbol_anywhere(parent_name) {
-                        current_parent = &parent_sym.parent_name;
-                    } else {
-                        // Parent not found, but we already matched this level.
-                        // Remaining qualifiers (if any) will fail on the next iteration.
-                        current_parent = &None;
-                    }
+            // Walk up ancestors looking for this qualifier.
+            let mut found = false;
+            let mut limit = 50; // Safety limit against cycles
+            loop {
+                if limit == 0 {
+                    break;
                 }
-                None => return false,
+                limit -= 1;
+                match current_parent {
+                    Some(parent_name) => {
+                        if parent_name.eq_ignore_ascii_case(qualifier) {
+                            // Found the qualifier in the ancestor chain.
+                            // Move past it for the next qualifier.
+                            if let Some(parent_sym) = self.find_symbol_anywhere(parent_name) {
+                                current_parent = &parent_sym.parent_name;
+                            } else {
+                                current_parent = &None;
+                            }
+                            found = true;
+                            break;
+                        }
+                        // Not a match at this level — move up.
+                        if let Some(parent_sym) = self.find_symbol_anywhere(parent_name) {
+                            current_parent = &parent_sym.parent_name;
+                        } else {
+                            current_parent = &None;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            if !found {
+                return false;
             }
         }
         true

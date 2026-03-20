@@ -86,6 +86,32 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         }
     }
 
+    // Inject SPECIAL-NAMES switch condition names as boolean data items
+    // so codegen declares them as C variables.
+    if let Some(ref env) = program.environment {
+        if let Some(ref config) = env.configuration {
+            for entry in &config.special_names {
+                for cond_name in entry.on_condition.iter().chain(entry.off_condition.iter()) {
+                    data_items.push(HirDataItem {
+                        name: cond_name.clone(),
+                        data_type: HirType::Numeric {
+                            size: 1,
+                            decimal_places: 0,
+                            is_signed: false,
+                        },
+                        initial_value: Some(HirLiteral::Integer(0)),
+                        redefines: None,
+                        renames: None,
+                        occurs: None,
+                        indexed_by: Vec::new(),
+                        screen_info: None,
+                        span: entry.span,
+                    });
+                }
+            }
+        }
+    }
+
     let (body, mut paragraphs) = program
         .procedure
         .as_ref()
@@ -308,6 +334,39 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
     }
     for item in &data.report {
         lower_data_item(item, &mut items);
+    }
+    // Implicit Report Writer special registers
+    if !data.report.is_empty() {
+        items.push(HirDataItem {
+            name: SmolStr::new("LINE-COUNTER"),
+            data_type: HirType::Numeric {
+                size: 6,
+                decimal_places: 0,
+                is_signed: false,
+            },
+            initial_value: Some(HirLiteral::Integer(0)),
+            occurs: None,
+            indexed_by: Vec::new(),
+            redefines: None,
+            renames: None,
+            screen_info: None,
+            span: Span::dummy(),
+        });
+        items.push(HirDataItem {
+            name: SmolStr::new("PAGE-COUNTER"),
+            data_type: HirType::Numeric {
+                size: 6,
+                decimal_places: 0,
+                is_signed: false,
+            },
+            initial_value: Some(HirLiteral::Integer(0)),
+            occurs: None,
+            indexed_by: Vec::new(),
+            redefines: None,
+            renames: None,
+            screen_info: None,
+            span: Span::dummy(),
+        });
     }
     items
 }
@@ -619,7 +678,11 @@ fn lower_procedure_division(
         }
     }
 
-    // Lower sections and their paragraphs
+    // Lower sections and their paragraphs.
+    // Track paragraph names to detect cross-section duplicates that would
+    // cause C-level label/function redefinition errors.
+    let mut seen_para_names: std::collections::HashSet<SmolStr> =
+        paragraphs.iter().map(|p| p.name.clone()).collect();
     for section in &proc.sections {
         // Collect all statements in this section for the section-level paragraph
         let mut section_stmts = Vec::new();
@@ -629,21 +692,28 @@ fn lower_procedure_division(
         });
         for para in &section.paragraphs {
             let stmts = lower_paragraph(para, condition_names);
-            // Always register named paragraphs, even if empty, because they
-            // may be targets of GO TO or PERFORM THRU.
+            // If this paragraph name already exists in another section,
+            // qualify it with the section name to avoid C-level collisions.
+            let effective_name = if seen_para_names.contains(&para.name) {
+                let qualified: SmolStr = format!("{}--{}", section.name, para.name).into();
+                qualified
+            } else {
+                seen_para_names.insert(para.name.clone());
+                para.name.clone()
+            };
             body.push(HirStatement::Label {
-                name: para.name.clone(),
+                name: effective_name.clone(),
             });
             body.push(HirStatement::Perform {
                 kind: HirPerformKind::ProcedureName {
-                    name: para.name.clone(),
+                    name: effective_name.clone(),
                     through: None,
                 },
                 span: para.span,
             });
             section_stmts.extend(stmts.clone());
             paragraphs.push(HirParagraph {
-                name: para.name.clone(),
+                name: effective_name,
                 body: stmts,
                 span: para.span,
             });
@@ -1498,7 +1568,10 @@ fn lower_set(
                 },
             }
         }
-        SetKind::ConditionTrue { conditions, value: _ } => {
+        SetKind::ConditionTrue {
+            conditions,
+            value: _,
+        } => {
             // SET condition-name TO TRUE:
             // For each condition name, find its parent data item and the
             // first VALUE, then emit MOVE value TO parent.
@@ -1511,12 +1584,8 @@ fn lower_set(
                     // Use the first value of the condition-name
                     if let Some(first_cv) = info.values.first() {
                         hir_value = match first_cv {
-                            ConditionValue::Single(lit) => {
-                                HirExpr::Literal(lit.clone())
-                            }
-                            ConditionValue::Range { from, .. } => {
-                                HirExpr::Literal(from.clone())
-                            }
+                            ConditionValue::Single(lit) => HirExpr::Literal(lit.clone()),
+                            ConditionValue::Range { from, .. } => HirExpr::Literal(from.clone()),
                         };
                     }
                 } else {
@@ -2308,6 +2377,7 @@ fn lower_declaratives(
     };
     let mut decls = Vec::new();
     let mut extra_paras = Vec::new();
+    let mut seen_para_names = std::collections::HashSet::new();
     for decl in &proc.declaratives {
         if let UseStatement::AfterException { file_names } = &decl.use_statement {
             let body: Vec<HirStatement> = decl
@@ -2322,8 +2392,11 @@ fn lower_declaratives(
             });
             // Also register each named paragraph inside the declarative section
             // so that codegen emits forward declarations and function definitions.
+            // Skip duplicate paragraph names across declarative sections to avoid
+            // C-level redefinition errors (e.g. INPUT-PROCESS in IX218A).
             for para in &decl.paragraphs {
-                if !para.name.is_empty() {
+                if !para.name.is_empty() && !seen_para_names.contains(&para.name) {
+                    seen_para_names.insert(para.name.clone());
                     let stmts = lower_paragraph(para, condition_names);
                     extra_paras.push(HirParagraph {
                         name: para.name.clone(),
@@ -2430,10 +2503,7 @@ fn split_subscript_expr(expr: &HirExpr, target_count: usize) -> Vec<HirExpr> {
 
 /// Walk all statements and fix `HirExpr::Subscript` / `HirMoveTarget::Subscript`
 /// nodes whose subscript count doesn't match the expected OCCURS dimensionality.
-fn fix_subscript_dimensions(
-    stmts: &mut [HirStatement],
-    occurs_dims: &HashMap<SmolStr, usize>,
-) {
+fn fix_subscript_dimensions(stmts: &mut [HirStatement], occurs_dims: &HashMap<SmolStr, usize>) {
     for stmt in stmts.iter_mut() {
         fix_subscripts_in_statement(stmt, occurs_dims);
     }
@@ -2531,10 +2601,7 @@ fn fix_subscripts_in_move_target(
     }
 }
 
-fn fix_subscripts_in_condition(
-    cond: &mut HirCondition,
-    occurs_dims: &HashMap<SmolStr, usize>,
-) {
+fn fix_subscripts_in_condition(cond: &mut HirCondition, occurs_dims: &HashMap<SmolStr, usize>) {
     match cond {
         HirCondition::Compare { left, right, .. } => {
             fix_subscripts_in_expr(left, occurs_dims);
@@ -2577,10 +2644,7 @@ fn fix_subscripts_in_perform_kind(
     }
 }
 
-fn fix_subscripts_in_statement(
-    stmt: &mut HirStatement,
-    occurs_dims: &HashMap<SmolStr, usize>,
-) {
+fn fix_subscripts_in_statement(stmt: &mut HirStatement, occurs_dims: &HashMap<SmolStr, usize>) {
     match stmt {
         HirStatement::Move { from, to, .. } => {
             fix_subscripts_in_expr(from, occurs_dims);
@@ -2604,32 +2668,83 @@ fn fix_subscripts_in_statement(
                 fix_subscripts_in_expr(t, occurs_dims);
             }
         }
-        HirStatement::Add { operands, to, giving, on_size_error, not_on_size_error, .. } => {
-            for op in operands.iter_mut() { fix_subscripts_in_expr(op, occurs_dims); }
-            for t in to.iter_mut() { fix_subscripts_in_expr(t, occurs_dims); }
-            for g in giving.iter_mut() { fix_subscripts_in_expr(g, occurs_dims); }
+        HirStatement::Add {
+            operands,
+            to,
+            giving,
+            on_size_error,
+            not_on_size_error,
+            ..
+        } => {
+            for op in operands.iter_mut() {
+                fix_subscripts_in_expr(op, occurs_dims);
+            }
+            for t in to.iter_mut() {
+                fix_subscripts_in_expr(t, occurs_dims);
+            }
+            for g in giving.iter_mut() {
+                fix_subscripts_in_expr(g, occurs_dims);
+            }
             fix_subscript_dimensions(on_size_error, occurs_dims);
             fix_subscript_dimensions(not_on_size_error, occurs_dims);
         }
-        HirStatement::Subtract { operands, from, giving, on_size_error, not_on_size_error, .. } => {
-            for op in operands.iter_mut() { fix_subscripts_in_expr(op, occurs_dims); }
-            for f in from.iter_mut() { fix_subscripts_in_expr(f, occurs_dims); }
-            for g in giving.iter_mut() { fix_subscripts_in_expr(g, occurs_dims); }
+        HirStatement::Subtract {
+            operands,
+            from,
+            giving,
+            on_size_error,
+            not_on_size_error,
+            ..
+        } => {
+            for op in operands.iter_mut() {
+                fix_subscripts_in_expr(op, occurs_dims);
+            }
+            for f in from.iter_mut() {
+                fix_subscripts_in_expr(f, occurs_dims);
+            }
+            for g in giving.iter_mut() {
+                fix_subscripts_in_expr(g, occurs_dims);
+            }
             fix_subscript_dimensions(on_size_error, occurs_dims);
             fix_subscript_dimensions(not_on_size_error, occurs_dims);
         }
-        HirStatement::Multiply { operand, by, giving, on_size_error, not_on_size_error, .. } => {
+        HirStatement::Multiply {
+            operand,
+            by,
+            giving,
+            on_size_error,
+            not_on_size_error,
+            ..
+        } => {
             fix_subscripts_in_expr(operand, occurs_dims);
-            for b in by.iter_mut() { fix_subscripts_in_expr(b, occurs_dims); }
-            for g in giving.iter_mut() { fix_subscripts_in_expr(g, occurs_dims); }
+            for b in by.iter_mut() {
+                fix_subscripts_in_expr(b, occurs_dims);
+            }
+            for g in giving.iter_mut() {
+                fix_subscripts_in_expr(g, occurs_dims);
+            }
             fix_subscript_dimensions(on_size_error, occurs_dims);
             fix_subscript_dimensions(not_on_size_error, occurs_dims);
         }
-        HirStatement::Divide { operand, into, giving, remainder, on_size_error, not_on_size_error, .. } => {
+        HirStatement::Divide {
+            operand,
+            into,
+            giving,
+            remainder,
+            on_size_error,
+            not_on_size_error,
+            ..
+        } => {
             fix_subscripts_in_expr(operand, occurs_dims);
-            for i in into.iter_mut() { fix_subscripts_in_expr(i, occurs_dims); }
-            for g in giving.iter_mut() { fix_subscripts_in_expr(g, occurs_dims); }
-            if let Some(r) = remainder { fix_subscripts_in_expr(r, occurs_dims); }
+            for i in into.iter_mut() {
+                fix_subscripts_in_expr(i, occurs_dims);
+            }
+            for g in giving.iter_mut() {
+                fix_subscripts_in_expr(g, occurs_dims);
+            }
+            if let Some(r) = remainder {
+                fix_subscripts_in_expr(r, occurs_dims);
+            }
             fix_subscript_dimensions(on_size_error, occurs_dims);
             fix_subscript_dimensions(not_on_size_error, occurs_dims);
         }
@@ -2641,7 +2756,11 @@ fn fix_subscripts_in_statement(
         HirStatement::Perform { kind, .. } => {
             fix_subscripts_in_perform_kind(kind, occurs_dims);
         }
-        HirStatement::Search { at_end, when_clauses, .. } => {
+        HirStatement::Search {
+            at_end,
+            when_clauses,
+            ..
+        } => {
             fix_subscript_dimensions(at_end, occurs_dims);
             for wc in when_clauses.iter_mut() {
                 fix_subscripts_in_condition(&mut wc.condition, occurs_dims);

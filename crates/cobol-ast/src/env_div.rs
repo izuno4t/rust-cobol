@@ -31,11 +31,16 @@ pub struct ConfigurationSection {
 }
 
 /// An entry in the SPECIAL-NAMES paragraph that maps an implementor-name
-/// to a user-defined mnemonic name.
+/// to a user-defined mnemonic name, and optionally defines ON/OFF STATUS
+/// condition names for external switches.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpecialNameEntry {
     pub system_name: SmolStr,
     pub user_name: Option<SmolStr>,
+    /// Condition name for ON STATUS (switch is on).
+    pub on_condition: Option<SmolStr>,
+    /// Condition name for OFF STATUS (switch is off).
+    pub off_condition: Option<SmolStr>,
     pub span: Span,
 }
 
