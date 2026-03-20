@@ -1,6 +1,6 @@
 // COBOL Parser - PROCEDURE DIVISION parsing
 
-use cobol_ast::expr::{Condition, Expr};
+use cobol_ast::expr::{Condition, Expr, QualifiedName};
 use cobol_ast::proc_div::*;
 use cobol_ast::statement::*;
 use cobol_common::Span;
@@ -81,6 +81,7 @@ impl Parser {
                 name,
                 span,
             });
+            let _ = self.eat(TokenKind::Comma); // Optional comma separator
         }
 
         Ok(params)
@@ -217,6 +218,10 @@ impl Parser {
             if self.check(TokenKind::ExceptionKw) || self.check(TokenKind::ErrorKw) {
                 self.advance();
             }
+            // optional PROCEDURE
+            if self.check(TokenKind::Procedure) {
+                self.advance();
+            }
             // optional ON
             if self.check(TokenKind::OnKw) {
                 self.advance();
@@ -270,7 +275,7 @@ impl Parser {
         let mut current_para_span: Option<Span> = None;
         let mut current_sentences: Vec<Sentence> = Vec::new();
 
-        while !self.at_eof() {
+        while !self.at_eof() && !self.at_end_program() {
             // Check for paragraph or section header
             if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
                 && !self.at_statement_start()
@@ -296,7 +301,7 @@ impl Parser {
                     let mut sec_para_span: Option<Span> = None;
                     let mut sec_sentences: Vec<Sentence> = Vec::new();
 
-                    while !self.at_eof() {
+                    while !self.at_eof() && !self.at_end_program() {
                         if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
                             && !self.at_statement_start()
                             && self.peek(1).kind == TokenKind::Section
@@ -393,7 +398,7 @@ impl Parser {
     }
 
     fn parse_sentence(&mut self) -> Result<Option<Sentence>, ()> {
-        if self.at_eof() {
+        if self.at_eof() || self.at_end_program() {
             return Ok(None);
         }
 
@@ -409,7 +414,7 @@ impl Parser {
         let mut statements = Vec::new();
 
         loop {
-            if self.at_eof() || self.check(TokenKind::Period) {
+            if self.at_eof() || self.check(TokenKind::Period) || self.at_end_program() {
                 break;
             }
 
@@ -468,6 +473,7 @@ impl Parser {
             TokenKind::GoTo => self.parse_goto_statement(),
             TokenKind::Call => self.parse_call_statement(),
             TokenKind::Stop => self.parse_stop_statement(),
+            TokenKind::Alter => self.parse_alter_statement(),
             TokenKind::Goback => {
                 self.advance();
                 Ok(Statement::Goback)
@@ -529,20 +535,22 @@ impl Parser {
         loop {
             let target_start = self.span();
             let qn = self.parse_qualified_name()?;
-            // Check for reference modification on the target
-            let target_expr =
-                if self.check(TokenKind::LeftParen) && self.is_reference_modification_ahead() {
-                    let (ref_start, ref_length) = self.parse_reference_modification()?;
-                    let target_end = self.span();
-                    Expr::ReferenceModification {
-                        variable: qn,
-                        start: Box::new(ref_start),
-                        length: ref_length.map(Box::new),
-                        span: target_start.merge(&target_end),
-                    }
-                } else {
-                    Expr::Identifier(qn)
+            // parse_qualified_name now consumes reference modification.
+            let target_expr = if let Some((ref_start, ref_length)) = qn.ref_mod.clone() {
+                let target_end = self.span();
+                let qn_no_ref = QualifiedName {
+                    ref_mod: None,
+                    ..qn
                 };
+                Expr::ReferenceModification {
+                    variable: qn_no_ref,
+                    start: ref_start,
+                    length: ref_length,
+                    span: target_start.merge(&target_end),
+                }
+            } else {
+                Expr::Identifier(qn)
+            };
             to.push(target_expr);
             let _ = self.eat(TokenKind::Comma); // Optional comma separator
             if !self.check(TokenKind::Identifier) || self.at_statement_terminator() {
@@ -1253,6 +1261,9 @@ impl Parser {
                 || self.peek(1).kind == TokenKind::Times
                 || self.peek(1).kind == TokenKind::IntegerLiteral
                 || self.peek(1).kind == TokenKind::With
+                || (self.peek(1).kind == TokenKind::Identifier
+                    && (self.peek(2).kind == TokenKind::Times
+                        || self.peek(1).text.eq_ignore_ascii_case("TEST")))
                 || self.is_end_keyword(self.peek(1).kind)
                 || Self::is_statement_start_keyword(self.peek(1).kind)
                 || self.peek(1).kind == TokenKind::Eof)
@@ -1340,19 +1351,28 @@ impl Parser {
     }
 
     /// Parse optional WITH TEST BEFORE/AFTER clause, returning the test type.
+    /// Both `WITH TEST BEFORE/AFTER` and `TEST BEFORE/AFTER` (without WITH) are accepted.
     fn parse_perform_test(&mut self) -> PerformTest {
+        // Accept optional WITH before TEST
         if self.check(TokenKind::With) || self.check_identifier("WITH") {
+            // Peek ahead: only consume WITH if followed by TEST
+            if self.peek(1).kind == TokenKind::Identifier
+                && self.peek(1).text.eq_ignore_ascii_case("TEST")
+            {
+                self.advance(); // consume WITH
+            } else {
+                return PerformTest::Before;
+            }
+        }
+        if self.check_identifier("TEST") {
             self.advance();
-            if self.check_identifier("TEST") {
+            if self.check_identifier("AFTER") {
                 self.advance();
-                if self.check_identifier("AFTER") {
-                    self.advance();
-                    return PerformTest::After;
-                }
-                // BEFORE is the default; consume it if present
-                if self.check_identifier("BEFORE") {
-                    self.advance();
-                }
+                return PerformTest::After;
+            }
+            // BEFORE is the default; consume it if present
+            if self.check_identifier("BEFORE") {
+                self.advance();
             }
         }
         PerformTest::Before
@@ -1517,6 +1537,7 @@ impl Parser {
                     mode: current_mode,
                     value,
                 });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
             }
         }
 
@@ -1602,8 +1623,34 @@ impl Parser {
     // --- STOP ---
     fn parse_stop_statement(&mut self) -> Result<Statement, ()> {
         self.expect(TokenKind::Stop)?;
-        self.expect(TokenKind::Run)?;
-        Ok(Statement::StopRun)
+        if self.check(TokenKind::Run) {
+            self.advance();
+            Ok(Statement::StopRun)
+        } else {
+            // STOP literal (obsolete): display literal and halt
+            let lit = self.parse_expr()?;
+            Ok(Statement::StopLiteral(lit))
+        }
+    }
+
+    // --- ALTER ---
+    fn parse_alter_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Alter)?;
+        let from = self.expect_identifier()?;
+        self.expect(TokenKind::To)?;
+        // Optional PROCEED TO
+        if self.check_identifier("PROCEED") {
+            self.advance();
+            self.expect(TokenKind::To)?;
+        }
+        let to = self.expect_identifier()?;
+        let end_span = self.span();
+        Ok(Statement::Alter(AlterStatement {
+            from,
+            to,
+            span: start_span.merge(&end_span),
+        }))
     }
 
     // --- EXIT ---
@@ -2828,6 +2875,7 @@ impl Parser {
                     mode: current_mode,
                     value,
                 });
+                let _ = self.eat(TokenKind::Comma); // Optional comma separator
             }
         }
 
@@ -3636,6 +3684,11 @@ impl Parser {
             }
         }
         false
+    }
+
+    /// Check if we are at `END PROGRAM` (two separate tokens).
+    pub(crate) fn at_end_program(&self) -> bool {
+        self.check(TokenKind::End) && self.peek(1).kind == TokenKind::Program
     }
 
     fn is_end_keyword(&self, kind: TokenKind) -> bool {

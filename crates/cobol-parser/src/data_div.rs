@@ -154,6 +154,37 @@ impl Parser {
                 self.eat_is();
                 let mode = self.expect_identifier()?;
                 recording_mode = Some(mode);
+            } else if self.check(TokenKind::Data) {
+                // DATA RECORD IS / DATA RECORDS ARE — obsolete clause, skip
+                self.advance();
+                self.eat(TokenKind::Record);
+                self.eat(TokenKind::Records);
+                self.eat_is();
+                // ARE is not a keyword, skip it if present as identifier
+                if self.check_identifier("ARE") {
+                    self.advance();
+                }
+                while self.check(TokenKind::Identifier)
+                    || self.check(TokenKind::LevelNumber)
+                {
+                    self.advance();
+                    // skip comma separators between record names
+                    self.eat(TokenKind::Comma);
+                }
+            } else if self.check(TokenKind::Value) {
+                // VALUE OF clause — obsolete, skip until next keyword or period
+                self.advance();
+                self.eat(TokenKind::Of);
+                while !self.check(TokenKind::Period)
+                    && !self.check(TokenKind::Data)
+                    && !self.check(TokenKind::Block)
+                    && !self.check(TokenKind::Record)
+                    && !self.check(TokenKind::Label)
+                    && !self.check(TokenKind::Recording)
+                    && !self.at_eof()
+                {
+                    self.advance();
+                }
             } else {
                 self.advance();
             }

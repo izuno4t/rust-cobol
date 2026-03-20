@@ -56,4 +56,7 @@ sed \
     -e "s|XXXXX49[[:space:]]|00000049|g" \
     -e "s|XXXXX50[[:space:]]|00000050|g" \
     -e "s|XXXXX0[[:space:]]|00000000|g" \
-    "$INPUT" > "$OUTPUT"
+    "$INPUT" | \
+    sed -e 's/^\(.\{6\}\)P/\1*/' \
+        -e 's/^\(.\{6\}\)C/\1*/' \
+    > "$OUTPUT"

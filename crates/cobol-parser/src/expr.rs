@@ -26,6 +26,7 @@ impl Parser {
         }
 
         let mut subscripts = Vec::new();
+        let mut ref_mod = None;
         if self.check(TokenKind::LeftParen) {
             // Peek ahead to decide: reference modification (contains ':')
             // vs. subscript. We scan tokens inside the parens looking for
@@ -43,9 +44,21 @@ impl Parser {
                     }
                 }
                 self.expect(TokenKind::RightParen)?;
+            } else {
+                // Reference modification: consume (start:length)
+                let (ref_start, ref_length) = self.parse_reference_modification()?;
+                ref_mod = Some((Box::new(ref_start), ref_length.map(Box::new)));
             }
-            // If it is reference modification, leave the '(' unconsumed --
-            // the caller (parse_primary) handles it.
+        }
+
+        // After subscripts, there may also be a reference modification
+        // e.g. TABLE(IDX)(1:3)
+        if ref_mod.is_none()
+            && self.check(TokenKind::LeftParen)
+            && self.is_reference_modification_ahead()
+        {
+            let (ref_start, ref_length) = self.parse_reference_modification()?;
+            ref_mod = Some((Box::new(ref_start), ref_length.map(Box::new)));
         }
 
         let end_span = self.span();
@@ -54,6 +67,7 @@ impl Parser {
             name,
             qualifiers,
             subscripts,
+            ref_mod,
             span: start_span.merge(&end_span),
         })
     }
@@ -252,16 +266,18 @@ impl Parser {
             let start_span = self.span();
             let qn = self.parse_qualified_name()?;
 
-            // Check for trailing reference modification: VAR(start:length)
-            // parse_qualified_name leaves '(' unconsumed when it detects
-            // a reference modification pattern.
-            if self.check(TokenKind::LeftParen) && self.is_reference_modification_ahead() {
-                let (ref_start, ref_length) = self.parse_reference_modification()?;
+            // parse_qualified_name now consumes reference modification itself.
+            // If ref_mod is present, wrap in ReferenceModification expr.
+            if let Some((ref_start, ref_length)) = qn.ref_mod.clone() {
                 let end_span = self.span();
+                let qn_no_ref = QualifiedName {
+                    ref_mod: None,
+                    ..qn
+                };
                 return Ok(Expr::ReferenceModification {
-                    variable: qn,
-                    start: Box::new(ref_start),
-                    length: ref_length.map(Box::new),
+                    variable: qn_no_ref,
+                    start: ref_start,
+                    length: ref_length,
                     span: start_span.merge(&end_span),
                 });
             }

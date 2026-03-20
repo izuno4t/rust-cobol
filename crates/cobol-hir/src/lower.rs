@@ -695,6 +695,20 @@ fn lower_statement(
             report_names: term.report_names.clone(),
             span: term.span,
         }),
+        // Obsolete statements — lower to no-op or simple equivalents
+        Statement::StopLiteral(expr) => {
+            let hir_expr = lower_expr(expr);
+            Some(HirStatement::Display {
+                operands: vec![hir_expr],
+                no_advancing: false,
+                span: Span::new(0, 0, cobol_common::FileId(0)),
+            })
+        }
+        Statement::Alter(_) => {
+            // ALTER changes a GO TO target at runtime; not supported in HIR.
+            // Emit nothing; the codegen cannot implement this obsolete feature.
+            None
+        }
     }
 }
 

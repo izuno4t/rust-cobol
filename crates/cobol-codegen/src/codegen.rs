@@ -4342,6 +4342,83 @@ fn emit_expr(expr: &HirExpr) -> String {
                         "0".to_string()
                     }
                 }
+                "MEAN" => {
+                    let arg_list =
+                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_mean(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "MEDIAN" => {
+                    let arg_list =
+                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_median(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "MIDRANGE" => {
+                    let arg_list =
+                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_midrange(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "STANDARD-DEVIATION" => {
+                    let arg_list =
+                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_standard_deviation(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "VARIANCE" => {
+                    let arg_list =
+                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_variance(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "PRESENT-VALUE" => {
+                    if c_args.len() >= 2 {
+                        let rate = &c_args[0];
+                        let rest: Vec<_> = c_args[1..]
+                            .iter()
+                            .map(|a| format!("(double){a}"))
+                            .collect();
+                        let joined = rest.join(", ");
+                        format!(
+                            "({{ double _pv[] = {{{joined}}}; \
+                             cobol_func_present_value((double){rate}, _pv, {}); }})",
+                            rest.len()
+                        )
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "SUM" => {
+                    let arg_list =
+                        c_args.iter().map(|a| format!("(double){a}")).collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _sv[] = {{{joined}}}; \
+                         cobol_func_sum_float(_sv, {}); }})",
+                        c_args.len()
+                    )
+                }
                 "ORD-MAX" => {
                     let arg_list = c_args.join(", ");
                     format!(

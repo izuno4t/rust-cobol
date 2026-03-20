@@ -46,7 +46,7 @@ impl Parser {
         }
     }
 
-    /// Parse a complete COBOL program.
+    /// Parse a complete COBOL program (possibly containing nested programs).
     pub fn parse_program(&mut self) -> Result<CobolProgram, ()> {
         let start_span = self.span();
 
@@ -70,6 +70,27 @@ impl Parser {
             None
         };
 
+        // Parse nested programs (before END PROGRAM of the outer program)
+        let mut nested_programs = Vec::new();
+        while !self.at_eof()
+            && self.check(TokenKind::Identification)
+            && !self.at_end_program()
+        {
+            let nested = self.parse_program()?;
+            nested_programs.push(nested);
+        }
+
+        // Consume optional END PROGRAM program-id.
+        if self.at_end_program() {
+            self.advance(); // END
+            self.advance(); // PROGRAM
+            // Consume the program-id (may be an identifier or keyword)
+            if !self.check(TokenKind::Period) && !self.at_eof() {
+                self.advance(); // program-id
+            }
+            self.eat(TokenKind::Period);
+        }
+
         let end_span = self.span();
 
         Ok(CobolProgram {
@@ -77,9 +98,22 @@ impl Parser {
             environment,
             data,
             procedure,
-            nested_programs: Vec::new(),
+            nested_programs,
             span: start_span.merge(&end_span),
         })
+    }
+
+    /// Parse a compilation unit that may contain multiple programs.
+    ///
+    /// Returns the first program. Subsequent programs in the same source
+    /// file are stored in `nested_programs` of the returned program for now,
+    /// preserving them in the AST.
+    pub fn parse_compilation_unit(&mut self) -> Result<Vec<CobolProgram>, ()> {
+        let mut programs = Vec::new();
+        while !self.at_eof() {
+            programs.push(self.parse_program()?);
+        }
+        Ok(programs)
     }
 
     /// Get diagnostics reporter reference.
@@ -233,6 +267,7 @@ impl Parser {
                 | TokenKind::Merge
                 | TokenKind::Release
                 | TokenKind::Cancel
+                | TokenKind::Alter
                 | TokenKind::Raise
                 | TokenKind::Resume
                 | TokenKind::Allocate

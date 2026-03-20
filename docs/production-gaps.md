@@ -395,7 +395,7 @@ COBOL-85互換性の確保。
 1. ~~残りの低優先度項目（4-1〜4-6）~~ — 完了
 2. ~~フレーキーテストの修正（2-12）~~ — 完了
 
-### Phase 7: NIST CCVS 85 適合性検証 — テスト基盤構築済み
+### Phase 7: NIST CCVS 85 適合性検証 — 実行済み・修正中
 
 NIST COBOL-85テストスイート（CCVS 85）による適合性検証。
 約9,700個のテストケース、12モジュール構成。
@@ -405,24 +405,54 @@ GnuCOBOLはv2.2で99.79%通過（9,688/9,708）。
 
 - `tests/nist/extract.pl` — newcob.val抽出スクリプト
 - `tests/nist/run_nist.sh` — テスト実行・結果集計スクリプト
+- `tests/nist/preprocess.sh` — XXXXX プレースホルダー置換
 - Makefile統合（`make nist MODULE=NC`）
+- newcob.val取得・展開済み（12モジュール、全プログラム抽出済み）
 
-**未実施:** newcob.valのダウンロードと実際のテスト実行。
+**初回実行結果（2026-03-19）:**
 
-段階的に以下のモジュール順で通過率を上げる。
+| モジュール | 総数 | PASS | INSPECT | COMPILE_ERROR | FAIL | SKIP |
+|---|---|---|---|---|---|---|
+| NC (Nucleus) | 96 | 0 | 48 | 46 | 1 | 1 |
+| IF (Intrinsic Functions) | 45 | 0 | 0 | 45 | 0 | 0 |
+| IC (Inter-program Comm.) | 25 | 0 | 5 | 20 | 0 | 0 |
+| SQ (Sequential I/O) | 84 | 0 | 2 | 82 | 0 | 0 |
+| SM (Source Manip.) | 13 | — | — | — | — | — |
+| IX (Indexed I/O) | 29 | — | — | — | — | — |
+| RL (Relative I/O) | 26 | — | — | — | — | — |
+| ST (SORT/MERGE) | 25 | — | — | — | — | — |
+| RW (Report Writer) | 6 | — | — | — | — | — |
+| DB (Debugging) | 15 | — | — | — | — | — |
+| SG (Segmentation) | 13 | — | — | — | — | — |
+| OB (Obsolete) | 5 | — | — | — | — | — |
 
-1. **NC (Nucleus)** — 約95プログラム。最優先
-2. **SM (Source Manipulation)** — 約17プログラム
-3. **IC (Inter-program Communication)** — 約25プログラム
-4. **SQ (Sequential I/O)** — 順編成ファイルI/O
-5. **IF (Intrinsic Functions)** — 組み込み関数
-6. **IX (Indexed I/O)** — 索引編成ファイルI/O
-7. **RL (Relative I/O)** — 相対編成ファイルI/O
-8. **ST (SORT/MERGE)** — ソート・マージ
-9. **RW (Report Writer)** — REPORT SECTION
-10. **DB (Debugging)** — デバッグ機能
-11. **SG (Segmentation)** — セグメント機能
-12. **OB (Obsolete)** — 廃止予定機能（低優先）
+（SM〜OBは未実行。OBはサンプルコンパイル成功確認済み）
+
+**コンパイルエラーの主要原因（影響プログラム数順）:**
+
+1. **`DATA RECORD IS` 句パーサー未対応** — SQ 74件 + ST/RW/DB/SG全件。廃止予定句だがNISTで広く使用
+2. **lexer.rs:659 型不一致** — IF全45件。`lex_number()`の戻り値型エラー。1行修正で解消
+3. **NC sema: 未定義データ名** — NC 14件。修飾名解決、INDEXED BY、CORRESPONDING、RENAMES等
+4. **NC codegen: C型不一致** — NC 18件。OCCURS配列、REDEFINES union、混合型演算
+5. **IC: コンマ区切り識別子リスト** — IC 8件。`MOVE TO a, b` / `USING a, b`
+6. **NC parser: 参照変更・クラス条件** — NC 6件。`(start:length)`、`IS NUMERIC`
+7. **IC: 複数プログラム構成** — IC 5件。`END PROGRAM` + 次の `IDENTIFICATION DIVISION`
+8. **IX: DECLARATIVES節** — IX全件。`USE AFTER ERROR` のパース
+9. **SM: COPYライブラリパス** — SM全件。`COPY ... OF library-name`
+10. **RL: RELATIVEファイルcodegen** — RL全件。レコードバッファ変数宣言欠落
+
+**修正優先順位（最大影響順）:**
+
+| 優先度 | 修正内容 | 解消見込み |
+|---|---|---|
+| P1 | lexer.rs 型修正 | IF 45件 |
+| P2 | `DATA RECORD IS` パーサー | SQ 74件 + ST 25 + RW 6 + DB 15 + SG 13 = 133件 |
+| P3 | NC sema/codegen修正群 | NC 46件 |
+| P4 | IC パーサー修正群 | IC 20件 |
+| P5 | DECLARATIVES パーサー | IX 29件 |
+| P6 | COPY OF ライブラリ対応 | SM 13件 |
+| P7 | RELATIVE ファイルcodegen | RL 26件 |
+| P8 | INSPECT結果の検証・修正 | NC 48件 + IC 5件 + SQ 2件 |
 
 製品版の基準: NC + IF + SQ + IC で95%以上通過。
 

@@ -31,6 +31,8 @@ pub enum Statement {
     GoTo(GoToStatement),
     Call(Box<CallStatement>),
     StopRun,
+    StopLiteral(Expr),
+    Alter(AlterStatement),
     Goback,
     Continue,
     ExitProgram,
@@ -952,5 +954,14 @@ pub struct GenerateStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminateStatement {
     pub report_names: Vec<SmolStr>,
+    pub span: Span,
+}
+
+/// ALTER statement (obsolete): changes the target of a GO TO statement.
+/// `ALTER proc-name-1 TO [PROCEED TO] proc-name-2`
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterStatement {
+    pub from: SmolStr,
+    pub to: SmolStr,
     pub span: Span,
 }

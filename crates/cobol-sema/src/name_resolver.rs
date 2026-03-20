@@ -665,6 +665,8 @@ impl<'a> NameResolver<'a> {
             }
             // Report writer statements — no name resolution needed for now
             Statement::Initiate(_) | Statement::Generate(_) | Statement::Terminate(_) => {}
+            // Obsolete statements — minimal name resolution
+            Statement::StopLiteral(_) | Statement::Alter(_) => {}
         }
     }
 

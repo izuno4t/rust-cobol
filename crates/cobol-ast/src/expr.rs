@@ -127,6 +127,9 @@ pub struct QualifiedName {
     pub qualifiers: Vec<SmolStr>,
     /// Subscript expressions (parenthesized indices).
     pub subscripts: Vec<Expr>,
+    /// Optional reference modification: (start, length).
+    /// Present when the name is followed by `(start:length)` syntax.
+    pub ref_mod: Option<(Box<Expr>, Option<Box<Expr>>)>,
     pub span: Span,
 }
 
