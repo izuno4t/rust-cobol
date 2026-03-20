@@ -256,6 +256,12 @@ impl<'a> TypeChecker<'a> {
     fn check_expr_is_numeric(&mut self, expr: &Expr, context: &str) {
         let expr_type = self.resolve_expr_type(expr);
         if let Some(ref t) = expr_type {
+            // Level 66 RENAMES items have placeholder type Alphanumeric(0);
+            // their real type is inherited from the renamed item, so skip
+            // the check rather than emitting a false positive.
+            if is_renames_placeholder(t) {
+                return;
+            }
             if !t.is_numeric() && !matches!(t, CobolType::NumericEdited { .. }) {
                 let span = self.expr_span(expr);
                 self.reporter.report(
@@ -278,6 +284,9 @@ impl<'a> TypeChecker<'a> {
     fn check_target_is_numeric(&mut self, name: &QualifiedName, context: &str) {
         let name_type = self.resolve_name_type(name);
         if let Some(ref t) = name_type {
+            if is_renames_placeholder(t) {
+                return;
+            }
             if !t.is_numeric() && !matches!(t, CobolType::NumericEdited { .. }) {
                 self.reporter.report(
                     Diagnostic::error(
@@ -434,4 +443,11 @@ impl<'a> TypeChecker<'a> {
             Expr::ReferenceModification { span, .. } => *span,
         }
     }
+}
+
+/// Returns true if the type is the placeholder assigned to level 66 RENAMES
+/// items (Alphanumeric with size 0).  The actual type of a RENAMES item is
+/// inherited from the renamed subject, which we do not resolve statically yet.
+fn is_renames_placeholder(t: &CobolType) -> bool {
+    matches!(t, CobolType::Alphanumeric { size: 0 })
 }

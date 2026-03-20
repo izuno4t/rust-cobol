@@ -258,6 +258,46 @@ pub fn generate_c(program: &HirProgram) -> String {
         out.push('\n');
     }
 
+    // Forward-declare CALL targets with weak stub definitions.  When the
+    // real sub-program is linked, the real definition overrides the stub.
+    // Otherwise the stub (which does nothing) is used, preventing link
+    // errors for absent sub-programs.
+    let call_targets = collect_call_targets(program);
+    if !call_targets.is_empty() {
+        out.push_str("/* Weak stubs for CALL targets (overridden by real sub-programs) */\n");
+        out.push_str(
+            "#pragma clang diagnostic push\n\
+             #pragma clang diagnostic ignored \"-Wdeprecated-non-prototype\"\n",
+        );
+        for target in &call_targets {
+            out.push_str(&format!(
+                "__attribute__((weak)) void {target}() {{ /* stub */ }}\n"
+            ));
+        }
+        out.push_str("#pragma clang diagnostic pop\n");
+        out.push('\n');
+    }
+
+    // Forward-declare nested program entry points
+    if !program.nested_programs.is_empty() {
+        out.push_str("/* Forward declarations for nested programs */\n");
+        for nested in &program.nested_programs {
+            let nested_name = sanitize_name(&nested.name);
+            let param_sig = if nested.using_params.is_empty() {
+                "void".to_string()
+            } else {
+                nested
+                    .using_params
+                    .iter()
+                    .map(|_| "void*".to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.push_str(&format!("void {nested_name}({param_sig});\n"));
+        }
+        out.push('\n');
+    }
+
     // Forward-declare paragraph functions
     for para in &program.paragraphs {
         let c_name = sanitize_name(&para.name);
@@ -462,7 +502,128 @@ pub fn generate_c(program: &HirProgram) -> String {
         out.push_str("}\n");
     }
 
+    // Emit nested programs as separate callable functions
+    for nested in &program.nested_programs {
+        emit_nested_program(&mut out, nested);
+    }
+
     out
+}
+
+/// Emit a nested (contained) program as a callable C function.
+fn emit_nested_program(out: &mut String, program: &HirProgram) {
+    let prog_name = sanitize_name(&program.name);
+
+    // Pre-compute subscript path info for this nested program.
+    let paths = build_subscript_paths(&program.data_items);
+    SUBSCRIPT_PATHS.with(|cell| {
+        *cell.borrow_mut() = paths;
+    });
+
+    let fr_map: FileRecordMap = program
+        .file_records
+        .iter()
+        .map(|(f, r)| (sanitize_name(f), sanitize_name(r)))
+        .collect();
+    FILE_RECORD_MAP.with(|cell| {
+        *cell.borrow_mut() = fr_map;
+    });
+
+    let decimal_names = build_decimal_names(&program.data_items);
+    DECIMAL_NAMES.with(|cell| {
+        *cell.borrow_mut() = decimal_names;
+    });
+
+    let group_names = build_group_names(&program.data_items);
+    GROUP_NAMES.with(|cell| {
+        *cell.borrow_mut() = group_names;
+    });
+
+    // Emit data items as function-scope statics
+    emit_data_items(out, &program.data_items);
+
+    // Forward-declare paragraph functions for this nested program.
+    // Use the same para_{name} convention; if names collide with the parent,
+    // the nested definition overrides (last definition wins for static fns).
+    for para in &program.paragraphs {
+        let c_name = sanitize_name(&para.name);
+        out.push_str(&format!("static void para_{c_name}(void);\n"));
+    }
+    if !program.paragraphs.is_empty() {
+        out.push('\n');
+    }
+
+    let fs_map = build_file_status_map(&program.file_status_vars);
+    let label_map = build_body_label_map(&program.body);
+    let has_decl = !program.declaratives.is_empty();
+
+    // Generate the param signature based on USING params
+    let param_sig = if program.using_params.is_empty() {
+        "void".to_string()
+    } else {
+        program
+            .using_params
+            .iter()
+            .map(|_| "void*".to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    out.push_str(&format!("\nvoid {prog_name}({param_sig}) {{\n"));
+    out.push_str("    /* Nested program entry point */\n");
+
+    // Initialize data items
+    emit_data_init(out, &program.data_items);
+
+    IN_BODY_CONTEXT.with(|flag| *flag.borrow_mut() = true);
+    for stmt in &program.body {
+        emit_statement(
+            out,
+            stmt,
+            &program.data_items,
+            &program.paragraphs,
+            &fs_map,
+            has_decl,
+            1,
+        );
+    }
+    IN_BODY_CONTEXT.with(|flag| *flag.borrow_mut() = false);
+
+    if !label_map.is_empty() {
+        GOTO_LABEL_MAP.with(|map| *map.borrow_mut() = label_map.clone());
+        out.push_str("_goto_dispatch:\n");
+        out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
+        out.push_str("      switch(_t) {\n");
+        for (name, id) in &label_map {
+            out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
+        }
+        out.push_str("        default: return;\n");
+        out.push_str("      }\n");
+        out.push_str("    }\n");
+    }
+    out.push_str("}\n");
+
+    // Emit paragraph function definitions for nested program
+    for para in &program.paragraphs {
+        let c_name = sanitize_name(&para.name);
+        out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+        for stmt in &para.body {
+            emit_statement(
+                out,
+                stmt,
+                &program.data_items,
+                &program.paragraphs,
+                &fs_map,
+                has_decl,
+                1,
+            );
+        }
+        out.push_str("}\n");
+    }
+
+    // Recursively emit any further nested programs
+    for nested in &program.nested_programs {
+        emit_nested_program(out, nested);
+    }
 }
 
 /// Collect all Label statements from the body and assign each a unique integer ID.
@@ -491,7 +652,18 @@ fn emit_header(out: &mut String) {
     out.push_str("#include <setjmp.h>\n");
     out.push_str("#include <math.h>\n");
     out.push_str("#include <time.h>\n");
+    out.push_str("#include <dlfcn.h>\n");
     out.push('\n');
+    // Helper for dynamic CALL: convert COBOL program name (space-padded,
+    // may contain hyphens) to a C identifier suitable for dlsym lookup.
+    out.push_str("static void cobol_resolve_call_name(const char* src, size_t src_len, char* dst, size_t dst_len) {\n");
+    out.push_str("    size_t j = 0;\n");
+    out.push_str("    for (size_t i = 0; i < src_len && j < dst_len - 1; i++) {\n");
+    out.push_str("        if (src[i] == ' ' || src[i] == '\\0') break;\n");
+    out.push_str("        dst[j++] = (src[i] == '-') ? '_' : src[i];\n");
+    out.push_str("    }\n");
+    out.push_str("    dst[j] = '\\0';\n");
+    out.push_str("}\n\n");
 }
 
 fn emit_runtime_declarations(out: &mut String) {
@@ -1098,7 +1270,18 @@ fn emit_group_macros(
             } else {
                 format!("{access_path}.members")
             };
+            // Emit macros with both the top-level group qualifier and the
+            // immediate sub-group qualifier.  This allows references like
+            // `ALPHAN-KEY OF KEY-1` (which becomes KEY_1__ALPHAN_KEY in C)
+            // to resolve correctly even when the same leaf name exists
+            // under multiple sub-groups of the same top-level group.
             emit_group_macros(out, sub_members, group_c_name, &sub_prefix, duplicate_names);
+            // Also emit macros qualified by the immediate parent sub-group
+            // (e.g., KEY_1__ALPHAN_KEY) so that COBOL qualified references
+            // like `ALPHAN-KEY OF KEY-1` map to the correct macro.
+            if c_name != group_c_name {
+                emit_group_macros(out, sub_members, &c_name, &sub_prefix, duplicate_names);
+            }
         }
     }
 }
@@ -2072,10 +2255,20 @@ fn emit_statement(
             ..
         } => {
             // Extract the program name from the expression.
-            let prog_name = match program {
-                HirExpr::Literal(HirLiteral::String(s)) => sanitize_name(s),
-                HirExpr::Variable(name) => sanitize_name(name),
-                _ => emit_expr(program),
+            // Distinguish static CALL (literal string) from dynamic CALL (variable).
+            let (prog_name, is_dynamic) = match program {
+                HirExpr::Literal(HirLiteral::String(s)) => (sanitize_name(s), false),
+                HirExpr::Variable(name) => {
+                    // Check if the variable is a data item (dynamic CALL) or
+                    // could be a literal-like reference.
+                    let sname = sanitize_name(name);
+                    if find_data_item(name, data_items).is_some() {
+                        (sname, true)
+                    } else {
+                        (sname, false)
+                    }
+                }
+                _ => (emit_expr(program), false),
             };
             let has_exception_handlers = !on_exception.is_empty() || !not_on_exception.is_empty();
             out.push_str(&format!("{pad}/* CALL {prog_name} */\n"));
@@ -2088,22 +2281,96 @@ fn emit_statement(
             } else {
                 pad.to_string()
             };
-            if params.is_empty() {
-                if has_exception_handlers {
+            if is_dynamic {
+                // Dynamic CALL: resolve function at runtime via dlsym.
+                // The variable contains the program name as a string.
+                let param_count = params.len();
+                if param_count == 0 {
+                    out.push_str(&format!("{inner_pad}{{\n"));
                     out.push_str(&format!(
-                        "{inner_pad}extern void {prog_name}(void) __attribute__((weak));\n"
+                        "{inner_pad}    char _name[256]; cobol_resolve_call_name({prog_name}, sizeof({prog_name}), _name, sizeof(_name));\n"
                     ));
+                    out.push_str(&format!(
+                        "{inner_pad}    void (*_fp)(void) = (void(*)(void))dlsym(RTLD_DEFAULT, _name);\n"
+                    ));
+                    if has_exception_handlers {
+                        out.push_str(&format!(
+                            "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp(); cobol_call_leave(); }} }} else {{ _call_failed = 1; }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp(); cobol_call_leave(); }} }}\n"
+                        ));
+                    }
+                    out.push_str(&format!("{inner_pad}}}\n"));
+                } else {
+                    // Build param values
+                    let mut param_values = Vec::new();
+                    let mut content_copies = Vec::new();
+                    for (i, p) in params.iter().enumerate() {
+                        let arg = emit_expr(&p.expr);
+                        match p.mode {
+                            cobol_hir::HirParamMode::ByReference => {
+                                param_values.push(format!("&{arg}"));
+                            }
+                            cobol_hir::HirParamMode::ByValue => {
+                                let arg_int = emit_int_compatible_expr(&p.expr, data_items);
+                                param_values.push(format!("(int64_t){arg_int}"));
+                            }
+                            cobol_hir::HirParamMode::ByContent => {
+                                let copy_var = format!("_content_copy_{i}");
+                                content_copies.push(format!(
+                                    "{inner_pad}typeof({arg}) {copy_var} = {arg};\n"
+                                ));
+                                param_values.push(format!("&{copy_var}"));
+                            }
+                        }
+                    }
+                    out.push_str(&format!("{inner_pad}{{\n"));
+                    for copy in &content_copies {
+                        out.push_str(copy);
+                    }
+                    let values_str = param_values.join(", ");
+                    // Build typedef for the function pointer type
+                    let void_ptrs: Vec<&str> = (0..param_count).map(|_| "void*").collect();
+                    let types_str = void_ptrs.join(", ");
+                    out.push_str(&format!(
+                        "{inner_pad}    char _name[256]; cobol_resolve_call_name({prog_name}, sizeof({prog_name}), _name, sizeof(_name));\n"
+                    ));
+                    out.push_str(&format!(
+                        "{inner_pad}    void (*_fp)({types_str}) = (void(*)({types_str}))dlsym(RTLD_DEFAULT, _name);\n"
+                    ));
+                    if has_exception_handlers {
+                        out.push_str(&format!(
+                            "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp({values_str}); cobol_call_leave(); }} }} else {{ _call_failed = 1; }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp({values_str}); cobol_call_leave(); }} }}\n"
+                        ));
+                    }
+                    out.push_str(&format!("{inner_pad}}}\n"));
+                }
+            } else if params.is_empty() {
+                if has_exception_handlers {
+                    // Use file-scope weak declaration for null check
                     out.push_str(&format!("{inner_pad}if ({prog_name}) {{\n"));
                     out.push_str(&format!(
                         "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }}\n"
                     ));
                     out.push_str(&format!("{inner_pad}}} else {{ _call_failed = 1; }}\n"));
                 } else {
+                    // Call via file-scope weak declaration — null-check
+                    // to gracefully handle missing sub-programs.
                     out.push_str(&format!(
-                        "{inner_pad}{{ extern void {prog_name}(void); jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }} }}\n"
+                        "{inner_pad}if ({prog_name}) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }} }}\n"
                     ));
                 }
             } else {
+                // Wrap in a block to scope _content_copy_* variables
+                // and avoid redefinition when multiple CALLs in same scope.
+                out.push_str(&format!("{inner_pad}{{\n"));
+                let call_pad = format!("{inner_pad}    ");
                 // Build param types and values based on passing mode
                 let mut param_types = Vec::new();
                 let mut param_values = Vec::new();
@@ -2118,13 +2385,13 @@ fn emit_statement(
                         cobol_hir::HirParamMode::ByValue => {
                             let arg_int = emit_int_compatible_expr(&p.expr, data_items);
                             param_types.push("int64_t".to_string());
-                            param_values.push(arg_int);
+                            param_values.push(format!("(int64_t){arg_int}"));
                         }
                         cobol_hir::HirParamMode::ByContent => {
                             // BY CONTENT: create a copy and pass address of the copy
                             let copy_var = format!("_content_copy_{i}");
                             content_copies
-                                .push(format!("{inner_pad}typeof({arg}) {copy_var} = {arg};\n"));
+                                .push(format!("{call_pad}typeof({arg}) {copy_var} = {arg};\n"));
                             param_types.push("void*".to_string());
                             param_values.push(format!("&{copy_var}"));
                         }
@@ -2133,22 +2400,23 @@ fn emit_statement(
                 for copy in &content_copies {
                     out.push_str(copy);
                 }
-                let types_str = param_types.join(", ");
+                let _types_str = param_types.join(", ");
                 let values_str = param_values.join(", ");
                 if has_exception_handlers {
+                    // Use file-scope weak declaration for null check
+                    out.push_str(&format!("{call_pad}if ({prog_name}) {{\n"));
                     out.push_str(&format!(
-                        "{inner_pad}extern void {prog_name}({types_str}) __attribute__((weak));\n"
+                        "{call_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
                     ));
-                    out.push_str(&format!("{inner_pad}if ({prog_name}) {{\n"));
-                    out.push_str(&format!(
-                        "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
-                    ));
-                    out.push_str(&format!("{inner_pad}}} else {{ _call_failed = 1; }}\n"));
+                    out.push_str(&format!("{call_pad}}} else {{ _call_failed = 1; }}\n"));
                 } else {
+                    // Call via file-scope weak declaration — null-check
+                    // to gracefully handle missing sub-programs.
                     out.push_str(&format!(
-                        "{inner_pad}{{ extern void {prog_name}({types_str}); jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }} }}\n"
+                        "{call_pad}if ({prog_name}) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }} }}\n"
                     ));
                 }
+                out.push_str(&format!("{inner_pad}}}\n"));
             }
             if has_exception_handlers {
                 emit_on_exception(
@@ -6586,6 +6854,86 @@ fn emit_file_status_update(
     }
 }
 
+/// Collect all CALL target program names across the program body and
+/// paragraphs. Returns sanitized, unique C identifiers for weak forward
+/// declarations.
+fn collect_call_targets(program: &HirProgram) -> Vec<String> {
+    let mut targets = BTreeSet::new();
+    for stmt in &program.body {
+        collect_call_targets_stmt(stmt, &mut targets);
+    }
+    for para in &program.paragraphs {
+        for stmt in &para.body {
+            collect_call_targets_stmt(stmt, &mut targets);
+        }
+    }
+    for decl in &program.declaratives {
+        for stmt in &decl.body {
+            collect_call_targets_stmt(stmt, &mut targets);
+        }
+    }
+    // Exclude nested program names (they are defined in this compilation unit)
+    let nested_names: BTreeSet<String> = program
+        .nested_programs
+        .iter()
+        .map(|p| sanitize_name(&p.name))
+        .collect();
+    targets
+        .into_iter()
+        .filter(|t| !nested_names.contains(t))
+        .collect()
+}
+
+fn collect_call_targets_stmt(stmt: &HirStatement, targets: &mut BTreeSet<String>) {
+    match stmt {
+        HirStatement::Call {
+            program,
+            on_exception,
+            not_on_exception,
+            ..
+        } => {
+            let prog_name = match program {
+                HirExpr::Literal(HirLiteral::String(s)) => Some(sanitize_name(s)),
+                _ => None,
+            };
+            if let Some(name) = prog_name {
+                targets.insert(name);
+            }
+            for s in on_exception {
+                collect_call_targets_stmt(s, targets);
+            }
+            for s in not_on_exception {
+                collect_call_targets_stmt(s, targets);
+            }
+        }
+        HirStatement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                collect_call_targets_stmt(s, targets);
+            }
+            for s in else_body {
+                collect_call_targets_stmt(s, targets);
+            }
+        }
+        HirStatement::Perform {
+            kind:
+                HirPerformKind::Inline { body }
+                | HirPerformKind::Times { body, .. }
+                | HirPerformKind::Until { body, .. }
+                | HirPerformKind::Varying { body, .. },
+            ..
+        } => {
+            for s in body {
+                collect_call_targets_stmt(s, targets);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Collect all file names referenced in file I/O statements across
 /// the program body,  and nested constructs. Returns a
 /// sorted, deduplicated list of file names.
@@ -7513,6 +7861,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -7581,6 +7930,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -7747,6 +8097,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -7780,6 +8131,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -7813,6 +8165,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -7846,6 +8199,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -7879,6 +8233,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -7920,6 +8275,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 
@@ -7960,6 +8316,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
             span: Span::dummy(),
         };
 

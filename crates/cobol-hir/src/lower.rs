@@ -189,6 +189,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         file_status_vars,
         declaratives,
         file_records,
+        nested_programs: program.nested_programs.iter().map(lower_to_hir).collect(),
         span: program.span,
     };
 

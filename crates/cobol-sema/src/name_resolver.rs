@@ -52,6 +52,7 @@ impl<'a> NameResolver<'a> {
             data_type: None,
             span: program.identification.span,
             parent_name: None,
+            parent_span: None,
         });
 
         // Register SPECIAL-NAMES condition names (ON/OFF STATUS).
@@ -67,6 +68,7 @@ impl<'a> NameResolver<'a> {
                             data_type: Some(CobolType::Boolean),
                             span: entry.span,
                             parent_name: entry.user_name.clone(),
+                            parent_span: None,
                         });
                     }
                     if let Some(ref off_name) = entry.off_condition {
@@ -78,6 +80,7 @@ impl<'a> NameResolver<'a> {
                             data_type: Some(CobolType::Boolean),
                             span: entry.span,
                             parent_name: entry.user_name.clone(),
+                            parent_span: None,
                         });
                     }
                     // Register the mnemonic name itself.
@@ -91,6 +94,7 @@ impl<'a> NameResolver<'a> {
                             data_type: Some(CobolType::Boolean),
                             span: entry.span,
                             parent_name: None,
+                            parent_span: None,
                         });
                     }
                 }
@@ -163,6 +167,7 @@ impl<'a> NameResolver<'a> {
                 }),
                 span: dummy_span,
                 parent_name: None,
+                parent_span: None,
             });
             self.table.define(Symbol {
                 name: SmolStr::new("PAGE-COUNTER"),
@@ -177,6 +182,7 @@ impl<'a> NameResolver<'a> {
                 }),
                 span: dummy_span,
                 parent_name: None,
+                parent_span: None,
             });
         }
         for item in &data.report {
@@ -193,6 +199,7 @@ impl<'a> NameResolver<'a> {
             data_type: None,
             span: fd.span,
             parent_name: None,
+            parent_span: None,
         });
 
         // When a LINAGE clause is present, register the implicit
@@ -211,6 +218,7 @@ impl<'a> NameResolver<'a> {
                 }),
                 span: fd.span,
                 parent_name: None,
+                parent_span: None,
             });
         }
 
@@ -221,6 +229,13 @@ impl<'a> NameResolver<'a> {
     }
 
     fn register_data_item(&mut self, item: &DataItem, parent_name: Option<&SmolStr>) {
+        // We resolve parent_span lazily from the most recently registered
+        // symbol with the given parent_name.  Since items are registered in
+        // tree order (parent before children), the last symbol registered
+        // with that name is the correct parent.
+        let parent_span =
+            parent_name.and_then(|pn| self.table.find_last_symbol(pn).map(|s| s.span));
+
         let name = match &item.name {
             Some(n) => n.clone(),
             None => {
@@ -234,8 +249,10 @@ impl<'a> NameResolver<'a> {
             }
         };
 
-        // Determine if this is a group item (has children or no PICTURE).
-        let is_group = !item.children.is_empty();
+        // Determine if this is a group item.  Level 88 (condition name) and
+        // level 66 (RENAMES) children do not make a parent a group; only
+        // actual subordinate data items do.
+        let is_group = item.children.iter().any(|c| c.level != 88 && c.level != 66);
 
         // Determine the data type from the PICTURE clause or USAGE.
         let data_type = self.determine_data_type(item, is_group);
@@ -261,6 +278,7 @@ impl<'a> NameResolver<'a> {
                 data_type: Some(CobolType::Boolean),
                 span: item.span,
                 parent_name: parent_name.cloned(),
+                parent_span,
             });
         } else {
             let kind = SymbolKind::DataItem {
@@ -274,6 +292,7 @@ impl<'a> NameResolver<'a> {
                 data_type,
                 span: item.span,
                 parent_name: parent_name.cloned(),
+                parent_span,
             });
 
             // Register INDEXED BY names from the OCCURS clause as index data items.
@@ -288,6 +307,7 @@ impl<'a> NameResolver<'a> {
                         data_type: Some(CobolType::Index),
                         span: occurs.span,
                         parent_name: Some(name.clone()),
+                        parent_span: Some(item.span),
                     });
                 }
             }
@@ -341,6 +361,7 @@ impl<'a> NameResolver<'a> {
                 data_type: None,
                 span: section.span,
                 parent_name: None,
+                parent_span: None,
             });
 
             for para in &section.paragraphs {
@@ -350,6 +371,7 @@ impl<'a> NameResolver<'a> {
                     data_type: None,
                     span: para.span,
                     parent_name: Some(section.name.clone()),
+                    parent_span: None,
                 });
             }
         }
@@ -362,6 +384,7 @@ impl<'a> NameResolver<'a> {
                 data_type: None,
                 span: para.span,
                 parent_name: None,
+                parent_span: None,
             });
         }
     }

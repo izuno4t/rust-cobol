@@ -521,6 +521,32 @@ impl Parser {
                 }
             }
 
+            // Handle identifier-based abbreviated: IF A = B OR C OR D - 1
+            // An identifier inherits both the subject and operator from the
+            // previous comparison.  Exclude cases where the identifier starts
+            // a new full condition (followed by comparison op, subscript,
+            // qualifier, or NOT).
+            if self.current().kind == TokenKind::Identifier
+                && !is_comparison_op_kind(self.peek(1).kind)
+                && self.peek(1).kind != TokenKind::Not
+                && self.peek(1).kind != TokenKind::Of
+                && self.peek(1).kind != TokenKind::In
+                && self.peek(1).kind != TokenKind::LeftParen
+            {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    left = Condition::Or(Box::new(left), Box::new(abbreviated));
+                    continue;
+                }
+            }
+
             let right = self.parse_and_condition()?;
             left = Condition::Or(Box::new(left), Box::new(right));
         }
@@ -576,6 +602,28 @@ impl Parser {
             if is_abbreviated_subject_only(self.current().kind)
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
+            {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    left = Condition::And(Box::new(left), Box::new(abbreviated));
+                    continue;
+                }
+            }
+
+            // Handle identifier-based abbreviated: IF A = B AND C AND D - 1
+            if self.current().kind == TokenKind::Identifier
+                && !is_comparison_op_kind(self.peek(1).kind)
+                && self.peek(1).kind != TokenKind::Not
+                && self.peek(1).kind != TokenKind::Of
+                && self.peek(1).kind != TokenKind::In
+                && self.peek(1).kind != TokenKind::LeftParen
             {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;

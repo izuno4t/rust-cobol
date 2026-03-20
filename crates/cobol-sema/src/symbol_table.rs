@@ -40,6 +40,10 @@ pub struct Symbol {
     pub span: Span,
     /// Parent data name, used for COBOL qualified name resolution (OF/IN).
     pub parent_name: Option<SmolStr>,
+    /// Span of the parent declaration, used to disambiguate when multiple
+    /// symbols share the same `parent_name`.
+    #[doc(hidden)]
+    pub parent_span: Option<Span>,
 }
 
 /// Classification of a symbol entry.
@@ -195,72 +199,107 @@ impl SymbolTable {
     ///
     /// In COBOL, qualifiers do not need to be direct parents — they can be any
     /// ancestor.  For example, `FIELD OF GRANDPARENT` is valid even when
-    /// FIELD's immediate parent is PARENT (a child of GRANDPARENT).  We walk
-    /// up the ancestor chain for each qualifier, searching for a match at any
-    /// level.
+    /// FIELD's immediate parent is PARENT (a child of GRANDPARENT).
+    ///
+    /// Uses `parent_span` to precisely identify the parent symbol when multiple
+    /// symbols share the same name.  Falls back to name-only matching when
+    /// `parent_span` is not available.
     fn matches_qualifiers(&self, symbol: &Symbol, qualifiers: &[SmolStr]) -> bool {
-        let mut current_parent = &symbol.parent_name;
+        // Build the exact ancestor chain for this symbol using parent_span
+        // for disambiguation.
+        let ancestors = self.build_ancestor_chain(symbol);
+
+        // Each qualifier must appear in the ancestor chain, in order.
+        let mut search_from = 0;
         for qualifier in qualifiers {
-            // Walk up ancestors looking for this qualifier.
-            let mut found = false;
-            let mut limit = 50; // Safety limit against cycles
-            loop {
-                if limit == 0 {
-                    break;
-                }
-                limit -= 1;
-                match current_parent {
-                    Some(parent_name) => {
-                        if parent_name.eq_ignore_ascii_case(qualifier) {
-                            // Found the qualifier in the ancestor chain.
-                            // Move past it for the next qualifier.
-                            if let Some(parent_sym) = self.find_symbol_anywhere(parent_name) {
-                                current_parent = &parent_sym.parent_name;
-                            } else {
-                                current_parent = &None;
-                            }
-                            found = true;
-                            break;
-                        }
-                        // Not a match at this level — move up.
-                        if let Some(parent_sym) = self.find_symbol_anywhere(parent_name) {
-                            current_parent = &parent_sym.parent_name;
-                        } else {
-                            current_parent = &None;
-                        }
-                    }
-                    None => break,
-                }
-            }
-            if !found {
-                return false;
+            let found = ancestors[search_from..]
+                .iter()
+                .position(|a| a.name.eq_ignore_ascii_case(qualifier));
+            match found {
+                Some(pos) => search_from += pos + 1,
+                None => return false,
             }
         }
         true
     }
 
-    /// Searches all scopes for a symbol with the given name.
-    // TODO: Normalize symbol names to uppercase at registration time to avoid 2-pass lookup
-    fn find_symbol_anywhere(&self, name: &SmolStr) -> Option<&Symbol> {
+    /// Builds the ancestor chain for a symbol by following parent_span links.
+    /// Returns a list of ancestor symbols from immediate parent to root.
+    fn build_ancestor_chain(&self, symbol: &Symbol) -> Vec<&Symbol> {
+        let mut chain = Vec::new();
+        let mut current = symbol;
+        let mut limit = 50;
+        loop {
+            if limit == 0 {
+                break;
+            }
+            limit -= 1;
+            let parent_name = match &current.parent_name {
+                Some(pn) => pn,
+                None => break,
+            };
+            // Use parent_span for precise matching when available.
+            let parent = if let Some(ps) = current.parent_span {
+                self.find_symbol_by_name_and_span(parent_name, ps)
+            } else {
+                None
+            };
+            // Fall back to name-only search if span matching fails.
+            let parent = parent.or_else(|| self.find_symbol_anywhere(parent_name));
+            match parent {
+                Some(p) => {
+                    chain.push(p);
+                    current = p;
+                }
+                None => break,
+            }
+        }
+        chain
+    }
+
+    /// Searches all scopes for ALL symbols with the given name.
+    fn find_all_symbols(&self, name: &SmolStr) -> Vec<&Symbol> {
+        let mut result: Vec<&Symbol> = Vec::new();
         for scope in &self.scopes {
             if let Some(syms) = scope.symbols.get(name) {
-                if let Some(first) = syms.first() {
-                    return Some(first);
-                }
+                result.extend(syms.iter());
             }
+        }
+        if !result.is_empty() {
+            return result;
         }
         // Fall back to case-insensitive search.
         let upper = name.to_ascii_uppercase();
         for scope in &self.scopes {
             for (key, syms) in &scope.symbols {
                 if key.to_ascii_uppercase() == upper {
-                    if let Some(first) = syms.first() {
-                        return Some(first);
-                    }
+                    result.extend(syms.iter());
                 }
             }
         }
-        None
+        result
+    }
+
+    /// Searches all scopes for a symbol with the given name.
+    // TODO: Normalize symbol names to uppercase at registration time to avoid 2-pass lookup
+    pub fn find_symbol_anywhere(&self, name: &SmolStr) -> Option<&Symbol> {
+        self.find_all_symbols(name).into_iter().next()
+    }
+
+    /// Returns the LAST symbol registered with the given name.
+    /// Used during registration to find the correct parent when multiple
+    /// symbols share the same name (since items are registered in tree
+    /// order, the most recent one is the current parent).
+    pub fn find_last_symbol(&self, name: &SmolStr) -> Option<&Symbol> {
+        let all = self.find_all_symbols(name);
+        all.into_iter().last()
+    }
+
+    /// Finds a symbol by name AND parent span, for precise disambiguation.
+    fn find_symbol_by_name_and_span(&self, name: &SmolStr, span: Span) -> Option<&Symbol> {
+        self.find_all_symbols(name)
+            .into_iter()
+            .find(|sym| sym.span == span)
     }
 }
 
@@ -376,6 +415,7 @@ mod tests {
             data_type: Some(CobolType::Alphanumeric { size: 10 }),
             span: Span::new(0, 0, FileId(0)),
             parent_name: parent.map(SmolStr::new),
+            parent_span: None,
         }
     }
 
@@ -421,6 +461,7 @@ mod tests {
             data_type: Some(CobolType::Group { size: 20 }),
             span: Span::new(0, 0, FileId(0)),
             parent_name: None,
+            parent_span: None,
         });
         table.define(Symbol {
             name: SmolStr::new("FIELD"),
@@ -431,6 +472,7 @@ mod tests {
             data_type: Some(CobolType::Alphanumeric { size: 10 }),
             span: Span::new(0, 0, FileId(0)),
             parent_name: Some(SmolStr::new("RECORD")),
+            parent_span: Some(Span::new(0, 0, FileId(0))),
         });
 
         let result = table.lookup_qualified(&SmolStr::new("FIELD"), &[SmolStr::new("RECORD")]);

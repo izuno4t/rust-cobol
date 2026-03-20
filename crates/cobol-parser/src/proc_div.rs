@@ -282,7 +282,7 @@ impl Parser {
         let mut current_para_span: Option<Span> = None;
         let mut current_sentences: Vec<Sentence> = Vec::new();
 
-        while !self.at_eof() && !self.at_end_program() {
+        while !self.at_eof() && !self.at_end_program() && !self.at_identification_division() {
             // Check for paragraph or section header
             if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
                 && !self.at_statement_start()
@@ -312,7 +312,10 @@ impl Parser {
                     let mut sec_para_span: Option<Span> = None;
                     let mut sec_sentences: Vec<Sentence> = Vec::new();
 
-                    while !self.at_eof() && !self.at_end_program() {
+                    while !self.at_eof()
+                        && !self.at_end_program()
+                        && !self.at_identification_division()
+                    {
                         if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
                             && !self.at_statement_start()
                             && self.peek(1).kind == TokenKind::Section
@@ -409,7 +412,7 @@ impl Parser {
     }
 
     fn parse_sentence(&mut self) -> Result<Option<Sentence>, ()> {
-        if self.at_eof() || self.at_end_program() {
+        if self.at_eof() || self.at_end_program() || self.at_identification_division() {
             return Ok(None);
         }
 
@@ -425,7 +428,11 @@ impl Parser {
         let mut statements = Vec::new();
 
         loop {
-            if self.at_eof() || self.check(TokenKind::Period) || self.at_end_program() {
+            if self.at_eof()
+                || self.check(TokenKind::Period)
+                || self.at_end_program()
+                || self.at_identification_division()
+            {
                 break;
             }
 
@@ -1630,8 +1637,13 @@ impl Parser {
             while !self.at_statement_terminator()
                 && !self.check(TokenKind::Returning)
                 && !self.check(TokenKind::EndCall)
+                && !self.check(TokenKind::OnKw)
+                && !self.check(TokenKind::ExceptionKw)
+                && !self.check(TokenKind::Overflow)
+                && !self.check(TokenKind::Not)
                 && !self.at_eof()
             {
+                // BY REFERENCE / BY CONTENT / BY VALUE
                 if self.check(TokenKind::By) {
                     self.advance();
                     if self.check(TokenKind::Reference) {
@@ -1646,6 +1658,23 @@ impl Parser {
                     }
                     continue;
                 }
+                // REFERENCE / CONTENT / VALUE without BY prefix
+                // (COBOL allows omitting BY)
+                if self.check(TokenKind::Reference) {
+                    self.advance();
+                    current_mode = ParamMode::ByReference;
+                    continue;
+                }
+                if self.check(TokenKind::Content) {
+                    self.advance();
+                    current_mode = ParamMode::ByContent;
+                    continue;
+                }
+                if self.check(TokenKind::Value) {
+                    self.advance();
+                    current_mode = ParamMode::ByValue;
+                    continue;
+                }
 
                 let value = self.parse_expr()?;
                 using.push(CallParam {
@@ -1653,6 +1682,7 @@ impl Parser {
                     value,
                 });
                 let _ = self.eat(TokenKind::Comma); // Optional comma separator
+                let _ = self.eat(TokenKind::Semicolon); // Optional semicolon
             }
         }
 
@@ -2758,6 +2788,7 @@ impl Parser {
                 && !self.check(TokenKind::Duplicates)
                 && !self.check(TokenKind::With)
                 && !self.check_identifier("COLLATING")
+                && !self.check_identifier("SEQUENCE")
                 && !self.at_eof()
             {
                 fields.push(self.parse_qualified_name()?);
@@ -2776,9 +2807,11 @@ impl Parser {
             false
         };
 
-        // COLLATING SEQUENCE (skip — we don't use it yet)
-        if self.check_identifier("COLLATING") {
-            self.advance(); // COLLATING
+        // [COLLATING] SEQUENCE (skip — we don't use it yet)
+        if self.check_identifier("COLLATING") || self.check_identifier("SEQUENCE") {
+            if self.check_identifier("COLLATING") {
+                self.advance(); // COLLATING
+            }
             self.eat_identifier("SEQUENCE");
             self.eat_is();
             if self.check(TokenKind::Identifier) {
@@ -2895,6 +2928,7 @@ impl Parser {
                 && !self.check(TokenKind::Giving)
                 && !self.check(TokenKind::Output)
                 && !self.check_identifier("COLLATING")
+                && !self.check_identifier("SEQUENCE")
                 && !self.at_eof()
             {
                 fields.push(self.parse_qualified_name()?);
@@ -2902,9 +2936,11 @@ impl Parser {
             keys.push(SortKey { order, fields });
         }
 
-        // COLLATING SEQUENCE (skip — we don't use it yet)
-        if self.check_identifier("COLLATING") {
-            self.advance(); // COLLATING
+        // [COLLATING] SEQUENCE (skip — we don't use it yet)
+        if self.check_identifier("COLLATING") || self.check_identifier("SEQUENCE") {
+            if self.check_identifier("COLLATING") {
+                self.advance(); // COLLATING
+            }
             self.eat_identifier("SEQUENCE");
             self.eat_is();
             if self.check(TokenKind::Identifier) {
@@ -3221,14 +3257,20 @@ impl Parser {
             }
         }
 
-        // NOT ON SIZE ERROR
+        // NOT ON SIZE ERROR — only if the NOT is actually followed by SIZE/ON SIZE
         if self.check(TokenKind::Not) {
-            self.advance();
-            self.eat(TokenKind::OnKw);
-            self.eat(TokenKind::SizeKw);
-            self.eat(TokenKind::ErrorKw);
-            while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
-                not_on_size_error.push(self.parse_statement()?);
+            let peek1 = self.peek(1).kind;
+            let peek2 = self.peek(2).kind;
+            let is_size_error = peek1 == TokenKind::SizeKw
+                || (peek1 == TokenKind::OnKw && peek2 == TokenKind::SizeKw);
+            if is_size_error {
+                self.advance();
+                self.eat(TokenKind::OnKw);
+                self.eat(TokenKind::SizeKw);
+                self.eat(TokenKind::ErrorKw);
+                while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+                    not_on_size_error.push(self.parse_statement()?);
+                }
             }
         }
 
@@ -3925,6 +3967,12 @@ impl Parser {
     /// Check if we are at `END PROGRAM` (two separate tokens).
     pub(crate) fn at_end_program(&self) -> bool {
         self.check(TokenKind::End) && self.peek(1).kind == TokenKind::Program
+    }
+
+    /// Check if we are at the start of a new nested/sibling program
+    /// (`IDENTIFICATION DIVISION`).
+    pub(crate) fn at_identification_division(&self) -> bool {
+        self.check(TokenKind::Identification) && self.peek(1).kind == TokenKind::Division
     }
 
     fn is_end_keyword(&self, kind: TokenKind) -> bool {
