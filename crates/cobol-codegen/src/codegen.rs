@@ -287,12 +287,29 @@ pub fn generate_c(program: &HirProgram) -> String {
         out.push_str("static void _check_file_declarative(const char* file_c_name, int fs) {\n");
         out.push_str("    if (fs == 0) return;\n");
         for decl in &program.declaratives {
-            for fname in &decl.file_names {
-                let c_file = sanitize_name(fname);
-                let c_decl = sanitize_name(&decl.name);
+            let c_decl = sanitize_name(&decl.name);
+            // Check if any file_name is a mode keyword (I-O, INPUT, OUTPUT,
+            // EXTEND) rather than a specific file name.  Mode-based USE AFTER
+            // handlers apply to ALL files opened in that mode; as a
+            // simplification we treat them as unconditional catch-alls.
+            let is_mode_based = decl.file_names.iter().any(|f| {
+                let upper = f.to_uppercase();
+                matches!(
+                    upper.as_str(),
+                    "I-O" | "INPUT" | "OUTPUT" | "EXTEND"
+                )
+            });
+            if is_mode_based {
                 out.push_str(&format!(
-                    "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ decl_{c_decl}(); return; }}\n"
+                    "    decl_{c_decl}(); return;\n"
                 ));
+            } else {
+                for fname in &decl.file_names {
+                    let c_file = sanitize_name(fname);
+                    out.push_str(&format!(
+                        "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ decl_{c_decl}(); return; }}\n"
+                    ));
+                }
             }
         }
         out.push_str("}\n\n");
@@ -690,6 +707,8 @@ fn emit_runtime_declarations(out: &mut String) {
         "extern void cobol_decimal_from_int(int64_t value, int32_t scale, CobolDecimal* result);\n",
     );
     out.push_str("extern int64_t cobol_decimal_to_int64(const CobolDecimal* d);\n");
+    out.push_str("extern double cobol_decimal_to_double(const CobolDecimal* d);\n");
+    out.push_str("extern void cobol_decimal_from_double(double val, CobolDecimal* result);\n");
     out.push_str("extern void cobol_decimal_from_string(const uint8_t* ptr, uint32_t len, CobolDecimal* result);\n");
     out.push_str("extern uint32_t cobol_decimal_to_display(const CobolDecimal* dec, uint8_t* buf, uint32_t buf_len, const uint8_t* pic_ptr, uint32_t pic_len);\n");
     // Screen section runtime declarations
@@ -4078,8 +4097,16 @@ fn emit_move_to(
                     let src_size =
                         find_data_item_size(&sanitize_name(src_var_name), data_items);
                     let tgt_size = find_data_item_size(c_target, data_items);
+                    // When source is a subscript expression the result of
+                    // emit_expr is an element value (e.g. char), not a
+                    // pointer.  We need to take its address with '&'.
+                    let addr_prefix = if matches!(from, HirExpr::Subscript { .. }) {
+                        "&"
+                    } else {
+                        ""
+                    };
                     out.push_str(&format!(
-                        "{pad}cobol_move_string((const uint8_t*){e}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
+                        "{pad}cobol_move_string((const uint8_t*){addr_prefix}{e}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
                 } else {
                     let e = emit_int_compatible_expr(from, data_items);
@@ -4549,6 +4576,47 @@ fn emit_expr_as_numeric(expr: &HirExpr) -> String {
     }
 }
 
+/// Emit an expression as a `double`, preserving decimal fractional parts.
+/// Used for math intrinsic function arguments (ACOS, ASIN, COS, SIN, TAN,
+/// LOG, SQRT, etc.) where truncating to int64 loses precision.
+fn emit_expr_as_double(expr: &HirExpr) -> String {
+    match expr {
+        HirExpr::Variable(name) => {
+            let c_name = sanitize_name(name);
+            let is_dec = DECIMAL_NAMES.with(|cell| cell.borrow().contains(&c_name));
+            if is_dec {
+                format!("cobol_decimal_to_double(&{c_name})")
+            } else {
+                format!("(double){c_name}")
+            }
+        }
+        HirExpr::BinaryOp { op, left, right } => {
+            let l = emit_expr_as_double(left);
+            let r = emit_expr_as_double(right);
+            let op_str = match op {
+                HirBinOp::Add => "+",
+                HirBinOp::Sub => "-",
+                HirBinOp::Mul => "*",
+                HirBinOp::Div => "/",
+                HirBinOp::Pow => return format!("pow({l}, {r})"),
+            };
+            format!("({l} {op_str} {r})")
+        }
+        HirExpr::UnaryOp { op, operand } => {
+            let o = emit_expr_as_double(operand);
+            match op {
+                HirUnaryOp::Neg => format!("(-{o})"),
+            }
+        }
+        HirExpr::Literal(HirLiteral::Integer(n)) => format!("(double){n}"),
+        HirExpr::Literal(HirLiteral::Decimal(d)) => d.to_string(),
+        _ => {
+            let e = emit_expr_as_numeric(expr);
+            format!("(double)({e})")
+        }
+    }
+}
+
 /// Emit alphanumeric MAX/MIN: builds arrays of pointers and lengths, calls runtime,
 /// returns pointer to the winning element.
 fn emit_alpha_max_min(args: &[HirExpr], func: &str) -> String {
@@ -4645,8 +4713,10 @@ fn emit_expr(expr: &HirExpr) -> String {
             }
         }
         HirExpr::Literal(HirLiteral::String(s)) => {
-            // Strings in expression context are unusual; use 0
-            format!("0 /* string literal: {} */", escape_c_string(s))
+            // Return string literal as a C string (used as pointer in intrinsic
+            // function arguments such as FUNCTION LOWER-CASE("text"))
+            let escaped = escape_c_string(s);
+            format!("\"{}\"", escaped)
         }
         HirExpr::Literal(HirLiteral::Zero) => "((int64_t)0)".to_string(),
         HirExpr::Literal(HirLiteral::Space) => "((int64_t)32)".to_string(),
@@ -4783,8 +4853,29 @@ fn emit_expr(expr: &HirExpr) -> String {
                     }
                 }
                 "ORD" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_ord((uint8_t){arg})")
+                    if let Some(arg_expr) = args.first() {
+                        match arg_expr {
+                            HirExpr::Literal(HirLiteral::String(s)) => {
+                                if let Some(ch) = s.bytes().next() {
+                                    format!("cobol_func_ord({ch})")
+                                } else {
+                                    "cobol_func_ord(0)".to_string()
+                                }
+                            }
+                            HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+                                // Variable may be a char array; dereference
+                                // the first byte.
+                                let c = emit_expr(arg_expr);
+                                format!("cobol_func_ord((uint8_t)*((const uint8_t*){c}))")
+                            }
+                            _ => {
+                                if let Some(arg) = c_args.first() {
+                                    format!("cobol_func_ord((uint8_t){arg})")
+                                } else {
+                                    "0".to_string()
+                                }
+                            }
+                        }
                     } else {
                         "0".to_string()
                     }
@@ -4822,78 +4913,89 @@ fn emit_expr(expr: &HirExpr) -> String {
                     }
                 }
                 "SQRT" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_sqrt((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_sqrt({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "EXP" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_exp((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_exp({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "EXP10" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_exp10((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_exp10({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "LOG" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_log((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_log({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "LOG10" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_log10((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_log10({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "SIN" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_sin((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_sin({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "COS" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_cos((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_cos({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "TAN" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_tan((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_tan({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "ASIN" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_asin((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_asin({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "ACOS" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_acos((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_acos({d})")
                     } else {
                         "0.0".to_string()
                     }
                 }
                 "ATAN" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_atan((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_atan({d})")
                     } else {
                         "0.0".to_string()
                     }
@@ -4906,11 +5008,10 @@ fn emit_expr(expr: &HirExpr) -> String {
                     }
                 }
                 "REM" | "REMAINDER" => {
-                    if c_args.len() >= 2 {
-                        format!(
-                            "cobol_func_rem((double){}, (double){})",
-                            c_args[0], c_args[1]
-                        )
+                    if args.len() >= 2 {
+                        let d0 = emit_expr_as_double(&args[0]);
+                        let d1 = emit_expr_as_double(&args[1]);
+                        format!("cobol_func_rem({d0}, {d1})")
                     } else {
                         "0.0".to_string()
                     }
@@ -5277,6 +5378,24 @@ fn is_group_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
         .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
 }
 
+/// Check whether an expression tree contains any decimal variable or decimal
+/// literal, meaning that converting to int64 would lose fractional precision.
+fn expr_contains_decimal(expr: &HirExpr) -> bool {
+    match expr {
+        HirExpr::Variable(name) => {
+            let c_name = sanitize_name(name);
+            DECIMAL_NAMES.with(|cell| cell.borrow().contains(&c_name))
+        }
+        HirExpr::Literal(HirLiteral::Decimal(_)) => true,
+        HirExpr::BinaryOp { left, right, .. } => {
+            expr_contains_decimal(left) || expr_contains_decimal(right)
+        }
+        HirExpr::UnaryOp { operand, .. } => expr_contains_decimal(operand),
+        HirExpr::FunctionCall { args, .. } => args.iter().any(expr_contains_decimal),
+        _ => false,
+    }
+}
+
 /// Emit an expression as int64, converting CobolDecimal to int64 if needed.
 /// For simple variable/subscript expressions, wraps with cobol_decimal_to_int64.
 /// For compound expressions (BinaryOp etc), recursively converts sub-expressions.
@@ -5348,8 +5467,11 @@ fn emit_assign_to_decimal(
             ));
         }
         HirExpr::Literal(HirLiteral::Zero) | HirExpr::Literal(HirLiteral::Null) => {
+            // Only zero the value; preserve scale/size/is_signed so that
+            // subsequent double-precision arithmetic (cobol_decimal_to_double,
+            // cobol_decimal_from_double) still knows the field's precision.
             out.push_str(&format!(
-                "{pad}cobol_decimal_from_int(0, 0, &{c_target});\n"
+                "{pad}{c_target}.value = 0;\n"
             ));
         }
         HirExpr::Literal(HirLiteral::String(s)) => {
@@ -5365,6 +5487,18 @@ fn emit_assign_to_decimal(
                 // CobolDecimal to CobolDecimal: struct copy
                 let c_src = emit_expr(from);
                 out.push_str(&format!("{pad}{c_target} = {c_src};\n"));
+            } else if expr_contains_decimal(from)
+                || matches!(from, HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. }
+                    if expr_contains_decimal(from))
+            {
+                // Expression contains decimal sub-expressions or fractional
+                // literals: use double arithmetic to preserve precision, then
+                // convert back via cobol_decimal_from_double which respects the
+                // target's existing scale.
+                let e = emit_expr_as_double(from);
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_double({e}, &{c_target});\n"
+                ));
             } else {
                 // Integer variable or expression -> CobolDecimal
                 // Use emit_int_compatible_expr to handle BinaryOp/UnaryOp
@@ -6628,6 +6762,26 @@ fn find_first_index_name(c_name: &str, data_items: &[HirDataItem]) -> Option<Str
 /// Find the byte size of a data item by its sanitized C name.
 /// Returns a reasonable default (80) if the item is not found.
 fn find_data_item_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    // Handle subscript/struct-access expressions like
+    // "TABLE.members._m_FOO[(I)-1].members._m_BAR" by extracting the
+    // final member name ("_m_BAR") and looking it up without the prefix.
+    if c_name.contains('[') || c_name.contains(".members.") {
+        if let Some(pos) = c_name.rfind(".members._m_") {
+            let leaf = &c_name[pos + ".members._m_".len()..];
+            // Remove any trailing subscript like "[(I)-1]"
+            let leaf_name = if let Some(br) = leaf.find('[') {
+                &leaf[..br]
+            } else {
+                leaf
+            };
+            if !leaf_name.is_empty() {
+                let found = find_data_item_size_in(leaf_name, data_items);
+                if found > 0 {
+                    return found;
+                }
+            }
+        }
+    }
     // Handle qualified C names like "WS_DST__FIELD_B"
     if let Some(pos) = c_name.find("__") {
         let group_c = &c_name[..pos];

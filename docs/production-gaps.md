@@ -415,25 +415,26 @@ GnuCOBOLはv2.2で99.79%通過（9,688/9,708）。
 
 | モジュール | 総数 | PASS | FAIL | CErr | RErr | Rate |
 |---|---|---|---|---|---|---|
-| NC (Nucleus) | 95 | 53 | 0 | 37 | 2 | 55% |
+| NC (Nucleus) | 95 | 54 | 0 | 37 | 1 | 56% |
 | SM (Source Manip.) | 13 | 4 | 0 | 7 | 0 | 30% |
 | IC (Inter-program Comm.) | 25 | 0 | 0 | 12 | 0 | 0% |
-| SQ (Sequential I/O) | 84 | 70 | 0 | 5 | 0 | 83% |
-| IF (Intrinsic Functions) | 45 | 30 | 0 | 1 | 5 | 66% |
-| IX (Indexed I/O) | 29 | 13 | 0 | 10 | 0 | 44% |
+| SQ (Sequential I/O) | 84 | 72 | 0 | 5 | 0 | 85% |
+| IF (Intrinsic Functions) | 45 | 41 | 0 | 1 | 0 | 91% |
+| IX (Indexed I/O) | 29 | 15 | 0 | 10 | 0 | 51% |
 | RL (Relative I/O) | 26 | 22 | 0 | 1 | 0 | 84% |
-| ST (SORT/MERGE) | 25 | 11 | 0 | 6 | 2 | 44% |
+| ST (SORT/MERGE) | 25 | 13 | 0 | 6 | 0 | 52% |
 | RW (Report Writer) | 6 | 0 | 0 | 4 | 0 | 0% |
 | DB (Debugging) | 15 | 3 | 0 | 3 | 0 | 20% |
 | SG (Segmentation) | 13 | 0 | 0 | 10 | 0 | 0% |
 | OB (Obsolete) | 5 | 2 | 0 | 2 | 0 | 40% |
-| **TOTAL** | **381** | **208** | **0** | **98** | **9** | **54%** |
+| **TOTAL** | **381** | **226** | **0** | **98** | **1** | **59%** |
 
 **進捗推移:**
 - 初回(3/19): PASS 0/250 (0%) — 4モジュールのみ
 - Round 2: PASS 49/381 (12%) — 全モジュール実行開始
 - Round 7: PASS 158/381 (41%)
-- Round 8: PASS 208/381 (54%) — 現在
+- Round 8: PASS 208/381 (54%)
+- Round 9: PASS 226/381 (59%) — 現在
 
 **第2回で実施した修正:**
 

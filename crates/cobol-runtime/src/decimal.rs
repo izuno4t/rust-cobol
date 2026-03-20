@@ -260,6 +260,42 @@ pub unsafe extern "C" fn cobol_decimal_to_int64(d: *const CobolDecimal) -> i64 {
     }
 }
 
+/// Convert a `CobolDecimal` to a C `double`.
+///
+/// This preserves the fractional part, unlike `cobol_decimal_to_int64` which
+/// truncates.  Used when passing decimal values to math intrinsic functions
+/// (ACOS, ASIN, COS, SIN, TAN, LOG, SQRT, etc.).
+///
+/// # Safety
+/// `d` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_decimal_to_double(d: *const CobolDecimal) -> f64 {
+    let d = &*d;
+    if d.scale <= 0 {
+        d.value as f64
+    } else {
+        d.value as f64 / 10_f64.powi(d.scale)
+    }
+}
+
+/// Create a `CobolDecimal` from a C `double`, using the existing target's scale.
+///
+/// The value is multiplied by 10^scale to convert from floating point to the
+/// scaled-integer representation.  Used when assigning the result of a
+/// floating-point expression (e.g. `COMPUTE ARG1 = ARG1 + 0.25`) back to a
+/// `CobolDecimal` field.
+///
+/// # Safety
+/// `result` must be a valid, writable pointer.  The target's `scale`, `size`,
+/// and `is_signed` fields must already be initialised (they are preserved).
+#[no_mangle]
+pub unsafe extern "C" fn cobol_decimal_from_double(val: f64, result: *mut CobolDecimal) {
+    let r = &mut *result;
+    let factor = 10_f64.powi(r.scale);
+    let scaled = (val * factor).round() as i64;
+    r.value = clamp_to_size(scaled, r.size, r.is_signed);
+}
+
 /// Parse a decimal number from a UTF-8 string (e.g. "123.45" or "-0.5").
 ///
 /// # Safety

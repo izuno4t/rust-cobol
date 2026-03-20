@@ -1804,6 +1804,10 @@ impl Parser {
             {
                 let file_name = self.advance().text;
                 entries.push(OpenEntry { mode, file_name });
+                // Skip optional comma separator between file names
+                if self.check(TokenKind::Comma) {
+                    self.advance();
+                }
             }
         }
 
@@ -1829,6 +1833,10 @@ impl Parser {
                 file_name,
                 close_option: None,
             });
+            // Skip optional comma separator between file names
+            if self.check(TokenKind::Comma) {
+                self.advance();
+            }
         }
 
         let end_span = self.span();
