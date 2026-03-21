@@ -726,7 +726,7 @@ pub enum HirPerformKind {
     },
     /// PERFORM ... VARYING.
     Varying {
-        var: SmolStr,
+        var: HirExpr,
         from: HirExpr,
         by: HirExpr,
         until: HirCondition,
