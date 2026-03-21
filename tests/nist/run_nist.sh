@@ -20,7 +20,7 @@ RESULTS_DIR="$SCRIPT_DIR/results"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
 # Working directory for test execution — keeps output files out of the repo root
-NIST_WORKDIR="$REPO_ROOT/target/nist"
+export NIST_WORKDIR="$REPO_ROOT/target/nist"
 
 # Module execution order (by priority)
 ALL_MODULES=(NC SM IC SQ IF IX RL ST RW DB SG OB)
@@ -56,7 +56,7 @@ run_program() {
         # Execute in target/nist so output files don't pollute the repo
         if timeout 30 bash -c "cd \"$NIST_WORKDIR\" && \"$bin\"" > "$log" 2>&1; then
             # NIST programs write to PRINT-FILE, also check stdout
-            local print_file="$NIST_WORKDIR/P"
+            local print_file="/tmp/nist/P"
             local result_file="$log"
             if [ -f "$print_file" ] && [ -s "$print_file" ]; then
                 result_file="$print_file"

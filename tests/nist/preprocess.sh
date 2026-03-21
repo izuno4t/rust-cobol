@@ -11,6 +11,8 @@ set -euo pipefail
 INPUT="$1"
 OUTPUT="$2"
 PROG_NAME=$(basename "$INPUT" .cob)
+# COBOL fixed-format has a 72-column limit, so file paths embedded in
+# ASSIGN TO clauses must be short. Use /tmp/nist for runtime I/O files.
 TMPDIR="/tmp/nist"
 mkdir -p "$TMPDIR"
 
