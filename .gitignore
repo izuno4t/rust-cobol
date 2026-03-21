@@ -6,6 +6,9 @@ tests/nist/newcob.val
 tests/nist/newcob.val.*
 tests/nist/programs/
 tests/nist/results/
+tests/nist/XXXX*
+tests/nist/FILE*
+tests/nist/SQ_*
 
 # Benchmark artifacts
 tests/benchmark/*.out

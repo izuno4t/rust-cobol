@@ -1010,6 +1010,15 @@ fn emit_single_data_item(
                 // Emit #define macros for children of this REDEFINES group
                 // Note: REDEFINES group is a struct, not a union, so no .members wrapper
                 emit_group_macros(out, members, &c_name, &c_name, duplicate_member_names);
+                // Also emit REDEFINES members within this group so that
+                // nested REDEFINES children get their #define macros.
+                emit_group_redefines(
+                    out,
+                    members,
+                    &c_name,
+                    duplicate_member_names,
+                    emitted_typedefs,
+                );
             }
             _ => {
                 if item.occurs.is_some() {
