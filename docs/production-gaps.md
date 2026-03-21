@@ -501,3 +501,28 @@ CErr 0達成モジュール: SQ, RL, RW, SG, ST (IF/IX は残1)
    完了（tests/benchmark/ に算術・文字列・ファイルI/Oベンチマーク）
 4. ~~ドキュメント整備~~ —
    完了（docs/user-guide.md, docs/cobol-standards.md）
+
+### Phase 10: Typed HIR リファクタリング — 未着手
+
+**目的:** sema の解析結果を HIR lowering に正式に接続し、lower.rs の補修ロジックを排除する。
+
+**現状の問題:**
+
+- `main.rs` で `SemanticAnalyzer` を実行するが、結果（`AnalysisResult`）は
+  `has_errors` と `symbol_table` しか持たない
+- `lower_to_hir(&program)` は未型付き AST を直接入力しており、sema の名前解決・
+  型解決の結果を利用していない
+- `cobol-hir` は `cobol-sema` に依存していない（Cargo.toml に依存なし）
+- `lower.rs` に AST 由来の曖昧さを後処理で補正するコードが散在
+
+**リファクタリング方針:**
+
+1. `AnalysisResult` に型付きシンボルテーブル（型情報・スコープ解決済み）を含める
+2. `lower_to_hir(&program, &analysis)` に変更し、sema 結果を正式入力にする
+3. `cobol-hir` を `cobol-sema` に依存させる
+4. `lower.rs` の補修ロジック（型推論再実行、名前再解決）を sema 側に移動
+5. 最終的に Typed HIR を sema の成果物として生成する構成へ
+
+**前提条件:** NIST CCVS 85 通過率が安定した後に実施（リグレッションリスク大）
+
+**見積もり:** 中規模リファクタリング。既存テスト（161 E2E + 44 unit）で回帰検証可能。
