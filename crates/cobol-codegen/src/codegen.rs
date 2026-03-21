@@ -1010,6 +1010,14 @@ fn emit_single_data_item(
                 // Emit #define macros for children of this REDEFINES group
                 // Note: REDEFINES group is a struct, not a union, so no .members wrapper
                 emit_group_macros(out, members, &c_name, &c_name, duplicate_member_names);
+                // Emit nested REDEFINES within this top-level REDEFINES group
+                emit_group_redefines(
+                    out,
+                    members,
+                    &c_name,
+                    duplicate_member_names,
+                    emitted_typedefs,
+                );
             }
             _ => {
                 if item.occurs.is_some() {
@@ -1315,6 +1323,16 @@ fn emit_group_redefines(
                         "#define {c_name} (*(_grp_{c_name}_t*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
                     ));
                     emit_group_macros(out, grp_members, &c_name, &c_name, duplicate_names);
+                    // Recurse into REDEFINES group children to emit nested
+                    // REDEFINES macros (e.g. RDF3-5-1 REDEFINES RDF3-5).
+                    let sub_prefix = c_name.clone();
+                    emit_group_redefines(
+                        out,
+                        grp_members,
+                        &sub_prefix,
+                        duplicate_names,
+                        emitted_typedefs,
+                    );
                 }
                 _ => {
                     if member.occurs.is_some() {
@@ -1684,6 +1702,10 @@ fn emit_statement(
             not_on_size_error,
             ..
         } => {
+            let has_size_error = !on_size_error.is_empty() || !not_on_size_error.is_empty();
+            if has_size_error {
+                out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
+            }
             emit_corresponding_arith(out, from, to, "+", data_items, &pad);
             emit_on_size_error(
                 out,
@@ -1695,6 +1717,9 @@ fn emit_statement(
                 has_declaratives,
                 indent,
             );
+            if has_size_error {
+                out.push_str(&format!("{pad}}}\n"));
+            }
         }
         HirStatement::SubtractCorresponding {
             from,
@@ -1703,6 +1728,10 @@ fn emit_statement(
             not_on_size_error,
             ..
         } => {
+            let has_size_error = !on_size_error.is_empty() || !not_on_size_error.is_empty();
+            if has_size_error {
+                out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
+            }
             emit_corresponding_arith(out, from, to, "-", data_items, &pad);
             emit_on_size_error(
                 out,
@@ -1714,6 +1743,9 @@ fn emit_statement(
                 has_declaratives,
                 indent,
             );
+            if has_size_error {
+                out.push_str(&format!("{pad}}}\n"));
+            }
         }
         HirStatement::Compute {
             targets,
@@ -4044,6 +4076,27 @@ fn emit_move_to(
                      sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
                 ));
             }
+        } else if let HirExpr::ReferenceModification {
+            variable,
+            start,
+            length,
+        } = from
+        {
+            // Reference-modified source to group target: copy substring
+            let c_src = sanitize_name(variable);
+            let c_start = emit_expr(start);
+            let src_full_size = find_data_item_size(&c_src, data_items);
+            let c_len = if let Some(len) = length {
+                emit_expr(len)
+            } else {
+                format!("({src_full_size} - ({c_start} - 1))")
+            };
+            let tgt_size = find_data_item_size(c_target, data_items);
+            out.push_str(&format!(
+                "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
+                 {pad}memcpy(&{c_target}, {c_src} + ({c_start} - 1), \
+                 {c_len} < {tgt_size} ? {c_len} : {tgt_size});\n"
+            ));
         } else {
             // Non-variable to group: handle figurative constants
             match from {
@@ -4165,13 +4218,19 @@ fn emit_move_to(
                 out.push_str(&format!(
                     "{pad}cobol_move_string((const uint8_t*)\"{escaped}\", {src_len}, (uint8_t*){c_target}, {tgt_size});\n"
                 ));
-            } else {
+            } else if is_target_group {
                 let escaped = escape_c_string(s);
+                let src_len = s.len();
+                let tgt_size = find_data_item_size(c_target, data_items);
                 out.push_str(&format!(
-                    "{pad}strncpy({c_target}, \"{escaped}\", sizeof({c_target}) - 1);\n"
+                    "{pad}cobol_move_string((const uint8_t*)\"{escaped}\", {src_len}, (uint8_t*)&{c_target}, {tgt_size});\n"
                 ));
+            } else {
+                // Numeric target: parse string as number
+                let escaped = escape_c_string(s);
+                let src_len = s.len();
                 out.push_str(&format!(
-                    "{pad}{c_target}[sizeof({c_target}) - 1] = '\\0';\n"
+                    "{pad}{c_target} = cobol_func_numval((const uint8_t*)\"{escaped}\", {src_len});\n"
                 ));
             }
         }
@@ -4619,25 +4678,55 @@ fn emit_perform(
             body,
         } => {
             let c_var = sanitize_name(var);
-            let c_from = emit_int_compatible_expr(from, data_items);
-            let c_by = emit_int_compatible_expr(by, data_items);
+            let var_is_decimal = find_data_item(var, data_items)
+                .is_some_and(|i| needs_decimal(&i.data_type));
             let cond = emit_condition(until, data_items);
-            out.push_str(&format!(
-                "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
-            ));
-            for s in body {
-                emit_statement(
+            if var_is_decimal {
+                // Decimal VARYING: use cobol_decimal operations
+                emit_assign_to_decimal(out, from, &c_var, data_items, &pad);
+                out.push_str(&format!("{pad}while (!({cond})) {{\n"));
+                for s in body {
+                    emit_statement(
+                        out,
+                        s,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                    );
+                }
+                // Increment: convert BY to a temp decimal and add
+                let inner_pad = format!("{pad}    ");
+                emit_decimal_arith(
                     out,
-                    s,
+                    &c_var,
+                    by,
+                    "cobol_decimal_add",
                     data_items,
-                    paragraphs,
-                    fs_map,
-                    has_declaratives,
-                    indent + 1,
+                    &inner_pad,
                 );
+                out.push_str(&format!("{pad}}}\n"));
+            } else {
+                let c_from = emit_int_compatible_expr(from, data_items);
+                let c_by = emit_int_compatible_expr(by, data_items);
+                out.push_str(&format!(
+                    "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
+                ));
+                for s in body {
+                    emit_statement(
+                        out,
+                        s,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                    );
+                }
+                out.push_str(&format!("{pad}    {c_var} += {c_by};\n"));
+                out.push_str(&format!("{pad}}}\n"));
             }
-            out.push_str(&format!("{pad}    {c_var} += {c_by};\n"));
-            out.push_str(&format!("{pad}}}\n"));
         }
         HirPerformKind::ProcedureName { name, through } => {
             let c_name = sanitize_name(name);
@@ -6081,7 +6170,7 @@ fn emit_corresponding_arith(
                     let func = if op == "+" {
                         "cobol_decimal_add"
                     } else {
-                        "cobol_decimal_subtract"
+                        "cobol_decimal_sub"
                     };
                     out.push_str(&format!(
                         "{pad}{func}(&{src_ref}, &{tgt_ref}, &{tgt_ref});\n"
@@ -6248,12 +6337,7 @@ fn emit_decimal_giving_add(
     for op in operands {
         if first {
             // Initialize target with first operand
-            let op_is_decimal = match op {
-                HirExpr::Variable(name) => {
-                    find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
-                }
-                _ => false,
-            };
+            let op_is_decimal = is_decimal_expr(op, data_items);
             if op_is_decimal {
                 let c_op = emit_expr(op);
                 out.push_str(&format!("{pad}{c_target} = {c_op};\n"));

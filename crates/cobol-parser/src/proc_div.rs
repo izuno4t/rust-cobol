@@ -3252,6 +3252,7 @@ impl Parser {
                 && !self.check(TokenKind::Not)
                 && !self.check(end_token)
                 && !self.check(TokenKind::Period)
+                && !self.check(TokenKind::Else)
             {
                 on_size_error.push(self.parse_statement()?);
             }
@@ -3268,7 +3269,11 @@ impl Parser {
                 self.eat(TokenKind::OnKw);
                 self.eat(TokenKind::SizeKw);
                 self.eat(TokenKind::ErrorKw);
-                while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+                while !self.at_eof()
+                    && !self.check(end_token)
+                    && !self.check(TokenKind::Period)
+                    && !self.check(TokenKind::Else)
+                {
                     not_on_size_error.push(self.parse_statement()?);
                 }
             }
@@ -3298,6 +3303,7 @@ impl Parser {
                 && !self.check(TokenKind::Not)
                 && !self.check(end_token)
                 && !self.check(TokenKind::Period)
+                && !self.check(TokenKind::Else)
             {
                 at_end.push(self.parse_statement()?);
             }
@@ -3310,7 +3316,11 @@ impl Parser {
             self.advance();
             self.eat(TokenKind::At);
             self.eat(TokenKind::End);
-            while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+            while !self.at_eof()
+                && !self.check(end_token)
+                && !self.check(TokenKind::Period)
+                && !self.check(TokenKind::Else)
+            {
                 not_at_end.push(self.parse_statement()?);
             }
         }
@@ -3337,6 +3347,7 @@ impl Parser {
                 && !self.check(TokenKind::Not)
                 && !self.check(end_token)
                 && !self.check(TokenKind::Period)
+                && !self.check(TokenKind::Else)
             {
                 invalid_key.push(self.parse_statement()?);
             }
@@ -3347,7 +3358,11 @@ impl Parser {
             self.advance();
             self.eat(TokenKind::InvalidKey);
             self.eat(TokenKind::Key);
-            while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+            while !self.at_eof()
+                && !self.check(end_token)
+                && !self.check(TokenKind::Period)
+                && !self.check(TokenKind::Else)
+            {
                 not_invalid_key.push(self.parse_statement()?);
             }
         }
@@ -3374,6 +3389,7 @@ impl Parser {
                 && !self.check(TokenKind::Not)
                 && !self.check(end_token)
                 && !self.check(TokenKind::Period)
+                && !self.check(TokenKind::Else)
             {
                 on_overflow.push(self.parse_statement()?);
             }
@@ -3384,7 +3400,11 @@ impl Parser {
             self.advance();
             self.eat(TokenKind::OnKw);
             self.eat(TokenKind::Overflow);
-            while !self.at_eof() && !self.check(end_token) && !self.check(TokenKind::Period) {
+            while !self.at_eof()
+                && !self.check(end_token)
+                && !self.check(TokenKind::Period)
+                && !self.check(TokenKind::Else)
+            {
                 not_on_overflow.push(self.parse_statement()?);
             }
         }
