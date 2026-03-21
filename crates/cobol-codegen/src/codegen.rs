@@ -271,8 +271,25 @@ pub fn generate_c(program: &HirProgram) -> String {
     // Runtime function declarations
     emit_runtime_declarations(&mut out);
 
-    // Global data items
-    emit_data_items(&mut out, &program.data_items);
+    // Build set of FD record alias names to skip during data item emission.
+    let fd_alias_set: HashSet<String> = program
+        .fd_record_aliases
+        .keys()
+        .map(|k| sanitize_name(k))
+        .collect();
+
+    // Global data items (skip FD record aliases — they'll be #defined below)
+    emit_data_items(&mut out, &program.data_items, &fd_alias_set);
+
+    // FD record aliases: multiple 01-level items under the same FD share storage.
+    // Emit #define macros so they all reference the first record's variable.
+    for (alias, primary) in &program.fd_record_aliases {
+        let c_alias = sanitize_name(alias);
+        let c_primary = sanitize_name(primary);
+        out.push_str(&format!(
+            "#define {c_alias} {c_primary} /* FD record alias */\n"
+        ));
+    }
 
     // COBOL 2002+: Emit class definitions (struct + vtable)
     emit_classes(&mut out, &program.classes);
@@ -583,7 +600,12 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
     });
 
     // Emit data items as function-scope statics
-    emit_data_items(out, &program.data_items);
+    let nested_fd_aliases: HashSet<String> = program
+        .fd_record_aliases
+        .keys()
+        .map(|k| sanitize_name(k))
+        .collect();
+    emit_data_items(out, &program.data_items, &nested_fd_aliases);
 
     // Forward-declare paragraph functions for this nested program.
     // Use the same para_{name} convention; if names collide with the parent,
@@ -942,7 +964,7 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push('\n');
 }
 
-fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
+fn emit_data_items(out: &mut String, items: &[HirDataItem], fd_aliases: &HashSet<String>) {
     if items.is_empty() {
         return;
     }
@@ -960,6 +982,9 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem]) {
         let c_name = sanitize_name(&item.name);
         if group_member_names.contains(&c_name) {
             continue; // Already emitted as part of a group struct
+        }
+        if fd_aliases.contains(&c_name) {
+            continue; // FD record alias — will be #defined to the primary record
         }
         emit_single_data_item(out, item, &duplicate_member_names, &mut emitted_typedefs);
     }
@@ -8038,6 +8063,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -8107,6 +8133,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -8274,6 +8301,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -8308,6 +8336,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -8342,6 +8371,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -8376,6 +8406,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -8410,6 +8441,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -8452,6 +8484,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -8493,6 +8526,7 @@ PROCEDURE DIVISION.
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };

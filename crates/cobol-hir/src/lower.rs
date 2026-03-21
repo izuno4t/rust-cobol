@@ -146,6 +146,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
 
     // Extract FD/SD file-name → first record name mapping.
     let file_records = extract_file_records(program);
+    // Extract FD record aliases: additional record names → first record name.
+    let fd_record_aliases = extract_fd_record_aliases(program);
 
     // Extract USING parameters from PROCEDURE DIVISION.
     let using_params = program
@@ -189,6 +191,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         file_status_vars,
         declaratives,
         file_records,
+        fd_record_aliases,
         nested_programs: program.nested_programs.iter().map(lower_to_hir).collect(),
         span: program.span,
     };
@@ -2259,6 +2262,29 @@ fn extract_file_records(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
         }
     }
     map
+}
+
+/// Build a map from additional FD record names to the first record name.
+/// In COBOL, multiple 01-level items under the same FD share the same record buffer.
+fn extract_fd_record_aliases(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
+    let Some(data) = &program.data else {
+        return HashMap::new();
+    };
+    let mut aliases = HashMap::new();
+    for fd in &data.file_section {
+        let named_items: Vec<SmolStr> = fd
+            .items
+            .iter()
+            .filter_map(|item| item.name.clone())
+            .collect();
+        if named_items.len() > 1 {
+            let first = &named_items[0];
+            for other in &named_items[1..] {
+                aliases.insert(other.clone(), first.clone());
+            }
+        }
+    }
+    aliases
 }
 
 fn patch_open_entries(

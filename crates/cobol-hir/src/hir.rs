@@ -35,6 +35,9 @@ pub struct HirProgram {
     /// FD/SD file name → first record name mapping.
     /// Used by codegen to determine the record buffer for READ without INTO.
     pub file_records: std::collections::HashMap<SmolStr, SmolStr>,
+    /// Maps each additional FD record name to the first record name.
+    /// Multiple 01-level items under the same FD share the same record buffer.
+    pub fd_record_aliases: std::collections::HashMap<SmolStr, SmolStr>,
     /// Nested programs (COBOL 85 inter-program communication).
     pub nested_programs: Vec<HirProgram>,
     pub span: Span,
