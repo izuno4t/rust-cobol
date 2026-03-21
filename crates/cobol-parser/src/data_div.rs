@@ -990,6 +990,22 @@ fn analyze_picture(raw: &str) -> PictureAnalysis {
                 let count = parse_repeat_count(bytes, &mut i);
                 size += count;
             }
+            b'C' => {
+                // CR (credit) — 2-character edit symbol
+                if i + 1 < bytes.len() && bytes[i + 1] == b'R' {
+                    is_edited = true;
+                    size += 2;
+                    i += 1; // skip 'R'
+                }
+            }
+            b'D' => {
+                // DB (debit) — 2-character edit symbol
+                if i + 1 < bytes.len() && bytes[i + 1] == b'B' {
+                    is_edited = true;
+                    size += 2;
+                    i += 1; // skip 'B'
+                }
+            }
             _ => {}
         }
         i += 1;

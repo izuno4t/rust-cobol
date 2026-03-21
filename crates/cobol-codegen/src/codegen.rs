@@ -1324,6 +1324,14 @@ fn emit_group_redefines(
                         "#define {c_name} (*(_grp_{c_name}_t*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
                     ));
                     emit_group_macros(out, grp_members, &c_name, &c_name, duplicate_names);
+                    // Recurse into this REDEFINES group to emit nested REDEFINES
+                    emit_group_redefines(
+                        out,
+                        grp_members,
+                        &c_name,
+                        duplicate_names,
+                        emitted_typedefs,
+                    );
                 }
                 _ => {
                     if member.occurs.is_some() {
@@ -1339,6 +1347,7 @@ fn emit_group_redefines(
                 }
             }
         }
+        // Recurse into non-REDEFINES groups to find nested REDEFINES
         if member.redefines.is_none() {
             if let HirType::Group {
                 members: sub_members,
@@ -1693,6 +1702,11 @@ fn emit_statement(
             not_on_size_error,
             ..
         } => {
+            let has_size_err =
+                !on_size_error.is_empty() || !not_on_size_error.is_empty();
+            if has_size_err {
+                out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
+            }
             emit_corresponding_arith(out, from, to, "+", data_items, &pad);
             emit_on_size_error(
                 out,
@@ -1704,6 +1718,9 @@ fn emit_statement(
                 has_declaratives,
                 indent,
             );
+            if has_size_err {
+                out.push_str(&format!("{pad}}}\n"));
+            }
         }
         HirStatement::SubtractCorresponding {
             from,
@@ -1712,6 +1729,11 @@ fn emit_statement(
             not_on_size_error,
             ..
         } => {
+            let has_size_err =
+                !on_size_error.is_empty() || !not_on_size_error.is_empty();
+            if has_size_err {
+                out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
+            }
             emit_corresponding_arith(out, from, to, "-", data_items, &pad);
             emit_on_size_error(
                 out,
@@ -1723,6 +1745,9 @@ fn emit_statement(
                 has_declaratives,
                 indent,
             );
+            if has_size_err {
+                out.push_str(&format!("{pad}}}\n"));
+            }
         }
         HirStatement::Compute {
             targets,
@@ -2999,13 +3024,16 @@ fn emit_statement(
                         "{pad}{{ const char* _env = getenv(\"{c_env}\");\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}  if (_env) {{ strncpy((char*){c_target}, _env, {size}); }} }}\n"
+                        "{pad}  if (_env) {{ strncpy((char*)&{c_target}, _env, {size}); }} }}\n"
                     ));
                 }
                 HirAcceptSource::Console => {
-                    out.push_str(&format!("{pad}fgets((char*){c_target}, {size}, stdin);\n"));
+                    // Use &target to handle both char arrays and union (group) types
                     out.push_str(&format!(
-                        "{pad}((char*){c_target})[strcspn((char*){c_target}, \"\\n\")] = '\\0';\n"
+                        "{pad}fgets((char*)&{c_target}, {size}, stdin);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}((char*)&{c_target})[strcspn((char*)&{c_target}, \"\\n\")] = '\\0';\n"
                     ));
                 }
             }
@@ -4628,25 +4656,107 @@ fn emit_perform(
             body,
         } => {
             let c_var = sanitize_name(var);
-            let c_from = emit_int_compatible_expr(from, data_items);
-            let c_by = emit_int_compatible_expr(by, data_items);
+            let var_is_decimal = find_data_item(var.as_str(), data_items)
+                .is_some_and(|i| needs_decimal(&i.data_type));
             let cond = emit_condition(until, data_items);
-            out.push_str(&format!(
-                "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
-            ));
-            for s in body {
-                emit_statement(
-                    out,
-                    s,
-                    data_items,
-                    paragraphs,
-                    fs_map,
-                    has_declaratives,
-                    indent + 1,
-                );
+
+            if var_is_decimal {
+                // CobolDecimal loop variable: use decimal arithmetic
+                let from_is_decimal = is_decimal_expr(from, data_items);
+                if from_is_decimal {
+                    let c_from = emit_expr(from);
+                    out.push_str(&format!("{pad}{c_var} = {c_from};\n"));
+                } else {
+                    // Try to extract value and scale from literal
+                    let from_info: Option<(i64, u32)> = match from {
+                        HirExpr::Literal(HirLiteral::Decimal(s)) => {
+                            Some(parse_decimal_literal(s))
+                        }
+                        HirExpr::Literal(HirLiteral::Integer(n)) => Some((*n, 0)),
+                        _ => None,
+                    };
+                    if let Some((val, scale)) = from_info {
+                        out.push_str(&format!(
+                            "{pad}cobol_decimal_from_int({val}, {scale}, &{c_var});\n"
+                        ));
+                    } else {
+                        let c_from = emit_int_compatible_expr(from, data_items);
+                        out.push_str(&format!(
+                            "{pad}cobol_decimal_from_int({c_from}, 0, &{c_var});\n"
+                        ));
+                    }
+                }
+                out.push_str(&format!("{pad}while (!({cond})) {{\n"));
+                for s in body {
+                    emit_statement(
+                        out,
+                        s,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                    );
+                }
+                // Increment by decimal amount
+                let by_is_decimal = is_decimal_expr(by, data_items);
+                if by_is_decimal {
+                    let c_by = emit_expr(by);
+                    out.push_str(&format!(
+                        "{pad}    cobol_decimal_add(&{c_var}, &{c_by}, &{c_var});\n"
+                    ));
+                } else {
+                    // Extract value and scale from literal, or fall back to generic
+                    let by_info: Option<(i64, u32)> = match by {
+                        HirExpr::Literal(HirLiteral::Decimal(s)) => {
+                            Some(parse_decimal_literal(s))
+                        }
+                        HirExpr::UnaryOp {
+                            op: HirUnaryOp::Neg,
+                            operand,
+                        } => {
+                            if let HirExpr::Literal(HirLiteral::Decimal(s)) = operand.as_ref() {
+                                let (v, s) = parse_decimal_literal(s);
+                                Some((-v, s))
+                            } else {
+                                None
+                            }
+                        }
+                        HirExpr::Literal(HirLiteral::Integer(n)) => Some((*n, 0)),
+                        _ => None,
+                    };
+                    if let Some((by_val, by_scale)) = by_info {
+                        out.push_str(&format!(
+                            "{pad}    {{ CobolDecimal _by; cobol_decimal_from_int({by_val}, {by_scale}, &_by); cobol_decimal_add(&{c_var}, &_by, &{c_var}); }}\n"
+                        ));
+                    } else {
+                        let c_by = emit_int_compatible_expr(by, data_items);
+                        out.push_str(&format!(
+                            "{pad}    {{ CobolDecimal _by; cobol_decimal_from_int({c_by}, 0, &_by); cobol_decimal_add(&{c_var}, &_by, &{c_var}); }}\n"
+                        ));
+                    }
+                }
+                out.push_str(&format!("{pad}}}\n"));
+            } else {
+                let c_from = emit_int_compatible_expr(from, data_items);
+                let c_by = emit_int_compatible_expr(by, data_items);
+                out.push_str(&format!(
+                    "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
+                ));
+                for s in body {
+                    emit_statement(
+                        out,
+                        s,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                    );
+                }
+                out.push_str(&format!("{pad}    {c_var} += {c_by};\n"));
+                out.push_str(&format!("{pad}}}\n"));
             }
-            out.push_str(&format!("{pad}    {c_var} += {c_by};\n"));
-            out.push_str(&format!("{pad}}}\n"));
         }
         HirPerformKind::ProcedureName { name, through } => {
             let c_name = sanitize_name(name);
@@ -6090,7 +6200,7 @@ fn emit_corresponding_arith(
                     let func = if op == "+" {
                         "cobol_decimal_add"
                     } else {
-                        "cobol_decimal_subtract"
+                        "cobol_decimal_sub"
                     };
                     out.push_str(&format!(
                         "{pad}{func}(&{src_ref}, &{tgt_ref}, &{tgt_ref});\n"
@@ -6257,12 +6367,7 @@ fn emit_decimal_giving_add(
     for op in operands {
         if first {
             // Initialize target with first operand
-            let op_is_decimal = match op {
-                HirExpr::Variable(name) => {
-                    find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
-                }
-                _ => false,
-            };
+            let op_is_decimal = is_decimal_expr(op, data_items);
             if op_is_decimal {
                 let c_op = emit_expr(op);
                 out.push_str(&format!("{pad}{c_target} = {c_op};\n"));
@@ -6280,8 +6385,7 @@ fn emit_decimal_giving_add(
     for t in to {
         if first {
             let c_t = emit_expr(t);
-            let t_is_decimal = find_data_item(expr_var_name(t), data_items)
-                .is_some_and(|i| needs_decimal(&i.data_type));
+            let t_is_decimal = is_decimal_expr(t, data_items);
             if t_is_decimal {
                 out.push_str(&format!("{pad}{c_target} = {c_t};\n"));
             } else {
@@ -6412,7 +6516,7 @@ fn emit_inspect_tallying(
         return;
     }
     for (i, t) in tallying.iter().enumerate() {
-        let counter = sanitize_name(&t.counter);
+        let counter = emit_expr_as_numeric(&t.counter);
         let (mode, search_ptr, search_len) = match &t.kind {
             cobol_hir::HirTallyingKind::Characters => (0u32, "NULL".to_string(), "0".to_string()),
             cobol_hir::HirTallyingKind::All(expr) => {

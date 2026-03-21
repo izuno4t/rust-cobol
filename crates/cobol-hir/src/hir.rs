@@ -823,7 +823,7 @@ pub enum HirInspectKind {
 /// A tallying phrase in INSPECT TALLYING.
 #[derive(Debug, Clone)]
 pub struct HirInspectTallying {
-    pub counter: SmolStr,
+    pub counter: HirExpr,
     pub kind: HirTallyingKind,
     pub before_after: Vec<HirBeforeAfter>,
 }

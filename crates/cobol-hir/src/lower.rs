@@ -1745,8 +1745,16 @@ fn lower_inspect_tallying(t: &cobol_ast::statement::InspectTallying) -> HirInspe
         cobol_ast::statement::TallyingKind::All(e) => HirTallyingKind::All(lower_expr(e)),
         cobol_ast::statement::TallyingKind::Leading(e) => HirTallyingKind::Leading(lower_expr(e)),
     };
+    let counter_expr = if t.counter.subscripts.is_empty() {
+        HirExpr::Variable(t.counter.name.clone())
+    } else {
+        HirExpr::Subscript {
+            variable: t.counter.name.clone(),
+            subscripts: t.counter.subscripts.iter().map(lower_expr).collect(),
+        }
+    };
     HirInspectTallying {
-        counter: t.counter.name.clone(),
+        counter: counter_expr,
         kind,
         before_after: t.before_after.iter().map(lower_before_after).collect(),
     }
