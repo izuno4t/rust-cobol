@@ -8,12 +8,52 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use cobol_hir::{
     HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem, HirExpr,
     HirFileInfo, HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph, HirPerformKind, HirProgram,
     HirStartRelation, HirStatement, HirType, HirUnaryOp,
 };
+
+/// Compute a fingerprint hash for a group's member structure.
+/// Used to disambiguate groups with the same local name but different members.
+fn compute_group_fingerprint(members: &[HirDataItem]) -> u32 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for m in members {
+        if m.redefines.is_some() {
+            continue;
+        }
+        m.name.hash(&mut hasher);
+        std::mem::discriminant(&m.data_type).hash(&mut hasher);
+        m.occurs.hash(&mut hasher);
+        match &m.data_type {
+            HirType::Alphanumeric { size } => size.hash(&mut hasher),
+            HirType::Numeric {
+                size,
+                decimal_places,
+                ..
+            } => {
+                size.hash(&mut hasher);
+                decimal_places.hash(&mut hasher);
+            }
+            HirType::Group {
+                members: sub_members,
+                ..
+            } => {
+                compute_group_fingerprint(sub_members).hash(&mut hasher);
+            }
+            _ => {}
+        }
+    }
+    (hasher.finish() & 0xFFFF_FFFF) as u32
+}
+
+/// Generate the typedef name for a group struct, unique per member layout.
+fn group_typedef_name(c_name: &str, members: &[HirDataItem]) -> String {
+    let fp = compute_group_fingerprint(members);
+    format!("_grp_{c_name}_{fp:08x}_t")
+}
 
 /// Maps sanitized file name -> sanitized FILE STATUS variable name.
 type FileStatusMap = HashMap<String, String>;
@@ -27,6 +67,8 @@ thread_local! {
     static GOTO_LABEL_MAP: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
     /// Counter for generating unique PERFORM THRU dispatch label names.
     static PERFORM_THRU_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    /// Labels already emitted in the current body to avoid C redefinition errors.
+    static EMITTED_LABELS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// Maps sanitized file name -> sanitized FD/SD first-record variable name.
@@ -385,6 +427,7 @@ pub fn generate_c(program: &HirProgram) -> String {
     let has_labels = !label_map.is_empty();
     GOTO_LABEL_MAP.with(|map| *map.borrow_mut() = label_map.clone());
     PERFORM_THRU_COUNTER.with(|c| *c.borrow_mut() = 0);
+    EMITTED_LABELS.with(|set| set.borrow_mut().clear());
 
     // Emit goto dispatch variable if needed
     if has_labels {
@@ -1004,8 +1047,9 @@ fn emit_single_data_item(
             HirType::Group { members, .. } => {
                 // Group REDEFINES: reinterpret as the group's struct type
                 emit_group_typedefs(out, &c_name, members, emitted_typedefs);
+                let td = group_typedef_name(&c_name, members);
                 out.push_str(&format!(
-                    "#define {c_name} (*(_grp_{c_name}_t*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                    "#define {c_name} (*({td}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
                 ));
                 // Emit #define macros for children of this REDEFINES group
                 // Note: REDEFINES group is a struct, not a union, so no .members wrapper
@@ -1070,9 +1114,10 @@ fn emit_single_data_item(
         HirType::Group { members, .. } => {
             // Emit group as union of struct + byte array for group-level operations
             emit_group_typedefs(out, &c_name, members, emitted_typedefs);
+            let td = group_typedef_name(&c_name, members);
             out.push_str("static union {\n");
-            out.push_str(&format!("    _grp_{c_name}_t members;\n"));
-            out.push_str(&format!("    uint8_t _bytes[sizeof(_grp_{c_name}_t)];\n"));
+            out.push_str(&format!("    {td} members;\n"));
+            out.push_str(&format!("    uint8_t _bytes[sizeof({td})];\n"));
             out.push_str(&format!("}} {c_name};\n"));
             // Generate macros for group members.
             // Qualified: #define GROUP__FIELD_A GROUP.members._m_FIELD_A (always unique)
@@ -1145,8 +1190,8 @@ fn emit_group_typedefs(
             emit_group_typedefs(out, &member_c_name, sub_members, emitted_typedefs);
         }
     }
-    // Skip if this typedef name has already been emitted
-    let typedef_name = format!("_grp_{c_name}_t");
+    // Skip if this exact typedef (name + member layout) has already been emitted
+    let typedef_name = group_typedef_name(c_name, members);
     if !emitted_typedefs.insert(typedef_name.clone()) {
         return;
     }
@@ -1204,9 +1249,13 @@ fn emit_group_struct_member(
         HirType::Numeric { .. } => {
             out.push_str(&format!("    int64_t _m_{c_name}{array_suffix};\n"));
         }
-        HirType::Group { .. } => {
+        HirType::Group {
+            members: ref sub_members,
+            ..
+        } => {
+            let td = group_typedef_name(&c_name, sub_members);
             out.push_str(&format!(
-                "    union {{ _grp_{c_name}_t members; uint8_t _bytes[sizeof(_grp_{c_name}_t)]; }} _m_{c_name}{array_suffix};\n"
+                "    union {{ {td} members; uint8_t _bytes[sizeof({td})]; }} _m_{c_name}{array_suffix};\n"
             ));
         }
         HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
@@ -1319,8 +1368,9 @@ fn emit_group_redefines(
                     ..
                 } => {
                     emit_group_typedefs(out, &c_name, grp_members, emitted_typedefs);
+                    let td = group_typedef_name(&c_name, grp_members);
                     out.push_str(&format!(
-                        "#define {c_name} (*(_grp_{c_name}_t*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
+                        "#define {c_name} (*({td}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
                     ));
                     emit_group_macros(out, grp_members, &c_name, &c_name, duplicate_names);
                     // Recurse into REDEFINES group children to emit nested
@@ -3040,17 +3090,21 @@ fn emit_statement(
                 }
                 HirAcceptSource::Environment(env_name) => {
                     let c_env = sanitize_name(env_name);
+                    let tgt_ptr = c_ptr_expr(&c_target, data_items);
                     out.push_str(&format!(
                         "{pad}{{ const char* _env = getenv(\"{c_env}\");\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}  if (_env) {{ strncpy((char*){c_target}, _env, {size}); }} }}\n"
+                        "{pad}  if (_env) {{ strncpy((char*){tgt_ptr}, _env, {size}); }} }}\n"
                     ));
                 }
                 HirAcceptSource::Console => {
-                    out.push_str(&format!("{pad}fgets((char*){c_target}, {size}, stdin);\n"));
+                    let tgt_ptr = c_ptr_expr(&c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}((char*){c_target})[strcspn((char*){c_target}, \"\\n\")] = '\\0';\n"
+                        "{pad}fgets((char*){tgt_ptr}, {size}, stdin);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}((char*){tgt_ptr})[strcspn((char*){tgt_ptr}, \"\\n\")] = '\\0';\n"
                     ));
                 }
             }
@@ -3237,7 +3291,11 @@ fn emit_statement(
         }
         HirStatement::Label { name } => {
             let c_name = sanitize_name(name);
-            out.push_str(&format!("lbl_{c_name}:;\n"));
+            let label = format!("lbl_{c_name}");
+            let is_new = EMITTED_LABELS.with(|set| set.borrow_mut().insert(label.clone()));
+            if is_new {
+                out.push_str(&format!("{label}:;\n"));
+            }
         }
         // --- COBOL 2002+ statements ---
         HirStatement::Invoke {
@@ -6515,7 +6573,7 @@ fn emit_inspect_tallying(
         return;
     }
     for (i, t) in tallying.iter().enumerate() {
-        let counter = sanitize_name(&t.counter);
+        let counter = emit_expr(&t.counter);
         let (mode, search_ptr, search_len) = match &t.kind {
             cobol_hir::HirTallyingKind::Characters => (0u32, "NULL".to_string(), "0".to_string()),
             cobol_hir::HirTallyingKind::All(expr) => {
@@ -6807,9 +6865,16 @@ fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (Str
             (format!("(const uint8_t*){c_src} + ({c_start} - 1)"), c_len)
         }
         _ => {
-            // Fallback for non-alphanumeric expressions used in mixed comparisons
+            // Fallback for non-alphanumeric expressions used in mixed comparisons.
+            // Use a statement expression to create a temporary so we can take its address
+            // (rvalues like `(int64_t)'B'` cannot have their address taken directly).
             let e = emit_expr(expr);
-            (format!("(const uint8_t*)&{e}"), format!("sizeof({e})"))
+            (
+                format!(
+                    "({{ int64_t _cmp_tmp = {e}; (const uint8_t*)&_cmp_tmp; }})"
+                ),
+                "sizeof(int64_t)".to_string(),
+            )
         }
     }
 }

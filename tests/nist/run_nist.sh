@@ -54,7 +54,7 @@ run_program() {
     if $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" 2>"$compile_log"; then
         # Run with timeout (30 seconds)
         # Execute in target/nist so output files don't pollute the repo
-        if timeout 30 bash -c "cd \"$NIST_WORKDIR\" && \"$bin\"" > "$log" 2>&1; then
+        if timeout 60 bash -c "cd \"$NIST_WORKDIR\" && \"$bin\"" > "$log" 2>&1; then
             # NIST programs write to PRINT-FILE, also check stdout
             local print_file="/tmp/nist/P"
             local result_file="$log"

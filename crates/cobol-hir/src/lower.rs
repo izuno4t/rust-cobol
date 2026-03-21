@@ -1746,7 +1746,7 @@ fn lower_inspect_tallying(t: &cobol_ast::statement::InspectTallying) -> HirInspe
         cobol_ast::statement::TallyingKind::Leading(e) => HirTallyingKind::Leading(lower_expr(e)),
     };
     HirInspectTallying {
-        counter: t.counter.name.clone(),
+        counter: lower_qualified_name_to_expr(&t.counter),
         kind,
         before_after: t.before_after.iter().map(lower_before_after).collect(),
     }

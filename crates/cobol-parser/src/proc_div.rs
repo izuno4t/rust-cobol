@@ -1890,6 +1890,7 @@ impl Parser {
         let mut files = Vec::new();
         while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
             && !self.at_statement_terminator()
+            && !self.at_statement_start()
             && !self.at_eof()
         {
             let file_name = self.advance().text;
