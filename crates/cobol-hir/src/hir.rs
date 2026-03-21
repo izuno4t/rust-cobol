@@ -726,7 +726,7 @@ pub enum HirPerformKind {
     },
     /// PERFORM ... VARYING.
     Varying {
-        var: HirExpr,
+        var: SmolStr,
         from: HirExpr,
         by: HirExpr,
         until: HirCondition,
@@ -823,7 +823,7 @@ pub enum HirInspectKind {
 /// A tallying phrase in INSPECT TALLYING.
 #[derive(Debug, Clone)]
 pub struct HirInspectTallying {
-    pub counter: HirExpr,
+    pub counter: SmolStr,
     pub kind: HirTallyingKind,
     pub before_after: Vec<HirBeforeAfter>,
 }

@@ -140,7 +140,7 @@ fn collect_subscript_paths(
     parent_is_redefines: bool,
 ) {
     for member in members {
-        if member.redefines.is_some() || member.renames.is_some() {
+        if member.redefines.is_some() {
             continue;
         }
         let c_name = sanitize_name(&member.name);
@@ -936,11 +936,6 @@ fn collect_group_member_names(items: &[HirDataItem]) -> BTreeSet<String> {
 
 fn collect_member_names_recursive(members: &[HirDataItem], names: &mut BTreeSet<String>) {
     for member in members {
-        // RENAMES (level 66) items are aliases emitted at the top level,
-        // not struct members. Exclude them so they're not skipped.
-        if member.renames.is_some() {
-            continue;
-        }
         names.insert(sanitize_name(&member.name));
         if let HirType::Group {
             members: sub_members,
@@ -1008,22 +1003,13 @@ fn emit_single_data_item(
             }
             HirType::Group { members, .. } => {
                 // Group REDEFINES: reinterpret as the group's struct type
-                let td_name = emit_group_typedefs(out, &c_name, members, emitted_typedefs);
+                emit_group_typedefs(out, &c_name, members, emitted_typedefs);
                 out.push_str(&format!(
-                    "#define {c_name} (*({td_name}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                    "#define {c_name} (*(_grp_{c_name}_t*)&{c_redef}) /* REDEFINES {c_redef} */\n"
                 ));
                 // Emit #define macros for children of this REDEFINES group
                 // Note: REDEFINES group is a struct, not a union, so no .members wrapper
                 emit_group_macros(out, members, &c_name, &c_name, duplicate_member_names);
-                // Also emit REDEFINES members within this group so that
-                // nested REDEFINES children get their #define macros.
-                emit_group_redefines(
-                    out,
-                    members,
-                    &c_name,
-                    duplicate_member_names,
-                    emitted_typedefs,
-                );
             }
             _ => {
                 if item.occurs.is_some() {
@@ -1075,10 +1061,10 @@ fn emit_single_data_item(
         }
         HirType::Group { members, .. } => {
             // Emit group as union of struct + byte array for group-level operations
-            let td_name = emit_group_typedefs(out, &c_name, members, emitted_typedefs);
+            emit_group_typedefs(out, &c_name, members, emitted_typedefs);
             out.push_str("static union {\n");
-            out.push_str(&format!("    {td_name} members;\n"));
-            out.push_str(&format!("    uint8_t _bytes[sizeof({td_name})];\n"));
+            out.push_str(&format!("    _grp_{c_name}_t members;\n"));
+            out.push_str(&format!("    uint8_t _bytes[sizeof(_grp_{c_name}_t)];\n"));
             out.push_str(&format!("}} {c_name};\n"));
             // Generate macros for group members.
             // Qualified: #define GROUP__FIELD_A GROUP.members._m_FIELD_A (always unique)
@@ -1131,14 +1117,12 @@ fn emit_single_data_item(
 }
 
 /// Emit struct typedef(s) for a group and its nested groups (bottom-up).
-/// Returns the actual typedef name used (may differ from `_grp_{c_name}_t`
-/// if there was a naming collision, e.g. duplicate FILLER groups).
 fn emit_group_typedefs(
     out: &mut String,
     c_name: &str,
     members: &[HirDataItem],
     emitted_typedefs: &mut HashSet<String>,
-) -> String {
+) {
     // First, recurse into nested groups
     for member in members {
         if member.redefines.is_some() {
@@ -1153,21 +1137,11 @@ fn emit_group_typedefs(
             emit_group_typedefs(out, &member_c_name, sub_members, emitted_typedefs);
         }
     }
-    // If this typedef name has already been emitted (e.g., duplicate FILLER groups
-    // under different REDEFINES), make the name unique by appending a counter.
-    let mut typedef_name = format!("_grp_{c_name}_t");
-    if emitted_typedefs.contains(&typedef_name) {
-        let mut counter = 2u32;
-        loop {
-            let candidate = format!("_grp_{c_name}_{counter}_t");
-            if !emitted_typedefs.contains(&candidate) {
-                typedef_name = candidate;
-                break;
-            }
-            counter += 1;
-        }
+    // Skip if this typedef name has already been emitted
+    let typedef_name = format!("_grp_{c_name}_t");
+    if !emitted_typedefs.insert(typedef_name.clone()) {
+        return;
     }
-    emitted_typedefs.insert(typedef_name.clone());
     // Emit this level's struct typedef
     out.push_str("typedef struct {\n");
     let mut member_name_counts: HashMap<String, u32> = HashMap::new();
@@ -1175,13 +1149,9 @@ fn emit_group_typedefs(
         if member.redefines.is_some() {
             continue; // REDEFINES handled separately
         }
-        if member.renames.is_some() {
-            continue; // RENAMES (level 66) are aliases, not separate storage
-        }
         emit_group_struct_member(out, member, &mut member_name_counts);
     }
     out.push_str(&format!("}} {typedef_name};\n"));
-    typedef_name
 }
 
 /// Emit a single member within a group struct typedef.
@@ -1273,10 +1243,6 @@ fn emit_group_macros(
         if member.redefines.is_some() {
             continue;
         }
-        // RENAMES (level 66) are aliases — handled at top level
-        if member.renames.is_some() {
-            continue;
-        }
         // FILLER items (and items misnamed "PIC" from implicit FILLER) are unnamed
         // padding; skip macro generation to avoid duplicate #define errors
         if member.name == "FILLER" || member.name == "PIC" {
@@ -1344,23 +1310,11 @@ fn emit_group_redefines(
                     members: grp_members,
                     ..
                 } => {
-                    let td_name = emit_group_typedefs(out, &c_name, grp_members, emitted_typedefs);
-                    // Use direct cast expression for #define and child macros
-                    // to avoid collisions when multiple REDEFINES groups share
-                    // the same name (e.g. duplicate FILLER items).
-                    let cast_expr = format!("(*({td_name}*)&{qualified_target})");
+                    emit_group_typedefs(out, &c_name, grp_members, emitted_typedefs);
                     out.push_str(&format!(
-                        "#define {c_name} {cast_expr} /* REDEFINES {c_redef} */\n"
+                        "#define {c_name} (*(_grp_{c_name}_t*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
                     ));
-                    emit_group_macros(out, grp_members, &c_name, &cast_expr, duplicate_names);
-                    // Recurse into this REDEFINES group to emit nested REDEFINES
-                    emit_group_redefines(
-                        out,
-                        grp_members,
-                        &cast_expr,
-                        duplicate_names,
-                        emitted_typedefs,
-                    );
+                    emit_group_macros(out, grp_members, &c_name, &c_name, duplicate_names);
                 }
                 _ => {
                     if member.occurs.is_some() {
@@ -1376,7 +1330,6 @@ fn emit_group_redefines(
                 }
             }
         }
-        // Recurse into non-REDEFINES groups to find nested REDEFINES
         if member.redefines.is_none() {
             if let HirType::Group {
                 members: sub_members,
@@ -1430,8 +1383,8 @@ fn emit_data_init(out: &mut String, items: &[HirDataItem]) {
         if group_member_names.contains(&c_name) {
             continue;
         }
-        // Skip REDEFINES/RENAMES items — they share memory with another item
-        if item.redefines.is_some() || item.renames.is_some() {
+        // Skip REDEFINES items — they share memory with the redefined item
+        if item.redefines.is_some() {
             continue;
         }
         emit_single_data_init(out, item);
@@ -1474,8 +1427,8 @@ fn emit_single_data_init_with_prefix(
         // (e.g., FILLER -> _m_FILLER, _m_FILLER_2, _m_FILLER_3)
         let mut member_name_counts: HashMap<String, u32> = HashMap::new();
         for member in members {
-            // Skip REDEFINES/RENAMES members — they share memory with another item
-            if member.redefines.is_some() || member.renames.is_some() {
+            // Skip REDEFINES members — they share memory with the redefined item
+            if member.redefines.is_some() {
                 continue;
             }
             let member_base = sanitize_name(&member.name);
@@ -1731,10 +1684,6 @@ fn emit_statement(
             not_on_size_error,
             ..
         } => {
-            let has_size_err = !on_size_error.is_empty() || !not_on_size_error.is_empty();
-            if has_size_err {
-                out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
-            }
             emit_corresponding_arith(out, from, to, "+", data_items, &pad);
             emit_on_size_error(
                 out,
@@ -1746,9 +1695,6 @@ fn emit_statement(
                 has_declaratives,
                 indent,
             );
-            if has_size_err {
-                out.push_str(&format!("{pad}}}\n"));
-            }
         }
         HirStatement::SubtractCorresponding {
             from,
@@ -1757,10 +1703,6 @@ fn emit_statement(
             not_on_size_error,
             ..
         } => {
-            let has_size_err = !on_size_error.is_empty() || !not_on_size_error.is_empty();
-            if has_size_err {
-                out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
-            }
             emit_corresponding_arith(out, from, to, "-", data_items, &pad);
             emit_on_size_error(
                 out,
@@ -1772,9 +1714,6 @@ fn emit_statement(
                 has_declaratives,
                 indent,
             );
-            if has_size_err {
-                out.push_str(&format!("{pad}}}\n"));
-            }
         }
         HirStatement::Compute {
             targets,
@@ -3051,14 +2990,13 @@ fn emit_statement(
                         "{pad}{{ const char* _env = getenv(\"{c_env}\");\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}  if (_env) {{ strncpy((char*)&{c_target}, _env, {size}); }} }}\n"
+                        "{pad}  if (_env) {{ strncpy((char*){c_target}, _env, {size}); }} }}\n"
                     ));
                 }
                 HirAcceptSource::Console => {
-                    // Use &target to handle both char arrays and union (group) types
-                    out.push_str(&format!("{pad}fgets((char*)&{c_target}, {size}, stdin);\n"));
+                    out.push_str(&format!("{pad}fgets((char*){c_target}, {size}, stdin);\n"));
                     out.push_str(&format!(
-                        "{pad}((char*)&{c_target})[strcspn((char*)&{c_target}, \"\\n\")] = '\\0';\n"
+                        "{pad}((char*){c_target})[strcspn((char*){c_target}, \"\\n\")] = '\\0';\n"
                     ));
                 }
             }
@@ -4106,26 +4044,6 @@ fn emit_move_to(
                      sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
                 ));
             }
-        } else if let HirExpr::ReferenceModification {
-            variable,
-            start,
-            length,
-        } = from
-        {
-            // Reference-modified source to group target: copy substring
-            let c_src = sanitize_name(variable);
-            let c_start = emit_expr(start);
-            let src_full_size = find_data_item_size(&c_src, data_items);
-            let c_len = if let Some(len) = length {
-                emit_expr(len)
-            } else {
-                format!("({src_full_size} - ({c_start} - 1))")
-            };
-            out.push_str(&format!(
-                "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
-                 {pad}memcpy(&{c_target}, (const uint8_t*){c_src} + ({c_start} - 1), \
-                 {c_len} < sizeof({c_target}) ? {c_len} : sizeof({c_target}));\n"
-            ));
         } else {
             // Non-variable to group: handle figurative constants
             match from {
@@ -4266,34 +4184,6 @@ fn emit_move_to(
                 ));
             } else {
                 out.push_str(&format!("{pad}{c_target} = {n};\n"));
-            }
-        }
-        HirExpr::Literal(HirLiteral::Decimal(d)) => {
-            if is_target_alpha {
-                // Decimal literal → alphanumeric: format and move as display string
-                let tgt_size = find_data_item_size(c_target, data_items);
-                let display_str = d.to_string();
-                let display_len = display_str.len();
-                out.push_str(&format!(
-                    "{pad}cobol_move_string((const uint8_t*)\"{display_str}\", {display_len}, (uint8_t*){c_target}, {tgt_size});\n"
-                ));
-            } else if is_target_decimal {
-                // Parse the decimal and compute integer value + scale
-                let parts: Vec<&str> = d.split('.').collect();
-                let int_part: i64 = parts[0].parse().unwrap_or(0);
-                let frac_str = parts.get(1).copied().unwrap_or("");
-                let scale = frac_str.len() as i64;
-                let frac: i64 = frac_str.parse().unwrap_or(0);
-                let val = if int_part < 0 {
-                    int_part * 10i64.pow(scale as u32) - frac
-                } else {
-                    int_part * 10i64.pow(scale as u32) + frac
-                };
-                out.push_str(&format!(
-                    "{pad}cobol_decimal_from_int({val}, {scale}, &{c_target});\n"
-                ));
-            } else {
-                out.push_str(&format!("{pad}{c_target} = {d};\n"));
             }
         }
         HirExpr::Literal(HirLiteral::Zero) => {
@@ -4728,105 +4618,26 @@ fn emit_perform(
             until,
             body,
         } => {
-            let c_var = emit_expr(var);
-            let var_name = expr_var_name(var);
-            let var_is_decimal =
-                find_data_item(var_name, data_items).is_some_and(|i| needs_decimal(&i.data_type));
+            let c_var = sanitize_name(var);
+            let c_from = emit_int_compatible_expr(from, data_items);
+            let c_by = emit_int_compatible_expr(by, data_items);
             let cond = emit_condition(until, data_items);
-
-            if var_is_decimal {
-                // CobolDecimal loop variable: use decimal arithmetic
-                let from_is_decimal = is_decimal_expr(from, data_items);
-                if from_is_decimal {
-                    let c_from = emit_expr(from);
-                    out.push_str(&format!("{pad}{c_var} = {c_from};\n"));
-                } else {
-                    // Try to extract value and scale from literal
-                    let from_info: Option<(i64, u32)> = match from {
-                        HirExpr::Literal(HirLiteral::Decimal(s)) => Some(parse_decimal_literal(s)),
-                        HirExpr::Literal(HirLiteral::Integer(n)) => Some((*n, 0)),
-                        _ => None,
-                    };
-                    if let Some((val, scale)) = from_info {
-                        out.push_str(&format!(
-                            "{pad}cobol_decimal_from_int({val}, {scale}, &{c_var});\n"
-                        ));
-                    } else {
-                        let c_from = emit_int_compatible_expr(from, data_items);
-                        out.push_str(&format!(
-                            "{pad}cobol_decimal_from_int({c_from}, 0, &{c_var});\n"
-                        ));
-                    }
-                }
-                out.push_str(&format!("{pad}while (!({cond})) {{\n"));
-                for s in body {
-                    emit_statement(
-                        out,
-                        s,
-                        data_items,
-                        paragraphs,
-                        fs_map,
-                        has_declaratives,
-                        indent + 1,
-                    );
-                }
-                // Increment by decimal amount
-                let by_is_decimal = is_decimal_expr(by, data_items);
-                if by_is_decimal {
-                    let c_by = emit_expr(by);
-                    out.push_str(&format!(
-                        "{pad}    cobol_decimal_add(&{c_var}, &{c_by}, &{c_var});\n"
-                    ));
-                } else {
-                    // Extract value and scale from literal, or fall back to generic
-                    let by_info: Option<(i64, u32)> = match by {
-                        HirExpr::Literal(HirLiteral::Decimal(s)) => Some(parse_decimal_literal(s)),
-                        HirExpr::UnaryOp {
-                            op: HirUnaryOp::Neg,
-                            operand,
-                        } => {
-                            if let HirExpr::Literal(HirLiteral::Decimal(s)) = operand.as_ref() {
-                                let (v, s) = parse_decimal_literal(s);
-                                Some((-v, s))
-                            } else {
-                                None
-                            }
-                        }
-                        HirExpr::Literal(HirLiteral::Integer(n)) => Some((*n, 0)),
-                        _ => None,
-                    };
-                    if let Some((by_val, by_scale)) = by_info {
-                        out.push_str(&format!(
-                            "{pad}    {{ CobolDecimal _by; cobol_decimal_from_int({by_val}, {by_scale}, &_by); cobol_decimal_add(&{c_var}, &_by, &{c_var}); }}\n"
-                        ));
-                    } else {
-                        let c_by = emit_int_compatible_expr(by, data_items);
-                        out.push_str(&format!(
-                            "{pad}    {{ CobolDecimal _by; cobol_decimal_from_int({c_by}, 0, &_by); cobol_decimal_add(&{c_var}, &_by, &{c_var}); }}\n"
-                        ));
-                    }
-                }
-                out.push_str(&format!("{pad}}}\n"));
-            } else {
-                let c_from = emit_int_compatible_expr(from, data_items);
-                let c_by = emit_int_compatible_expr(by, data_items);
-                out.push_str(&format!(
-                    "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
-                ));
-                for s in body {
-                    emit_statement(
-                        out,
-                        s,
-                        data_items,
-                        paragraphs,
-                        fs_map,
-                        has_declaratives,
-                        indent + 1,
-                    );
-                }
-                out.push_str(&format!("{pad}    {c_var} += {c_by};\n"));
-                out.push_str(&format!("{pad}}}\n"));
+            out.push_str(&format!(
+                "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
+            ));
+            for s in body {
+                emit_statement(
+                    out,
+                    s,
+                    data_items,
+                    paragraphs,
+                    fs_map,
+                    has_declaratives,
+                    indent + 1,
+                );
             }
+            out.push_str(&format!("{pad}    {c_var} += {c_by};\n"));
+            out.push_str(&format!("{pad}}}\n"));
         }
         HirPerformKind::ProcedureName { name, through } => {
             let c_name = sanitize_name(name);
@@ -6270,7 +6081,7 @@ fn emit_corresponding_arith(
                     let func = if op == "+" {
                         "cobol_decimal_add"
                     } else {
-                        "cobol_decimal_sub"
+                        "cobol_decimal_subtract"
                     };
                     out.push_str(&format!(
                         "{pad}{func}(&{src_ref}, &{tgt_ref}, &{tgt_ref});\n"
@@ -6437,7 +6248,12 @@ fn emit_decimal_giving_add(
     for op in operands {
         if first {
             // Initialize target with first operand
-            let op_is_decimal = is_decimal_expr(op, data_items);
+            let op_is_decimal = match op {
+                HirExpr::Variable(name) => {
+                    find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+                }
+                _ => false,
+            };
             if op_is_decimal {
                 let c_op = emit_expr(op);
                 out.push_str(&format!("{pad}{c_target} = {c_op};\n"));
@@ -6455,7 +6271,8 @@ fn emit_decimal_giving_add(
     for t in to {
         if first {
             let c_t = emit_expr(t);
-            let t_is_decimal = is_decimal_expr(t, data_items);
+            let t_is_decimal = find_data_item(expr_var_name(t), data_items)
+                .is_some_and(|i| needs_decimal(&i.data_type));
             if t_is_decimal {
                 out.push_str(&format!("{pad}{c_target} = {c_t};\n"));
             } else {
@@ -6507,13 +6324,6 @@ fn emit_initialize_field(
     pad: &str,
 ) {
     if let Some(item) = find_data_item(name.as_str(), data_items) {
-        // OCCURS items: memset the entire array
-        if item.occurs.is_some() {
-            out.push_str(&format!(
-                "{pad}memset({c_name}, 0, sizeof({c_name})); /* INITIALIZE */\n"
-            ));
-            return;
-        }
         match &item.data_type {
             HirType::Alphanumeric { size } => {
                 out.push_str(&format!(
@@ -6523,9 +6333,6 @@ fn emit_initialize_field(
             HirType::Group { members, .. } => {
                 out.push_str(&format!("{pad}/* INITIALIZE group {c_name} */\n"));
                 for member in members {
-                    if member.redefines.is_some() || member.renames.is_some() {
-                        continue;
-                    }
                     let member_c = sanitize_name(&member.name);
                     emit_initialize_field(out, &member.name, &member_c, data_items, pad);
                 }
@@ -6596,7 +6403,7 @@ fn emit_inspect_tallying(
         return;
     }
     for (i, t) in tallying.iter().enumerate() {
-        let counter = emit_expr_as_numeric(&t.counter);
+        let counter = sanitize_name(&t.counter);
         let (mode, search_ptr, search_len) = match &t.kind {
             cobol_hir::HirTallyingKind::Characters => (0u32, "NULL".to_string(), "0".to_string()),
             cobol_hir::HirTallyingKind::All(expr) => {
@@ -6809,11 +6616,6 @@ fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (Str
         HirExpr::Literal(HirLiteral::Decimal(d)) => {
             let len = d.len();
             (format!("(const uint8_t*)\"{}\"", d), format!("{len}"))
-        }
-        HirExpr::Literal(HirLiteral::AllChar(s)) => {
-            let escaped = escape_c_string(s);
-            let len = s.len();
-            (format!("(const uint8_t*)\"{}\"", escaped), format!("{len}"))
         }
         HirExpr::Subscript { .. } => {
             let c_name = emit_expr(expr);

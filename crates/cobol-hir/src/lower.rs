@@ -498,63 +498,45 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
 }
 
 fn determine_hir_type(item: &DataItem) -> HirType {
-    determine_hir_type_with_usage(item, None)
-}
-
-fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage>) -> HirType {
-    // In COBOL, a USAGE clause on a group item is inherited by its children,
-    // not applied to the group itself.  When this item has children it must
-    // be treated as a Group so its members are preserved in the HIR.
-    // Effective USAGE: item's own USAGE overrides inherited.
-    let effective_usage = item.usage.as_ref().or(inherited_usage);
-    // Check USAGE for special types (elementary items only)
-    if item.children.is_empty() {
-        if let Some(usage) = effective_usage {
-            match usage {
-                Usage::Index => return HirType::Index,
-                Usage::Pointer | Usage::FunctionPointer => return HirType::Pointer,
-                Usage::Comp3 | Usage::PackedDecimal => {
-                    if let Some(pic) = &item.picture {
-                        return HirType::Comp3 {
-                            size: pic.size,
-                            decimal_places: pic.decimal_positions,
-                        };
-                    }
+    // Check USAGE first for special types
+    if let Some(usage) = &item.usage {
+        match usage {
+            Usage::Index => return HirType::Index,
+            Usage::Pointer | Usage::FunctionPointer => return HirType::Pointer,
+            Usage::Comp3 | Usage::PackedDecimal => {
+                if let Some(pic) = &item.picture {
                     return HirType::Comp3 {
-                        size: 1,
-                        decimal_places: 0,
+                        size: pic.size,
+                        decimal_places: pic.decimal_positions,
                     };
                 }
-                Usage::Comp
-                | Usage::Comp4
-                | Usage::Comp5
-                | Usage::Binary
-                | Usage::Computational => {
-                    if let Some(pic) = &item.picture {
-                        return HirType::Binary { size: pic.size };
-                    }
-                    return HirType::Binary { size: 4 };
-                }
-                Usage::FloatShort | Usage::Comp1 => return HirType::FloatShort,
-                Usage::FloatLong | Usage::Comp2 => return HirType::FloatLong,
-                Usage::FloatExtended => return HirType::FloatExtended,
-                _ => {}
+                return HirType::Comp3 {
+                    size: 1,
+                    decimal_places: 0,
+                };
             }
+            Usage::Comp | Usage::Comp4 | Usage::Comp5 | Usage::Binary | Usage::Computational => {
+                if let Some(pic) = &item.picture {
+                    return HirType::Binary { size: pic.size };
+                }
+                return HirType::Binary { size: 4 };
+            }
+            Usage::FloatShort | Usage::Comp1 => return HirType::FloatShort,
+            Usage::FloatLong | Usage::Comp2 => return HirType::FloatLong,
+            Usage::FloatExtended => return HirType::FloatExtended,
+            _ => {}
         }
     }
 
     // Derive type from PICTURE clause
     if let Some(pic) = &item.picture {
         match pic.category {
-            cobol_ast::PictureCategory::Numeric => HirType::Numeric {
-                size: pic.size,
-                decimal_places: pic.decimal_positions,
-                is_signed: pic.is_signed,
-            },
-            cobol_ast::PictureCategory::NumericEdited => {
-                // Numeric-edited fields contain formatting characters (B, CR, $, /, Z, etc.)
-                // and are stored as character arrays, not integers.
-                HirType::Alphanumeric { size: pic.size }
+            cobol_ast::PictureCategory::Numeric | cobol_ast::PictureCategory::NumericEdited => {
+                HirType::Numeric {
+                    size: pic.size,
+                    decimal_places: pic.decimal_positions,
+                    is_signed: pic.is_signed,
+                }
             }
             cobol_ast::PictureCategory::National | cobol_ast::PictureCategory::NationalEdited => {
                 HirType::National { size: pic.size }
@@ -572,9 +554,7 @@ fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage
                 .name
                 .clone()
                 .unwrap_or_else(|| SmolStr::from("FILLER"));
-            // Propagate parent's USAGE to children (COBOL inheritance rule).
-            let child_inherited = effective_usage;
-            let data_type = determine_hir_type_with_usage(child, child_inherited);
+            let data_type = determine_hir_type(child);
             let initial_value = child.value.as_ref().map(lower_value_clause);
             let occurs = child.occurs.as_ref().map(|o| o.max);
             let renames = child
@@ -600,7 +580,7 @@ fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage
         }
         let total: u32 = members
             .iter()
-            .filter(|m| m.redefines.is_none() && m.renames.is_none()) // REDEFINES/RENAMES overlay same storage
+            .filter(|m| m.redefines.is_none()) // REDEFINES overlay same storage
             .map(|m| {
                 let element_size = match &m.data_type {
                     HirType::Alphanumeric { size } => *size,
@@ -1280,19 +1260,7 @@ fn lower_perform(
         }
         PerformKind::Varying { varying, body, .. } => {
             if let Some(clause) = varying.first() {
-                let var = if clause.identifier.subscripts.is_empty() {
-                    HirExpr::Variable(clause.identifier.name.clone())
-                } else {
-                    HirExpr::Subscript {
-                        variable: clause.identifier.name.clone(),
-                        subscripts: clause
-                            .identifier
-                            .subscripts
-                            .iter()
-                            .map(lower_expr)
-                            .collect(),
-                    }
-                };
+                let var = clause.identifier.name.clone();
                 let from = lower_expr(&clause.from);
                 let by = lower_expr(&clause.by);
                 let until = lower_condition(&clause.until, condition_names);
@@ -1777,16 +1745,8 @@ fn lower_inspect_tallying(t: &cobol_ast::statement::InspectTallying) -> HirInspe
         cobol_ast::statement::TallyingKind::All(e) => HirTallyingKind::All(lower_expr(e)),
         cobol_ast::statement::TallyingKind::Leading(e) => HirTallyingKind::Leading(lower_expr(e)),
     };
-    let counter_expr = if t.counter.subscripts.is_empty() {
-        HirExpr::Variable(t.counter.name.clone())
-    } else {
-        HirExpr::Subscript {
-            variable: t.counter.name.clone(),
-            subscripts: t.counter.subscripts.iter().map(lower_expr).collect(),
-        }
-    };
     HirInspectTallying {
-        counter: counter_expr,
+        counter: t.counter.name.clone(),
         kind,
         before_after: t.before_after.iter().map(lower_before_after).collect(),
     }

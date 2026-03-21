@@ -1066,13 +1066,7 @@ impl Parser {
                 self.advance();
                 Some(AcceptSource::Console)
             } else {
-                // Treat any other identifier after FROM as a mnemonic-name
-                // (e.g., ACCEPT-INPUT-DEVICE defined in SPECIAL-NAMES).
-                // This is equivalent to ACCEPT FROM CONSOLE.
-                if self.check(TokenKind::Identifier) {
-                    self.advance();
-                }
-                Some(AcceptSource::Console)
+                None
             }
         } else {
             None
