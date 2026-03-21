@@ -29,6 +29,7 @@ use crate::hir::{
     HirParagraph, HirParam, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind,
     HirScreenInfo, HirSearchWhen, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
     HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
+    HirVaryingAfter,
 };
 
 /// A single or range value for an 88-level condition.
@@ -1271,11 +1272,21 @@ fn lower_perform(
                     .iter()
                     .filter_map(|s| lower_statement(s, condition_names))
                     .collect();
+                let after_clauses: Vec<_> = varying[1..]
+                    .iter()
+                    .map(|c| HirVaryingAfter {
+                        var: c.identifier.name.clone(),
+                        from: lower_expr(&c.from),
+                        by: lower_expr(&c.by),
+                        until: lower_condition(&c.until, condition_names),
+                    })
+                    .collect();
                 HirPerformKind::Varying {
                     var,
                     from,
                     by,
                     until,
+                    after_clauses,
                     body: hir_body,
                 }
             } else {

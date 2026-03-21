@@ -261,6 +261,48 @@ pub unsafe extern "C" fn cobol_move_numeric_to_display(
     }
 }
 
+/// Store an integer value as zoned decimal (zero-padded ASCII digits) in a
+/// display numeric buffer within a group struct. PIC 99 with value 7 → "07".
+/// Negative values store the absolute value (sign handling is separate).
+///
+/// # Safety
+/// `dst_ptr` must point to a valid buffer of at least `dst_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_store_numeric_display(value: i64, dst_ptr: *mut u8, dst_len: u32) {
+    if dst_ptr.is_null() || dst_len == 0 {
+        return;
+    }
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
+    let abs_val = value.unsigned_abs();
+    let formatted = format!("{:0>width$}", abs_val, width = dst.len());
+    let bytes = formatted.as_bytes();
+    // Take the rightmost dst_len digits
+    if bytes.len() >= dst.len() {
+        let offset = bytes.len() - dst.len();
+        dst.copy_from_slice(&bytes[offset..]);
+    } else {
+        dst.copy_from_slice(bytes);
+    }
+}
+
+/// Read a zoned decimal (ASCII digit) buffer and return its int64_t value.
+/// Handles leading/trailing spaces and sign characters.
+///
+/// # Safety
+/// `src_ptr` must point to a valid buffer of at least `src_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_display_to_int64(src_ptr: *const u8, src_len: u32) -> i64 {
+    if src_ptr.is_null() || src_len == 0 {
+        return 0;
+    }
+    let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
+    let s = std::str::from_utf8_unchecked(src).trim();
+    if s.is_empty() {
+        return 0;
+    }
+    s.parse::<i64>().unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // STRING statement
 // ---------------------------------------------------------------------------

@@ -733,6 +733,7 @@ pub enum HirPerformKind {
         from: HirExpr,
         by: HirExpr,
         until: HirCondition,
+        after_clauses: Vec<HirVaryingAfter>,
         body: Vec<HirStatement>,
     },
     /// PERFORM procedure-name [THRU procedure-name].
@@ -740,6 +741,15 @@ pub enum HirPerformKind {
         name: SmolStr,
         through: Option<SmolStr>,
     },
+}
+
+/// An AFTER clause in PERFORM VARYING ... AFTER.
+#[derive(Debug, Clone)]
+pub struct HirVaryingAfter {
+    pub var: SmolStr,
+    pub from: HirExpr,
+    pub by: HirExpr,
+    pub until: HirCondition,
 }
 
 /// A file open entry.

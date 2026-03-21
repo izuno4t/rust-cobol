@@ -189,14 +189,11 @@ fn expand_copy(
                         Ok(content) => {
                             // Strip identification area from copybook
                             // content if in fixed format.
-                            let content =
-                                if config.source_format == SourceFormat::Fixed {
-                                    strip_fixed_format_columns(
-                                        &content,
-                                    )
-                                } else {
-                                    content
-                                };
+                            let content = if config.source_format == SourceFormat::Fixed {
+                                strip_fixed_format_columns(&content)
+                            } else {
+                                content
+                            };
 
                             // Apply REPLACING if specified.
                             let content = if stmt.replacings.is_empty() {

@@ -61,9 +61,7 @@ pub fn scan_copy_statements(source: &str, fixed_format: bool) -> Vec<CopyStateme
                 continue;
             }
 
-            if let Some(stmt) =
-                parse_copy_statement(source, copy_start, after_copy, fixed_format)
-            {
+            if let Some(stmt) = parse_copy_statement(source, copy_start, after_copy, fixed_format) {
                 pos = stmt.end;
                 results.push(stmt);
             } else {
@@ -256,9 +254,7 @@ fn parse_copy_statement(
                 pos = skip_whitespace(source, after_replacing, fixed_format);
                 // Parse replacement pairs until we hit the period.
                 while pos < len && source.as_bytes()[pos] != b'.' {
-                    if let Some((pair, np)) =
-                        parse_replace_pair(source, pos, fixed_format)
-                    {
+                    if let Some((pair, np)) = parse_replace_pair(source, pos, fixed_format) {
                         replacings.push(pair);
                         pos = skip_whitespace(source, np, fixed_format);
                     } else {

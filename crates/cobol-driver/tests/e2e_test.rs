@@ -2583,13 +2583,16 @@ fn test_c2_move_corresponding() {
         "Should have MOVE CORRESPONDING comment, got:\n{}",
         c_code
     );
-    // FIELD-A is numeric in both groups → should generate qualified assignment
+    // FIELD-A is numeric in both groups → should generate qualified
+    // store via cobol_store_numeric_display (group members are char[])
     assert!(
-        c_code.contains("WS_DST__FIELD_A = WS_SRC__FIELD_A"),
-        "Should move matching FIELD-A with qualified names, got:\n{}",
+        c_code.contains("WS_DST__FIELD_A")
+            && c_code.contains("WS_SRC__FIELD_A")
+            && c_code.contains("cobol_store_numeric_display"),
+        "Should move matching FIELD-A with qualified names via display store, got:\n{}",
         c_code
     );
-    // FIELD-B and FIELD-C don't match → should NOT appear
+    // FIELD-B and FIELD-C don't match → should NOT appear in MOVE section
     assert!(
         !c_code.contains("FIELD_B = ") && !c_code.contains("FIELD_C = "),
         "Should NOT move non-matching fields, got:\n{}",
@@ -4425,7 +4428,7 @@ fn test_typedef_codegen() {
             file_status_vars: vec![],
             declaratives: vec![],
             file_records: std::collections::HashMap::new(),
-        fd_record_aliases: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::new(0, 0, FileId(0)),
         };

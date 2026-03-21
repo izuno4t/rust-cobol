@@ -111,6 +111,7 @@ thread_local! {
     /// an arithmetic or pointer type is expected.
     static GROUP_NAMES: RefCell<HashSet<String>> =
         RefCell::new(HashSet::new());
+
 }
 
 /// Build the subscript path map for all data items inside groups with OCCURS.
@@ -779,6 +780,10 @@ fn emit_runtime_declarations(out: &mut String) {
         "extern void cobol_move_numeric_to_display(int64_t value, int32_t scale, uint8_t* dst, uint32_t dst_len);\n",
     );
     out.push_str(
+        "extern void cobol_store_numeric_display(int64_t value, uint8_t* dst, uint32_t dst_len);\n",
+    );
+    out.push_str("extern int64_t cobol_display_to_int64(const uint8_t* src, uint32_t src_len);\n");
+    out.push_str(
         "extern int32_t cobol_string_concat(const void* sources, uint32_t source_count, uint8_t* dst, uint32_t dst_len, uint32_t* pointer);\n",
     );
     out.push_str(
@@ -1250,13 +1255,15 @@ fn emit_group_struct_member(
     let array_suffix = member.occurs.map_or(String::new(), |n| format!("[{n}]"));
     match &member.data_type {
         HirType::Alphanumeric { size } => {
+            // In group structs, do NOT add +1 for null terminator.
+            // Group members must match COBOL byte layout exactly so that
+            // group-level MOVE/COMPARE operations work correctly.
             if member.occurs.is_some() {
                 out.push_str(&format!(
-                    "    char _m_{c_name}{array_suffix}[{}];\n",
-                    size + 1
+                    "    char _m_{c_name}{array_suffix}[{size}];\n"
                 ));
             } else {
-                out.push_str(&format!("    char _m_{c_name}[{}];\n", size + 1));
+                out.push_str(&format!("    char _m_{c_name}[{size}];\n"));
             }
         }
         HirType::National { size } => {
@@ -1268,11 +1275,20 @@ fn emit_group_struct_member(
                 out.push_str(&format!("    uint16_t _m_{c_name}[{size}];\n"));
             }
         }
-        HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+        HirType::Numeric {
+            size,
+            decimal_places,
+            ..
+        } if *decimal_places > 0 => {
             out.push_str(&format!("    CobolDecimal _m_{c_name}{array_suffix};\n"));
         }
-        HirType::Numeric { .. } => {
-            out.push_str(&format!("    int64_t _m_{c_name}{array_suffix};\n"));
+        HirType::Numeric { size, .. } => {
+            // USAGE DISPLAY numeric in group: store as zoned decimal (char[])
+            // so that group-level byte operations (MOVE, COMPARE) work correctly.
+            let disp_size = *size as usize;
+            out.push_str(&format!(
+                "    char _m_{c_name}{array_suffix}[{disp_size}];\n"
+            ));
         }
         HirType::Group {
             members: ref sub_members,
@@ -1634,6 +1650,32 @@ fn emit_single_data_init_with_prefix(
                 ));
             }
             (
+                HirType::Numeric {
+                    size,
+                    decimal_places: 0,
+                    ..
+                },
+                HirLiteral::Integer(n),
+            ) if group_prefix.is_some() => {
+                out.push_str(&format!(
+                    "    cobol_store_numeric_display({n}, \
+                     (uint8_t*){c_name}, {size});\n"
+                ));
+            }
+            (
+                HirType::Numeric {
+                    size,
+                    decimal_places: 0,
+                    ..
+                },
+                HirLiteral::Zero,
+            ) if group_prefix.is_some() => {
+                out.push_str(&format!(
+                    "    cobol_store_numeric_display(0, \
+                     (uint8_t*){c_name}, {size});\n"
+                ));
+            }
+            (
                 HirType::Numeric { .. }
                 | HirType::Index
                 | HirType::Comp3 { .. }
@@ -1672,19 +1714,28 @@ fn emit_single_data_init_with_prefix(
                 ));
             }
             _ => {
-                emit_default_init(out, &item.data_type, &c_name);
+                emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
             }
         }
     } else {
-        emit_default_init(out, &item.data_type, &c_name);
+        emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
     }
 }
 
-fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &str) {
+fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &str, in_group: bool) {
     match data_type {
         HirType::Alphanumeric { size } => {
             out.push_str(&format!(
                 "    memset({c_name}, ' ', {size});\n    {c_name}[{size}] = '\\0';\n"
+            ));
+        }
+        HirType::Numeric {
+            size,
+            decimal_places: 0,
+            ..
+        } if in_group => {
+            out.push_str(&format!(
+                "    cobol_store_numeric_display(0, (uint8_t*){c_name}, {size});\n"
             ));
         }
         HirType::Numeric { .. }
@@ -1856,7 +1907,15 @@ fn emit_statement(
                     emit_assign_to_decimal(out, expr, &c_target, data_items, &pad);
                 } else {
                     let c_expr = emit_int_compatible_expr(expr, data_items);
-                    out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
+                    let c_tgt_base = sanitize_name(target_name);
+                    if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                        out.push_str(&format!(
+                            "{pad}cobol_store_numeric_display({c_expr}, \
+                             (uint8_t*){c_target}, {disp_size});\n"
+                        ));
+                    } else {
+                        out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
+                    }
                 }
             }
             emit_on_size_error(
@@ -1907,12 +1966,24 @@ fn emit_statement(
                         // Use first two addends as decimal add, then chain
                         emit_decimal_giving_add(out, operands, to, &c_target, data_items, &pad);
                     } else if has_size_error {
-                        out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                        out.push_str(&format!("{pad}{c_target} = {sum_expr};\n"));
+                        let c_tgt_base = sanitize_name(var_name);
+                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            out.push_str(&format!(
+                                "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                 (const uint8_t*){c_target}, {disp_size});\n"
+                            ));
+                            out.push_str(&format!(
+                                "{pad}cobol_store_numeric_display({sum_expr}, \
+                                 (uint8_t*){c_target}, {disp_size});\n"
+                            ));
+                        } else {
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            out.push_str(&format!("{pad}{c_target} = {sum_expr};\n"));
+                        }
                         emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
-                        out.push_str(&format!("{pad}{c_target} = {sum_expr};\n"));
+                        emit_store_int(out, &c_target, &sum_expr, data_items, &pad);
                     }
                 }
             } else {
@@ -1939,12 +2010,26 @@ fn emit_statement(
                             .collect();
                         let sum_expr = sum.join(" + ");
                         if has_size_error {
-                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                            out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
+                            let c_tgt_base = sanitize_name(var_name);
+                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                out.push_str(&format!(
+                                    "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}cobol_store_numeric_display(\
+                                     cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size}) + ({sum_expr}), \
+                                     (uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                            } else {
+                                out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                                out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
+                            }
                             emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
-                            out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
+                            emit_store_int_op(out, &c_target, "+", &sum_expr, data_items, &pad);
                         }
                     }
                 }
@@ -2000,12 +2085,26 @@ fn emit_statement(
                              {from_val} - ({sub_expr}), 0, &{c_target});\n"
                         ));
                     } else if has_size_error {
-                        out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                        out.push_str(&format!("{pad}{c_target} = {from_val} - ({sub_expr});\n"));
+                        let result_expr = format!("{from_val} - ({sub_expr})");
+                        let c_tgt_base = sanitize_name(var_name);
+                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            out.push_str(&format!(
+                                "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                 (const uint8_t*){c_target}, {disp_size});\n"
+                            ));
+                            out.push_str(&format!(
+                                "{pad}cobol_store_numeric_display({result_expr}, \
+                                 (uint8_t*){c_target}, {disp_size});\n"
+                            ));
+                        } else {
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            out.push_str(&format!("{pad}{c_target} = {result_expr};\n"));
+                        }
                         emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
-                        out.push_str(&format!("{pad}{c_target} = {from_val} - ({sub_expr});\n"));
+                        let result_expr = format!("{from_val} - ({sub_expr})");
+                        emit_store_int(out, &c_target, &result_expr, data_items, &pad);
                     }
                 }
             } else {
@@ -2032,12 +2131,33 @@ fn emit_statement(
                             .collect();
                         let sum_expr = sum.join(" + ");
                         if has_size_error {
-                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                            out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
+                            let c_tgt_base = sanitize_name(var_name);
+                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                out.push_str(&format!(
+                                    "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}cobol_store_numeric_display(\
+                                     cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size}) - ({sum_expr}), \
+                                     (uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                            } else {
+                                out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                                out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
+                            }
                             emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
-                            out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
+                            emit_store_int_op(
+                                out,
+                                &c_target,
+                                "-",
+                                &format!("({sum_expr})"),
+                                data_items,
+                                &pad,
+                            );
                         }
                     }
                 }
@@ -2153,19 +2273,40 @@ fn emit_statement(
                         if target_is_decimal {
                             out.push_str(&format!("{c_target} = _mr; }}\n"));
                         } else {
-                            out.push_str(&format!(
-                                "{c_target} = cobol_decimal_to_int64(&_mr); }}\n"
-                            ));
+                            let c_tgt_base = sanitize_name(var_name);
+                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                out.push_str(&format!(
+                                    "cobol_store_numeric_display(\
+                                     cobol_decimal_to_int64(&_mr), \
+                                     (uint8_t*){c_target}, {disp_size}); }}\n"
+                                ));
+                            } else {
+                                out.push_str(&format!(
+                                    "{c_target} = cobol_decimal_to_int64(&_mr); }}\n"
+                                ));
+                            }
                         }
                     } else {
                         let mul_expr = format!("{first_by_int} * {c_operand_int}");
                         if has_size_error {
-                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                            out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
+                            let c_tgt_base = sanitize_name(var_name);
+                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                out.push_str(&format!(
+                                    "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}cobol_store_numeric_display({mul_expr}, \
+                                     (uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                            } else {
+                                out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                                out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
+                            }
                             emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
-                            out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
+                            emit_store_int(out, &c_target, &mul_expr, data_items, &pad);
                         }
                     }
                 }
@@ -2187,20 +2328,47 @@ fn emit_statement(
                     } else if is_decimal_expr(operand, data_items) {
                         // int64 target *= CobolDecimal operand: use decimal path
                         let c_operand = emit_expr(operand);
-                        out.push_str(&format!(
-                            "{pad}{{ CobolDecimal _td; cobol_decimal_from_int({c_target}, 0, &_td); \
-                             cobol_decimal_mul(&_td, &{c_operand}, &_td); \
-                             {c_target} = cobol_decimal_to_int64(&_td); }}\n"
-                        ));
+                        let c_tgt_base = sanitize_name(var_name);
+                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            out.push_str(&format!(
+                                "{pad}{{ CobolDecimal _td; cobol_decimal_from_int(\
+                                 cobol_display_to_int64(\
+                                 (const uint8_t*){c_target}, {disp_size}), 0, &_td); \
+                                 cobol_decimal_mul(&_td, &{c_operand}, &_td); \
+                                 cobol_store_numeric_display(\
+                                 cobol_decimal_to_int64(&_td), \
+                                 (uint8_t*){c_target}, {disp_size}); }}\n"
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "{pad}{{ CobolDecimal _td; cobol_decimal_from_int({c_target}, 0, &_td); \
+                                 cobol_decimal_mul(&_td, &{c_operand}, &_td); \
+                                 {c_target} = cobol_decimal_to_int64(&_td); }}\n"
+                            ));
+                        }
                     } else {
                         let c_operand = emit_expr(operand);
                         if has_size_error {
-                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                            out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+                            let c_tgt_base = sanitize_name(var_name);
+                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                out.push_str(&format!(
+                                    "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}cobol_store_numeric_display(\
+                                     cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size}) * ({c_operand}), \
+                                     (uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                            } else {
+                                out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                                out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+                            }
                             emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
-                            out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+                            emit_store_int_op(out, &c_target, "*", &c_operand, data_items, &pad);
                         }
                     }
                 }
@@ -2249,9 +2417,10 @@ fn emit_statement(
                     let var_name = expr_var_name(target);
                     if let Some(rem) = remainder {
                         let c_rem = emit_expr(rem);
-                        out.push_str(&format!(
-                            "{pad}{c_rem} = {first_into_int} % {c_operand_int};\n"
-                        ));
+                        let rem_name = expr_var_name(rem);
+                        let rem_expr = format!("{first_into_int} % {c_operand_int}");
+                        emit_store_int(out, &c_rem, &rem_expr, data_items, &pad);
+                        let _ = rem_name; // suppress unused warning
                     }
                     let target_is_decimal = find_data_item(var_name, data_items)
                         .is_some_and(|i| needs_decimal(&i.data_type));
@@ -2281,21 +2450,33 @@ fn emit_statement(
                              {first_into_int} / {c_operand_int}, 0, &{c_target}); }}\n"
                         ));
                     } else if any_src_decimal {
-                        out.push_str(&format!(
-                            "{pad}{c_target} = {first_into_int} / {c_operand_int};\n"
-                        ));
+                        let div_expr = format!("{first_into_int} / {c_operand_int}");
+                        emit_store_int(out, &c_target, &div_expr, data_items, &pad);
                     } else if has_size_error {
-                        out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                        out.push_str(&format!(
-                            "{pad}if ({c_operand_int} == 0) {{ _size_error = 1; }} \
-                             else {{ {c_target} = {first_into_int} / {c_operand_int}; }}\n"
-                        ));
+                        let div_expr = format!("{first_into_int} / {c_operand_int}");
+                        let c_tgt_base = sanitize_name(var_name);
+                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            out.push_str(&format!(
+                                "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                 (const uint8_t*){c_target}, {disp_size});\n"
+                            ));
+                            out.push_str(&format!(
+                                "{pad}if ({c_operand_int} == 0) {{ _size_error = 1; }} \
+                                 else {{ cobol_store_numeric_display({div_expr}, \
+                                 (uint8_t*){c_target}, {disp_size}); }}\n"
+                            ));
+                        } else {
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            out.push_str(&format!(
+                                "{pad}if ({c_operand_int} == 0) {{ _size_error = 1; }} \
+                                 else {{ {c_target} = {div_expr}; }}\n"
+                            ));
+                        }
                         emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
-                        out.push_str(&format!(
-                            "{pad}{c_target} = {first_into_int} / {c_operand_int};\n"
-                        ));
+                        let div_expr = format!("{first_into_int} / {c_operand_int}");
+                        emit_store_int(out, &c_target, &div_expr, data_items, &pad);
                     }
                 }
             } else {
@@ -2315,27 +2496,73 @@ fn emit_statement(
                         );
                     } else if is_decimal_expr(operand, data_items) {
                         // int64 target /= CobolDecimal operand
-                        out.push_str(&format!(
-                            "{pad}{{ CobolDecimal _td; cobol_decimal_from_int({c_target}, 0, &_td); \
-                             cobol_decimal_div(&_td, &{c_operand}, &_td); \
-                             {c_target} = cobol_decimal_to_int64(&_td); }}\n"
-                        ));
+                        let c_tgt_base = sanitize_name(var_name);
+                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            out.push_str(&format!(
+                                "{pad}{{ CobolDecimal _td; cobol_decimal_from_int(\
+                                 cobol_display_to_int64(\
+                                 (const uint8_t*){c_target}, {disp_size}), 0, &_td); \
+                                 cobol_decimal_div(&_td, &{c_operand}, &_td); \
+                                 cobol_store_numeric_display(\
+                                 cobol_decimal_to_int64(&_td), \
+                                 (uint8_t*){c_target}, {disp_size}); }}\n"
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "{pad}{{ CobolDecimal _td; cobol_decimal_from_int({c_target}, 0, &_td); \
+                                 cobol_decimal_div(&_td, &{c_operand}, &_td); \
+                                 {c_target} = cobol_decimal_to_int64(&_td); }}\n"
+                            ));
+                        }
                     } else {
                         if let Some(rem) = remainder {
                             let c_rem = emit_expr(rem);
-                            out.push_str(&format!(
-                                "{pad}{c_rem} = {c_target} % {c_operand_int};\n"
-                            ));
+                            let rem_name = expr_var_name(rem);
+                            let c_tgt_base = sanitize_name(var_name);
+                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                let rem_expr = format!(
+                                    "cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size}) % {c_operand_int}"
+                                );
+                                emit_store_int(out, &c_rem, &rem_expr, data_items, &pad);
+                            } else {
+                                let rem_expr = format!("{c_target} % {c_operand_int}");
+                                emit_store_int(out, &c_rem, &rem_expr, data_items, &pad);
+                            }
+                            let _ = rem_name;
                         }
                         if has_size_error {
-                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                            out.push_str(&format!(
-                                "{pad}if ({c_operand_int} == 0) {{ _size_error = 1; }} else {{ {c_target} /= {c_operand_int}; }}\n"
-                            ));
+                            let c_tgt_base = sanitize_name(var_name);
+                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                out.push_str(&format!(
+                                    "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size});\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}if ({c_operand_int} == 0) {{ _size_error = 1; }} \
+                                     else {{ cobol_store_numeric_display(\
+                                     cobol_display_to_int64(\
+                                     (const uint8_t*){c_target}, {disp_size}) / {c_operand_int}, \
+                                     (uint8_t*){c_target}, {disp_size}); }}\n"
+                                ));
+                            } else {
+                                out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                                out.push_str(&format!(
+                                    "{pad}if ({c_operand_int} == 0) {{ _size_error = 1; }} \
+                                     else {{ {c_target} /= {c_operand_int}; }}\n"
+                                ));
+                            }
                             emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
-                            out.push_str(&format!("{pad}{c_target} /= {c_operand_int};\n"));
+                            emit_store_int_op(
+                                out,
+                                &c_target,
+                                "/",
+                                &c_operand_int,
+                                data_items,
+                                &pad,
+                            );
                         }
                     }
                 }
@@ -2896,12 +3123,11 @@ fn emit_statement(
             for target in targets {
                 let c_target = sanitize_name(target);
                 let target_item = find_data_item(target.as_str(), data_items);
-                let target_is_decimal =
-                    target_item.is_some_and(|i| needs_decimal(&i.data_type));
+                let target_is_decimal = target_item.is_some_and(|i| needs_decimal(&i.data_type));
                 let target_is_alpha = target_item
                     .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
-                let target_is_group = target_item
-                    .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
+                let target_is_group =
+                    target_item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
                 if target_is_decimal {
                     emit_assign_to_decimal(out, value, &c_target, data_items, &pad);
                 } else if target_is_alpha {
@@ -2923,7 +3149,7 @@ fn emit_statement(
                     ));
                 } else {
                     let c_value = emit_int_compatible_expr(value, data_items);
-                    out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
+                    emit_store_int(out, &c_target, &c_value, data_items, &pad);
                 }
             }
         }
@@ -3065,8 +3291,10 @@ fn emit_statement(
                         "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    {c_target} = (_tm->tm_year % 100) * 10000 + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
+                        "{pad}    int64_t _dv = (_tm->tm_year % 100) * 10000 \
+                         + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
                     ));
+                    emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 HirAcceptSource::DateYyyymmdd => {
@@ -3076,8 +3304,10 @@ fn emit_statement(
                         "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    {c_target} = (_tm->tm_year + 1900) * 10000 + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
+                        "{pad}    int64_t _dv = (_tm->tm_year + 1900) * 10000 \
+                         + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
                     ));
+                    emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 HirAcceptSource::Day => {
@@ -3087,8 +3317,10 @@ fn emit_statement(
                         "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    {c_target} = (_tm->tm_year % 100) * 1000 + _tm->tm_yday + 1;\n"
+                        "{pad}    int64_t _dv = (_tm->tm_year % 100) * 1000 \
+                         + _tm->tm_yday + 1;\n"
                     ));
+                    emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 HirAcceptSource::DayOfWeek => {
@@ -3098,8 +3330,9 @@ fn emit_statement(
                         "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    {c_target} = _tm->tm_wday == 0 ? 7 : _tm->tm_wday;\n"
+                        "{pad}    int64_t _dv = _tm->tm_wday == 0 ? 7 : _tm->tm_wday;\n"
                     ));
+                    emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 HirAcceptSource::Time => {
@@ -3109,8 +3342,10 @@ fn emit_statement(
                         "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    {c_target} = _tm->tm_hour * 1000000 + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
+                        "{pad}    int64_t _dv = _tm->tm_hour * 1000000 \
+                         + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
                     ));
+                    emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 HirAcceptSource::Environment(env_name) => {
@@ -3125,9 +3360,7 @@ fn emit_statement(
                 }
                 HirAcceptSource::Console => {
                     let tgt_ptr = c_ptr_expr(&c_target, data_items);
-                    out.push_str(&format!(
-                        "{pad}fgets((char*){tgt_ptr}, {size}, stdin);\n"
-                    ));
+                    out.push_str(&format!("{pad}fgets((char*){tgt_ptr}, {size}, stdin);\n"));
                     out.push_str(&format!(
                         "{pad}((char*){tgt_ptr})[strcspn((char*){tgt_ptr}, \"\\n\")] = '\\0';\n"
                     ));
@@ -3821,8 +4054,14 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
                 out.push_str(&format!(
                     "{pad}cobol_display_national((const uint16_t*){c_name}, {size});\n"
                 ));
+            } else if let Some(disp_size) = grp_display_size(&c_name, data_items) {
+                out.push_str(&format!(
+                    "{pad}cobol_display_int(cobol_display_to_int64(\
+                     (const uint8_t*){c_name}, {disp_size}));\n"
+                ));
             } else {
-                out.push_str(&format!("{pad}cobol_display_int({c_name});\n"));
+                let e = emit_int_compatible_expr(expr, data_items);
+                out.push_str(&format!("{pad}cobol_display_int({e});\n"));
             }
         }
         HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. } => {
@@ -3992,7 +4231,15 @@ fn emit_display_operand(out: &mut String, expr: &HirExpr, data_items: &[HirDataI
                     "{pad}{{ char _dbuf[64]; uint32_t _dlen = cobol_decimal_to_display(&{c_access}, (uint8_t*)_dbuf, 64, (const uint8_t*)\"{pic_str}\", {pic_len}); cobol_display_string((const uint8_t*)_dbuf, _dlen); }}\n"
                 ));
             } else {
-                out.push_str(&format!("{pad}cobol_display_int({c_access});\n"));
+                let c_var = sanitize_name(variable);
+                if let Some(disp_size) = grp_display_size(&c_var, data_items) {
+                    out.push_str(&format!(
+                        "{pad}cobol_display_int(cobol_display_to_int64(\
+                         (const uint8_t*){c_access}, {disp_size}));\n"
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}cobol_display_int({c_access});\n"));
+                }
             }
         }
     }
@@ -4049,6 +4296,11 @@ fn emit_screen_display(
                 .unwrap_or(1);
             out.push_str(&format!(
                 "{pad}cobol_display_string((const uint8_t*){c_name}, {size});\n"
+            ));
+        } else if let Some(disp_size) = grp_display_size(&c_name, data_items) {
+            out.push_str(&format!(
+                "{pad}cobol_display_int(cobol_display_to_int64(\
+                 (const uint8_t*){c_name}, {disp_size}));\n"
             ));
         } else {
             out.push_str(&format!("{pad}cobol_display_int({c_name});\n"));
@@ -4334,9 +4586,9 @@ fn emit_move_to(
                 // Numeric target: parse string as number
                 let escaped = escape_c_string(s);
                 let src_len = s.len();
-                out.push_str(&format!(
-                    "{pad}{c_target} = cobol_func_numval((const uint8_t*)\"{escaped}\", {src_len});\n"
-                ));
+                let numval_expr =
+                    format!("cobol_func_numval((const uint8_t*)\"{escaped}\", {src_len})");
+                emit_store_int(out, c_target, &numval_expr, data_items, pad);
             }
         }
         HirExpr::Literal(HirLiteral::Integer(n)) => {
@@ -4347,7 +4599,7 @@ fn emit_move_to(
                     "{pad}cobol_move_numeric_to_display({n}, 0, (uint8_t*){c_target}, {tgt_size});\n"
                 ));
             } else {
-                out.push_str(&format!("{pad}{c_target} = {n};\n"));
+                emit_store_int(out, c_target, &n.to_string(), data_items, pad);
             }
         }
         HirExpr::Literal(HirLiteral::Zero) => {
@@ -4357,7 +4609,7 @@ fn emit_move_to(
                     "{pad}memset({c_target}, '0', {tgt_size}); {c_target}[{tgt_size}] = '\\0';\n"
                 ));
             } else {
-                out.push_str(&format!("{pad}{c_target} = 0;\n"));
+                emit_store_int(out, c_target, "0", data_items, pad);
             }
         }
         HirExpr::Literal(HirLiteral::Space) => {
@@ -4397,7 +4649,7 @@ fn emit_move_to(
             ));
         }
         HirExpr::Literal(HirLiteral::Null) => {
-            out.push_str(&format!("{pad}{c_target} = 0;\n"));
+            emit_store_int(out, c_target, "0", data_items, pad);
         }
         HirExpr::Literal(HirLiteral::AllChar(s)) => {
             if is_target_alpha {
@@ -4419,7 +4671,7 @@ fn emit_move_to(
                     out.push_str(&format!("{pad}  {c_target}[{tgt_size}] = '\\0'; }}\n"));
                 }
             } else if let Some(ch) = s.chars().next() {
-                out.push_str(&format!("{pad}{c_target} = '{ch}';\n"));
+                emit_store_int(out, c_target, &format!("'{ch}'"), data_items, pad);
             }
         }
         _ => {
@@ -4530,18 +4782,17 @@ fn emit_move_to(
                 if let HirExpr::Variable(name) = from {
                     let c_src = sanitize_name(name);
                     let src_size = find_data_item_size(&c_src, data_items);
-                    out.push_str(&format!(
-                        "{pad}{c_target} = cobol_func_numval((const uint8_t*){c_src}, {src_size});\n"
-                    ));
+                    let numval_expr =
+                        format!("cobol_func_numval((const uint8_t*){c_src}, {src_size})");
+                    emit_store_int(out, c_target, &numval_expr, data_items, pad);
                 } else if let HirExpr::Subscript { variable, .. } = from {
                     let e = emit_expr(from);
                     let src_size = find_data_item_size(&sanitize_name(variable), data_items);
-                    out.push_str(&format!(
-                        "{pad}{c_target} = cobol_func_numval((const uint8_t*){e}, {src_size});\n"
-                    ));
+                    let numval_expr = format!("cobol_func_numval((const uint8_t*){e}, {src_size})");
+                    emit_store_int(out, c_target, &numval_expr, data_items, pad);
                 } else {
                     let e = emit_expr(from);
-                    out.push_str(&format!("{pad}{c_target} = {e};\n"));
+                    emit_store_int(out, c_target, &e, data_items, pad);
                 }
             } else if is_target_alpha && is_source_group_var {
                 // Group variable → alphanumeric: copy bytes with & prefix (group is a C union)
@@ -4620,22 +4871,21 @@ fn emit_move_to(
                              0, &{c_target});\n"
                         ));
                     } else {
-                        out.push_str(&format!(
-                            "{pad}{c_target} = cobol_func_numval((const uint8_t*)&{c_src}, {src_size});\n"
-                        ));
+                        let numval_expr =
+                            format!("cobol_func_numval((const uint8_t*)&{c_src}, {src_size})");
+                        emit_store_int(out, c_target, &numval_expr, data_items, pad);
                     }
                 }
             } else if is_source_decimal_var {
                 // CobolDecimal variable → integer target: use cobol_decimal_to_int64
                 let e = emit_expr(from);
-                out.push_str(&format!(
-                    "{pad}{c_target} = cobol_decimal_to_int64(&{e});\n"
-                ));
+                let dec_expr = format!("cobol_decimal_to_int64(&{e})");
+                emit_store_int(out, c_target, &dec_expr, data_items, pad);
             } else {
                 // Use emit_int_compatible_expr to handle compound expressions
                 // that may contain CobolDecimal sub-expressions.
                 let e = emit_int_compatible_expr(from, data_items);
-                out.push_str(&format!("{pad}{c_target} = {e};\n"));
+                emit_store_int(out, c_target, &e, data_items, pad);
             }
         }
     }
@@ -4786,11 +5036,12 @@ fn emit_perform(
             from,
             by,
             until,
+            after_clauses,
             body,
         } => {
             let c_var = sanitize_name(var);
-            let var_is_decimal = find_data_item(var, data_items)
-                .is_some_and(|i| needs_decimal(&i.data_type));
+            let var_is_decimal =
+                find_data_item(var, data_items).is_some_and(|i| needs_decimal(&i.data_type));
             let cond = emit_condition(until, data_items);
             if var_is_decimal {
                 // Decimal VARYING: use cobol_decimal operations
@@ -4809,21 +5060,36 @@ fn emit_perform(
                 }
                 // Increment: convert BY to a temp decimal and add
                 let inner_pad = format!("{pad}    ");
-                emit_decimal_arith(
-                    out,
-                    &c_var,
-                    by,
-                    "cobol_decimal_add",
-                    data_items,
-                    &inner_pad,
-                );
+                emit_decimal_arith(out, &c_var, by, "cobol_decimal_add", data_items, &inner_pad);
                 out.push_str(&format!("{pad}}}\n"));
             } else {
                 let c_from = emit_int_compatible_expr(from, data_items);
                 let c_by = emit_int_compatible_expr(by, data_items);
-                out.push_str(&format!(
-                    "{pad}{c_var} = {c_from};\n{pad}while (!({cond})) {{\n"
-                ));
+                // Initialize outer VARYING variable
+                emit_store_int(out, &c_var, &c_from, data_items, &pad);
+                out.push_str(&format!("{pad}while (!({cond})) {{\n"));
+                // Initialize AFTER variables at start of each outer iteration
+                let after_indent = indent + 1;
+                let after_pad = "    ".repeat(after_indent);
+                for ac in after_clauses {
+                    let ac_var = sanitize_name(&ac.var);
+                    let ac_from = emit_int_compatible_expr(&ac.from, data_items);
+                    emit_store_int(out, &ac_var, &ac_from, data_items, &after_pad);
+                }
+                // Generate nested AFTER loops
+                let mut current_indent = after_indent;
+                for ac in after_clauses {
+                    let ac_var = sanitize_name(&ac.var);
+                    let ac_by = emit_int_compatible_expr(&ac.by, data_items);
+                    let ac_cond = emit_condition(&ac.until, data_items);
+                    let lpad = "    ".repeat(current_indent);
+                    out.push_str(&format!("{lpad}while (!({ac_cond})) {{\n"));
+                    current_indent += 1;
+                    let _ = ac_by; // used below for increment
+                }
+                // Emit body at the innermost level
+                let body_pad = "    ".repeat(current_indent);
+                let _ = body_pad;
                 for s in body {
                     emit_statement(
                         out,
@@ -4832,10 +5098,21 @@ fn emit_perform(
                         paragraphs,
                         fs_map,
                         has_declaratives,
-                        indent + 1,
+                        current_indent,
                     );
                 }
-                out.push_str(&format!("{pad}    {c_var} += {c_by};\n"));
+                // Close AFTER loops (innermost first) with increments
+                for ac in after_clauses.iter().rev() {
+                    current_indent -= 1;
+                    let ac_var = sanitize_name(&ac.var);
+                    let ac_by = emit_int_compatible_expr(&ac.by, data_items);
+                    let lpad = "    ".repeat(current_indent + 1);
+                    emit_store_int_op(out, &ac_var, "+", &ac_by, data_items, &lpad);
+                    let lpad_close = "    ".repeat(current_indent);
+                    out.push_str(&format!("{lpad_close}}}\n"));
+                }
+                // Increment outer VARYING variable
+                emit_store_int_op(out, &c_var, "+", &c_by, data_items, &after_pad);
                 out.push_str(&format!("{pad}}}\n"));
             }
         }
@@ -5885,6 +6162,122 @@ fn needs_decimal(data_type: &HirType) -> bool {
     ) || matches!(data_type, HirType::Comp3 { decimal_places, .. } if *decimal_places > 0)
 }
 
+/// Check if a variable is a USAGE DISPLAY numeric stored as char[] inside a group.
+/// Returns Some(display_size) if so, None otherwise.
+/// Top-level numeric items are stored as int64_t and return None.
+fn grp_display_size(c_name: &str, data_items: &[HirDataItem]) -> Option<u32> {
+    // Handle qualified names like "WS_DST__FIELD_A" by extracting the member
+    // part after the last "__".
+    let base_name = c_name
+        .rfind("__")
+        .map(|pos| &c_name[pos + 2..])
+        .unwrap_or(c_name);
+    // Search within groups first — if it exists as a display numeric
+    // member of any group, it's stored as char[].
+    fn search_in(c_name: &str, members: &[HirDataItem]) -> Option<u32> {
+        for m in members {
+            if m.redefines.is_some() {
+                continue;
+            }
+            let mc = sanitize_name(&m.name);
+            if mc == c_name {
+                if let HirType::Numeric {
+                    size,
+                    decimal_places: 0,
+                    ..
+                } = &m.data_type
+                {
+                    return Some(*size);
+                }
+                return None;
+            }
+            if let HirType::Group {
+                members: sub_members,
+                ..
+            } = &m.data_type
+            {
+                if let Some(s) = search_in(c_name, sub_members) {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+    for item in data_items {
+        if let HirType::Group { members, .. } = &item.data_type {
+            if let Some(s) = search_in(base_name, members) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the leaf member name from a C target expression for type lookup.
+/// For simple names like `FOO`, returns `"FOO"`.
+/// For struct paths like `GRP.members._m_X[i].members._m_Y`, returns `"Y"`.
+/// For qualified macro names like `GRP__FIELD`, returns `"FIELD"`.
+fn extract_leaf_member(c_target: &str) -> &str {
+    // Find the last `._m_` segment (possibly followed by `[...]`)
+    if let Some(pos) = c_target.rfind("._m_") {
+        let after = &c_target[pos + 4..];
+        // Strip any trailing subscript `[...]`
+        after.split('[').next().unwrap_or(after)
+    } else if let Some(pos) = c_target.rfind("__") {
+        // Qualified macro name: WS_GRP__FIELD -> FIELD
+        &c_target[pos + 2..]
+    } else {
+        // Simple name, strip subscripts
+        c_target.split('[').next().unwrap_or(c_target)
+    }
+}
+
+/// Generate C code to store an int64_t value into a target variable.
+/// If the target is a display numeric group member (char[]), uses
+/// cobol_store_numeric_display. Otherwise emits direct assignment.
+/// `c_target` is the full C expression (may include subscripts).
+/// `base_name` is the sanitized COBOL variable name for type lookup.
+fn emit_store_int(
+    out: &mut String,
+    c_target: &str,
+    value_expr: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    // Extract base (leaf) name from c_target for type lookup.
+    // For paths like "GRP.members._m_X[(i)-1].members._m_Y",
+    // we want the final member name "Y".
+    let base = extract_leaf_member(c_target);
+    if let Some(disp_size) = grp_display_size(base, data_items) {
+        out.push_str(&format!(
+            "{pad}cobol_store_numeric_display({value_expr}, (uint8_t*){c_target}, {disp_size});\n"
+        ));
+    } else {
+        out.push_str(&format!("{pad}{c_target} = {value_expr};\n"));
+    }
+}
+
+/// Generate C code to store `target op value` (e.g., += , -=, *=, /=).
+fn emit_store_int_op(
+    out: &mut String,
+    c_target: &str,
+    op: &str,
+    value_expr: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let base = extract_leaf_member(c_target);
+    if let Some(disp_size) = grp_display_size(base, data_items) {
+        out.push_str(&format!(
+            "{pad}cobol_store_numeric_display(\
+             cobol_display_to_int64((const uint8_t*){c_target}, {disp_size}) {op} ({value_expr}), \
+             (uint8_t*){c_target}, {disp_size});\n"
+        ));
+    } else {
+        out.push_str(&format!("{pad}{c_target} {op}= {value_expr};\n"));
+    }
+}
+
 /// Returns true if the given expression refers to a CobolDecimal variable.
 fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     let name = expr_var_name(expr);
@@ -5954,7 +6347,15 @@ fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> Strin
                 let size = find_data_item_size(&sanitize_name(var_name), data_items);
                 format!("cobol_func_numval((const uint8_t*){c}, {size})")
             } else {
-                emit_expr(expr)
+                // Check if this is a display numeric stored as char[] in a group
+                let var_name = expr_var_name(expr);
+                let c_var = sanitize_name(var_name);
+                if let Some(disp_size) = grp_display_size(&c_var, data_items) {
+                    let c = emit_expr(expr);
+                    format!("cobol_display_to_int64((const uint8_t*){c}, {disp_size})")
+                } else {
+                    emit_expr(expr)
+                }
             }
         }
         HirExpr::BinaryOp { op, left, right } => {
@@ -6222,6 +6623,28 @@ fn emit_corresponding_move(
                     continue;
                 }
                 match (&src_item.data_type, &tgt_item.data_type) {
+                    (
+                        HirType::Numeric {
+                            size: src_disp,
+                            decimal_places: 0,
+                            ..
+                        },
+                        HirType::Numeric {
+                            size: tgt_disp,
+                            decimal_places: 0,
+                            ..
+                        },
+                    ) => {
+                        // Both are display numeric in groups (char[])
+                        let src_read = format!(
+                            "cobol_display_to_int64(\
+                             (const uint8_t*){src_q}, {src_disp})"
+                        );
+                        out.push_str(&format!(
+                            "{pad}cobol_store_numeric_display({src_read}, \
+                             (uint8_t*){tgt_q}, {tgt_disp});\n"
+                        ));
+                    }
                     (HirType::Numeric { .. }, HirType::Numeric { .. })
                     | (HirType::Binary { .. }, HirType::Binary { .. })
                     | (HirType::Comp3 { .. }, HirType::Comp3 { .. }) => {
@@ -6286,6 +6709,15 @@ fn emit_corresponding_arith(
                     out.push_str(&format!(
                         "{pad}{func}(&{src_ref}, &{tgt_ref}, &{tgt_ref});\n"
                     ));
+                } else if let Some(disp_size) = grp_display_size(&member_c, data_items) {
+                    out.push_str(&format!(
+                        "{pad}cobol_store_numeric_display(\
+                         cobol_display_to_int64(\
+                         (const uint8_t*){tgt_ref}, {disp_size}) {op} \
+                         cobol_display_to_int64(\
+                         (const uint8_t*){src_ref}, {disp_size}), \
+                         (uint8_t*){tgt_ref}, {disp_size});\n"
+                    ));
                 } else {
                     out.push_str(&format!("{pad}{tgt_ref} = {tgt_ref} {op} {src_ref};\n"));
                 }
@@ -6327,9 +6759,20 @@ fn emit_integer_overflow_check(
     pad: &str,
 ) {
     if let Some(max_val) = get_pic_max(target_name, data_items) {
-        out.push_str(&format!(
-            "{pad}if (llabs({c_target}) > {max_val}) {{ _size_error = 1; {c_target} = _prev; }}\n"
-        ));
+        let c_tgt_base = sanitize_name(target_name);
+        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+            out.push_str(&format!(
+                "{pad}if (llabs(cobol_display_to_int64(\
+                 (const uint8_t*){c_target}, {disp_size})) > {max_val}) \
+                 {{ _size_error = 1; cobol_store_numeric_display(\
+                 _prev, (uint8_t*){c_target}, {disp_size}); }}\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "{pad}if (llabs({c_target}) > {max_val}) \
+                 {{ _size_error = 1; {c_target} = _prev; }}\n"
+            ));
+        }
     }
 }
 
@@ -6358,15 +6801,36 @@ fn emit_save_and_check_overflow(
         }
         out.push_str(&format!("{pad}}}\n"));
     } else {
-        out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-        out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
-        if let Some(max_val) = get_pic_max(target_name, data_items) {
+        let c_tgt_base = sanitize_name(target_name);
+        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
             out.push_str(&format!(
-                "{pad}if (llabs({c_target}) > {max_val}) \
-                 {{ _size_error = 1; {c_target} = _prev; }}\n"
+                "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                 (const uint8_t*){c_target}, {disp_size});\n"
             ));
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display({c_expr}, \
+                 (uint8_t*){c_target}, {disp_size});\n"
+            ));
+            if let Some(max_val) = get_pic_max(target_name, data_items) {
+                out.push_str(&format!(
+                    "{pad}if (llabs(cobol_display_to_int64(\
+                     (const uint8_t*){c_target}, {disp_size})) > {max_val}) \
+                     {{ _size_error = 1; cobol_store_numeric_display(\
+                     _prev, (uint8_t*){c_target}, {disp_size}); }}\n"
+                ));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        } else {
+            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+            out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
+            if let Some(max_val) = get_pic_max(target_name, data_items) {
+                out.push_str(&format!(
+                    "{pad}if (llabs({c_target}) > {max_val}) \
+                     {{ _size_error = 1; {c_target} = _prev; }}\n"
+                ));
+            }
+            out.push_str(&format!("{pad}}}\n"));
         }
-        out.push_str(&format!("{pad}}}\n"));
     }
 }
 
@@ -6540,12 +7004,38 @@ fn emit_initialize_field(
             }
             _ => {
                 // Numeric, Binary, Index, etc. → zero
-                out.push_str(&format!("{pad}{c_name} = 0; /* INITIALIZE */\n"));
+                let base = c_name
+                    .split('[')
+                    .next()
+                    .and_then(|s| s.split('.').next_back())
+                    .map(|s| s.trim_start_matches("_m_"))
+                    .unwrap_or(c_name);
+                if let Some(disp_size) = grp_display_size(base, data_items) {
+                    out.push_str(&format!(
+                        "{pad}cobol_store_numeric_display(0, \
+                         (uint8_t*){c_name}, {disp_size}); /* INITIALIZE */\n"
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}{c_name} = 0; /* INITIALIZE */\n"));
+                }
             }
         }
     } else {
         // Unknown field, default to zero
-        out.push_str(&format!("{pad}{c_name} = 0; /* INITIALIZE */\n"));
+        let base = c_name
+            .split('[')
+            .next()
+            .and_then(|s| s.split('.').next_back())
+            .map(|s| s.trim_start_matches("_m_"))
+            .unwrap_or(c_name);
+        if let Some(disp_size) = grp_display_size(base, data_items) {
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display(0, \
+                 (uint8_t*){c_name}, {disp_size}); /* INITIALIZE */\n"
+            ));
+        } else {
+            out.push_str(&format!("{pad}{c_name} = 0; /* INITIALIZE */\n"));
+        }
     }
 }
 
@@ -6895,9 +7385,7 @@ fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (Str
             // (rvalues like `(int64_t)'B'` cannot have their address taken directly).
             let e = emit_expr(expr);
             (
-                format!(
-                    "({{ int64_t _cmp_tmp = {e}; (const uint8_t*)&_cmp_tmp; }})"
-                ),
+                format!("({{ int64_t _cmp_tmp = {e}; (const uint8_t*)&_cmp_tmp; }})"),
                 "sizeof(int64_t)".to_string(),
             )
         }
