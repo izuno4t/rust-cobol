@@ -13,7 +13,7 @@ tests/nist/SQ_*
 # Benchmark artifacts
 tests/benchmark/*.out
 
-# Stray files from COBOL compilation (fixed-format parse artifacts)
+# Stray files from COBOL compilation and NIST test execution
 /ADD
 /BENCH-RECORD
 /COMPUTE
@@ -24,4 +24,7 @@ tests/benchmark/*.out
 /WS-*
 /TEST-FILE
 /PRINT*
+/FILE*
+/SQ_*
+/XXXX*
 *.dat

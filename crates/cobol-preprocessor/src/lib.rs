@@ -11,6 +11,7 @@ mod scanner;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use cobol_common::SourceFormat;
 use cobol_diagnostics::{Diagnostic, DiagnosticReporter};
 
 pub use copy_resolver::CopyResolver;
@@ -22,6 +23,10 @@ pub struct PreprocessedSource {
     pub source: String,
     /// Diagnostics emitted during preprocessing (missing copybooks, circular COPY, etc.).
     pub diagnostics: Vec<Diagnostic>,
+    /// The effective source format after preprocessing. When the input is
+    /// fixed format, the preprocessor strips columns 1-7 and 73-80, converting
+    /// the text to free format for correct COPY/REPLACE handling.
+    pub effective_source_format: SourceFormat,
 }
 
 /// Configuration for the preprocessor.
@@ -31,6 +36,9 @@ pub struct PreprocessorConfig {
     pub copy_paths: Vec<PathBuf>,
     /// Maximum nesting depth for COPY statements (to guard against deep recursion).
     pub max_copy_depth: usize,
+    /// Source format (Fixed, Free, Variable). In Fixed format, columns 73-80
+    /// (the identification area) are stripped before scanning for COPY/REPLACE.
+    pub source_format: SourceFormat,
 }
 
 impl Default for PreprocessorConfig {
@@ -42,6 +50,7 @@ impl Default for PreprocessorConfig {
                 PathBuf::from("./copy"),
             ],
             max_copy_depth: 64,
+            source_format: SourceFormat::Free,
         }
     }
 }
@@ -71,11 +80,20 @@ pub fn preprocess(
         include_stack.insert(file_path.to_path_buf());
     }
 
+    // Strip identification area (columns 73-80) for fixed-format sources.
+    // This prevents text like "SM2064.2" in columns 73-80 from corrupting
+    // copybook names (e.g., "COPY K5SDA" + "SM2064.2" → "K5SDASM2064").
+    let source = if config.source_format == SourceFormat::Fixed {
+        strip_fixed_format_columns(source)
+    } else {
+        source.to_string()
+    };
+
     let resolver = CopyResolver::new(config, file_path);
 
     // Phase 1: Expand all COPY statements (recursively).
     let expanded = expand_copy(
-        source,
+        &source,
         &resolver,
         &mut include_stack,
         &mut reporter,
@@ -84,12 +102,36 @@ pub fn preprocess(
     );
 
     // Phase 2: Apply REPLACE directives.
-    let replaced = replacer::apply_replace(&expanded, &mut reporter);
+    let fixed = config.source_format == SourceFormat::Fixed;
+    let replaced = replacer::apply_replace(&expanded, &mut reporter, fixed);
 
     PreprocessedSource {
         source: replaced,
         diagnostics: reporter.take_diagnostics(),
+        effective_source_format: config.source_format,
     }
+}
+
+/// Strips columns 73-80 (the identification area) from each line of fixed-format
+/// COBOL source. Lines shorter than 73 characters are left unchanged.
+/// This prevents the identification area from corrupting copybook names and other
+/// tokens that the COPY/REPLACE scanner needs to parse.
+fn strip_fixed_format_columns(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    for line in source.split('\n') {
+        let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
+        if line_no_cr.len() > 72 {
+            result.push_str(&line_no_cr[..72]);
+        } else {
+            result.push_str(line_no_cr);
+        }
+        result.push('\n');
+    }
+    // Remove the trailing newline we added if source didn't end with one
+    if !source.ends_with('\n') && !source.ends_with("\r\n") {
+        result.pop(); // remove trailing '\n'
+    }
+    result
 }
 
 /// Recursively expands COPY statements in the given source text.
@@ -112,7 +154,8 @@ fn expand_copy(
         return source.to_string();
     }
 
-    let copy_stmts = scanner::scan_copy_statements(source);
+    let fixed = config.source_format == SourceFormat::Fixed;
+    let copy_stmts = scanner::scan_copy_statements(source, fixed);
 
     if copy_stmts.is_empty() {
         return source.to_string();
@@ -144,6 +187,17 @@ fn expand_copy(
                 } else {
                     match std::fs::read_to_string(&path) {
                         Ok(content) => {
+                            // Strip identification area from copybook
+                            // content if in fixed format.
+                            let content =
+                                if config.source_format == SourceFormat::Fixed {
+                                    strip_fixed_format_columns(
+                                        &content,
+                                    )
+                                } else {
+                                    content
+                                };
+
                             // Apply REPLACING if specified.
                             let content = if stmt.replacings.is_empty() {
                                 content

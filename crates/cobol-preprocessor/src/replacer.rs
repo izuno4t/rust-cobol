@@ -33,8 +33,12 @@ pub fn apply_replacing(content: &str, replacings: &[ReplacePair]) -> String {
 /// REPLACE directives are scanned and processed in order. Each REPLACE
 /// directive activates a set of replacements that apply to subsequent text
 /// until the next REPLACE or REPLACE OFF directive.
-pub fn apply_replace(source: &str, _reporter: &mut DiagnosticReporter) -> String {
-    let directives = scanner::scan_replace_directives(source);
+pub fn apply_replace(
+    source: &str,
+    _reporter: &mut DiagnosticReporter,
+    fixed_format: bool,
+) -> String {
+    let directives = scanner::scan_replace_directives(source, fixed_format);
 
     if directives.is_empty() {
         return source.to_string();
@@ -171,7 +175,7 @@ mod tests {
     fn test_apply_replace_basic() {
         let source = "REPLACE ==OLD== BY ==NEW==.\n01 OLD PIC X.\n";
         let mut reporter = DiagnosticReporter::new();
-        let result = apply_replace(source, &mut reporter);
+        let result = apply_replace(source, &mut reporter, false);
         assert!(result.contains("NEW"), "result: {:?}", result);
         assert!(!reporter.has_errors());
     }
@@ -185,7 +189,7 @@ mod tests {
             "01 OLD PIC 9.\n",
         );
         let mut reporter = DiagnosticReporter::new();
-        let result = apply_replace(source, &mut reporter);
+        let result = apply_replace(source, &mut reporter, false);
         let lines: Vec<&str> = result.lines().collect();
 
         // First data line: OLD should be replaced with NEW.
@@ -210,7 +214,7 @@ mod tests {
             "MOVE A TO X.\n",
         );
         let mut reporter = DiagnosticReporter::new();
-        let result = apply_replace(source, &mut reporter);
+        let result = apply_replace(source, &mut reporter, false);
 
         // After first REPLACE: A -> B
         assert!(result.contains("MOVE B TO X."), "result: {:?}", result);

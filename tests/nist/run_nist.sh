@@ -14,22 +14,26 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PROGRAMS_DIR="$SCRIPT_DIR/programs"
 RESULTS_DIR="$SCRIPT_DIR/results"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
+# Working directory for test execution — keeps output files out of the repo root
+NIST_WORKDIR="$REPO_ROOT/target/nist"
 
 # Module execution order (by priority)
 ALL_MODULES=(NC SM IC SQ IF IX RL ST RW DB SG OB)
 
 mkdir -p "$RESULTS_DIR"
+mkdir -p "$NIST_WORKDIR"
 
 # Compile and run a single test program
 run_program() {
     local module="$1"
     local program="$2"
     local src="$PROGRAMS_DIR/$module/$program.cob"
-    local bin="/tmp/nist_${program}"
+    local bin="$NIST_WORKDIR/nist_${program}"
     local log="$RESULTS_DIR/${module}/${program}.log"
     local status_file="$RESULTS_DIR/${module}/${program}.status"
 
@@ -42,16 +46,17 @@ run_program() {
     fi
 
     # Preprocess (replace XXXXX placeholders)
-    local preprocessed="/tmp/nist_preproc_${program}.cob"
+    local preprocessed="$NIST_WORKDIR/nist_preproc_${program}.cob"
     "$SCRIPT_DIR/preprocess.sh" "$src" "$preprocessed"
 
     # Compile
     local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
     if $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" 2>"$compile_log"; then
         # Run with timeout (30 seconds)
-        if timeout 30 "$bin" > "$log" 2>&1; then
+        # Execute in target/nist so output files don't pollute the repo
+        if timeout 30 bash -c "cd \"$NIST_WORKDIR\" && \"$bin\"" > "$log" 2>&1; then
             # NIST programs write to PRINT-FILE, also check stdout
-            local print_file="/tmp/nist/P"
+            local print_file="$NIST_WORKDIR/P"
             local result_file="$log"
             if [ -f "$print_file" ] && [ -s "$print_file" ]; then
                 result_file="$print_file"

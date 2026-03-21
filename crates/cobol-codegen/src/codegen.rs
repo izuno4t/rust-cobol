@@ -2352,7 +2352,7 @@ fn emit_statement(
                             cobol_hir::HirParamMode::ByContent => {
                                 let copy_var = format!("_content_copy_{i}");
                                 content_copies.push(format!(
-                                    "{inner_pad}typeof({arg}) {copy_var} = {arg};\n"
+                                    "{inner_pad}typeof({arg}) {copy_var}; memcpy(&{copy_var}, &{arg}, sizeof({arg}));\n"
                                 ));
                                 param_values.push(format!("&{copy_var}"));
                             }
@@ -2423,7 +2423,7 @@ fn emit_statement(
                             // BY CONTENT: create a copy and pass address of the copy
                             let copy_var = format!("_content_copy_{i}");
                             content_copies
-                                .push(format!("{call_pad}typeof({arg}) {copy_var} = {arg};\n"));
+                                .push(format!("{call_pad}typeof({arg}) {copy_var}; memcpy(&{copy_var}, &{arg}, sizeof({arg}));\n"));
                             param_types.push("void*".to_string());
                             param_values.push(format!("&{copy_var}"));
                         }
@@ -2820,10 +2820,32 @@ fn emit_statement(
         HirStatement::Set { targets, value, .. } => {
             for target in targets {
                 let c_target = sanitize_name(target);
-                let target_is_decimal = find_data_item(target.as_str(), data_items)
-                    .is_some_and(|i| needs_decimal(&i.data_type));
+                let target_item = find_data_item(target.as_str(), data_items);
+                let target_is_decimal =
+                    target_item.is_some_and(|i| needs_decimal(&i.data_type));
+                let target_is_alpha = target_item
+                    .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
+                let target_is_group = target_item
+                    .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
                 if target_is_decimal {
                     emit_assign_to_decimal(out, value, &c_target, data_items, &pad);
+                } else if target_is_alpha {
+                    // SET index-value TO alphanumeric target: convert via
+                    // cobol_move_numeric_to_display
+                    let c_value = emit_int_compatible_expr(value, data_items);
+                    let tgt_size = find_data_item_size(&c_target, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_numeric_to_display({c_value}, 0, \
+                         (uint8_t*){c_target}, {tgt_size});\n"
+                    ));
+                } else if target_is_group {
+                    // SET to group target: treat as alphanumeric bytes
+                    let c_value = emit_int_compatible_expr(value, data_items);
+                    let tgt_size = find_data_item_size(&c_target, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_numeric_to_display({c_value}, 0, \
+                         (uint8_t*)&{c_target}, {tgt_size});\n"
+                    ));
                 } else {
                     let c_value = emit_int_compatible_expr(value, data_items);
                     out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
@@ -4492,8 +4514,14 @@ fn emit_move_to(
                         "{pad}cobol_move_string((const uint8_t*){addr_prefix}{e}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
                 } else {
+                    // Fallback for alpha target with unrecognized source:
+                    // use cobol_move_numeric_to_display to safely convert
                     let e = emit_int_compatible_expr(from, data_items);
-                    out.push_str(&format!("{pad}{c_target} = {e};\n"));
+                    let tgt_size = find_data_item_size(c_target, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_numeric_to_display({e}, 0, \
+                         (uint8_t*){c_target}, {tgt_size});\n"
+                    ));
                 }
             } else if is_source_group_var {
                 // Group variable → numeric target: treat group as alphanumeric bytes

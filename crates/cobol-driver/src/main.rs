@@ -106,6 +106,7 @@ fn run() -> Result<(), i32> {
         for extra_path in &cli.copy_paths {
             config.copy_paths.push(PathBuf::from(extra_path));
         }
+        config.source_format = source_format;
         config
     };
 

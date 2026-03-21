@@ -44,7 +44,9 @@ pub struct ReplaceDirective {
 /// Scans source text for COPY statements.
 ///
 /// Returns all COPY statements found, in order of appearance.
-pub fn scan_copy_statements(source: &str) -> Vec<CopyStatement> {
+/// When `fixed_format` is true, the scanner skips fixed-format line prefixes
+/// (columns 1-7: sequence area + indicator) when crossing line boundaries.
+pub fn scan_copy_statements(source: &str, fixed_format: bool) -> Vec<CopyStatement> {
     let mut results = Vec::new();
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -59,7 +61,9 @@ pub fn scan_copy_statements(source: &str) -> Vec<CopyStatement> {
                 continue;
             }
 
-            if let Some(stmt) = parse_copy_statement(source, copy_start, after_copy) {
+            if let Some(stmt) =
+                parse_copy_statement(source, copy_start, after_copy, fixed_format)
+            {
                 pos = stmt.end;
                 results.push(stmt);
             } else {
@@ -76,7 +80,7 @@ pub fn scan_copy_statements(source: &str) -> Vec<CopyStatement> {
 /// Scans source text for REPLACE directives.
 ///
 /// Returns all REPLACE directives found, in order of appearance.
-pub fn scan_replace_directives(source: &str) -> Vec<ReplaceDirective> {
+pub fn scan_replace_directives(source: &str, fixed_format: bool) -> Vec<ReplaceDirective> {
     let mut results = Vec::new();
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -90,7 +94,9 @@ pub fn scan_replace_directives(source: &str) -> Vec<ReplaceDirective> {
                 continue;
             }
 
-            if let Some(directive) = parse_replace_directive(source, replace_start, after_replace) {
+            if let Some(directive) =
+                parse_replace_directive(source, replace_start, after_replace, fixed_format)
+            {
                 pos = directive.end;
                 results.push(directive);
             } else {
@@ -206,8 +212,9 @@ fn parse_copy_statement(
     source: &str,
     copy_start: usize,
     after_keyword: usize,
+    fixed_format: bool,
 ) -> Option<CopyStatement> {
-    let mut pos = skip_whitespace(source, after_keyword);
+    let mut pos = skip_whitespace(source, after_keyword, fixed_format);
     let len = source.len();
 
     if pos >= len {
@@ -216,7 +223,7 @@ fn parse_copy_statement(
 
     // Parse copybook name.
     let (copybook_name, next_pos) = parse_cobol_word(source, pos)?;
-    pos = skip_whitespace(source, next_pos);
+    pos = skip_whitespace(source, next_pos, fixed_format);
 
     // Check for optional OF/IN library-name.
     let mut library_name = None;
@@ -231,10 +238,10 @@ fn parse_copy_statement(
             || upper_rest.starts_with("IN\n")
             || upper_rest.starts_with("IN\r")
         {
-            pos = skip_whitespace(source, pos + 2);
+            pos = skip_whitespace(source, pos + 2, fixed_format);
             if let Some((lib_name, np)) = parse_cobol_word(source, pos) {
                 library_name = Some(lib_name);
-                pos = skip_whitespace(source, np);
+                pos = skip_whitespace(source, np, fixed_format);
             }
         }
     }
@@ -246,12 +253,14 @@ fn parse_copy_statement(
         if upper_rest.starts_with("REPLACING") {
             let after_replacing = pos + 9;
             if after_replacing >= len || !is_cobol_word_char(source.as_bytes()[after_replacing]) {
-                pos = skip_whitespace(source, after_replacing);
+                pos = skip_whitespace(source, after_replacing, fixed_format);
                 // Parse replacement pairs until we hit the period.
                 while pos < len && source.as_bytes()[pos] != b'.' {
-                    if let Some((pair, np)) = parse_replace_pair(source, pos) {
+                    if let Some((pair, np)) =
+                        parse_replace_pair(source, pos, fixed_format)
+                    {
                         replacings.push(pair);
-                        pos = skip_whitespace(source, np);
+                        pos = skip_whitespace(source, np, fixed_format);
                     } else {
                         break;
                     }
@@ -279,8 +288,9 @@ fn parse_replace_directive(
     source: &str,
     replace_start: usize,
     after_keyword: usize,
+    fixed_format: bool,
 ) -> Option<ReplaceDirective> {
-    let mut pos = skip_whitespace(source, after_keyword);
+    let mut pos = skip_whitespace(source, after_keyword, fixed_format);
     let len = source.len();
 
     if pos >= len {
@@ -292,7 +302,7 @@ fn parse_replace_directive(
     if upper_rest.starts_with("OFF") {
         let after_off = pos + 3;
         if after_off >= len || !is_cobol_word_char(source.as_bytes()[after_off]) {
-            pos = skip_whitespace(source, after_off);
+            pos = skip_whitespace(source, after_off, fixed_format);
             // Expect terminating period.
             if pos < len && source.as_bytes()[pos] == b'.' {
                 pos += 1;
@@ -309,9 +319,9 @@ fn parse_replace_directive(
     // Parse replacement pairs.
     let mut replacings = Vec::new();
     while pos < len && source.as_bytes()[pos] != b'.' {
-        if let Some((pair, np)) = parse_replace_pair(source, pos) {
+        if let Some((pair, np)) = parse_replace_pair(source, pos, fixed_format) {
             replacings.push(pair);
-            pos = skip_whitespace(source, np);
+            pos = skip_whitespace(source, np, fixed_format);
         } else {
             break;
         }
@@ -336,7 +346,11 @@ fn parse_replace_directive(
 
 /// Parses a single replacement pair: either `==old== BY ==new==`
 /// (pseudo-text) or `old-word BY new-word` (identifier).
-fn parse_replace_pair(source: &str, start: usize) -> Option<(ReplacePair, usize)> {
+fn parse_replace_pair(
+    source: &str,
+    start: usize,
+    fixed_format: bool,
+) -> Option<(ReplacePair, usize)> {
     let len = source.len();
     let mut pos = start;
 
@@ -352,7 +366,7 @@ fn parse_replace_pair(source: &str, start: usize) -> Option<(ReplacePair, usize)
         (word, false, np)
     };
 
-    pos = skip_whitespace(source, next_pos);
+    pos = skip_whitespace(source, next_pos, fixed_format);
 
     // Expect BY keyword.
     let upper_rest = source[pos..].to_ascii_uppercase();
@@ -363,11 +377,24 @@ fn parse_replace_pair(source: &str, start: usize) -> Option<(ReplacePair, usize)
     if after_by < len && is_cobol_word_char(source.as_bytes()[after_by]) {
         return None;
     }
-    pos = skip_whitespace(source, after_by);
+    pos = skip_whitespace(source, after_by, fixed_format);
 
     let (new_text, next_pos2) = if pos < len && source[pos..].starts_with("==") {
         let (text, np) = parse_pseudo_text(source, pos)?;
         (text, np)
+    } else if pos < len && (source.as_bytes()[pos] == b'"' || source.as_bytes()[pos] == b'\'') {
+        // Handle string literal replacement values (e.g., "TRUE ")
+        parse_string_literal(source, pos)?
+    } else if pos < len
+        && (source.as_bytes()[pos] == b'+' || source.as_bytes()[pos] == b'-')
+        && pos + 1 < len
+        && source.as_bytes()[pos + 1].is_ascii_digit()
+    {
+        // Handle signed numeric literal (e.g., +000004.99)
+        parse_numeric_literal(source, pos)?
+    } else if pos < len && source.as_bytes()[pos].is_ascii_digit() {
+        // Handle numeric literal (e.g., 12345)
+        parse_numeric_literal(source, pos)?
     } else {
         parse_cobol_word(source, pos)?
     };
@@ -399,6 +426,61 @@ fn parse_pseudo_text(source: &str, start: usize) -> Option<(String, usize)> {
     Some((text, after_close))
 }
 
+/// Parses a string literal (single or double quoted) starting at `pos`.
+/// Returns the full string including quotes and the position after it.
+fn parse_string_literal(source: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    if start >= len {
+        return None;
+    }
+
+    let quote = bytes[start];
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+
+    let mut end = start + 1;
+    while end < len {
+        if bytes[end] == quote {
+            // Check for doubled quote (escape)
+            if end + 1 < len && bytes[end + 1] == quote {
+                end += 2;
+                continue;
+            }
+            end += 1; // past the closing quote
+            return Some((source[start..end].to_string(), end));
+        }
+        end += 1;
+    }
+    None // unterminated string
+}
+
+/// Parses a numeric literal (optionally signed, with decimal point) starting at `pos`.
+/// Returns the literal text and position after it.
+fn parse_numeric_literal(source: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    if start >= len {
+        return None;
+    }
+
+    let mut end = start;
+    // Optional sign
+    if end < len && (bytes[end] == b'+' || bytes[end] == b'-') {
+        end += 1;
+    }
+    // Digits and decimal point
+    let digit_start = end;
+    while end < len && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+        end += 1;
+    }
+    if end == digit_start {
+        return None; // no digits
+    }
+    Some((source[start..end].to_string(), end))
+}
+
 /// Parses a COBOL word (letters, digits, hyphens) starting at `pos`.
 /// Returns the word and position after it.
 fn parse_cobol_word(source: &str, start: usize) -> Option<(String, usize)> {
@@ -422,13 +504,42 @@ fn parse_cobol_word(source: &str, start: usize) -> Option<(String, usize)> {
 }
 
 /// Skips whitespace and newlines starting from `pos`.
-fn skip_whitespace(source: &str, start: usize) -> usize {
+/// When `fixed_format` is true, also skips the fixed-format line prefix
+/// (columns 1-7: 6-digit sequence number + 1 indicator character) after
+/// crossing a newline boundary.
+fn skip_whitespace(source: &str, start: usize, fixed_format: bool) -> usize {
     let bytes = source.as_bytes();
+    let len = bytes.len();
     let mut pos = start;
-    while pos < bytes.len()
-        && (bytes[pos] == b' ' || bytes[pos] == b'\t' || bytes[pos] == b'\n' || bytes[pos] == b'\r')
-    {
-        pos += 1;
+    while pos < len {
+        match bytes[pos] {
+            b' ' | b'\t' | b'\r' => pos += 1,
+            b'\n' => {
+                pos += 1;
+                if fixed_format && pos < len {
+                    // Skip fixed-format line prefix (columns 1-7).
+                    // Find end of line to check its length.
+                    let line_start = pos;
+                    let mut line_end = pos;
+                    while line_end < len && bytes[line_end] != b'\n' {
+                        line_end += 1;
+                    }
+                    let line_len = line_end - line_start;
+                    if line_len >= 7 {
+                        let indicator = bytes[line_start + 6];
+                        // If indicator is '*' or '/', this is a comment line.
+                        // Skip the entire line.
+                        if indicator == b'*' || indicator == b'/' {
+                            pos = line_end;
+                            continue;
+                        }
+                        // Skip the 7-character prefix (sequence + indicator).
+                        pos = line_start + 7;
+                    }
+                }
+            }
+            _ => break,
+        }
     }
     pos
 }
@@ -440,7 +551,7 @@ mod tests {
     #[test]
     fn test_scan_simple_copy() {
         let source = "COPY mybook.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].copybook_name, "mybook");
         assert!(stmts[0].library_name.is_none());
@@ -450,7 +561,7 @@ mod tests {
     #[test]
     fn test_scan_copy_of_library() {
         let source = "COPY mybook OF mylib.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].copybook_name, "mybook");
         assert_eq!(stmts[0].library_name.as_deref(), Some("mylib"));
@@ -459,7 +570,7 @@ mod tests {
     #[test]
     fn test_scan_copy_in_library() {
         let source = "COPY mybook IN mylib.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].copybook_name, "mybook");
         assert_eq!(stmts[0].library_name.as_deref(), Some("mylib"));
@@ -468,7 +579,7 @@ mod tests {
     #[test]
     fn test_scan_copy_with_pseudo_text_replacing() {
         let source = "COPY mybook REPLACING ==OLD== BY ==NEW==.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].replacings.len(), 1);
         assert_eq!(stmts[0].replacings[0].old_text, "OLD");
@@ -479,7 +590,7 @@ mod tests {
     #[test]
     fn test_scan_copy_with_word_replacing() {
         let source = "COPY mybook REPLACING OLD-NAME BY NEW-NAME.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].replacings.len(), 1);
         assert_eq!(stmts[0].replacings[0].old_text, "OLD-NAME");
@@ -490,7 +601,7 @@ mod tests {
     #[test]
     fn test_scan_copy_multiple_replacings() {
         let source = "COPY mybook REPLACING ==:A:== BY ==X== ==:B:== BY ==Y==.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].replacings.len(), 2);
         assert_eq!(stmts[0].replacings[0].old_text, ":A:");
@@ -502,7 +613,7 @@ mod tests {
     #[test]
     fn test_scan_copy_case_insensitive() {
         let source = "copy MYBOOK.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].copybook_name, "MYBOOK");
     }
@@ -510,7 +621,7 @@ mod tests {
     #[test]
     fn test_scan_replace_directive() {
         let source = "REPLACE ==OLD== BY ==NEW==.\n";
-        let directives = scan_replace_directives(source);
+        let directives = scan_replace_directives(source, false);
         assert_eq!(directives.len(), 1);
         assert!(!directives[0].is_off);
         assert_eq!(directives[0].replacings.len(), 1);
@@ -521,7 +632,7 @@ mod tests {
     #[test]
     fn test_scan_replace_off() {
         let source = "REPLACE OFF.\n";
-        let directives = scan_replace_directives(source);
+        let directives = scan_replace_directives(source, false);
         assert_eq!(directives.len(), 1);
         assert!(directives[0].is_off);
         assert!(directives[0].replacings.is_empty());
@@ -531,14 +642,14 @@ mod tests {
     fn test_no_false_positive_on_copybook_word() {
         // "COPYBOOK" should not be recognized as a COPY statement.
         let source = "MOVE COPYBOOK TO WS-FIELD.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert!(stmts.is_empty());
     }
 
     #[test]
     fn test_multiple_copy_statements() {
         let source = "COPY a.\nCOPY b.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 2);
         assert_eq!(stmts[0].copybook_name, "a");
         assert_eq!(stmts[1].copybook_name, "b");
@@ -557,7 +668,7 @@ mod tests {
     fn test_copy_in_string_literal_ignored() {
         // COPY inside a double-quoted string should not be detected.
         let source = "MOVE \"COPY FILE DESCR\" TO FEATURE.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert!(
             stmts.is_empty(),
             "COPY inside string literal should be ignored"
@@ -567,7 +678,7 @@ mod tests {
     #[test]
     fn test_copy_in_single_quoted_string_ignored() {
         let source = "MOVE 'COPY FILE DESCR' TO FEATURE.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert!(
             stmts.is_empty(),
             "COPY inside single-quoted string should be ignored"
@@ -578,7 +689,7 @@ mod tests {
     fn test_copy_in_fixed_format_comment_ignored() {
         // Fixed format: column 7 (index 6) is '*' → comment line.
         let source = "000100*    COPY MYBOOK.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert!(
             stmts.is_empty(),
             "COPY in fixed-format comment line should be ignored"
@@ -589,7 +700,7 @@ mod tests {
     fn test_copy_in_fixed_format_comment_slash_ignored() {
         // Fixed format: column 7 (index 6) is '/' → comment line.
         let source = "000100/    COPY MYBOOK.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert!(
             stmts.is_empty(),
             "COPY in fixed-format '/' comment line should be ignored"
@@ -599,7 +710,7 @@ mod tests {
     #[test]
     fn test_copy_in_free_format_comment_ignored() {
         let source = "*> COPY MYBOOK.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert!(
             stmts.is_empty(),
             "COPY in free-format comment should be ignored"
@@ -610,7 +721,7 @@ mod tests {
     fn test_copy_after_string_still_found() {
         // COPY after a string literal should still be found.
         let source = "MOVE \"HELLO\" TO WS-FIELD.\nCOPY mybook.\n";
-        let stmts = scan_copy_statements(source);
+        let stmts = scan_copy_statements(source, false);
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].copybook_name, "mybook");
     }
@@ -618,7 +729,7 @@ mod tests {
     #[test]
     fn test_replace_in_string_literal_ignored() {
         let source = "MOVE \"REPLACE OLD BY NEW\" TO WS-FIELD.\n";
-        let directives = scan_replace_directives(source);
+        let directives = scan_replace_directives(source, false);
         assert!(
             directives.is_empty(),
             "REPLACE inside string literal should be ignored"
