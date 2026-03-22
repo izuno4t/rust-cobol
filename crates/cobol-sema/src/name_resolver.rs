@@ -243,9 +243,126 @@ impl<'a> NameResolver<'a> {
             parent_span: None,
         });
 
+        self.register_comm_item(cd.symbolic_queue.as_ref(), CobolType::Alphanumeric { size: 12 }, cd.span);
+        self.register_comm_item(
+            cd.symbolic_sub_queue_1.as_ref(),
+            CobolType::Alphanumeric { size: 12 },
+            cd.span,
+        );
+        self.register_comm_item(
+            cd.symbolic_sub_queue_2.as_ref(),
+            CobolType::Alphanumeric { size: 12 },
+            cd.span,
+        );
+        self.register_comm_item(
+            cd.symbolic_sub_queue_3.as_ref(),
+            CobolType::Alphanumeric { size: 12 },
+            cd.span,
+        );
+        self.register_comm_item(
+            cd.symbolic_source.as_ref(),
+            CobolType::Alphanumeric { size: 12 },
+            cd.span,
+        );
+        self.register_comm_item(
+            cd.destination.as_ref(),
+            CobolType::Alphanumeric { size: 12 },
+            cd.span,
+        );
+        self.register_comm_item(
+            cd.message_date.as_ref(),
+            CobolType::Numeric {
+                size: 8,
+                decimal_places: 0,
+                is_signed: false,
+            },
+            cd.span,
+        );
+        self.register_comm_item(
+            cd.text_length.as_ref(),
+            CobolType::Numeric {
+                size: 4,
+                decimal_places: 0,
+                is_signed: false,
+            },
+            cd.span,
+        );
+        self.register_comm_item(cd.end_key.as_ref(), CobolType::Alphanumeric { size: 1 }, cd.span);
+        self.register_comm_item(
+            cd.status_key.as_ref(),
+            CobolType::Alphanumeric { size: 2 },
+            cd.span,
+        );
+        self.register_comm_item(
+            cd.message_count.as_ref(),
+            CobolType::Numeric {
+                size: 6,
+                decimal_places: 0,
+                is_signed: false,
+            },
+            cd.span,
+        );
+        self.register_comm_item(
+            cd.destination_count.as_ref(),
+            CobolType::Numeric {
+                size: 4,
+                decimal_places: 0,
+                is_signed: false,
+            },
+            cd.span,
+        );
+        self.register_comm_item(cd.error_key.as_ref(), CobolType::Alphanumeric { size: 1 }, cd.span);
+        if let Some(name) = cd.message_time.as_ref() {
+            self.table.define(Symbol {
+                name: name.clone(),
+                kind: SymbolKind::DataItem {
+                    level: 1,
+                    is_group: true,
+                },
+                data_type: Some(CobolType::Group { size: 6 }),
+                span: cd.span,
+                parent_name: None,
+                parent_span: None,
+            });
+            for part in ["HRS", "MINS", "SECS"] {
+                self.table.define(Symbol {
+                    name: SmolStr::new(part),
+                    kind: SymbolKind::DataItem {
+                        level: 2,
+                        is_group: false,
+                    },
+                    data_type: Some(CobolType::Numeric {
+                        size: 2,
+                        decimal_places: 0,
+                        is_signed: false,
+                    }),
+                    span: cd.span,
+                    parent_name: Some(name.clone()),
+                    parent_span: Some(cd.span),
+                });
+            }
+        }
+
         for item in &cd.data_items {
             self.register_data_item(item, None);
         }
+    }
+
+    fn register_comm_item(&mut self, name: Option<&SmolStr>, data_type: CobolType, span: Span) {
+        let Some(name) = name else {
+            return;
+        };
+        self.table.define(Symbol {
+            name: name.clone(),
+            kind: SymbolKind::DataItem {
+                level: 77,
+                is_group: false,
+            },
+            data_type: Some(data_type),
+            span,
+            parent_name: None,
+            parent_span: None,
+        });
     }
 
     fn register_data_item(&mut self, item: &DataItem, parent_name: Option<&SmolStr>) {

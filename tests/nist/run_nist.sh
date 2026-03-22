@@ -196,6 +196,14 @@ run_program() {
     CURRENT_RUN_PID=""
 
     if [ "$exit_code" -eq 124 ]; then
+        local inspect_reason
+        inspect_reason="$(inspect_reason_for_program "$src" "$log")"
+        if [ "$inspect_reason" = "manual-report" ]; then
+            echo "INSPECT" > "$status_file"
+            printf '%s\n' "$inspect_reason" > "$reason_file"
+            echo "  $program: INSPECT (manual-report timed out waiting for external interaction)"
+            return
+        fi
         echo "TIMEOUT" > "$status_file"
         echo "  $program: TIMEOUT (exceeded ${TIMEOUT_SECONDS}s)"
         return

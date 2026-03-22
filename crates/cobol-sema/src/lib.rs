@@ -151,4 +151,28 @@ PROCEDURE DIVISION.
         let sym = result.symbol_table.lookup(&"WS-STR".into()).unwrap();
         assert!(sym.data_type.as_ref().unwrap().is_alphanumeric());
     }
+
+    #[test]
+    fn test_communication_clause_names_are_registered() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-COMM.
+DATA DIVISION.
+COMMUNICATION SECTION.
+CD CM-IN FOR INPUT
+   STATUS KEY IS STATUS-KEY
+   END KEY IS END-KEY
+   MESSAGE COUNT IS MSG-COUNT.
+PROCEDURE DIVISION.
+    MOVE STATUS-KEY TO END-KEY.
+    MOVE MSG-COUNT TO MSG-COUNT.
+    STOP RUN.
+";
+        let (result, diag) = analyze(src);
+        assert!(!result.has_errors, "{:?}", diag.diagnostics());
+        assert!(!diag.has_errors(), "{:?}", diag.diagnostics());
+        assert!(result.symbol_table.lookup(&"STATUS-KEY".into()).is_some());
+        assert!(result.symbol_table.lookup(&"END-KEY".into()).is_some());
+        assert!(result.symbol_table.lookup(&"MSG-COUNT".into()).is_some());
+    }
 }

@@ -115,6 +115,101 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_communication_section_synthetic_items() {
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-COMM.
+       DATA DIVISION.
+       COMMUNICATION SECTION.
+       CD  CM-IN FOR INPUT
+           TEXT LENGTH IS MSG-LENGTH
+           END KEY IS END-KEY
+           STATUS KEY IS STATUS-KEY
+           MESSAGE COUNT IS MSG-COUNT.
+       PROCEDURE DIVISION.
+           MOVE STATUS-KEY TO END-KEY.
+           ACCEPT CM-IN MESSAGE COUNT.
+           STOP RUN.                                                     ";
+        let program = parse(src).unwrap();
+        let data = program.data.unwrap();
+        let cd = &data.communication[0];
+        let names: Vec<_> = cd
+            .data_items
+            .iter()
+            .filter_map(|item| item.name.as_deref())
+            .collect();
+        assert!(names.contains(&"MSG-LENGTH"), "{names:?}");
+        assert!(names.contains(&"END-KEY"), "{names:?}");
+        assert!(names.contains(&"STATUS-KEY"), "{names:?}");
+        assert!(names.contains(&"MSG-COUNT"), "{names:?}");
+    }
+
+    #[test]
+    fn test_parse_communication_destination_table_synthetic_items() {
+       let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-COMM-OUT.
+       DATA DIVISION.
+       COMMUNICATION SECTION.
+       CD  CM-OUT OUTPUT
+           DESTINATION COUNT DEST-COUNT
+           DESTINATION TABLE OCCURS 2 TIMES INDEXED BY IDX-1
+           ERROR KEY ERR-KEY
+           DESTINATION SYM-DEST.
+       PROCEDURE DIVISION.
+           MOVE \"OUTQUEUE\" TO SYM-DEST (1).
+           MOVE ERR-KEY (2) TO ERR-KEY (1).
+           STOP RUN.                                                     ";
+        let program = parse(src).unwrap();
+        let data = program.data.unwrap();
+        let cd = &data.communication[0];
+        let sym_dest = cd
+            .data_items
+            .iter()
+            .find(|item| item.name.as_deref() == Some("SYM-DEST"))
+            .unwrap();
+        assert_eq!(sym_dest.occurs.as_ref().map(|o| o.max), Some(2));
+        assert_eq!(
+            sym_dest
+                .occurs
+                .as_ref()
+                .map(|o| o.indexed_by.clone())
+                .unwrap_or_default(),
+            vec!["IDX-1"]
+        );
+        let err_key = cd
+            .data_items
+            .iter()
+            .find(|item| item.name.as_deref() == Some("ERR-KEY"))
+            .unwrap();
+        assert_eq!(err_key.occurs.as_ref().map(|o| o.max), Some(2));
+    }
+
+    #[test]
+    fn test_parse_send_and_display_with_advancing_phrases() {
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-ADV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01  MSG PIC X(10).
+       PROCEDURE DIVISION.
+           DISPLAY MSG AFTER ADVANCING PAGE.
+           SEND DEST FROM MSG WITH EMI BEFORE ADVANCING THREE LINES.
+           STOP RUN.                                                     ";
+        let program = parse(src).unwrap();
+        let proc = program.procedure.unwrap();
+        let stmts: Vec<_> = proc
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.sentences.iter())
+            .flat_map(|s| s.statements.iter())
+            .collect();
+        assert!(stmts.iter().any(|s| matches!(s, Statement::Display(_))));
+        assert!(stmts.iter().any(|s| matches!(s, Statement::Send(_))));
+    }
+
+    #[test]
     fn test_parse_perform_varying() {
         let src = "\
        IDENTIFICATION DIVISION.

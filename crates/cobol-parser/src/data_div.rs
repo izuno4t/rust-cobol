@@ -264,7 +264,7 @@ impl Parser {
                     self.expect(TokenKind::Occurs)?;
                     destination_table_count = Some(self.parse_integer()?);
                     self.eat(TokenKind::Times);
-                    if self.check(TokenKind::Index) || self.check_identifier("INDEXED") {
+                    if self.check(TokenKind::Index) {
                         self.eat(TokenKind::Index);
                         self.eat_identifier("BY");
                         destination_table_indexed_by.push(self.expect_identifier()?);
@@ -324,6 +324,8 @@ impl Parser {
             status_key.as_ref(),
             message_count.as_ref(),
             destination_count.as_ref(),
+            destination_table_count,
+            &destination_table_indexed_by,
             error_key.as_ref(),
             destination.as_ref(),
             start_span,
@@ -1235,6 +1237,8 @@ fn build_communication_data_items(
     status_key: Option<&SmolStr>,
     message_count: Option<&SmolStr>,
     destination_count: Option<&SmolStr>,
+    destination_table_count: Option<u32>,
+    destination_table_indexed_by: &[SmolStr],
     error_key: Option<&SmolStr>,
     destination: Option<&SmolStr>,
     span: cobol_common::Span,
@@ -1247,7 +1251,6 @@ fn build_communication_data_items(
         symbolic_sub_queue_2,
         symbolic_sub_queue_3,
         symbolic_source,
-        destination,
     ]
     .into_iter()
     .flatten()
@@ -1277,7 +1280,22 @@ fn build_communication_data_items(
         items.push(make_numeric_item(name.clone(), "9(4)", 4, span));
     }
     if let Some(name) = error_key {
-        items.push(make_alpha_item(name.clone(), 1, span));
+        items.push(make_alpha_item_with_occurs(
+            name.clone(),
+            1,
+            destination_table_count,
+            destination_table_indexed_by,
+            span,
+        ));
+    }
+    if let Some(name) = destination {
+        items.push(make_alpha_item_with_occurs(
+            name.clone(),
+            12,
+            destination_table_count,
+            destination_table_indexed_by,
+            span,
+        ));
     }
 
     items
@@ -1297,6 +1315,28 @@ fn make_picture(raw: &str, category: PictureCategory, size: u32, span: cobol_com
 
 fn make_alpha_item(name: SmolStr, size: u32, span: cobol_common::Span) -> DataItem {
     make_item_with_picture(77, name, make_picture(&format!("X({size})"), PictureCategory::Alphanumeric, size, span), span)
+}
+
+fn make_alpha_item_with_occurs(
+    name: SmolStr,
+    size: u32,
+    occurs: Option<u32>,
+    indexed_by: &[SmolStr],
+    span: cobol_common::Span,
+) -> DataItem {
+    let mut item = make_alpha_item(name, size, span);
+    if let Some(max) = occurs {
+        item.occurs = Some(OccursClause {
+            min: None,
+            max,
+            depending_on: None,
+            ascending_keys: Vec::new(),
+            descending_keys: Vec::new(),
+            indexed_by: indexed_by.to_vec(),
+            span,
+        });
+    }
+    item
 }
 
 fn make_numeric_item(name: SmolStr, raw: &str, size: u32, span: cobol_common::Span) -> DataItem {

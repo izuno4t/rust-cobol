@@ -7,6 +7,23 @@ use smol_str::SmolStr;
 use crate::parser::Parser;
 
 impl Parser {
+    fn starts_full_condition_after_identifier(&self) -> bool {
+        if !self.check(TokenKind::Identifier) && !self.current().kind.is_keyword() {
+            return false;
+        }
+        if self.peek(1).kind == TokenKind::Of
+            || self.peek(1).kind == TokenKind::In
+            || self.peek(1).kind == TokenKind::LeftParen
+        {
+            return true;
+        }
+        if !self.peek(1).text.eq_ignore_ascii_case("IS") {
+            return false;
+        }
+        let next = self.peek(2).kind;
+        next == TokenKind::Not || is_comparison_op_kind(next)
+    }
+
     // =========================================================================
     // Qualified names
     // =========================================================================
@@ -526,12 +543,13 @@ impl Parser {
             // previous comparison.  Exclude cases where the identifier starts
             // a new full condition (followed by comparison op, subscript,
             // qualifier, or NOT).
-            if self.current().kind == TokenKind::Identifier
+            if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
                 && self.peek(1).kind != TokenKind::Of
                 && self.peek(1).kind != TokenKind::In
                 && self.peek(1).kind != TokenKind::LeftParen
+                && !self.starts_full_condition_after_identifier()
             {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;
@@ -618,12 +636,13 @@ impl Parser {
             }
 
             // Handle identifier-based abbreviated: IF A = B AND C AND D - 1
-            if self.current().kind == TokenKind::Identifier
+            if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
                 && self.peek(1).kind != TokenKind::Of
                 && self.peek(1).kind != TokenKind::In
                 && self.peek(1).kind != TokenKind::LeftParen
+                && !self.starts_full_condition_after_identifier()
             {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;

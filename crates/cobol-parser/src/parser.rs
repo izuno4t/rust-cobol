@@ -168,7 +168,7 @@ impl Parser {
     /// Check if the current token is an identifier with the given name
     /// (case-insensitive).
     pub(crate) fn check_identifier(&self, name: &str) -> bool {
-        self.current().kind == TokenKind::Identifier
+        (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
             && self.current().text.eq_ignore_ascii_case(name)
     }
 

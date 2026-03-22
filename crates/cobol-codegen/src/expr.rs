@@ -2790,6 +2790,8 @@ pub(crate) fn find_data_item_size(
             } else {
                 c_name
             }
+        } else if let Some(br) = c_name.find('[') {
+            &c_name[..br]
         } else {
             c_name
         }

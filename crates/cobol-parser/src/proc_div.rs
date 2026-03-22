@@ -10,6 +10,23 @@ use smol_str::SmolStr;
 use crate::parser::Parser;
 
 impl Parser {
+    fn parse_ignored_advancing_phrase(&mut self) {
+        if !(self.check(TokenKind::Before) || self.check(TokenKind::After)) {
+            return;
+        }
+        self.advance();
+        self.eat(TokenKind::Advancing);
+        if self.check(TokenKind::Page) {
+            self.advance();
+            return;
+        }
+        if !self.at_statement_terminator() && !self.at_statement_start() && !self.at_eof() {
+            let _ = self.parse_expr();
+        }
+        self.eat(TokenKind::Line);
+        self.eat(TokenKind::Lines);
+    }
+
     /// Parse the PROCEDURE DIVISION.
     pub fn parse_procedure_division(&mut self) -> Result<ProcedureDivision, ()> {
         let start_span = self.span();
@@ -1019,6 +1036,10 @@ impl Parser {
                 }
                 continue;
             }
+            if self.check(TokenKind::Before) || self.check(TokenKind::After) {
+                self.parse_ignored_advancing_phrase();
+                continue;
+            }
             if self.check(TokenKind::EndDisplay) {
                 self.advance();
                 break;
@@ -1182,6 +1203,9 @@ impl Parser {
         } else {
             false
         };
+        if self.check(TokenKind::Before) || self.check(TokenKind::After) {
+            self.parse_ignored_advancing_phrase();
+        }
         let end_span = self.span();
         Ok(Statement::Send(SendStatement {
             target,
