@@ -14,8 +14,27 @@ COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 NIST_WORKDIR="$ENV_ROOT/work/run"
 NIST_TMPDIR="/tmp/nist/run"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-60}"
+CURRENT_RUN_PID=""
 
 mkdir -p "$RESULTS_DIR" "$NIST_WORKDIR" "$NIST_TMPDIR"
+
+cleanup_running_job() {
+    if [ -n "${CURRENT_RUN_PID:-}" ] && kill -0 "$CURRENT_RUN_PID" 2>/dev/null; then
+        kill -TERM -- "-$CURRENT_RUN_PID" 2>/dev/null || true
+        sleep 1
+        kill -KILL -- "-$CURRENT_RUN_PID" 2>/dev/null || true
+        wait "$CURRENT_RUN_PID" 2>/dev/null || true
+    fi
+    CURRENT_RUN_PID=""
+}
+
+handle_interrupt() {
+    cleanup_running_job
+    exit 130
+}
+
+trap handle_interrupt INT TERM
+trap cleanup_running_job EXIT
 
 list_modules() {
     find "$PROGRAMS_DIR" -mindepth 1 -maxdepth 1 -type d \
@@ -168,12 +187,13 @@ run_program() {
     fi
 
     local exit_code=0
-    {
-        timeout "$TIMEOUT_SECONDS" perl -e '
-            chdir $ARGV[0] or die "chdir failed: $!";
-            exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
-        ' "$NIST_WORKDIR" "$bin"
-    } < /dev/null > "$log" 2>&1 || exit_code=$?
+    setsid timeout -k 5s "$TIMEOUT_SECONDS" perl -e '
+        chdir $ARGV[0] or die "chdir failed: $!";
+        exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
+    ' "$NIST_WORKDIR" "$bin" < /dev/null > "$log" 2>&1 &
+    CURRENT_RUN_PID=$!
+    wait "$CURRENT_RUN_PID" || exit_code=$?
+    CURRENT_RUN_PID=""
 
     if [ "$exit_code" -eq 124 ]; then
         echo "TIMEOUT" > "$status_file"

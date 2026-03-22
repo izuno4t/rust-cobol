@@ -22,6 +22,12 @@ Use the `Makefile` as the primary entry point:
 - `make fmt`: formats all Rust code.
 - `make check`: fast workspace type-check without full codegen.
 - `make example`: builds the compiler and runs `examples/hello.cob`.
+- `make nist-prepare`: extracts NIST CCVS assets from
+  `tests/nist/newcob.val` into `target/nist/programs`.
+- `make nist-run`: runs the primary GnuCOBOL-style NIST suite; pass
+  `MODULE=NC` or `PROGRAM=NC101A` to narrow scope.
+- `make nist-summary`: prints the latest aggregated NIST results from
+  `target/nist/results`.
 
 ## Coding Style & Naming Conventions
 
@@ -39,8 +45,10 @@ Add unit tests near the crate they validate, and put pipeline or CLI
 scenarios in `crates/cobol-driver/tests/e2e_test.rs` or adjacent
 integration files named `*_test.rs`. Use focused test names such as
 `test_perform_varying` that describe the COBOL feature under test. Run
-`make test` before opening a PR; use `make nist` or `make nist MODULE=NC`
-when touching standards-compliance behavior.
+`make test` before opening a PR; when touching standards-compliance
+behavior, run `make nist-prepare` once and then `make nist-run
+MODULE=NC` or a narrower module/program target. NIST artifacts are
+generated under `target/nist`, not under `tests/nist`.
 
 ## Commit & Pull Request Guidelines
 

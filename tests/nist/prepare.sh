@@ -7,6 +7,19 @@ SOURCE_VAL="${1:-$REPO_ROOT/tests/nist/newcob.val}"
 ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 EXTRACTOR="$REPO_ROOT/tests/nist/extract.pl"
+TMP_PROGRAMS_DIR=""
+BACKUP_PROGRAMS_DIR=""
+
+cleanup() {
+    if [ -n "$TMP_PROGRAMS_DIR" ] && [ -d "$TMP_PROGRAMS_DIR" ]; then
+        rm -rf "$TMP_PROGRAMS_DIR"
+    fi
+    if [ -n "$BACKUP_PROGRAMS_DIR" ] && [ -d "$BACKUP_PROGRAMS_DIR" ] && [ ! -d "$PROGRAMS_DIR" ]; then
+        mv "$BACKUP_PROGRAMS_DIR" "$PROGRAMS_DIR"
+    fi
+}
+
+trap cleanup EXIT
 
 if [ ! -f "$SOURCE_VAL" ]; then
     echo "Source archive not found: $SOURCE_VAL" >&2
@@ -18,13 +31,22 @@ if [ ! -f "$EXTRACTOR" ]; then
     exit 1
 fi
 
-if [ -d "$PROGRAMS_DIR" ] && find "$PROGRAMS_DIR" -mindepth 1 -print -quit | grep -q .; then
-    echo "Refusing to overwrite non-empty directory: $PROGRAMS_DIR" >&2
-    echo "Remove it manually if you want to regenerate this environment." >&2
-    exit 1
+mkdir -p "$ENV_ROOT"
+TMP_PROGRAMS_DIR="$(mktemp -d "$ENV_ROOT/programs.tmp.XXXXXX")"
+perl "$EXTRACTOR" "$SOURCE_VAL" "$TMP_PROGRAMS_DIR"
+
+if [ -d "$PROGRAMS_DIR" ]; then
+    BACKUP_PROGRAMS_DIR="${PROGRAMS_DIR}.bak.$$"
+    rm -rf "$BACKUP_PROGRAMS_DIR"
+    mv "$PROGRAMS_DIR" "$BACKUP_PROGRAMS_DIR"
 fi
 
-mkdir -p "$PROGRAMS_DIR"
-perl "$EXTRACTOR" "$SOURCE_VAL" "$PROGRAMS_DIR"
+mv "$TMP_PROGRAMS_DIR" "$PROGRAMS_DIR"
+TMP_PROGRAMS_DIR=""
+
+if [ -n "$BACKUP_PROGRAMS_DIR" ] && [ -d "$BACKUP_PROGRAMS_DIR" ]; then
+    rm -rf "$BACKUP_PROGRAMS_DIR"
+    BACKUP_PROGRAMS_DIR=""
+fi
 
 echo "Prepared NIST programs in: $PROGRAMS_DIR"

@@ -4,8 +4,12 @@
 CARGO := cargo
 BINARY := cobolc
 INSTALL_DIR := $(HOME)/.cargo/bin
+NIST_COBOLC := $(CURDIR)/target/release/cobol-driver
 
-.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist nist-summary help
+.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary help
+
+NIST_ENV_ROOT ?= $(CURDIR)/target/nist
+NIST_SOURCE_VAL ?=
 
 ## デフォルト: リリースビルド
 all: release
@@ -73,13 +77,24 @@ example: release
 	@echo "--- Running hello ---"
 	@/tmp/hello
 
-## NIST CCVS 85 テスト実行 (モジュール指定: make nist MODULE=NC)
-nist: release
-	COBOLC="$(CARGO) run --release --package cobol-driver --" tests/nist/run_nist.sh $(or $(MODULE),--all)
+## NIST CCVS 85 テスト準備
+nist-prepare:
+	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/prepare.sh $(NIST_SOURCE_VAL)
+
+## NIST CCVS 85 テスト実行
+nist-run:
+	@test -x "$(NIST_COBOLC)" || $(MAKE) release
+	@test -d "$(NIST_ENV_ROOT)/programs" || \
+		( echo "NIST programs are not prepared in $(NIST_ENV_ROOT)/programs"; \
+		  echo "Run 'make nist-prepare' first."; \
+		  exit 1 )
+	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
+	COBOLC="$(NIST_COBOLC)" \
+	bash tests/nist/run_nist.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
 ## NIST 結果サマリー
 nist-summary:
-	tests/nist/run_nist.sh --summary
+	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/run_nist.sh --summary
 
 ## ヘルプ
 help:
@@ -99,7 +114,9 @@ help:
 	@echo "  make install     - cobolc を ~/.cargo/bin にインストール"
 	@echo "  make uninstall   - cobolc をアンインストール"
 	@echo "  make example     - examples/hello.cob をコンパイル・実行"
-	@echo "  make nist        - NIST CCVS 85 全モジュール実行"
-	@echo "  make nist MODULE=NC - NIST 特定モジュール実行"
+	@echo "  make nist-prepare - NIST 資材を target/nist/programs に展開"
+	@echo "  make nist-run     - NIST CCVS 85 全モジュール実行"
+	@echo "  make nist-run MODULE=NC - NIST 特定モジュール実行"
+	@echo "  make nist-run MODULE=NC PROGRAM=NC101A - NIST 単一プログラム実行"
 	@echo "  make nist-summary - NIST 結果サマリー表示"
 	@echo "  make help        - このヘルプ表示"

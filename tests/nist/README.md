@@ -26,7 +26,7 @@ summary counts first, report layout second.
 ## Setup
 
 ```bash
-tests/nist/prepare.sh
+make nist-prepare
 ```
 
 By default this reads `tests/nist/newcob.val` and extracts programs into
@@ -35,11 +35,15 @@ By default this reads `tests/nist/newcob.val` and extracts programs into
 ## Usage
 
 ```bash
-bash tests/nist/run_nist.sh NC
-bash tests/nist/run_nist.sh NC NC101A
-bash tests/nist/run_nist.sh --all
-bash tests/nist/run_nist.sh --summary
+make nist-prepare
+make nist-run
+make nist-run MODULE=NC
+make nist-run MODULE=NC PROGRAM=NC101A
+make nist-summary
 ```
+
+The same `make nist-prepare` and `make nist-run` flow is intended for
+both local execution and CI jobs.
 
 ## Result Model
 
