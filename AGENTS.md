@@ -50,6 +50,13 @@ behavior, run `make nist-prepare` once and then `make nist-run
 MODULE=NC` or a narrower module/program target. NIST artifacts are
 generated under `target/nist`, not under `tests/nist`.
 
+## Work Process
+
+After any implementation change or test expectation change, run the
+directly affected test target immediately, then run the full test suite
+for the affected crate before reporting completion unless that is
+impossible.
+
 ## Commit & Pull Request Guidelines
 
 Recent history favors short, imperative subjects with conventional

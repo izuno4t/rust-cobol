@@ -251,8 +251,10 @@ PROCEDURE DIVISION.
     STOP RUN.
 ";
         let c_code = parse_lower_generate(src);
+        let inner_increment =
+            "cobol_store_numeric_display(cobol_display_to_int64((const uint8_t*)&(J), 2) +";
         let incr_pos = c_code
-            .find("J += ")
+            .find(inner_increment)
             .expect("expected inner increment");
         assert!(
             c_code[..incr_pos].contains("break;"),
