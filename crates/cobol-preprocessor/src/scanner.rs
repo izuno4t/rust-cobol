@@ -406,7 +406,7 @@ fn parse_replace_pair(
 }
 
 /// Parses pseudo-text delimited by `==` ... `==`.
-/// Returns the text between delimiters (trimmed) and position after closing `==`.
+/// Returns the raw text between delimiters and position after closing `==`.
 fn parse_pseudo_text(source: &str, start: usize) -> Option<(String, usize)> {
     if !source[start..].starts_with("==") {
         return None;
@@ -416,7 +416,7 @@ fn parse_pseudo_text(source: &str, start: usize) -> Option<(String, usize)> {
     let rest = &source[content_start..];
 
     let close_pos = rest.find("==")?;
-    let text = rest[..close_pos].trim().to_string();
+    let text = rest[..close_pos].to_string();
     let after_close = content_start + close_pos + 2;
 
     Some((text, after_close))
@@ -657,7 +657,7 @@ mod tests {
         let result = parse_pseudo_text(source, 0);
         assert!(result.is_some());
         let (text, _) = result.unwrap();
-        assert_eq!(text, "HELLO WORLD");
+        assert_eq!(text, "  HELLO WORLD  ");
     }
 
     #[test]

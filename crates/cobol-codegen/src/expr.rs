@@ -2416,6 +2416,9 @@ pub(crate) fn collect_file_names(program: &HirProgram) -> Vec<String> {
             collect_file_names_stmt(stmt, &mut names);
         }
     }
+    for nested in &program.nested_programs {
+        names.extend(collect_file_names(nested));
+    }
     names.into_iter().collect()
 }
 

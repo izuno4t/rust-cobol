@@ -104,12 +104,70 @@ pub fn preprocess(
     // Phase 2: Apply REPLACE directives.
     let fixed = config.source_format == SourceFormat::Fixed;
     let replaced = replacer::apply_replace(&expanded, &mut reporter, fixed);
+    let replaced = if fixed {
+        reflow_fixed_format_source(&replaced)
+    } else {
+        replaced
+    };
 
     PreprocessedSource {
         source: replaced,
         diagnostics: reporter.take_diagnostics(),
         effective_source_format: config.source_format,
     }
+}
+
+fn reflow_fixed_format_source(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+
+    for line in source.split('\n') {
+        let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
+        let (indicator, content) =
+            if line_no_cr.len() >= 7 && line_no_cr.as_bytes()[..6].iter().all(u8::is_ascii_digit) {
+                (line_no_cr.as_bytes()[6] as char, &line_no_cr[7..])
+            } else if line_no_cr.len() >= 7
+                && line_no_cr.as_bytes()[..6].iter().all(|b| *b == b' ')
+            {
+                (line_no_cr.as_bytes()[6] as char, &line_no_cr[7..])
+            } else {
+                (' ', line_no_cr)
+            };
+
+        if indicator == '*' || indicator == '/' {
+            out.push_str("      ");
+            out.push(indicator);
+            out.push_str(content);
+            out.push('\n');
+            continue;
+        }
+
+        let mut remaining = content;
+        let mut first = true;
+        while !remaining.is_empty() {
+            let take = remaining
+                .char_indices()
+                .nth(65)
+                .map(|(idx, _)| idx)
+                .unwrap_or(remaining.len());
+            let chunk = &remaining[..take];
+            out.push_str("      ");
+            out.push(if first { indicator } else { '-' });
+            out.push_str(chunk);
+            out.push('\n');
+            remaining = &remaining[take..];
+            first = false;
+        }
+        if content.is_empty() {
+            out.push_str("      ");
+            out.push(indicator);
+            out.push('\n');
+        }
+    }
+
+    if !source.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 /// Strips columns 73-80 (the identification area) from each line of fixed-format
@@ -130,6 +188,54 @@ fn strip_fixed_format_columns(source: &str) -> String {
     // Remove the trailing newline we added if source didn't end with one
     if !source.ends_with('\n') && !source.ends_with("\r\n") {
         result.pop(); // remove trailing '\n'
+    }
+    result
+}
+
+/// Normalizes fixed-format copybook content before COPY expansion.
+///
+/// Copybooks are spliced into the including line at the COPY keyword position,
+/// so their sequence area (columns 1-6) and indicator area (column 7) must be
+/// removed. Identification area columns 73-80 are also stripped.
+fn normalize_fixed_format_copybook(source: &str, first_line_inline: bool) -> String {
+    let mut result = String::with_capacity(source.len());
+    for (idx, line) in source.split('\n').enumerate() {
+        let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
+        let line_no_id = if line_no_cr.len() > 72 {
+            &line_no_cr[..72]
+        } else {
+            line_no_cr
+        };
+        let indicator = if line_no_id.len() >= 7 {
+            line_no_id.as_bytes()[6] as char
+        } else {
+            ' '
+        };
+        let content = if line_no_id.len() >= 7 {
+            line_no_id[7..].trim_start_matches(' ')
+        } else {
+            ""
+        };
+        if idx == 0 {
+            if first_line_inline {
+                if !content.is_empty() {
+                    result.push(' ');
+                }
+                result.push_str(content);
+            } else {
+                result.push_str("      ");
+                result.push(indicator);
+                result.push_str(content);
+            }
+        } else {
+            result.push_str("      ");
+            result.push(indicator);
+            result.push_str(content);
+        }
+        result.push('\n');
+    }
+    if !source.ends_with('\n') && !source.ends_with("\r\n") {
+        result.pop();
     }
     result
 }
@@ -166,7 +272,22 @@ fn expand_copy(
 
     for stmt in &copy_stmts {
         // Append text before this COPY statement.
-        result.push_str(&source[last_end..stmt.start]);
+        let prefix = &source[last_end..stmt.start];
+        let first_line_inline = if fixed {
+            if let Some(line_start) = prefix.rfind('\n') {
+                let inline = !prefix[line_start + 1..].trim_end_matches(' ').is_empty();
+                result.push_str(&prefix[..line_start + 1]);
+                result.push_str(prefix[line_start + 1..].trim_end_matches(' '));
+                inline
+            } else {
+                let inline = !prefix.trim_end_matches(' ').is_empty();
+                result.push_str(prefix.trim_end_matches(' '));
+                inline
+            }
+        } else {
+            result.push_str(prefix);
+            false
+        };
 
         // Resolve the copybook file.
         match resolver.resolve(&stmt.copybook_name, stmt.library_name.as_deref()) {
@@ -187,19 +308,27 @@ fn expand_copy(
                 } else {
                     match std::fs::read_to_string(&path) {
                         Ok(content) => {
-                            // Strip identification area from copybook
-                            // content if in fixed format.
                             let content = if config.source_format == SourceFormat::Fixed {
                                 strip_fixed_format_columns(&content)
                             } else {
                                 content
                             };
 
-                            // Apply REPLACING if specified.
+                            // Apply REPLACING before fixed-format normalization so
+                            // pseudo-text matching can still see continuation lines.
                             let content = if stmt.replacings.is_empty() {
                                 content
                             } else {
                                 replacer::apply_replacing(&content, &stmt.replacings)
+                            };
+
+                            // Normalize fixed-format copybooks before inlining.
+                            // Keeping columns 1-7 would leak copybook sequence
+                            // numbers into the caller's content area.
+                            let content = if config.source_format == SourceFormat::Fixed {
+                                normalize_fixed_format_copybook(&content, first_line_inline)
+                            } else {
+                                content
                             };
 
                             // Recursively expand nested COPY statements.

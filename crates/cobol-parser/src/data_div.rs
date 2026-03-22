@@ -284,7 +284,7 @@ impl Parser {
                 if self.check_identifier("ARE") {
                     self.advance();
                 }
-                while self.check(TokenKind::Identifier) || self.check(TokenKind::LevelNumber) {
+                while self.check(TokenKind::Identifier) {
                     self.advance();
                     // skip comma separators between record names
                     self.eat(TokenKind::Comma);

@@ -17,8 +17,7 @@ pub fn apply_replacing(content: &str, replacings: &[ReplacePair]) -> String {
 
     for pair in replacings {
         if pair.is_pseudo_text {
-            // Pseudo-text: literal substring replacement.
-            result = result.replace(&pair.old_text, &pair.new_text);
+            result = replace_pseudo_text(&result, &pair.old_text, &pair.new_text);
         } else {
             // Word replacement: replace whole-word occurrences.
             result = replace_whole_word(&result, &pair.old_text, &pair.new_text);
@@ -120,6 +119,134 @@ fn replace_whole_word(text: &str, old: &str, new: &str) -> String {
     result
 }
 
+fn replace_pseudo_text(text: &str, old: &str, new: &str) -> String {
+    let old_norm = normalize_pseudo_text(old);
+    if old_norm.is_empty() {
+        return text.to_string();
+    }
+
+    let new_norm = normalize_pseudo_text(new);
+    let token_only = is_single_cobol_token(&old_norm);
+
+    let mut raw = text.to_string();
+    loop {
+        let normalized = normalize_for_matching(&raw);
+        let Some((start_norm, end_norm)) = find_pseudo_match(&normalized.text, &old_norm, token_only)
+        else {
+            break;
+        };
+
+        let start_raw = normalized.map[start_norm];
+        let end_raw = normalized.map[end_norm - 1] + 1;
+        raw.replace_range(start_raw..end_raw, &new_norm);
+    }
+
+    raw
+}
+
+fn find_pseudo_match(text: &str, pattern: &str, token_only: bool) -> Option<(usize, usize)> {
+    let text_upper = text.to_ascii_uppercase();
+    let pattern_upper = pattern.to_ascii_uppercase();
+    let text_bytes = text.as_bytes();
+    let mut pos = 0;
+
+    while let Some(found) = text_upper[pos..].find(&pattern_upper) {
+        let start = pos + found;
+        let end = start + pattern.len();
+        if !token_only || is_token_boundary(text_bytes, start, end) {
+            return Some((start, end));
+        }
+        pos = start + 1;
+    }
+
+    None
+}
+
+fn is_token_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
+    let before_ok = start == 0 || !is_cobol_word_char(bytes[start - 1]);
+    let after_ok = end >= bytes.len() || !is_cobol_word_char(bytes[end]);
+    before_ok && after_ok
+}
+
+fn is_single_cobol_token(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    !bytes.is_empty() && bytes.iter().copied().all(is_cobol_word_char)
+}
+
+struct NormalizedText {
+    text: String,
+    map: Vec<usize>,
+}
+
+fn normalize_for_matching(raw: &str) -> NormalizedText {
+    let mut text = String::with_capacity(raw.len());
+    let mut map = Vec::with_capacity(raw.len());
+    let mut pending_space = false;
+    let mut offset = 0;
+    let mut previous_line_ended_with_space = false;
+
+    for line in raw.split_inclusive('\n') {
+        let has_newline = line.ends_with('\n');
+        let line_no_nl = line.strip_suffix('\n').unwrap_or(line);
+        let line_no_cr = line_no_nl.strip_suffix('\r').unwrap_or(line_no_nl);
+        let visible = if line_no_cr.len() > 72 {
+            &line_no_cr[..72]
+        } else {
+            line_no_cr
+        };
+        let bytes = visible.as_bytes();
+
+        let (indicator, start_idx) = if bytes.len() >= 7 && bytes[..6].iter().all(u8::is_ascii_digit)
+        {
+            (bytes[6], 7)
+        } else {
+            (b' ', 0)
+        };
+
+        let mut suppress_leading_space = false;
+        if indicator == b'-' {
+            pending_space = previous_line_ended_with_space;
+            suppress_leading_space = !previous_line_ended_with_space;
+        } else if !text.is_empty() {
+            pending_space = true;
+        }
+
+        let mut line_ended_with_space = false;
+        for (idx, b) in bytes.iter().copied().enumerate().skip(start_idx) {
+            if b == b' ' || b == b'\t' {
+                if suppress_leading_space {
+                    continue;
+                }
+                pending_space = true;
+                line_ended_with_space = true;
+                continue;
+            }
+
+            suppress_leading_space = false;
+            if pending_space && !text.is_empty() {
+                text.push(' ');
+                map.push(offset + idx);
+            }
+            pending_space = false;
+            line_ended_with_space = false;
+            text.push(b as char);
+            map.push(offset + idx);
+        }
+
+        previous_line_ended_with_space = line_ended_with_space;
+        offset += line.len();
+        if !has_newline {
+            break;
+        }
+    }
+
+    NormalizedText { text, map }
+}
+
+fn normalize_pseudo_text(raw: &str) -> String {
+    normalize_for_matching(raw).text
+}
+
 fn is_cobol_word_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
@@ -138,6 +265,18 @@ mod tests {
         }];
         let result = apply_replacing(content, &replacings);
         assert_eq!(result, "01 WS-NAME PIC X.");
+    }
+
+    #[test]
+    fn test_apply_replacing_pseudo_text_respects_token_boundaries() {
+        let content = "ADD 001005 TO WRK-DS-09V00-901.";
+        let replacings = vec![ReplacePair {
+            old_text: "001".to_string(),
+            new_text: "3".to_string(),
+            is_pseudo_text: true,
+        }];
+        let result = apply_replacing(content, &replacings);
+        assert_eq!(result, content);
     }
 
     #[test]

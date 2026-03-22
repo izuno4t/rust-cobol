@@ -89,27 +89,10 @@ pub fn generate_c(program: &HirProgram) -> String {
     // Runtime function declarations
     emit_runtime_declarations(&mut out);
 
-    // Build set of FD record alias names to skip during data item emission.
-    let fd_alias_set: HashSet<String> = program
-        .fd_record_aliases
-        .keys()
-        .map(|k| sanitize_name(k))
-        .collect();
-
-    // Global data items (skip FD record aliases — they'll be #defined below)
+    // Global data items
     let t_data = std::time::Instant::now();
-    emit_data_items(&mut out, &program.data_items, &fd_alias_set);
+    emit_data_items(&mut out, &program.data_items, &HashSet::new());
     cg_timing!("emit_data_items", t_data);
-
-    // FD record aliases: multiple 01-level items under the same FD share storage.
-    // Emit #define macros so they all reference the first record's variable.
-    for (alias, primary) in &program.fd_record_aliases {
-        let c_alias = sanitize_name(alias);
-        let c_primary = sanitize_name(primary);
-        out.push_str(&format!(
-            "#define {c_alias} {c_primary} /* FD record alias */\n"
-        ));
-    }
 
     // COBOL 2002+: Emit class definitions (struct + vtable)
     emit_classes(&mut out, &program.classes);
@@ -408,6 +391,23 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
     let prog_name = sanitize_name(&program.name);
     let ctx = with_active_context(|parent| CodegenContext::merged_with_program(parent, program));
     with_pushed_context(&ctx, || {
+    let nested_data_names = collect_top_level_data_item_c_names(program);
+    for c_name in &nested_data_names {
+        out.push_str(&format!("#undef {c_name}\n"));
+        out.push_str(&format!("#define {c_name} {prog_name}__{c_name}\n"));
+    }
+    if !nested_data_names.is_empty() {
+        out.push('\n');
+    }
+
+    for para in &program.paragraphs {
+        let c_name = sanitize_name(&para.name);
+        out.push_str(&format!("#undef para_{c_name}\n"));
+        out.push_str(&format!("#define para_{c_name} para_{prog_name}__{c_name}\n"));
+    }
+    if !program.paragraphs.is_empty() {
+        out.push('\n');
+    }
 
     // Emit data items as function-scope statics
     let nested_fd_aliases: HashSet<String> = program
@@ -416,6 +416,14 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
         .map(|k| sanitize_name(k))
         .collect();
     emit_data_items(out, &program.data_items, &nested_fd_aliases);
+
+    for nested in &program.nested_programs {
+        let nested_name = sanitize_name(&nested.name);
+        out.push_str(&format!("void {nested_name}(void);\n"));
+    }
+    if !program.nested_programs.is_empty() {
+        out.push('\n');
+    }
 
     // Forward-declare paragraph functions for this nested program.
     // Use the same para_{name} convention; if names collide with the parent,
@@ -500,10 +508,44 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
     }
 
     // Recursively emit any further nested programs
-        for nested in &program.nested_programs {
-            emit_nested_program(out, nested);
+    for nested in &program.nested_programs {
+        emit_nested_program(out, nested);
+    }
+    if !program.paragraphs.is_empty() {
+        out.push('\n');
+        for para in &program.paragraphs {
+            let c_name = sanitize_name(&para.name);
+            out.push_str(&format!("#undef para_{c_name}\n"));
         }
+    }
+    if !nested_data_names.is_empty() {
+        out.push('\n');
+        for c_name in &nested_data_names {
+            out.push_str(&format!("#undef {c_name}\n"));
+        }
+    }
     });
+}
+
+fn collect_top_level_data_item_c_names(program: &HirProgram) -> Vec<String> {
+    let group_member_names = collect_group_member_names(&program.data_items);
+    let fd_aliases: HashSet<String> = program
+        .fd_record_aliases
+        .keys()
+        .map(|k| sanitize_name(k))
+        .collect();
+    let mut names = BTreeSet::new();
+    for item in &program.data_items {
+        let c_name = sanitize_name(&item.name);
+        if group_member_names.contains(&c_name) {
+            continue;
+        }
+        if fd_aliases.contains(&c_name) {
+            continue;
+        }
+        names.insert(c_name);
+    }
+    names.into_iter().collect()
 }
 
 /// Collect all Label statements from the body and assign each a unique integer ID.
