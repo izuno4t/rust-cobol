@@ -118,6 +118,14 @@ impl Parser {
         &self.reporter
     }
 
+    pub(crate) fn checkpoint(&self) -> usize {
+        self.pos
+    }
+
+    pub(crate) fn restore(&mut self, pos: usize) {
+        self.pos = pos;
+    }
+
     /// Take ownership of diagnostics reporter.
     pub fn take_diagnostics(&mut self) -> DiagnosticReporter {
         std::mem::take(&mut self.reporter)

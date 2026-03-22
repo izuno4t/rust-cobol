@@ -28,6 +28,78 @@ ALL_MODULES=(NC SM IC SQ IF IX RL ST RW DB SG OB)
 mkdir -p "$RESULTS_DIR"
 mkdir -p "$NIST_WORKDIR"
 
+print_status_group() {
+    local module="$1"
+    local status_name="$2"
+    local label="$3"
+    local mod_results="$RESULTS_DIR/$module"
+    local matches=()
+    local status_file
+
+    [ -d "$mod_results" ] || return 0
+
+    for status_file in "$mod_results"/*.status; do
+        [ -f "$status_file" ] || continue
+        if [ "$(cat "$status_file")" != "$status_name" ]; then
+            continue
+        fi
+        local program
+        program="$(basename "$status_file" .status)"
+        matches+=("$program")
+    done
+
+    if [ "${#matches[@]}" -gt 0 ]; then
+        echo "  $label: ${matches[*]}"
+    fi
+}
+
+print_module_diagnostics() {
+    local module="$1"
+
+    echo "  Detailed Results:"
+    print_status_group "$module" "FAIL" "FAIL"
+    print_status_group "$module" "COMPILE_ERROR" "COMPILE_ERROR"
+    print_status_group "$module" "RUNTIME_ERROR" "RUNTIME_ERROR"
+    print_status_group "$module" "TIMEOUT" "TIMEOUT"
+    print_status_group "$module" "INSPECT" "INSPECT"
+}
+
+print_single_result_summary() {
+    local module="$1"
+    local program="$2"
+    local status_file="$RESULTS_DIR/${module}/${program}.status"
+    local log_file="$RESULTS_DIR/${module}/${program}.log"
+    local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
+
+    if [ ! -f "$status_file" ]; then
+        echo ""
+        echo "--- Result Summary ---"
+        echo "  $program: status file not found"
+        return
+    fi
+
+    local status
+    status="$(cat "$status_file")"
+
+    echo ""
+    echo "--- Result Summary ---"
+    echo "  Module: $module"
+    echo "  Program: $program"
+    echo "  Status: $status"
+
+    if [ -f "$log_file" ] && [ -s "$log_file" ]; then
+        local pass fail
+        pass=$(grep -ca " PASS " "$log_file" 2>/dev/null) || pass=0
+        fail=$(grep -ca "FAIL\*" "$log_file" 2>/dev/null) || fail=0
+        echo "  Output Log: $log_file"
+        echo "  PASS markers: $pass | FAIL markers: $fail"
+    fi
+
+    if [ "$status" = "COMPILE_ERROR" ] && [ -f "$compile_log" ]; then
+        echo "  Compile Log: $compile_log"
+    fi
+}
+
 # Compile and run a single test program
 run_program() {
     local module="$1"
@@ -53,8 +125,18 @@ run_program() {
     local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
     if $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" 2>"$compile_log"; then
         # Run with timeout (60 seconds)
-        # Execute in target/nist so output files don't pollute the repo
-        if timeout 60 bash -c "cd \"$NIST_WORKDIR\" && \"$bin\"" < /dev/null > "$log" 2>&1; then
+        # Execute in target/nist so output files don't pollute the repo.
+        # Run directly rather than through `bash -c` to avoid noisy shell
+        # diagnostics like "Segmentation fault" on every crash.
+        local exit_code=0
+        {
+            timeout 60 perl -e '
+                chdir $ARGV[0] or die "chdir failed: $!";
+                exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
+            ' "$NIST_WORKDIR" "$bin"
+        } < /dev/null > "$log" 2>&1 || exit_code=$?
+
+        if [ "$exit_code" -eq 0 ]; then
             # NIST programs write to PRINT-FILE, also check stdout
             local print_file="/tmp/nist/P"
             local result_file="$log"
@@ -83,7 +165,6 @@ run_program() {
                 echo "  $program: INSPECT (manual review needed)"
             fi
         else
-            local exit_code=$?
             if [ "$exit_code" -eq 124 ]; then
                 echo "TIMEOUT" > "$status_file"
                 echo "  $program: TIMEOUT (exceeded 60s)"
@@ -153,6 +234,7 @@ run_module() {
     echo "  Total: $total | Tested: $tested | Pass: $pass | Fail: $fail"
     echo "  Compile Error: $compile_err | Runtime Error: $runtime_err | Timeout: $timeout"
     echo "  Pass Rate: ${pass_rate}%"
+    print_module_diagnostics "$module"
     echo ""
 
     # Save module summary
@@ -240,6 +322,7 @@ case "${1:-}" in
         module="$1"
         if [ -n "${2:-}" ]; then
             run_program "$module" "$2"
+            print_single_result_summary "$module" "$2"
         else
             run_module "$module"
         fi

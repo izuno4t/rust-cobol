@@ -284,6 +284,10 @@ pub enum HirStatement {
         to: Vec<HirMoveTarget>,
         span: Span,
     },
+    SetSwitchStatus {
+        assignments: Vec<(SmolStr, bool)>,
+        span: Span,
+    },
     /// MOVE CORRESPONDING: move matching fields from source group to target group.
     MoveCorresponding {
         from: SmolStr,
@@ -675,12 +679,13 @@ pub enum HirUnaryOp {
 }
 
 /// Class condition types for IS NUMERIC, IS ALPHABETIC, etc.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirClassType {
     Numeric,
     Alphabetic,
     AlphabeticLower,
     AlphabeticUpper,
+    Custom(SmolStr),
 }
 
 /// A conditional expression in the HIR.
@@ -966,6 +971,13 @@ fn write_stmt(
                 format_expr(from),
                 targets.join(", ")
             )
+        }
+        HirStatement::SetSwitchStatus { assignments, .. } => {
+            let rendered: Vec<_> = assignments
+                .iter()
+                .map(|(target, value)| format!("{target} TO {}", if *value { "ON" } else { "OFF" }))
+                .collect();
+            writeln!(f, "{pad}SET {}", rendered.join(" "))
         }
         HirStatement::MoveCorresponding { from, to, .. } => {
             writeln!(f, "{pad}MOVE CORRESPONDING {from} TO {to}")

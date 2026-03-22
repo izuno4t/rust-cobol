@@ -256,7 +256,10 @@ pub unsafe extern "C" fn cobol_decimal_to_int64(d: *const CobolDecimal) -> i64 {
     if d.scale <= 0 {
         d.value
     } else {
-        d.value / 10_i64.pow(d.scale as u32)
+        match 10_i64.checked_pow(d.scale as u32) {
+            Some(divisor) if divisor != 0 => d.value / divisor,
+            _ => 0,
+        }
     }
 }
 

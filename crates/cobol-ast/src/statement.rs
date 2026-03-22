@@ -678,6 +678,10 @@ pub enum SetKind {
         conditions: Vec<QualifiedName>,
         value: bool,
     },
+    /// SET switch-name TO ON/OFF [switch-name TO ON/OFF]...
+    SwitchStatus {
+        assignments: Vec<(QualifiedName, bool)>,
+    },
     /// SET pointer TO ADDRESS OF identifier.
     Address {
         target: QualifiedName,

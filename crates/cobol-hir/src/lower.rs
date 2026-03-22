@@ -91,6 +91,23 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     if let Some(ref env) = program.environment {
         if let Some(ref config) = env.configuration {
             for entry in &config.special_names {
+                if let Some(user_name) = &entry.user_name {
+                    data_items.push(HirDataItem {
+                        name: user_name.clone(),
+                        data_type: HirType::Numeric {
+                            size: 1,
+                            decimal_places: 0,
+                            is_signed: false,
+                        },
+                        initial_value: Some(HirLiteral::Integer(0)),
+                        redefines: None,
+                        renames: None,
+                        occurs: None,
+                        indexed_by: Vec::new(),
+                        screen_info: None,
+                        span: entry.span,
+                    });
+                }
                 for cond_name in entry.on_condition.iter().chain(entry.off_condition.iter()) {
                     data_items.push(HirDataItem {
                         name: cond_name.clone(),
@@ -687,6 +704,8 @@ fn lower_procedure_division(
     // cause C-level label/function redefinition errors.
     let mut seen_para_names: std::collections::HashSet<SmolStr> =
         paragraphs.iter().map(|p| p.name.clone()).collect();
+    let mut seen_effective_names: std::collections::HashSet<SmolStr> =
+        paragraphs.iter().map(|p| p.name.clone()).collect();
     for section in &proc.sections {
         // Collect all statements in this section for the section-level paragraph
         let mut section_stmts = Vec::new();
@@ -699,11 +718,25 @@ fn lower_procedure_division(
             // If this paragraph name already exists in another section,
             // qualify it with the section name to avoid C-level collisions.
             let effective_name = if seen_para_names.contains(&para.name) {
-                let qualified: SmolStr = format!("{}--{}", section.name, para.name).into();
-                qualified
+                let base: SmolStr = format!("{}--{}", section.name, para.name).into();
+                if seen_effective_names.insert(base.clone()) {
+                    base
+                } else {
+                    let mut counter = 2usize;
+                    loop {
+                        let candidate: SmolStr =
+                            format!("{}--{}--{}", section.name, para.name, counter).into();
+                        if seen_effective_names.insert(candidate.clone()) {
+                            break candidate;
+                        }
+                        counter += 1;
+                    }
+                }
             } else {
                 seen_para_names.insert(para.name.clone());
-                para.name.clone()
+                let base = para.name.clone();
+                seen_effective_names.insert(base.clone());
+                base
             };
             body.push(HirStatement::Label {
                 name: effective_name.clone(),
@@ -1601,6 +1634,13 @@ fn lower_set(
                 span: set.span,
             }
         }
+        SetKind::SwitchStatus { assignments } => HirStatement::SetSwitchStatus {
+            assignments: assignments
+                .iter()
+                .map(|(target, value)| (target.name.clone(), *value))
+                .collect(),
+            span: set.span,
+        },
         SetKind::Address { target, source } => HirStatement::SetAddress {
             target: target.name.clone(),
             source: source.name.clone(),
@@ -2161,6 +2201,7 @@ fn lower_condition(
                 ClassType::AlphabeticLower => HirClassType::AlphabeticLower,
                 ClassType::AlphabeticUpper => HirClassType::AlphabeticUpper,
                 ClassType::National => HirClassType::Alphabetic, // fallback for NATIONAL
+                ClassType::Custom(name) => HirClassType::Custom(name.clone()),
             };
             let cond = HirCondition::ClassCondition {
                 operand: lower_expr(operand),

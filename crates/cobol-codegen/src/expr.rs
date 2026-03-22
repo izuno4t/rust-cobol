@@ -4,6 +4,14 @@ pub(crate) fn emit_expr(expr: &HirExpr) -> String {
     with_active_context(|ctx| emit_expr_with_ctx(expr, ctx))
 }
 
+pub(crate) fn display_numeric_ptr(expr: &str) -> String {
+    format!("(uint8_t*)&({expr})")
+}
+
+pub(crate) fn display_numeric_const_ptr(expr: &str) -> String {
+    format!("(const uint8_t*)&({expr})")
+}
+
 pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String {
     let emit_expr = |expr| super::emit_expr_with_ctx(expr, ctx);
     let emit_expr_as_numeric = |expr| super::emit_expr_as_numeric_with_ctx(expr, ctx);
@@ -641,7 +649,10 @@ pub(crate) fn emit_subscript_access(
 ) -> String {
     let c_name = sanitize_name(variable);
     // Check if we have pre-computed path info for this variable (nested OCCURS)
-    let path_info = with_active_context(|ctx| ctx.subscript_path(&c_name));
+    let path_info = with_active_context(|ctx| {
+        ctx.subscript_path(&c_name)
+            .or_else(|| ctx.subscript_path(extract_leaf_member(&c_name)))
+    });
 
     if let Some(ref info) = path_info {
         let occurs_count = info.segments.iter().filter(|(_, has)| *has).count();
@@ -691,6 +702,17 @@ pub(crate) fn grp_display_size(
     c_name: &str,
     data_items: &[HirDataItem],
 ) -> Option<u32> {
+    if let Some(item) = find_data_item_by_c_name(c_name, data_items) {
+        return match &item.data_type {
+            HirType::Numeric {
+                size,
+                decimal_places: 0,
+                ..
+            } => Some(*size),
+            _ => None,
+        };
+    }
+
     // Handle qualified names like "WS_DST__FIELD_A" by extracting the member
     // part after the last "__".
     let base_name = c_name
@@ -779,8 +801,9 @@ pub(crate) fn emit_store_int(
     // we want the final member name "Y".
     let base = extract_leaf_member(c_target);
     if let Some(disp_size) = grp_display_size(base, data_items) {
+        let c_target_ptr = display_numeric_ptr(c_target);
         out.push_str(&format!(
-            "{pad}cobol_store_numeric_display({value_expr}, (uint8_t*){c_target}, {disp_size});\n"
+            "{pad}cobol_store_numeric_display({value_expr}, {c_target_ptr}, {disp_size});\n"
         ));
     } else {
         out.push_str(&format!("{pad}{c_target} = {value_expr};\n"));
@@ -806,10 +829,12 @@ pub(crate) fn emit_store_int_op(
 ) {
     let base = extract_leaf_member(c_target);
     if let Some(disp_size) = grp_display_size(base, data_items) {
+        let c_target_const_ptr = display_numeric_const_ptr(c_target);
+        let c_target_ptr = display_numeric_ptr(c_target);
         out.push_str(&format!(
             "{pad}cobol_store_numeric_display(\
-             cobol_display_to_int64((const uint8_t*){c_target}, {disp_size}) {op} ({value_expr}), \
-             (uint8_t*){c_target}, {disp_size});\n"
+             cobol_display_to_int64({c_target_const_ptr}, {disp_size}) {op} ({value_expr}), \
+             {c_target_ptr}, {disp_size});\n"
         ));
     } else {
         out.push_str(&format!("{pad}{c_target} {op}= {value_expr};\n"));
@@ -1051,7 +1076,8 @@ pub(crate) fn is_index_name(name: &str, data_items: &[HirDataItem]) -> bool {
 
 /// Check if a sanitized C variable name corresponds to a group item.
 pub(crate) fn is_group_item_c(c_name: &str, data_items: &[HirDataItem]) -> bool {
-    is_group_item_c_in(c_name, data_items)
+    find_data_item_by_c_name(c_name, data_items)
+        .is_some_and(|item| matches!(item.data_type, HirType::Group { .. }))
 }
 
 pub(crate) fn is_group_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool {
@@ -1072,7 +1098,19 @@ pub(crate) fn is_group_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool {
 /// Check if a sanitized C variable name corresponds to a numeric, binary,
 /// comp3, index, or other non-array type stored as int64_t/CobolDecimal.
 pub(crate) fn is_numeric_item_c(c_name: &str, data_items: &[HirDataItem]) -> bool {
-    is_numeric_item_c_in(c_name, data_items)
+    find_data_item_by_c_name(c_name, data_items).is_some_and(|item| {
+        matches!(
+            item.data_type,
+            HirType::Numeric { .. }
+                | HirType::Comp3 { .. }
+                | HirType::Binary { .. }
+                | HirType::Index
+                | HirType::FloatShort
+                | HirType::FloatLong
+                | HirType::FloatExtended
+                | HirType::Boolean
+        )
+    })
 }
 
 pub(crate) fn is_numeric_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool {
@@ -1104,16 +1142,68 @@ pub(crate) fn is_numeric_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool 
 /// For group items (C unions), returns `&name` since unions cannot be cast
 /// to pointers directly. For elementary items (arrays/scalars), returns `name`.
 pub(crate) fn c_ptr_expr(c_name: &str, data_items: &[HirDataItem]) -> String {
-    if is_group_item_c(c_name, data_items) {
-        format!("&{c_name}")
-    } else if is_numeric_item_c(c_name, data_items) {
-        // Numeric items are stored as int64_t or CobolDecimal, so we need &
-        // to get a pointer to the storage (not cast the value itself)
+    let lookup = extract_leaf_member(c_name);
+    let is_display_numeric = with_active_context(|ctx| ctx.has_display_numeric(lookup));
+    if is_display_numeric {
+        return c_name.to_string();
+    }
+
+    if let Some(item) = find_data_item_by_c_name(c_name, data_items) {
+        match &item.data_type {
+            HirType::Alphanumeric { .. } | HirType::National { .. } => c_name.to_string(),
+            HirType::Group { .. }
+            | HirType::Numeric { .. }
+            | HirType::Comp3 { .. }
+            | HirType::Binary { .. }
+            | HirType::Index
+            | HirType::Boolean
+            | HirType::FloatShort
+            | HirType::FloatLong
+            | HirType::FloatExtended => format!("&{c_name}"),
+            HirType::Pointer => c_name.to_string(),
+        }
+    } else if is_group_item_c(c_name, data_items) || is_numeric_item_c(c_name, data_items) {
         format!("&{c_name}")
     } else {
-        // Alphanumeric and National are char[] / uint16_t[], which decay to pointers
         c_name.to_string()
     }
+}
+
+pub(crate) fn find_data_item_by_c_name<'a>(
+    c_name: &str,
+    data_items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    if let Some(pos) = c_name.find("__") {
+        let group_c = &c_name[..pos];
+        let member_c = extract_leaf_member(c_name);
+        for item in data_items {
+            if sanitize_name(&item.name) == group_c {
+                if let HirType::Group { members, .. } = &item.data_type {
+                    return find_data_item_by_sanitized_name(member_c, members);
+                }
+            }
+        }
+    }
+
+    let lookup = extract_leaf_member(c_name);
+    find_data_item_by_sanitized_name(lookup, data_items)
+}
+
+pub(crate) fn find_data_item_by_sanitized_name<'a>(
+    c_name: &str,
+    items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    for item in items {
+        if sanitize_name(&item.name) == c_name {
+            return Some(item);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if let Some(found) = find_data_item_by_sanitized_name(c_name, members) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 /// Resolve a variable name to its fully-qualified C name.
@@ -1153,10 +1243,12 @@ pub(crate) fn emit_corresponding_move(
                 // Use qualified macros to avoid collision
                 let src_q = format!("{c_from}__{member_c}");
                 let tgt_q = format!("{c_to}__{member_c}");
+                let src_ptr = c_ptr_expr(&src_q, data_items);
+                let tgt_ptr = c_ptr_expr(&tgt_q, data_items);
                 // For OCCURS items, use memcpy instead of direct assignment
                 if src_item.occurs.is_some() || tgt_item.occurs.is_some() {
                     out.push_str(&format!(
-                        "{pad}memcpy(&{tgt_q}, &{src_q}, sizeof({tgt_q}));\n"
+                        "{pad}memcpy({tgt_ptr}, {src_ptr}, sizeof({tgt_q}));\n"
                     ));
                     continue;
                 }
@@ -1203,7 +1295,7 @@ pub(crate) fn emit_corresponding_move(
                     }
                     _ => {
                         out.push_str(&format!(
-                            "{pad}memcpy(&{tgt_q}, &{src_q}, sizeof({tgt_q}));\n"
+                            "{pad}memcpy({tgt_ptr}, {src_ptr}, sizeof({tgt_q}));\n"
                         ));
                     }
                 }
@@ -1234,9 +1326,10 @@ pub(crate) fn emit_corresponding_arith(
         for tgt_item in to_members {
             if src_item.name == tgt_item.name && is_numeric_type(&tgt_item.data_type) {
                 let member_c = sanitize_name(&src_item.name);
-                // Use qualified names: GROUP.members._m_MEMBER for disambiguation
-                let src_ref = format!("{c_from}.members._m_{member_c}");
-                let tgt_ref = format!("{c_to}.members._m_{member_c}");
+                // Use qualified member macros so nested members and REDEFINES
+                // are addressed through the same path resolution as MOVE CORR.
+                let src_ref = format!("{c_from}__{member_c}");
+                let tgt_ref = format!("{c_to}__{member_c}");
                 if needs_decimal(&tgt_item.data_type) {
                     // CobolDecimal: use runtime functions
                     let func = if op == "+" {
@@ -1929,6 +2022,7 @@ pub(crate) fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataIte
             length,
         } => {
             let c_src = sanitize_name(variable);
+            let src_ptr = c_ptr_expr(&c_src, data_items);
             let c_start = emit_expr(start);
             let src_full_size = find_data_item_size(&c_src, data_items);
             let c_len = if let Some(len) = length {
@@ -1936,7 +2030,7 @@ pub(crate) fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataIte
             } else {
                 format!("({src_full_size} - ({c_start} - 1))")
             };
-            (format!("(const uint8_t*){c_src} + ({c_start} - 1)"), c_len)
+            (format!("(const uint8_t*){src_ptr} + ({c_start} - 1)"), c_len)
         }
         _ => {
             // Fallback for non-alphanumeric expressions used in mixed comparisons.
@@ -2057,6 +2151,7 @@ pub(crate) fn emit_condition_with_ctx(
                 HirClassType::Alphabetic => "cobol_is_alphabetic",
                 HirClassType::AlphabeticLower => "cobol_is_alphabetic_lower",
                 HirClassType::AlphabeticUpper => "cobol_is_alphabetic_upper",
+                HirClassType::Custom(_) => return "(0)".to_string(),
             };
             format!("({func}({ptr}, {len}))")
         }

@@ -124,14 +124,15 @@ pub(crate) fn emit_single_data_item(
                     out,
                     members,
                     std::slice::from_ref(&c_name),
-                    &c_name,
+                    &format!("(*({td}*)&{c_redef})"),
                     duplicate_member_names,
                 );
                 // Emit nested REDEFINES within this top-level REDEFINES group
                 emit_group_redefines(
                     out,
                     members,
-                    &c_name,
+                    std::slice::from_ref(&c_name),
+                    &c_redef,
                     duplicate_member_names,
                     emitted_typedefs,
                 );
@@ -206,6 +207,7 @@ pub(crate) fn emit_single_data_item(
             emit_group_redefines(
                 out,
                 members,
+                std::slice::from_ref(&c_name),
                 &format!("{c_name}.members"),
                 duplicate_member_names,
                 emitted_typedefs,
@@ -378,19 +380,24 @@ pub(crate) fn emit_group_macros(
     path_prefix: &str,
     duplicate_names: &BTreeSet<String>,
 ) {
+    let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
         if member.redefines.is_some() {
             continue;
         }
-        // FILLER items (and items misnamed "PIC" from implicit FILLER) are unnamed
-        // padding; skip macro generation to avoid duplicate #define errors
-        if member.name == "FILLER" || member.name == "PIC" {
-            continue;
-        }
-        let c_name = sanitize_name(&member.name);
+        let base_c_name = sanitize_name(&member.name);
+        let count = member_name_counts.entry(base_c_name.clone()).or_insert(0);
+        *count += 1;
+        let c_name = if *count > 1 {
+            format!("{}_{}", base_c_name, count)
+        } else {
+            base_c_name
+        };
         let access_path = format!("{path_prefix}._m_{c_name}");
-        // Unqualified macro: only if name is unique across all groups
-        if !duplicate_names.contains(&c_name) {
+        // Emit unqualified macros even for duplicate names so legacy NIST
+        // programs that rely on unqualified references continue to compile.
+        // In duplicate cases, the later definition wins and emits a warning.
+        if member.name != "FILLER" && member.name != "PIC" {
             out.push_str(&format!("#define {c_name} {access_path}\n"));
         }
         // Qualified macros: QUALIFIER__FIELD for each ancestor group name.
@@ -434,6 +441,7 @@ pub(crate) fn emit_group_macros(
 pub(crate) fn emit_group_redefines(
     out: &mut String,
     members: &[HirDataItem],
+    qualifier_names: &[String],
     path_prefix: &str,
     duplicate_names: &BTreeSet<String>,
     emitted_typedefs: &mut HashSet<String>,
@@ -444,11 +452,17 @@ pub(crate) fn emit_group_redefines(
             let c_redef = sanitize_name(redef_name);
             let c_type = c_type_for_hir_type(&member.data_type);
             let qualified_target = format!("{path_prefix}._m_{c_redef}");
+            let emit_aliases = member.name != "FILLER" && member.name != "PIC";
             match &member.data_type {
                 HirType::Alphanumeric { .. } | HirType::National { .. } => {
-                    out.push_str(&format!(
-                        "#define {c_name} (({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
-                    ));
+                    let alias_expr =
+                        format!("(({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */");
+                    if emit_aliases && !duplicate_names.contains(&c_name) {
+                        out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                    }
+                    for qualifier in qualifier_names {
+                        out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
+                    }
                 }
                 HirType::Group {
                     members: grp_members,
@@ -456,23 +470,32 @@ pub(crate) fn emit_group_redefines(
                 } => {
                     emit_group_typedefs(out, &c_name, grp_members, emitted_typedefs);
                     let td = group_typedef_name(&c_name, grp_members);
-                    out.push_str(&format!(
-                        "#define {c_name} (*({td}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
-                    ));
+                    let alias_expr = format!("(*({td}*)&{qualified_target}) /* REDEFINES {c_redef} */");
+                    if emit_aliases && !duplicate_names.contains(&c_name) {
+                        out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                    }
+                    for qualifier in qualifier_names {
+                        out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
+                    }
+                    let mut child_qualifiers = qualifier_names.to_vec();
+                    if emit_aliases && !child_qualifiers.contains(&c_name) {
+                        child_qualifiers.push(c_name.clone());
+                    }
+                    let access_expr = format!("(*({td}*)&{qualified_target})");
                     emit_group_macros(
                         out,
                         grp_members,
-                        std::slice::from_ref(&c_name),
-                        &c_name,
+                        &child_qualifiers,
+                        &access_expr,
                         duplicate_names,
                     );
                     // Recurse into REDEFINES group children to emit nested
                     // REDEFINES macros (e.g. RDF3-5-1 REDEFINES RDF3-5).
-                    let sub_prefix = c_name.clone();
                     emit_group_redefines(
                         out,
                         grp_members,
-                        &sub_prefix,
+                        &child_qualifiers,
+                        &access_expr,
                         duplicate_names,
                         emitted_typedefs,
                     );
@@ -480,13 +503,24 @@ pub(crate) fn emit_group_redefines(
                 _ => {
                     if member.occurs.is_some() {
                         // REDEFINES + OCCURS: pointer cast (acts as array base)
-                        out.push_str(&format!(
-                            "#define {c_name} (({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} OCCURS */\n"
-                        ));
+                        let alias_expr = format!(
+                            "(({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} OCCURS */"
+                        );
+                        if emit_aliases && !duplicate_names.contains(&c_name) {
+                            out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                        }
+                        for qualifier in qualifier_names {
+                            out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
+                        }
                     } else {
-                        out.push_str(&format!(
-                            "#define {c_name} (*({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
-                        ));
+                        let alias_expr =
+                            format!("(*({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */");
+                        if emit_aliases && !duplicate_names.contains(&c_name) {
+                            out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                        }
+                        for qualifier in qualifier_names {
+                            out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
+                        }
                     }
                 }
             }
@@ -503,9 +537,17 @@ pub(crate) fn emit_group_redefines(
                 } else {
                     format!("{path_prefix}._m_{c_name}.members")
                 };
+                let mut child_qualifiers = qualifier_names.to_vec();
+                if member.name != "FILLER"
+                    && member.name != "PIC"
+                    && !child_qualifiers.contains(&c_name)
+                {
+                    child_qualifiers.push(c_name.clone());
+                }
                 emit_group_redefines(
                     out,
                     sub_members,
+                    &child_qualifiers,
                     &sub_prefix,
                     duplicate_names,
                     emitted_typedefs,
@@ -736,7 +778,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
             ) if group_prefix.is_some() => {
                 out.push_str(&format!(
                     "    cobol_store_numeric_display({n}, \
-                     (uint8_t*){c_name}, {size});\n"
+                     (uint8_t*)&({c_name}), {size});\n"
                 ));
             }
             (
@@ -749,7 +791,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
             ) if group_prefix.is_some() => {
                 out.push_str(&format!(
                     "    cobol_store_numeric_display(0, \
-                     (uint8_t*){c_name}, {size});\n"
+                     (uint8_t*)&({c_name}), {size});\n"
                 ));
             }
             (
@@ -818,7 +860,7 @@ pub(crate) fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &
             ..
         } if in_group => {
             out.push_str(&format!(
-                "    cobol_store_numeric_display(0, (uint8_t*){c_name}, {size});\n"
+                "    cobol_store_numeric_display(0, (uint8_t*)&({c_name}), {size});\n"
             ));
         }
         HirType::Numeric { .. }

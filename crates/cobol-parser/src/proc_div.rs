@@ -2177,6 +2177,63 @@ impl Parser {
         let start_span = self.span();
         self.expect(TokenKind::Set)?;
 
+        if self.check(TokenKind::Identifier) || self.current().kind.is_keyword() {
+            let checkpoint = self.checkpoint();
+            let mut assignments = Vec::new();
+            let mut saw_switch_status = false;
+
+            loop {
+                let mut group_targets = Vec::new();
+                while !self.check(TokenKind::To)
+                    && !self.at_statement_terminator()
+                    && !self.at_eof()
+                {
+                    if !(self.check(TokenKind::Identifier) || self.current().kind.is_keyword()) {
+                        group_targets.clear();
+                        break;
+                    }
+                    group_targets.push(self.parse_qualified_name()?);
+                    let _ = self.eat(TokenKind::Comma);
+                }
+
+                if group_targets.is_empty() || !self.check(TokenKind::To) {
+                    assignments.clear();
+                    self.restore(checkpoint);
+                    break;
+                }
+                self.advance();
+
+                let value = if self.check(TokenKind::OnKw) || self.check_identifier("ON") {
+                    self.advance();
+                    true
+                } else if self.check(TokenKind::Off) || self.check_identifier("OFF") {
+                    self.advance();
+                    false
+                } else {
+                    assignments.clear();
+                    self.restore(checkpoint);
+                    break;
+                };
+
+                saw_switch_status = true;
+                for target in group_targets {
+                    assignments.push((target, value));
+                }
+
+                if self.at_statement_terminator() || self.at_eof() {
+                    break;
+                }
+            }
+
+            if saw_switch_status && !assignments.is_empty() {
+                let end_span = self.span();
+                return Ok(Statement::Set(Box::new(SetStatement {
+                    kind: SetKind::SwitchStatus { assignments },
+                    span: start_span.merge(&end_span),
+                })));
+            }
+        }
+
         let mut targets = Vec::new();
         while !self.check(TokenKind::To)
             && !self.check(TokenKind::Up)

@@ -764,14 +764,26 @@ impl Parser {
             });
         }
 
+        if let Expr::Identifier(qn) = expr {
+            if self.check(TokenKind::Identifier) {
+                let class_name = self.advance().text;
+                return Ok(Condition::ClassCondition {
+                    operand: Expr::Identifier(qn),
+                    class: ClassType::Custom(class_name),
+                    not: is_not,
+                    span: self.span(),
+                });
+            }
+            if has_is || is_not {
+                self.error("expected condition after IS/NOT");
+                return Err(());
+            }
+            return Ok(Condition::ConditionName(qn));
+        }
+
         if has_is || is_not {
             self.error("expected condition after IS/NOT");
             return Err(());
-        }
-
-        // Condition name (level 88)
-        if let Expr::Identifier(qn) = expr {
-            return Ok(Condition::ConditionName(qn));
         }
 
         self.error("expected condition");

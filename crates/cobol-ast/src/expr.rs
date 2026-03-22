@@ -99,13 +99,14 @@ pub enum CompareOp {
 }
 
 /// Class condition types for IS NUMERIC, IS ALPHABETIC, etc.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassType {
     Numeric,
     Alphabetic,
     AlphabeticLower,
     AlphabeticUpper,
     National,
+    Custom(SmolStr),
 }
 
 /// Sign condition types for IS POSITIVE, IS NEGATIVE, IS ZERO.

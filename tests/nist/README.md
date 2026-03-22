@@ -25,7 +25,7 @@ perl extract.pl newcob.val programs/
 
 抽出結果:
 
-```
+```text
 programs/
   NC/    — Nucleus (核文法)
   SM/    — Source Manipulation (COPY文)
@@ -57,10 +57,12 @@ programs/
 ./run_nist.sh --summary
 ```
 
+各実行の終了時に、モジュール別の失敗一覧や単一プログラムの結果要約も標準出力へ表示される。
+
 ## 目標通過率
 
 | モジュール | 目標 | 備考 |
-|---|---|---|
+| --- | --- | --- |
 | NC (Nucleus) | 95%+ | 最優先。COBOL核文法の網羅テスト |
 | IF (Intrinsic Functions) | 95%+ | 組み込み関数テスト |
 | SQ (Sequential I/O) | 95%+ | 順編成ファイルI/O |

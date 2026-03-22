@@ -170,9 +170,10 @@ pub(crate) fn emit_statement_with_ctx(
                     let c_expr = emit_int_compatible_expr(expr, data_items);
                     let c_tgt_base = sanitize_name(target_name);
                     if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                        let c_target_ptr = display_numeric_ptr(&c_target);
                         out.push_str(&format!(
                             "{pad}cobol_store_numeric_display({c_expr}, \
-                             (uint8_t*){c_target}, {disp_size});\n"
+                             {c_target_ptr}, {disp_size});\n"
                         ));
                     } else {
                         out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
@@ -229,13 +230,15 @@ pub(crate) fn emit_statement_with_ctx(
                     } else if has_size_error {
                         let c_tgt_base = sanitize_name(var_name);
                         if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            let c_target_const_ptr = display_numeric_const_ptr(&c_target);
+                            let c_target_ptr = display_numeric_ptr(&c_target);
                             out.push_str(&format!(
                                 "{pad}{{ int64_t _prev = cobol_display_to_int64(\
-                                 (const uint8_t*){c_target}, {disp_size});\n"
+                                 {c_target_const_ptr}, {disp_size});\n"
                             ));
                             out.push_str(&format!(
                                 "{pad}cobol_store_numeric_display({sum_expr}, \
-                                 (uint8_t*){c_target}, {disp_size});\n"
+                                 {c_target_ptr}, {disp_size});\n"
                             ));
                         } else {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
@@ -273,15 +276,17 @@ pub(crate) fn emit_statement_with_ctx(
                         if has_size_error {
                             let c_tgt_base = sanitize_name(var_name);
                             if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                let c_target_const_ptr = display_numeric_const_ptr(&c_target);
+                                let c_target_ptr = display_numeric_ptr(&c_target);
                                 out.push_str(&format!(
                                     "{pad}{{ int64_t _prev = cobol_display_to_int64(\
-                                     (const uint8_t*){c_target}, {disp_size});\n"
+                                     {c_target_const_ptr}, {disp_size});\n"
                                 ));
                                 out.push_str(&format!(
                                     "{pad}cobol_store_numeric_display(\
                                      cobol_display_to_int64(\
-                                     (const uint8_t*){c_target}, {disp_size}) + ({sum_expr}), \
-                                     (uint8_t*){c_target}, {disp_size});\n"
+                                     {c_target_const_ptr}, {disp_size}) + ({sum_expr}), \
+                                     {c_target_ptr}, {disp_size});\n"
                                 ));
                             } else {
                                 out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
@@ -349,13 +354,15 @@ pub(crate) fn emit_statement_with_ctx(
                         let result_expr = format!("{from_val} - ({sub_expr})");
                         let c_tgt_base = sanitize_name(var_name);
                         if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            let c_target_const_ptr = display_numeric_const_ptr(&c_target);
+                            let c_target_ptr = display_numeric_ptr(&c_target);
                             out.push_str(&format!(
                                 "{pad}{{ int64_t _prev = cobol_display_to_int64(\
-                                 (const uint8_t*){c_target}, {disp_size});\n"
+                                 {c_target_const_ptr}, {disp_size});\n"
                             ));
                             out.push_str(&format!(
                                 "{pad}cobol_store_numeric_display({result_expr}, \
-                                 (uint8_t*){c_target}, {disp_size});\n"
+                                 {c_target_ptr}, {disp_size});\n"
                             ));
                         } else {
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
@@ -394,15 +401,17 @@ pub(crate) fn emit_statement_with_ctx(
                         if has_size_error {
                             let c_tgt_base = sanitize_name(var_name);
                             if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                                let c_target_const_ptr = display_numeric_const_ptr(&c_target);
+                                let c_target_ptr = display_numeric_ptr(&c_target);
                                 out.push_str(&format!(
                                     "{pad}{{ int64_t _prev = cobol_display_to_int64(\
-                                     (const uint8_t*){c_target}, {disp_size});\n"
+                                     {c_target_const_ptr}, {disp_size});\n"
                                 ));
                                 out.push_str(&format!(
                                     "{pad}cobol_store_numeric_display(\
                                      cobol_display_to_int64(\
-                                     (const uint8_t*){c_target}, {disp_size}) - ({sum_expr}), \
-                                     (uint8_t*){c_target}, {disp_size});\n"
+                                     {c_target_const_ptr}, {disp_size}) - ({sum_expr}), \
+                                     {c_target_ptr}, {disp_size});\n"
                                 ));
                             } else {
                                 out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
@@ -1417,6 +1426,13 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
                     }
                 }
+            }
+        }
+        HirStatement::SetSwitchStatus { assignments, .. } => {
+            for (target, value) in assignments {
+                let c_target = sanitize_name(target);
+                let c_value = if *value { "1" } else { "0" };
+                out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
             }
         }
         HirStatement::SetAddress { target, source, .. } => {
@@ -2652,15 +2668,17 @@ pub(crate) fn emit_move_to(
             let is_source_group = find_data_item(src_name.as_str(), data_items)
                 .is_some_and(|item| matches!(item.data_type, HirType::Group { .. }));
             if is_source_group {
+                let src_ptr = c_ptr_expr(&c_src, data_items);
+                let tgt_ptr = c_ptr_expr(c_target, data_items);
                 // Both are groups: use sizeof() for correct C-level byte copy
                 out.push_str(&format!(
                     "{pad}{{\n\
                      {pad}    size_t _src_sz = sizeof({c_src});\n\
                      {pad}    size_t _tgt_sz = sizeof({c_target});\n\
                      {pad}    size_t _cp_sz = _src_sz < _tgt_sz ? _src_sz : _tgt_sz;\n\
-                     {pad}    memcpy(&{c_target}, &{c_src}, _cp_sz);\n\
+                     {pad}    memcpy({tgt_ptr}, {src_ptr}, _cp_sz);\n\
                      {pad}    if (_src_sz < _tgt_sz) {{\n\
-                     {pad}        memset((uint8_t*)&{c_target} + _src_sz, ' ', \
+                     {pad}        memset((uint8_t*){tgt_ptr} + _src_sz, ' ', \
                      _tgt_sz - _src_sz);\n\
                      {pad}    }}\n\
                      {pad}}}\n"
@@ -2670,8 +2688,10 @@ pub(crate) fn emit_move_to(
                 let src_size = find_data_item_size(&c_src, data_items);
                 let tgt_size = find_data_item_size(c_target, data_items);
                 let copy_size = src_size.min(tgt_size);
+                let src_ptr = c_ptr_expr(&c_src, data_items);
+                let tgt_ptr = c_ptr_expr(c_target, data_items);
                 out.push_str(&format!(
-                    "{pad}memcpy(&{c_target}, &{c_src}, {copy_size});\n"
+                    "{pad}memcpy({tgt_ptr}, {src_ptr}, {copy_size});\n"
                 ));
             }
         } else if let HirExpr::Subscript { variable, .. } = from {
@@ -2686,16 +2706,22 @@ pub(crate) fn emit_move_to(
                 let src_size = find_data_item_size(&sanitize_name(variable), data_items);
                 let tgt_size = find_data_item_size(c_target, data_items);
                 let copy_size = src_size.min(tgt_size);
-                let addr_prefix = if is_src_group { "&" } else { "" };
+                let src_ptr = if is_src_group {
+                    c_ptr_expr(&c_src, data_items)
+                } else {
+                    c_src.clone()
+                };
+                let tgt_ptr = c_ptr_expr(c_target, data_items);
                 out.push_str(&format!(
-                    "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
-                     {pad}memcpy(&{c_target}, {addr_prefix}{c_src}, {copy_size});\n"
+                    "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                     {pad}memcpy({tgt_ptr}, {src_ptr}, {copy_size});\n"
                 ));
             } else {
+                let tgt_ptr = c_ptr_expr(c_target, data_items);
                 let e = emit_int_compatible_expr(from, data_items);
                 out.push_str(&format!(
-                    "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
-                     {pad}{{ int64_t _v = {e}; memcpy(&{c_target}, &_v, \
+                    "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                     {pad}{{ int64_t _v = {e}; memcpy({tgt_ptr}, &_v, \
                      sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
                 ));
             }
@@ -2707,6 +2733,7 @@ pub(crate) fn emit_move_to(
         {
             // Reference-modified source to group target: copy substring
             let c_src = sanitize_name(variable);
+            let src_ptr = c_ptr_expr(&c_src, data_items);
             let c_start = emit_expr(start);
             let src_full_size = find_data_item_size(&c_src, data_items);
             let c_len = if let Some(len) = length {
@@ -2715,40 +2742,46 @@ pub(crate) fn emit_move_to(
                 format!("({src_full_size} - ({c_start} - 1))")
             };
             let tgt_size = find_data_item_size(c_target, data_items);
+            let tgt_ptr = c_ptr_expr(c_target, data_items);
             out.push_str(&format!(
-                "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
-                 {pad}memcpy(&{c_target}, {c_src} + ({c_start} - 1), \
+                "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                 {pad}memcpy({tgt_ptr}, (const uint8_t*){src_ptr} + ({c_start} - 1), \
                  {c_len} < {tgt_size} ? {c_len} : {tgt_size});\n"
             ));
         } else {
             // Non-variable to group: handle figurative constants
             match from {
                 HirExpr::Literal(HirLiteral::Space) => {
+                    let tgt_ptr = c_ptr_expr(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n"
+                        "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n"
                     ));
                 }
                 HirExpr::Literal(HirLiteral::Zero) => {
+                    let tgt_ptr = c_ptr_expr(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset(&{c_target}, '0', sizeof({c_target}));\n"
+                        "{pad}memset({tgt_ptr}, '0', sizeof({c_target}));\n"
                     ));
                 }
                 HirExpr::Literal(HirLiteral::HighValue) => {
+                    let tgt_ptr = c_ptr_expr(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset(&{c_target}, 0xFF, sizeof({c_target}));\n"
+                        "{pad}memset({tgt_ptr}, 0xFF, sizeof({c_target}));\n"
                     ));
                 }
                 HirExpr::Literal(HirLiteral::LowValue) => {
+                    let tgt_ptr = c_ptr_expr(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset(&{c_target}, 0x00, sizeof({c_target}));\n"
+                        "{pad}memset({tgt_ptr}, 0x00, sizeof({c_target}));\n"
                     ));
                 }
                 HirExpr::Literal(HirLiteral::String(s)) => {
                     let escaped = escape_c_string(s);
                     let src_len = s.len();
+                    let tgt_ptr = c_ptr_expr(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
-                         {pad}memcpy(&{c_target}, \"{escaped}\", \
+                        "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                         {pad}memcpy({tgt_ptr}, \"{escaped}\", \
                          {src_len} < sizeof({c_target}) ? {src_len} : sizeof({c_target}));\n"
                     ));
                 }
@@ -2760,20 +2793,22 @@ pub(crate) fn emit_move_to(
                         let src_size = find_data_item_size(&sanitize_name(src_name), data_items);
                         let tgt_size = find_data_item_size(c_target, data_items);
                         let copy_size = src_size.min(tgt_size);
-                        let addr_prefix = if is_group_expr(from, data_items) {
-                            "&"
+                        let src_ptr = if is_group_expr(from, data_items) {
+                            c_ptr_expr(&e, data_items)
                         } else {
-                            ""
+                            e
                         };
+                        let tgt_ptr = c_ptr_expr(c_target, data_items);
                         out.push_str(&format!(
-                            "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
-                             {pad}memcpy(&{c_target}, {addr_prefix}{e}, {copy_size});\n"
+                            "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                             {pad}memcpy({tgt_ptr}, {src_ptr}, {copy_size});\n"
                         ));
                     } else {
+                        let tgt_ptr = c_ptr_expr(c_target, data_items);
                         let e = emit_int_compatible_expr(from, data_items);
                         out.push_str(&format!(
-                            "{pad}memset(&{c_target}, ' ', sizeof({c_target}));\n\
-                             {pad}{{ int64_t _v = {e}; memcpy(&{c_target}, &_v, \
+                            "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                             {pad}{{ int64_t _v = {e}; memcpy({tgt_ptr}, &_v, \
                              sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
                         ));
                     }

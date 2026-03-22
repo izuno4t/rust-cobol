@@ -587,6 +587,11 @@ impl<'a> NameResolver<'a> {
                         self.resolve_qualified_name(c);
                     }
                 }
+                SetKind::SwitchStatus { assignments } => {
+                    for (target, _) in assignments {
+                        self.resolve_qualified_name(target);
+                    }
+                }
                 SetKind::Address { target, source } => {
                     self.resolve_qualified_name(target);
                     self.resolve_qualified_name(source);
