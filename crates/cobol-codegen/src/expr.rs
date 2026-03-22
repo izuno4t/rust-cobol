@@ -1,0 +1,2628 @@
+use super::*;
+
+pub(crate) fn emit_expr(expr: &HirExpr) -> String {
+    with_active_context(|ctx| emit_expr_with_ctx(expr, ctx))
+}
+
+pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String {
+    let emit_expr = |expr| super::emit_expr_with_ctx(expr, ctx);
+    let emit_expr_as_numeric = |expr| super::emit_expr_as_numeric_with_ctx(expr, ctx);
+    let emit_expr_as_double = |expr| super::emit_expr_as_double_with_ctx(expr, ctx);
+    match expr {
+        HirExpr::Literal(HirLiteral::Integer(n)) => format!("((int64_t){n})"),
+        HirExpr::Literal(HirLiteral::Decimal(d)) => {
+            // Validate that the decimal literal contains only safe characters
+            // to prevent injection into the generated C source.
+            if d.chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')
+            {
+                d.to_string()
+            } else {
+                "0 /* invalid decimal */".to_string()
+            }
+        }
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            // Return string literal as a C string (used as pointer in intrinsic
+            // function arguments such as FUNCTION LOWER-CASE("text"))
+            let escaped = escape_c_string(s);
+            format!("\"{}\"", escaped)
+        }
+        HirExpr::Literal(HirLiteral::Zero) => "((int64_t)0)".to_string(),
+        HirExpr::Literal(HirLiteral::Space) => "((int64_t)32)".to_string(),
+        HirExpr::Literal(HirLiteral::HighValue) => "((int64_t)0xFF)".to_string(),
+        HirExpr::Literal(HirLiteral::LowValue) => "((int64_t)0)".to_string(),
+        HirExpr::Literal(HirLiteral::Quote) => "((int64_t)'\"')".to_string(),
+        HirExpr::Literal(HirLiteral::Null) => "((int64_t)0)".to_string(),
+        HirExpr::Literal(HirLiteral::AllChar(s)) => {
+            if let Some(ch) = s.chars().next() {
+                format!("((int64_t)'{}')", ch)
+            } else {
+                "((int64_t)' ')".to_string()
+            }
+        }
+        HirExpr::Variable(name) => sanitize_name(name),
+        HirExpr::BinaryOp { op, left, right } => {
+            // Use emit_expr_as_numeric to auto-convert CobolDecimal sub-expressions
+            let l = emit_expr_as_numeric(left);
+            let r = emit_expr_as_numeric(right);
+            let op_str = match op {
+                HirBinOp::Add => "+",
+                HirBinOp::Sub => "-",
+                HirBinOp::Mul => "*",
+                HirBinOp::Div => "/",
+                HirBinOp::Pow => return format!("((int64_t)pow((double){l}, (double){r}))"),
+            };
+            format!("({l} {op_str} {r})")
+        }
+        HirExpr::UnaryOp { op, operand } => {
+            let o = emit_expr_as_numeric(operand);
+            match op {
+                HirUnaryOp::Neg => format!("(-{o})"),
+            }
+        }
+        HirExpr::FunctionCall { name, args } => {
+            let upper_name = name.to_uppercase();
+            let c_args: Vec<_> = args.iter().map(emit_expr_as_numeric).collect();
+            // Map COBOL intrinsic function names to runtime function calls.
+            match upper_name.as_str() {
+                "LENGTH" => {
+                    // FUNCTION LENGTH(var) -- returns the byte length.
+                    if let Some(arg_expr) = args.first() {
+                        // Check if the arg is a string-returning function
+                        if let HirExpr::FunctionCall {
+                            name: inner_name,
+                            args: inner_args,
+                        } = arg_expr
+                        {
+                            let inner_upper = inner_name.to_uppercase();
+                            match inner_upper.as_str() {
+                                "UPPER-CASE" | "LOWER-CASE" | "REVERSE" => {
+                                    if let Some(inner_arg) = inner_args.first() {
+                                        let size = if let HirExpr::Literal(HirLiteral::String(s)) =
+                                            inner_arg
+                                        {
+                                            format!("{}", s.len())
+                                        } else {
+                                            let c_arg = emit_expr(inner_arg);
+                                            format!("sizeof({c_arg})")
+                                        };
+                                        return format!("((int64_t){size})");
+                                    }
+                                }
+                                "CHAR" => return "((int64_t)1)".to_string(),
+                                "CURRENT-DATE" | "WHEN-COMPILED" => {
+                                    return "((int64_t)21)".to_string()
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let HirExpr::Literal(HirLiteral::String(s)) = arg_expr {
+                            return format!("((int64_t){})", s.len());
+                        }
+                        let c_arg = &c_args[0];
+                        format!("cobol_func_length((const uint8_t*){c_arg}, sizeof({c_arg}))")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "NUMVAL" | "NUMVAL-C" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_numval((const uint8_t*){arg}, sizeof({arg}))")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "MAX" => {
+                    let has_alpha = args
+                        .iter()
+                        .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                    if has_alpha && !args.is_empty() {
+                        emit_alpha_max_min(args, "cobol_func_max_alpha")
+                    } else if c_args.len() >= 2 {
+                        let arg_list = c_args.join(", ");
+                        format!(
+                            "({{ int64_t _mv[] = {{{arg_list}}}; \
+                             cobol_func_max_int_n(_mv, {}); }})",
+                            c_args.len()
+                        )
+                    } else {
+                        c_args.first().cloned().unwrap_or_else(|| "0".to_string())
+                    }
+                }
+                "MIN" => {
+                    let has_alpha = args
+                        .iter()
+                        .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                    if has_alpha && !args.is_empty() {
+                        emit_alpha_max_min(args, "cobol_func_min_alpha")
+                    } else if c_args.len() >= 2 {
+                        let arg_list = c_args.join(", ");
+                        format!(
+                            "({{ int64_t _mv[] = {{{arg_list}}}; \
+                             cobol_func_min_int_n(_mv, {}); }})",
+                            c_args.len()
+                        )
+                    } else {
+                        c_args.first().cloned().unwrap_or_else(|| "0".to_string())
+                    }
+                }
+                "MOD" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_mod({}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "INTEGER" | "INTEGER-PART" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_integer({arg}, 0)")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "ORD" => {
+                    if let Some(arg_expr) = args.first() {
+                        match arg_expr {
+                            HirExpr::Literal(HirLiteral::String(s)) => {
+                                if let Some(ch) = s.bytes().next() {
+                                    format!("cobol_func_ord({ch})")
+                                } else {
+                                    "cobol_func_ord(0)".to_string()
+                                }
+                            }
+                            HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+                                // Variable may be a char array; dereference
+                                // the first byte.
+                                let c = emit_expr(arg_expr);
+                                format!("cobol_func_ord((uint8_t)*((const uint8_t*){c}))")
+                            }
+                            _ => {
+                                if let Some(arg) = c_args.first() {
+                                    format!("cobol_func_ord((uint8_t){arg})")
+                                } else {
+                                    "0".to_string()
+                                }
+                            }
+                        }
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "CHAR" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("({{ static uint8_t _chbuf[2]; _chbuf[0] = cobol_func_char((uint32_t){arg}); _chbuf[1] = '\\0'; _chbuf; }})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "UPPER-CASE" | "LOWER-CASE" | "REVERSE" => {
+                    // String-returning functions: copy arg to temp buffer, apply, return buffer
+                    if let Some(arg_expr) = args.first() {
+                        let func = match upper_name.as_str() {
+                            "UPPER-CASE" => "cobol_func_upper_case",
+                            "LOWER-CASE" => "cobol_func_lower_case",
+                            _ => "cobol_func_reverse",
+                        };
+                        let (c_src, size) = emit_string_func_arg(arg_expr);
+                        format!(
+                            "({{ static uint8_t _sfbuf[{size}]; \
+                             memcpy(_sfbuf, (const uint8_t*){c_src}, {size}); \
+                             {func}(_sfbuf, {size}); _sfbuf; }})"
+                        )
+                    } else {
+                        "((uint8_t*)0)".to_string()
+                    }
+                }
+                "ABS" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_abs({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "SQRT" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_sqrt({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "EXP" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_exp({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "EXP10" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_exp10({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "LOG" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_log({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "LOG10" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_log10({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "SIN" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_sin({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "COS" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_cos({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "TAN" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_tan({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "ASIN" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_asin({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "ACOS" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_acos({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "ATAN" => {
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_atan({d})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "FACTORIAL" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_factorial({arg})")
+                    } else {
+                        "1".to_string()
+                    }
+                }
+                "REM" | "REMAINDER" => {
+                    if args.len() >= 2 {
+                        let d0 = emit_expr_as_double(&args[0]);
+                        let d1 = emit_expr_as_double(&args[1]);
+                        format!("cobol_func_rem({d0}, {d1})")
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "RANDOM" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_random({arg})")
+                    } else {
+                        "cobol_func_random(0)".to_string()
+                    }
+                }
+                "SIGN" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_sign({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "CEILING" | "CEIL" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_ceiling((double){arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "FLOOR" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_floor((double){arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "ANNUITY" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_annuity((double){}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "STORED-CHAR-LENGTH" => {
+                    if let Some(arg) = c_args.first() {
+                        format!(
+                            "cobol_func_stored_char_length(\
+                             (const uint8_t*){arg}, sizeof({arg}))"
+                        )
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "MEAN" => {
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_mean(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "MEDIAN" => {
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_median(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "RANGE" => {
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _rv[] = {{{joined}}}; \
+                         cobol_func_range(_rv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "MIDRANGE" => {
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_midrange(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "STANDARD-DEVIATION" => {
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_standard_deviation(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "VARIANCE" => {
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _mv[] = {{{joined}}}; \
+                         cobol_func_variance(_mv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "PRESENT-VALUE" => {
+                    if c_args.len() >= 2 {
+                        let rate = &c_args[0];
+                        let rest: Vec<_> =
+                            c_args[1..].iter().map(|a| format!("(double){a}")).collect();
+                        let joined = rest.join(", ");
+                        format!(
+                            "({{ double _pv[] = {{{joined}}}; \
+                             cobol_func_present_value((double){rate}, _pv, {}); }})",
+                            rest.len()
+                        )
+                    } else {
+                        "0.0".to_string()
+                    }
+                }
+                "SUM" => {
+                    let arg_list = c_args
+                        .iter()
+                        .map(|a| format!("(double){a}"))
+                        .collect::<Vec<_>>();
+                    let joined = arg_list.join(", ");
+                    format!(
+                        "({{ double _sv[] = {{{joined}}}; \
+                         cobol_func_sum_float(_sv, {}); }})",
+                        c_args.len()
+                    )
+                }
+                "ORD-MAX" => {
+                    let has_alpha = args
+                        .iter()
+                        .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                    if has_alpha && !args.is_empty() {
+                        emit_alpha_ord_max_min(args, "cobol_func_ord_max_alpha")
+                    } else {
+                        let arg_list = c_args.join(", ");
+                        format!(
+                            "({{ int64_t _om[] = {{{arg_list}}}; \
+                             cobol_func_ord_max(_om, {}); }})",
+                            c_args.len()
+                        )
+                    }
+                }
+                "ORD-MIN" => {
+                    let has_alpha = args
+                        .iter()
+                        .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                    if has_alpha && !args.is_empty() {
+                        emit_alpha_ord_max_min(args, "cobol_func_ord_min_alpha")
+                    } else {
+                        let arg_list = c_args.join(", ");
+                        format!(
+                            "({{ int64_t _om[] = {{{arg_list}}}; \
+                             cobol_func_ord_min(_om, {}); }})",
+                            c_args.len()
+                        )
+                    }
+                }
+                "INTEGER-OF-DATE" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_integer_of_date({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "DATE-OF-INTEGER" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_date_of_integer({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "INTEGER-OF-DAY" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_integer_of_day({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "DAY-OF-INTEGER" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_day_of_integer({arg})")
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "DATE-TO-YYYYMMDD" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_date_to_yyyymmdd({}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "YEAR-TO-YYYY" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_year_to_yyyy({}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "DAY-TO-YYYYDDD" => {
+                    if c_args.len() >= 2 {
+                        format!("cobol_func_day_to_yyyyddd({}, {})", c_args[0], c_args[1])
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "TEST-DATE-YYYYMMDD" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_test_date_yyyymmdd({arg})")
+                    } else {
+                        "1".to_string()
+                    }
+                }
+                "TEST-DAY-YYYYDDD" => {
+                    if let Some(arg) = c_args.first() {
+                        format!("cobol_func_test_day_yyyyddd({arg})")
+                    } else {
+                        "1".to_string()
+                    }
+                }
+                "CURRENT-DATE" => {
+                    "({ static uint8_t _cdbuf[22]; cobol_func_current_date(_cdbuf, 21); _cdbuf; })"
+                        .to_string()
+                }
+                "WHEN-COMPILED" => {
+                    "({ static uint8_t _wcbuf[22]; cobol_func_when_compiled(_wcbuf, 21); _wcbuf; })"
+                        .to_string()
+                }
+                "NATIONAL-OF" => {
+                    // FUNCTION NATIONAL-OF(alphanumeric-var)
+                    // Returns a national value; in expression context, emit
+                    // as a statement expression that fills a temp buffer.
+                    if let Some(arg) = c_args.first() {
+                        format!(
+                            "({{ static uint16_t _ntmp[256]; \
+                             cobol_func_national_of(\
+                             (const uint8_t*){arg}, sizeof({arg}), \
+                             _ntmp, 256); _ntmp; }})"
+                        )
+                    } else {
+                        "((uint16_t*)0)".to_string()
+                    }
+                }
+                "DISPLAY-OF" => {
+                    // FUNCTION DISPLAY-OF(national-var)
+                    // Returns an alphanumeric value.
+                    if let Some(arg) = c_args.first() {
+                        format!(
+                            "({{ static char _dtmp[256]; \
+                             cobol_func_display_of(\
+                             (const uint16_t*){arg}, sizeof({arg})/sizeof(uint16_t), \
+                             (uint8_t*)_dtmp, 256); _dtmp; }})"
+                        )
+                    } else {
+                        "((char*)0)".to_string()
+                    }
+                }
+                _ => {
+                    // User-defined or unhandled intrinsic function:
+                    // use cobol_func_ prefix with lowercase name so it matches
+                    // the runtime function naming convention.
+                    let c_name = sanitize_name(name).to_lowercase();
+                    format!("cobol_func_{c_name}({})", c_args.join(", "))
+                }
+            }
+        }
+        HirExpr::ReferenceModification {
+            variable,
+            start,
+            length: _,
+        } => {
+            // In numeric expression context, reference modification returns
+            // a pointer expression. This is unusual but we emit it for
+            // completeness. Callers like emit_display_operand handle the
+            // display case directly.
+            let c_var = sanitize_name(variable);
+            let c_start = emit_expr_as_numeric(start);
+            format!("({c_var} + ({c_start} - 1))")
+        }
+        HirExpr::Subscript {
+            variable,
+            subscripts,
+        } => emit_subscript_access(variable, subscripts),
+    }
+}
+
+/// Generates C code for subscripted table access.
+/// COBOL subscripts are 1-based; C arrays are 0-based.
+///
+/// For items inside groups with nested OCCURS, generates proper C struct
+/// access paths with subscripts at each OCCURS level.  For example:
+///   01 TABLE-1. 05 GRP OCCURS 3. 10 ITEM PIC 9 OCCURS 4.
+/// `ITEM(I, J)` becomes:
+///   `TABLE_1.members._m_GRP[(I)-1].members._m_ITEM[(J)-1]`
+pub(crate) fn emit_subscript_access(
+    variable: &smol_str::SmolStr,
+    subscripts: &[HirExpr],
+) -> String {
+    let c_name = sanitize_name(variable);
+    // Check if we have pre-computed path info for this variable (nested OCCURS)
+    let path_info = with_active_context(|ctx| ctx.subscript_path(&c_name));
+
+    if let Some(ref info) = path_info {
+        let occurs_count = info.segments.iter().filter(|(_, has)| *has).count();
+        if occurs_count > 0 && subscripts.len() >= occurs_count {
+            // Build the full struct access path, inserting subscripts at OCCURS levels
+            let mut access = info.root.clone();
+            let mut sub_idx = 0;
+            for (segment_suffix, has_occurs) in &info.segments {
+                access.push_str(segment_suffix);
+                if *has_occurs && sub_idx < subscripts.len() {
+                    let idx = emit_expr_as_numeric(&subscripts[sub_idx]);
+                    access.push_str(&format!("[({idx}) - 1]"));
+                    sub_idx += 1;
+                }
+            }
+            return access;
+        }
+    }
+
+    // Fallback: simple flat array subscript (top-level OCCURS without group nesting)
+    if subscripts.len() == 1 {
+        let idx = emit_expr_as_numeric(&subscripts[0]);
+        format!("{c_name}[({idx}) - 1]")
+    } else {
+        let mut access = c_name;
+        for sub in subscripts {
+            let idx = emit_expr_as_numeric(sub);
+            access = format!("{access}[({idx}) - 1]");
+        }
+        access
+    }
+}
+
+/// Returns true if the given HirType requires CobolDecimal representation
+/// (i.e., has fractional decimal places).
+pub(crate) fn needs_decimal(data_type: &HirType) -> bool {
+    matches!(
+        data_type,
+        HirType::Numeric { decimal_places, .. } if *decimal_places > 0
+    ) || matches!(data_type, HirType::Comp3 { decimal_places, .. } if *decimal_places > 0)
+}
+
+/// Check if a variable is a USAGE DISPLAY numeric stored as char[] inside a group.
+/// Returns Some(display_size) if so, None otherwise.
+/// Top-level numeric items are stored as int64_t and return None.
+pub(crate) fn grp_display_size(
+    c_name: &str,
+    data_items: &[HirDataItem],
+) -> Option<u32> {
+    // Handle qualified names like "WS_DST__FIELD_A" by extracting the member
+    // part after the last "__".
+    let base_name = c_name
+        .rfind("__")
+        .map(|pos| &c_name[pos + 2..])
+        .unwrap_or(c_name);
+    // Strip any trailing subscripts: NAME[...] -> NAME
+    let base_name = base_name.split('[').next().unwrap_or(base_name);
+    // Search within groups first — if it exists as a display numeric
+    // member of any group, it's stored as char[].
+    fn search_in(c_name: &str, members: &[HirDataItem]) -> Option<u32> {
+        for m in members {
+            if m.redefines.is_some() {
+                continue;
+            }
+            let mc = sanitize_name(&m.name);
+            if mc == c_name {
+                if let HirType::Numeric {
+                    size,
+                    decimal_places: 0,
+                    ..
+                } = &m.data_type
+                {
+                    return Some(*size);
+                }
+                return None;
+            }
+            if let HirType::Group {
+                members: sub_members,
+                ..
+            } = &m.data_type
+            {
+                if let Some(s) = search_in(c_name, sub_members) {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+    for item in data_items {
+        if let HirType::Group { members, .. } = &item.data_type {
+            if let Some(s) = search_in(base_name, members) {
+                return Some(s);
+            }
+        }
+    }
+    // Fallback: check the precomputed display numeric map (covers RENAMES etc.)
+    with_active_context(|ctx| ctx.display_numeric_size(base_name))
+}
+
+/// Extract the leaf member name from a C target expression for type lookup.
+/// For simple names like `FOO`, returns `"FOO"`.
+/// For struct paths like `GRP.members._m_X[i].members._m_Y`, returns `"Y"`.
+/// For qualified macro names like `GRP__FIELD`, returns `"FIELD"`.
+pub(crate) fn extract_leaf_member(c_target: &str) -> &str {
+    // Find the last `._m_` segment (possibly followed by `[...]`)
+    if let Some(pos) = c_target.rfind("._m_") {
+        let after = &c_target[pos + 4..];
+        // Strip any trailing subscript `[...]`
+        after.split('[').next().unwrap_or(after)
+    } else if let Some(pos) = c_target.rfind("__") {
+        // Qualified macro name: WS_GRP__FIELD -> FIELD
+        // Strip any trailing subscripts: NUMBER2[...] -> NUMBER2
+        let after = &c_target[pos + 2..];
+        after.split('[').next().unwrap_or(after)
+    } else {
+        // Simple name, strip subscripts
+        c_target.split('[').next().unwrap_or(c_target)
+    }
+}
+
+/// Generate C code to store an int64_t value into a target variable.
+/// If the target is a display numeric group member (char[]), uses
+/// cobol_store_numeric_display. Otherwise emits direct assignment.
+/// `c_target` is the full C expression (may include subscripts).
+/// `base_name` is the sanitized COBOL variable name for type lookup.
+pub(crate) fn emit_store_int(
+    out: &mut String,
+    c_target: &str,
+    value_expr: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    // Extract base (leaf) name from c_target for type lookup.
+    // For paths like "GRP.members._m_X[(i)-1].members._m_Y",
+    // we want the final member name "Y".
+    let base = extract_leaf_member(c_target);
+    if let Some(disp_size) = grp_display_size(base, data_items) {
+        out.push_str(&format!(
+            "{pad}cobol_store_numeric_display({value_expr}, (uint8_t*){c_target}, {disp_size});\n"
+        ));
+    } else {
+        out.push_str(&format!("{pad}{c_target} = {value_expr};\n"));
+    }
+}
+
+/// Check whether a variable name refers to a group member (char[] without null
+/// terminator). Returns true for variables that are Alphanumeric or Display
+/// Numeric members of groups.
+pub(crate) fn is_group_member_field(c_target: &str) -> bool {
+    let base = extract_leaf_member(c_target);
+    with_active_context(|ctx| ctx.is_group_alpha_name(base) || ctx.has_display_numeric(base))
+}
+
+/// Generate C code to store `target op value` (e.g., += , -=, *=, /=).
+pub(crate) fn emit_store_int_op(
+    out: &mut String,
+    c_target: &str,
+    op: &str,
+    value_expr: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let base = extract_leaf_member(c_target);
+    if let Some(disp_size) = grp_display_size(base, data_items) {
+        out.push_str(&format!(
+            "{pad}cobol_store_numeric_display(\
+             cobol_display_to_int64((const uint8_t*){c_target}, {disp_size}) {op} ({value_expr}), \
+             (uint8_t*){c_target}, {disp_size});\n"
+        ));
+    } else {
+        out.push_str(&format!("{pad}{c_target} {op}= {value_expr};\n"));
+    }
+}
+
+/// Returns true if the given expression refers to a CobolDecimal variable.
+pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+    let name = expr_var_name(expr);
+    if name.is_empty() {
+        return false;
+    }
+    find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+}
+
+/// Check whether an expression refers to a group variable (emitted as a C union).
+pub(crate) fn is_group_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+    let name = expr_var_name(expr);
+    if name.is_empty() {
+        return false;
+    }
+    find_data_item(name, data_items).is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
+}
+
+/// Check whether an expression refers to an alphanumeric variable (emitted as `char[]`).
+pub(crate) fn is_alpha_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+    let name = expr_var_name(expr);
+    if name.is_empty() {
+        return false;
+    }
+    find_data_item(name, data_items)
+        .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }))
+}
+
+/// Check whether an expression tree contains any decimal variable or decimal
+/// literal, meaning that converting to int64 would lose fractional precision.
+pub(crate) fn expr_contains_decimal(expr: &HirExpr) -> bool {
+    match expr {
+        HirExpr::Variable(name) => {
+            let c_name = sanitize_name(name);
+            with_active_context(|ctx| ctx.is_decimal_name(&c_name))
+        }
+        HirExpr::Literal(HirLiteral::Decimal(_)) => true,
+        HirExpr::BinaryOp { left, right, .. } => {
+            expr_contains_decimal(left) || expr_contains_decimal(right)
+        }
+        HirExpr::UnaryOp { operand, .. } => expr_contains_decimal(operand),
+        HirExpr::FunctionCall { args, .. } => args.iter().any(expr_contains_decimal),
+        _ => false,
+    }
+}
+
+/// Emit an expression as int64, converting CobolDecimal to int64 if needed.
+/// For simple variable/subscript expressions, wraps with cobol_decimal_to_int64.
+/// For compound expressions (BinaryOp etc), recursively converts sub-expressions.
+pub(crate) fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> String {
+    match expr {
+        HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+            if is_decimal_expr(expr, data_items) {
+                let c = emit_expr(expr);
+                format!("cobol_decimal_to_int64(&{c})")
+            } else if is_group_expr(expr, data_items) {
+                // Group variables are C unions; convert via cobol_func_numval
+                // (treat group bytes as alphanumeric and parse as a number).
+                let c = emit_expr(expr);
+                let var_name = expr_var_name(expr);
+                let size = find_data_item_size(&sanitize_name(var_name), data_items);
+                format!("cobol_func_numval((const uint8_t*)&{c}, {size})")
+            } else if is_alpha_expr(expr, data_items) {
+                // Alphanumeric fields are char[] in C; convert to int via numval.
+                let c = emit_expr(expr);
+                let var_name = expr_var_name(expr);
+                let size = find_data_item_size(&sanitize_name(var_name), data_items);
+                format!("cobol_func_numval((const uint8_t*){c}, {size})")
+            } else {
+                // Check if this is a display numeric stored as char[] in a group
+                let var_name = expr_var_name(expr);
+                let c_var = sanitize_name(var_name);
+                if let Some(disp_size) = grp_display_size(&c_var, data_items) {
+                    let c = emit_expr(expr);
+                    format!("cobol_display_to_int64((const uint8_t*){c}, {disp_size})")
+                } else {
+                    emit_expr(expr)
+                }
+            }
+        }
+        HirExpr::BinaryOp { op, left, right } => {
+            let l = emit_int_compatible_expr(left, data_items);
+            let r = emit_int_compatible_expr(right, data_items);
+            let op_str = match op {
+                HirBinOp::Add => "+",
+                HirBinOp::Sub => "-",
+                HirBinOp::Mul => "*",
+                HirBinOp::Div => "/",
+                HirBinOp::Pow => return format!("((int64_t)pow((double){l}, (double){r}))"),
+            };
+            format!("({l} {op_str} {r})")
+        }
+        HirExpr::UnaryOp { op, operand } => {
+            let o = emit_int_compatible_expr(operand, data_items);
+            match op {
+                HirUnaryOp::Neg => format!("(-{o})"),
+            }
+        }
+        HirExpr::FunctionCall { .. } => {
+            // FunctionCall results are always numeric C types (int64_t/double).
+            // emit_expr now uses emit_expr_as_numeric for function arguments,
+            // which auto-converts CobolDecimal variables via the DECIMAL_NAMES
+            // thread-local, so we can safely delegate.
+            emit_expr(expr)
+        }
+        _ => emit_expr(expr),
+    }
+}
+
+/// Emit code to assign a value to a CobolDecimal target.
+/// Handles integer literals, decimal literals, Zero, CobolDecimal sources,
+/// and integer variable sources.
+pub(crate) fn emit_assign_to_decimal(
+    out: &mut String,
+    from: &HirExpr,
+    c_target: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    match from {
+        HirExpr::Literal(HirLiteral::Integer(n)) => {
+            out.push_str(&format!(
+                "{pad}cobol_decimal_from_int({n}, 0, &{c_target});\n"
+            ));
+        }
+        HirExpr::Literal(HirLiteral::Decimal(d)) => {
+            let (scaled, scale) = parse_decimal_literal(d);
+            out.push_str(&format!(
+                "{pad}cobol_decimal_from_int({scaled}, {scale}, &{c_target});\n"
+            ));
+        }
+        HirExpr::Literal(HirLiteral::Zero) | HirExpr::Literal(HirLiteral::Null) => {
+            // Only zero the value; preserve scale/size/is_signed so that
+            // subsequent double-precision arithmetic (cobol_decimal_to_double,
+            // cobol_decimal_from_double) still knows the field's precision.
+            out.push_str(&format!("{pad}{c_target}.value = 0;\n"));
+        }
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            let len = s.len();
+            out.push_str(&format!(
+                "{pad}cobol_decimal_from_string(\
+                 (const uint8_t*)\"{escaped}\", {len}, &{c_target});\n"
+            ));
+        }
+        _ => {
+            if is_decimal_expr(from, data_items) {
+                // CobolDecimal to CobolDecimal: struct copy
+                let c_src = emit_expr(from);
+                out.push_str(&format!("{pad}{c_target} = {c_src};\n"));
+            } else if expr_contains_decimal(from)
+                || matches!(from, HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. }
+                    if expr_contains_decimal(from))
+            {
+                // Expression contains decimal sub-expressions or fractional
+                // literals: use double arithmetic to preserve precision, then
+                // convert back via cobol_decimal_from_double which respects the
+                // target's existing scale.
+                let e = emit_expr_as_double(from);
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_double({e}, &{c_target});\n"
+                ));
+            } else {
+                // Integer variable or expression -> CobolDecimal
+                // Use emit_int_compatible_expr to handle BinaryOp/UnaryOp
+                // that may contain CobolDecimal sub-expressions.
+                let e = emit_int_compatible_expr(from, data_items);
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_int({e}, 0, &{c_target});\n"
+                ));
+            }
+        }
+    }
+}
+
+/// Extract the base variable name from a `HirExpr` for data-item lookups.
+/// Returns the variable name for `Variable` and `Subscript` variants,
+/// or an empty string for other expression types.
+pub(crate) fn expr_var_name(expr: &HirExpr) -> &str {
+    match expr {
+        HirExpr::Variable(name) => name.as_str(),
+        HirExpr::Subscript { variable, .. } => variable.as_str(),
+        _ => "",
+    }
+}
+
+/// Look up a data item by name (searching flattened items including group members).
+pub(crate) fn find_data_item<'a>(name: &str, data_items: &'a [HirDataItem]) -> Option<&'a HirDataItem> {
+    // Handle qualified names like "WS-DST::FIELD-A"
+    if let Some(pos) = name.find("::") {
+        let group_name = &name[..pos];
+        let member_name = &name[pos + 2..];
+        // Find the group, then search within it
+        for item in data_items {
+            if item.name.as_str() == group_name {
+                if let HirType::Group { members, .. } = &item.data_type {
+                    return find_data_item(member_name, members);
+                }
+            }
+        }
+        // Fallback: try unqualified search
+        return find_data_item(member_name, data_items);
+    }
+    for item in data_items {
+        if item.name.as_str() == name {
+            return Some(item);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if let Some(found) = find_data_item(name, members) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Check if a name refers to an INDEX variable (declared via INDEXED BY).
+pub(crate) fn is_index_name(name: &str, data_items: &[HirDataItem]) -> bool {
+    for item in data_items {
+        for idx_name in &item.indexed_by {
+            if idx_name.as_str() == name {
+                return true;
+            }
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if is_index_name(name, members) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if a sanitized C variable name corresponds to a group item.
+pub(crate) fn is_group_item_c(c_name: &str, data_items: &[HirDataItem]) -> bool {
+    is_group_item_c_in(c_name, data_items)
+}
+
+pub(crate) fn is_group_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool {
+    for item in items {
+        let item_c = sanitize_name(&item.name);
+        if item_c == c_name {
+            return matches!(&item.data_type, HirType::Group { .. });
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if is_group_item_c_in(c_name, members) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if a sanitized C variable name corresponds to a numeric, binary,
+/// comp3, index, or other non-array type stored as int64_t/CobolDecimal.
+pub(crate) fn is_numeric_item_c(c_name: &str, data_items: &[HirDataItem]) -> bool {
+    is_numeric_item_c_in(c_name, data_items)
+}
+
+pub(crate) fn is_numeric_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool {
+    for item in items {
+        let item_c = sanitize_name(&item.name);
+        if item_c == c_name {
+            return matches!(
+                &item.data_type,
+                HirType::Numeric { .. }
+                    | HirType::Comp3 { .. }
+                    | HirType::Binary { .. }
+                    | HirType::Index
+                    | HirType::FloatShort
+                    | HirType::FloatLong
+                    | HirType::FloatExtended
+                    | HirType::Boolean
+            );
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if is_numeric_item_c_in(c_name, members) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Return a C expression suitable for use in pointer casts.
+/// For group items (C unions), returns `&name` since unions cannot be cast
+/// to pointers directly. For elementary items (arrays/scalars), returns `name`.
+pub(crate) fn c_ptr_expr(c_name: &str, data_items: &[HirDataItem]) -> String {
+    if is_group_item_c(c_name, data_items) {
+        format!("&{c_name}")
+    } else if is_numeric_item_c(c_name, data_items) {
+        // Numeric items are stored as int64_t or CobolDecimal, so we need &
+        // to get a pointer to the storage (not cast the value itself)
+        format!("&{c_name}")
+    } else {
+        // Alphanumeric and National are char[] / uint16_t[], which decay to pointers
+        c_name.to_string()
+    }
+}
+
+/// Resolve a variable name to its fully-qualified C name.
+/// If the variable is a group member, returns the qualified path
+/// (e.g., `WS_SRC.members._m_FIELD_A`).
+/// If it's a top-level variable, returns `sanitize_name(name)`.
+/// Get the group members of a data item by COBOL name.
+pub(crate) fn get_group_members<'a>(name: &str, data_items: &'a [HirDataItem]) -> &'a [HirDataItem] {
+    if let Some(item) = find_data_item(name, data_items) {
+        if let HirType::Group { members, .. } = &item.data_type {
+            return members;
+        }
+    }
+    &[]
+}
+
+/// Emit MOVE CORRESPONDING: for each member name in `from` group that also
+/// exists in `to` group, generate a MOVE from from.member to to.member.
+pub(crate) fn emit_corresponding_move(
+    out: &mut String,
+    from: &str,
+    to: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let from_members = get_group_members(from, data_items);
+    let to_members = get_group_members(to, data_items);
+    let c_from = sanitize_name(from);
+    let c_to = sanitize_name(to);
+    out.push_str(&format!(
+        "{pad}/* MOVE CORRESPONDING {c_from} TO {c_to} */\n"
+    ));
+    for src_item in from_members {
+        for tgt_item in to_members {
+            if src_item.name == tgt_item.name {
+                let member_c = sanitize_name(&src_item.name);
+                // Use qualified macros to avoid collision
+                let src_q = format!("{c_from}__{member_c}");
+                let tgt_q = format!("{c_to}__{member_c}");
+                // For OCCURS items, use memcpy instead of direct assignment
+                if src_item.occurs.is_some() || tgt_item.occurs.is_some() {
+                    out.push_str(&format!(
+                        "{pad}memcpy(&{tgt_q}, &{src_q}, sizeof({tgt_q}));\n"
+                    ));
+                    continue;
+                }
+                match (&src_item.data_type, &tgt_item.data_type) {
+                    (
+                        HirType::Numeric {
+                            size: src_disp,
+                            decimal_places: 0,
+                            ..
+                        },
+                        HirType::Numeric {
+                            size: tgt_disp,
+                            decimal_places: 0,
+                            ..
+                        },
+                    ) => {
+                        // Both are display numeric in groups (char[])
+                        let src_read = format!(
+                            "cobol_display_to_int64(\
+                             (const uint8_t*){src_q}, {src_disp})"
+                        );
+                        out.push_str(&format!(
+                            "{pad}cobol_store_numeric_display({src_read}, \
+                             (uint8_t*){tgt_q}, {tgt_disp});\n"
+                        ));
+                    }
+                    (HirType::Numeric { .. }, HirType::Numeric { .. })
+                    | (HirType::Binary { .. }, HirType::Binary { .. })
+                    | (HirType::Comp3 { .. }, HirType::Comp3 { .. }) => {
+                        out.push_str(&format!("{pad}{tgt_q} = {src_q};\n"));
+                    }
+                    (
+                        HirType::Alphanumeric { size: src_sz },
+                        HirType::Alphanumeric { size: tgt_sz },
+                    ) => {
+                        let copy_len = std::cmp::min(*src_sz, *tgt_sz);
+                        out.push_str(&format!("{pad}memcpy({tgt_q}, {src_q}, {copy_len});\n"));
+                        if *tgt_sz > *src_sz {
+                            out.push_str(&format!(
+                                "{pad}memset({tgt_q} + {src_sz}, ' ', {});\n",
+                                tgt_sz - src_sz
+                            ));
+                        }
+                    }
+                    _ => {
+                        out.push_str(&format!(
+                            "{pad}memcpy(&{tgt_q}, &{src_q}, sizeof({tgt_q}));\n"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Emit ADD/SUBTRACT CORRESPONDING: for each matching numeric member,
+/// generate target.member = target.member op source.member.
+pub(crate) fn emit_corresponding_arith(
+    out: &mut String,
+    from: &str,
+    to: &str,
+    op: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let from_members = get_group_members(from, data_items);
+    let to_members = get_group_members(to, data_items);
+    let c_from = sanitize_name(from);
+    let c_to = sanitize_name(to);
+    let op_name = if op == "+" { "ADD" } else { "SUBTRACT" };
+    out.push_str(&format!(
+        "{pad}/* {op_name} CORRESPONDING {c_from} TO {c_to} */\n"
+    ));
+    for src_item in from_members {
+        for tgt_item in to_members {
+            if src_item.name == tgt_item.name && is_numeric_type(&tgt_item.data_type) {
+                let member_c = sanitize_name(&src_item.name);
+                // Use qualified names: GROUP.members._m_MEMBER for disambiguation
+                let src_ref = format!("{c_from}.members._m_{member_c}");
+                let tgt_ref = format!("{c_to}.members._m_{member_c}");
+                if needs_decimal(&tgt_item.data_type) {
+                    // CobolDecimal: use runtime functions
+                    let func = if op == "+" {
+                        "cobol_decimal_add"
+                    } else {
+                        "cobol_decimal_sub"
+                    };
+                    out.push_str(&format!(
+                        "{pad}{func}(&{src_ref}, &{tgt_ref}, &{tgt_ref});\n"
+                    ));
+                } else if let Some(disp_size) = grp_display_size(&member_c, data_items) {
+                    out.push_str(&format!(
+                        "{pad}cobol_store_numeric_display(\
+                         cobol_display_to_int64(\
+                         (const uint8_t*){tgt_ref}, {disp_size}) {op} \
+                         cobol_display_to_int64(\
+                         (const uint8_t*){src_ref}, {disp_size}), \
+                         (uint8_t*){tgt_ref}, {disp_size});\n"
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}{tgt_ref} = {tgt_ref} {op} {src_ref};\n"));
+                }
+            }
+        }
+    }
+}
+
+/// Check if a HirType is a numeric type (suitable for arithmetic CORRESPONDING).
+pub(crate) fn is_numeric_type(ty: &HirType) -> bool {
+    matches!(
+        ty,
+        HirType::Numeric { .. }
+            | HirType::Binary { .. }
+            | HirType::Comp3 { .. }
+            | HirType::FloatShort
+            | HirType::FloatLong
+            | HirType::FloatExtended
+    )
+}
+
+/// Get the maximum integer value for a PIC 9(N) field.
+pub(crate) fn get_pic_max(name: &str, data_items: &[HirDataItem]) -> Option<i64> {
+    let item = find_data_item(name, data_items)?;
+    match &item.data_type {
+        HirType::Numeric { size, .. } => Some(10_i64.pow(*size) - 1),
+        HirType::Binary { size } => Some(10_i64.pow(*size) - 1),
+        _ => None,
+    }
+}
+
+/// Emit overflow check for integer (non-decimal) arithmetic targets.
+/// Expects `_prev` and `_size_error` to be in scope.
+pub(crate) fn emit_integer_overflow_check(
+    out: &mut String,
+    target_name: &str,
+    c_target: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    if let Some(max_val) = get_pic_max(target_name, data_items) {
+        let c_tgt_base = sanitize_name(target_name);
+        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+            out.push_str(&format!(
+                "{pad}if (llabs(cobol_display_to_int64(\
+                 (const uint8_t*){c_target}, {disp_size})) > {max_val}) \
+                 {{ _size_error = 1; cobol_store_numeric_display(\
+                 _prev, (uint8_t*){c_target}, {disp_size}); }}\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "{pad}if (llabs({c_target}) > {max_val}) \
+                 {{ _size_error = 1; {c_target} = _prev; }}\n"
+            ));
+        }
+    }
+}
+
+/// Emit COMPUTE with overflow check: save, assign, check, restore on overflow.
+pub(crate) fn emit_save_and_check_overflow(
+    out: &mut String,
+    target_name: &str,
+    c_target: &str,
+    c_expr: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let target_is_decimal =
+        find_data_item(target_name, data_items).is_some_and(|i| needs_decimal(&i.data_type));
+    if target_is_decimal {
+        // CobolDecimal target: save/restore struct, convert expression
+        out.push_str(&format!("{pad}{{ CobolDecimal _prev = {c_target};\n"));
+        out.push_str(&format!(
+            "{pad}cobol_decimal_from_int((int64_t)({c_expr}), 0, &{c_target});\n"
+        ));
+        if let Some(max_val) = get_pic_max(target_name, data_items) {
+            out.push_str(&format!(
+                "{pad}if (llabs({c_target}.value) > {max_val}) \
+                 {{ _size_error = 1; {c_target} = _prev; }}\n"
+            ));
+        }
+        out.push_str(&format!("{pad}}}\n"));
+    } else {
+        let c_tgt_base = sanitize_name(target_name);
+        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+            out.push_str(&format!(
+                "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                 (const uint8_t*){c_target}, {disp_size});\n"
+            ));
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display({c_expr}, \
+                 (uint8_t*){c_target}, {disp_size});\n"
+            ));
+            if let Some(max_val) = get_pic_max(target_name, data_items) {
+                out.push_str(&format!(
+                    "{pad}if (llabs(cobol_display_to_int64(\
+                     (const uint8_t*){c_target}, {disp_size})) > {max_val}) \
+                     {{ _size_error = 1; cobol_store_numeric_display(\
+                     _prev, (uint8_t*){c_target}, {disp_size}); }}\n"
+                ));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        } else {
+            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+            out.push_str(&format!("{pad}{c_target} = {c_expr};\n"));
+            if let Some(max_val) = get_pic_max(target_name, data_items) {
+                out.push_str(&format!(
+                    "{pad}if (llabs({c_target}) > {max_val}) \
+                     {{ _size_error = 1; {c_target} = _prev; }}\n"
+                ));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+    }
+}
+
+/// Generate a PICTURE string for use with cobol_decimal_to_display.
+/// E.g., Numeric { size: 5, decimal_places: 2, is_signed: true } => "-999.99"
+pub(crate) fn generate_pic_string(data_type: &HirType) -> String {
+    match data_type {
+        HirType::Numeric {
+            size,
+            decimal_places,
+            ..
+        }
+        | HirType::Comp3 {
+            size,
+            decimal_places,
+        } => {
+            let is_signed = match data_type {
+                HirType::Numeric { is_signed, .. } => *is_signed,
+                _ => true,
+            };
+            let int_digits = *size as usize - *decimal_places as usize;
+            let mut pic = String::new();
+            if is_signed {
+                pic.push('-');
+            }
+            for _ in 0..int_digits {
+                pic.push('9');
+            }
+            if *decimal_places > 0 {
+                pic.push('.');
+                for _ in 0..*decimal_places {
+                    pic.push('9');
+                }
+            }
+            pic
+        }
+        _ => "9".to_string(),
+    }
+}
+
+/// Emit a decimal arithmetic operation.
+/// Converts the operand to a CobolDecimal temporary if needed, then calls the runtime function.
+pub(crate) fn emit_decimal_arith(
+    out: &mut String,
+    c_target: &str,
+    operand: &HirExpr,
+    func: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    // Check if operand is already a decimal variable
+    let op_is_decimal = is_decimal_expr(operand, data_items);
+
+    if op_is_decimal {
+        let c_op = emit_expr(operand);
+        out.push_str(&format!(
+            "{pad}{func}(&{c_target}, &{c_op}, &{c_target});\n"
+        ));
+    } else {
+        // Convert operand to a temporary CobolDecimal (use int-compatible for mixed exprs)
+        let c_op = emit_int_compatible_expr(operand, data_items);
+        out.push_str(&format!(
+            "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_int({c_op}, 0, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
+        ));
+    }
+}
+
+/// Emit ADD GIVING for decimal: add all operands and TO values, store in GIVING target.
+pub(crate) fn emit_decimal_giving_add(
+    out: &mut String,
+    operands: &[HirExpr],
+    to: &[HirExpr],
+    c_target: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    // Start by copying the first addend to the target
+    let mut first = true;
+    for op in operands {
+        if first {
+            // Initialize target with first operand
+            let op_is_decimal = is_decimal_expr(op, data_items);
+            if op_is_decimal {
+                let c_op = emit_expr(op);
+                out.push_str(&format!("{pad}{c_target} = {c_op};\n"));
+            } else {
+                let c_op = emit_expr(op);
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_int({c_op}, 0, &{c_target});\n"
+                ));
+            }
+            first = false;
+        } else {
+            emit_decimal_arith(out, c_target, op, "cobol_decimal_add", data_items, pad);
+        }
+    }
+    for t in to {
+        if first {
+            let c_t = emit_expr(t);
+            let t_is_decimal = find_data_item(expr_var_name(t), data_items)
+                .is_some_and(|i| needs_decimal(&i.data_type));
+            if t_is_decimal {
+                out.push_str(&format!("{pad}{c_target} = {c_t};\n"));
+            } else {
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_int({c_t}, 0, &{c_target});\n"
+                ));
+            }
+            first = false;
+        } else {
+            emit_decimal_arith(out, c_target, t, "cobol_decimal_add", data_items, pad);
+        }
+    }
+}
+
+/// Parse a decimal literal string like "123.45" into (scaled_value, scale).
+/// E.g., "123.45" -> (12345, 2), "10.5" -> (105, 1), "100" -> (100, 0).
+pub(crate) fn parse_decimal_literal(s: &str) -> (i64, u32) {
+    let negative = s.starts_with('-');
+    let body = s.trim_start_matches(['+', '-']);
+    if let Some(dot_pos) = body.find('.') {
+        let int_part = &body[..dot_pos];
+        let frac_part = &body[dot_pos + 1..];
+        let scale = frac_part.len() as u32;
+        let combined: String = int_part.chars().chain(frac_part.chars()).collect();
+        let abs_value: i64 = combined.parse().unwrap_or(0);
+        if negative {
+            (-abs_value, scale)
+        } else {
+            (abs_value, scale)
+        }
+    } else {
+        let abs_value: i64 = body.parse().unwrap_or(0);
+        if negative {
+            (-abs_value, 0)
+        } else {
+            (abs_value, 0)
+        }
+    }
+}
+
+/// Emit INITIALIZE for a single field, choosing the correct default by type.
+///
+/// COBOL rules: ALPHANUMERIC → spaces, NUMERIC → zero, GROUP → recurse members.
+pub(crate) fn emit_initialize_field(
+    out: &mut String,
+    name: &smol_str::SmolStr,
+    c_name: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    if let Some(item) = find_data_item(name.as_str(), data_items) {
+        match &item.data_type {
+            HirType::Alphanumeric { size } => {
+                let is_grp_member =
+                    with_active_context(|ctx| ctx.is_group_alpha_name(&sanitize_name(name.as_str())));
+                if is_grp_member {
+                    out.push_str(&format!(
+                        "{pad}memset({c_name}, ' ', {size}); /* INITIALIZE */\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}memset({c_name}, ' ', {size}); {c_name}[{size}] = '\\0'; /* INITIALIZE */\n"
+                    ));
+                }
+            }
+            HirType::Group { members, .. } => {
+                out.push_str(&format!("{pad}/* INITIALIZE group {c_name} */\n"));
+                for member in members {
+                    let member_c = sanitize_name(&member.name);
+                    emit_initialize_field(out, &member.name, &member_c, data_items, pad);
+                }
+            }
+            dt if needs_decimal(dt) => {
+                // CobolDecimal → zero via runtime
+                out.push_str(&format!(
+                    "{pad}cobol_decimal_from_int(0, 0, &{c_name}); /* INITIALIZE */\n"
+                ));
+            }
+            _ => {
+                // Numeric, Binary, Index, etc. → zero
+                let base = c_name
+                    .split('[')
+                    .next()
+                    .and_then(|s| s.split('.').next_back())
+                    .map(|s| s.trim_start_matches("_m_"))
+                    .unwrap_or(c_name);
+                if let Some(disp_size) = grp_display_size(base, data_items) {
+                    out.push_str(&format!(
+                        "{pad}cobol_store_numeric_display(0, \
+                         (uint8_t*){c_name}, {disp_size}); /* INITIALIZE */\n"
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}{c_name} = 0; /* INITIALIZE */\n"));
+                }
+            }
+        }
+    } else {
+        // Unknown field, default to zero
+        let base = c_name
+            .split('[')
+            .next()
+            .and_then(|s| s.split('.').next_back())
+            .map(|s| s.trim_start_matches("_m_"))
+            .unwrap_or(c_name);
+        if let Some(disp_size) = grp_display_size(base, data_items) {
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display(0, \
+                 (uint8_t*){c_name}, {disp_size}); /* INITIALIZE */\n"
+            ));
+        } else {
+            out.push_str(&format!("{pad}{c_name} = 0; /* INITIALIZE */\n"));
+        }
+    }
+}
+
+/// Emit an INSPECT operand (pattern string) as a C pointer+length pair.
+/// Returns (ptr_expr, len_expr) for use in runtime calls.
+pub(crate) fn emit_inspect_operand(
+    _out: &mut str,
+    expr: &HirExpr,
+    _label: &str,
+    data_items: &[HirDataItem],
+    _pad: &str,
+) -> (String, String) {
+    match expr {
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            let len = s.len();
+            (format!("(const uint8_t*)\"{escaped}\""), format!("{len}"))
+        }
+        HirExpr::Literal(HirLiteral::Space) => {
+            ("(const uint8_t*)\" \"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::Zero) => {
+            ("(const uint8_t*)\"0\"".to_string(), "1".to_string())
+        }
+        HirExpr::Variable(name) => {
+            let c_name = sanitize_name(name);
+            let size = find_data_item_size(&c_name, data_items);
+            let ptr = c_ptr_expr(&c_name, data_items);
+            (format!("(const uint8_t*){ptr}"), format!("{size}"))
+        }
+        _ => ("NULL".to_string(), "0".to_string()),
+    }
+}
+
+/// Emit INSPECT TALLYING phrases.
+pub(crate) fn emit_inspect_tallying(
+    out: &mut String,
+    c_target: &str,
+    target_size: u32,
+    tallying: &[cobol_hir::HirInspectTallying],
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let tgt_ptr = c_ptr_expr(c_target, data_items);
+    if tallying.is_empty() {
+        // Fallback: count all characters
+        out.push_str(&format!(
+            "{pad}cobol_inspect_tallying((const uint8_t*){tgt_ptr}, {target_size}, NULL, 0, 0);\n"
+        ));
+        return;
+    }
+    for (i, t) in tallying.iter().enumerate() {
+        let counter = emit_expr(&t.counter);
+        let counter_var = expr_var_name(&t.counter);
+        let counter_base = sanitize_name(counter_var);
+        let counter_disp = grp_display_size(&counter_base, data_items);
+        let (mode, search_ptr, search_len) = match &t.kind {
+            cobol_hir::HirTallyingKind::Characters => (0u32, "NULL".to_string(), "0".to_string()),
+            cobol_hir::HirTallyingKind::All(expr) => {
+                let label = format!("tally_s{i}");
+                let (ptr, len) = emit_inspect_operand(out, expr, &label, data_items, pad);
+                (1, ptr, len)
+            }
+            cobol_hir::HirTallyingKind::Leading(expr) => {
+                let label = format!("tally_s{i}");
+                let (ptr, len) = emit_inspect_operand(out, expr, &label, data_items, pad);
+                (2, ptr, len)
+            }
+        };
+        if let Some(disp_size) = counter_disp {
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display(\
+                 cobol_display_to_int64((const uint8_t*){counter}, {disp_size}) + \
+                 cobol_inspect_tallying((const uint8_t*){tgt_ptr}, {target_size}, \
+                 {search_ptr}, {search_len}, {mode}), \
+                 (uint8_t*){counter}, {disp_size});\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "{pad}{counter} += cobol_inspect_tallying((const uint8_t*){tgt_ptr}, {target_size}, {search_ptr}, {search_len}, {mode});\n"
+            ));
+        }
+    }
+}
+
+/// Emit INSPECT REPLACING phrases.
+pub(crate) fn emit_inspect_replacing(
+    out: &mut String,
+    c_target: &str,
+    target_size: u32,
+    replacing: &[cobol_hir::HirInspectReplacing],
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let tgt_ptr = c_ptr_expr(c_target, data_items);
+    if replacing.is_empty() {
+        // Fallback: replace all characters with space
+        out.push_str(&format!(
+            "{pad}cobol_inspect_replacing((uint8_t*){tgt_ptr}, {target_size}, NULL, 0, (const uint8_t*)\" \", 1, 0);\n"
+        ));
+        return;
+    }
+    for (i, r) in replacing.iter().enumerate() {
+        let (mode, search_ptr, search_len, replace_ptr, replace_len) = match &r.kind {
+            cobol_hir::HirReplacingKind::Characters(to_expr) => {
+                let label = format!("rep_to{i}");
+                let (to_ptr, to_len) = emit_inspect_operand(out, to_expr, &label, data_items, pad);
+                (0u32, "NULL".to_string(), "0".to_string(), to_ptr, to_len)
+            }
+            cobol_hir::HirReplacingKind::All { from, to } => {
+                let from_label = format!("rep_from{i}");
+                let to_label = format!("rep_to{i}");
+                let (f_ptr, f_len) = emit_inspect_operand(out, from, &from_label, data_items, pad);
+                let (t_ptr, t_len) = emit_inspect_operand(out, to, &to_label, data_items, pad);
+                (1, f_ptr, f_len, t_ptr, t_len)
+            }
+            cobol_hir::HirReplacingKind::Leading { from, to } => {
+                let from_label = format!("rep_from{i}");
+                let to_label = format!("rep_to{i}");
+                let (f_ptr, f_len) = emit_inspect_operand(out, from, &from_label, data_items, pad);
+                let (t_ptr, t_len) = emit_inspect_operand(out, to, &to_label, data_items, pad);
+                (2, f_ptr, f_len, t_ptr, t_len)
+            }
+            cobol_hir::HirReplacingKind::First { from, to } => {
+                let from_label = format!("rep_from{i}");
+                let to_label = format!("rep_to{i}");
+                let (f_ptr, f_len) = emit_inspect_operand(out, from, &from_label, data_items, pad);
+                let (t_ptr, t_len) = emit_inspect_operand(out, to, &to_label, data_items, pad);
+                (3, f_ptr, f_len, t_ptr, t_len)
+            }
+        };
+        out.push_str(&format!(
+            "{pad}cobol_inspect_replacing((uint8_t*){tgt_ptr}, {target_size}, {search_ptr}, {search_len}, {replace_ptr}, {replace_len}, {mode});\n"
+        ));
+    }
+}
+
+/// Emit the value part of a STRING source operand.
+pub(crate) fn emit_string_source_value(
+    out: &mut String,
+    value: &HirExpr,
+    i: usize,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    match value {
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            let len = s.len();
+            out.push_str(&format!(
+                "{pad}    const void* _src_ptr_{i} = \"{escaped}\"; uint32_t _src_len_{i} = {len};\n"
+            ));
+        }
+        HirExpr::Variable(name) => {
+            let c_var = sanitize_name(name);
+            let var_size = find_data_item_size(&c_var, data_items);
+            let ptr = c_ptr_expr(&c_var, data_items);
+            out.push_str(&format!(
+                "{pad}    const void* _src_ptr_{i} = {ptr}; uint32_t _src_len_{i} = {var_size};\n"
+            ));
+        }
+        _ => {
+            let e = emit_expr(value);
+            out.push_str(&format!("{pad}    int64_t _src_tmp_{i} = {e};\n"));
+            out.push_str(&format!(
+                "{pad}    const void* _src_ptr_{i} = &_src_tmp_{i}; uint32_t _src_len_{i} = sizeof(int64_t);\n"
+            ));
+        }
+    }
+}
+
+/// Emit the delimiter part of a STRING source operand.
+pub(crate) fn emit_string_source_delimiter(
+    out: &mut String,
+    delimiter: &Option<HirExpr>,
+    i: usize,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    match delimiter {
+        Some(HirExpr::Literal(HirLiteral::String(s))) => {
+            let escaped = escape_c_string(s);
+            let len = s.len();
+            out.push_str(&format!(
+                "{pad}    const uint8_t* _delim_ptr_{i} = (const uint8_t*)\"{escaped}\"; uint32_t _delim_len_{i} = {len};\n"
+            ));
+        }
+        Some(HirExpr::Variable(name)) => {
+            let c_var = sanitize_name(name);
+            let var_size = find_data_item_size(&c_var, data_items);
+            let ptr = c_ptr_expr(&c_var, data_items);
+            out.push_str(&format!(
+                "{pad}    const uint8_t* _delim_ptr_{i} = (const uint8_t*){ptr}; uint32_t _delim_len_{i} = {var_size};\n"
+            ));
+        }
+        _ => {
+            // DELIMITED BY SIZE (no delimiter)
+            out.push_str(&format!(
+                "{pad}    const uint8_t* _delim_ptr_{i} = NULL; uint32_t _delim_len_{i} = 0;\n"
+            ));
+        }
+    }
+}
+
+/// Check whether an HIR expression refers to an alphanumeric field or string literal.
+pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+    match expr {
+        HirExpr::Variable(name) => {
+            if let Some(item) = find_data_item(name.as_str(), data_items) {
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. }
+                )
+            } else {
+                false
+            }
+        }
+        HirExpr::Literal(HirLiteral::String(_))
+        | HirExpr::Literal(HirLiteral::Space)
+        | HirExpr::Literal(HirLiteral::HighValue)
+        | HirExpr::Literal(HirLiteral::LowValue)
+        | HirExpr::Literal(HirLiteral::Quote) => true,
+        HirExpr::ReferenceModification { variable, .. } => {
+            if let Some(item) = find_data_item(variable.as_str(), data_items) {
+                matches!(item.data_type, HirType::Alphanumeric { .. })
+            } else {
+                false
+            }
+        }
+        HirExpr::FunctionCall { name, .. } => {
+            let upper_fn = name.to_uppercase();
+            matches!(
+                upper_fn.as_str(),
+                "CHAR" | "CURRENT-DATE" | "WHEN-COMPILED" | "UPPER-CASE" | "LOWER-CASE" | "REVERSE"
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Produce `(ptr_expr, len_expr)` for an alphanumeric comparison operand.
+pub(crate) fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (String, String) {
+    match expr {
+        HirExpr::Variable(name) => {
+            let c_name = sanitize_name(name);
+            let size = find_data_item_size(&c_name, data_items);
+            let ptr = c_ptr_expr(&c_name, data_items);
+            (format!("(const uint8_t*){ptr}"), format!("{size}"))
+        }
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            let len = s.len();
+            (format!("(const uint8_t*)\"{}\"", escaped), format!("{len}"))
+        }
+        HirExpr::Literal(HirLiteral::Space) => {
+            ("(const uint8_t*)\" \"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::HighValue) => {
+            ("(const uint8_t*)\"\\xFF\"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::LowValue) => {
+            ("(const uint8_t*)\"\\x00\"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::Quote) => {
+            ("(const uint8_t*)\"\\\"\"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::Integer(n)) => {
+            // Numeric literal compared with alphanumeric: convert to string
+            let s = n.to_string();
+            let len = s.len();
+            (format!("(const uint8_t*)\"{}\"", s), format!("{len}"))
+        }
+        HirExpr::Literal(HirLiteral::Zero) => {
+            ("(const uint8_t*)\"0\"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::Decimal(d)) => {
+            let len = d.len();
+            (format!("(const uint8_t*)\"{}\"", d), format!("{len}"))
+        }
+        HirExpr::Subscript { .. } => {
+            let c_name = emit_expr(expr);
+            let var_name = expr_var_name(expr);
+            let size = if !var_name.is_empty() {
+                let sz = find_data_item_size(&sanitize_name(var_name), data_items);
+                format!("{sz}")
+            } else {
+                format!("sizeof({c_name})")
+            };
+            let ptr = format!("(const uint8_t*)&{c_name}");
+            (ptr, size)
+        }
+        HirExpr::FunctionCall { name, args } => {
+            let upper_fn = name.to_uppercase();
+            match upper_fn.as_str() {
+                "CHAR" => {
+                    // Returns a 1-byte buffer pointer
+                    let e = emit_expr(expr);
+                    (format!("(const uint8_t*){e}"), "1".to_string())
+                }
+                "CURRENT-DATE" | "WHEN-COMPILED" => {
+                    let e = emit_expr(expr);
+                    (format!("(const uint8_t*){e}"), "21".to_string())
+                }
+                "UPPER-CASE" | "LOWER-CASE" | "REVERSE" => {
+                    let size: u32 = if let Some(arg) = args.first() {
+                        if let HirExpr::Variable(v) = arg {
+                            find_data_item_size(&sanitize_name(v), data_items)
+                        } else if let HirExpr::Literal(HirLiteral::String(s)) = arg {
+                            s.len() as u32
+                        } else {
+                            64
+                        }
+                    } else {
+                        64
+                    };
+                    let func = match upper_fn.as_str() {
+                        "UPPER-CASE" => "cobol_func_upper_case",
+                        "LOWER-CASE" => "cobol_func_lower_case",
+                        _ => "cobol_func_reverse",
+                    };
+                    let c_arg = if let Some(arg) = args.first() {
+                        emit_expr(arg)
+                    } else {
+                        "\"\"".to_string()
+                    };
+                    (
+                        format!(
+                            "({{ static uint8_t _fbuf[{size}]; \
+                             memcpy(_fbuf, (const uint8_t*){c_arg}, {size}); \
+                             {func}(_fbuf, {size}); \
+                             (const uint8_t*)_fbuf; }})"
+                        ),
+                        format!("{size}"),
+                    )
+                }
+                _ => {
+                    let e = emit_expr(expr);
+                    (format!("(const uint8_t*)&{e}"), format!("sizeof({e})"))
+                }
+            }
+        }
+        HirExpr::ReferenceModification {
+            variable,
+            start,
+            length,
+        } => {
+            let c_src = sanitize_name(variable);
+            let c_start = emit_expr(start);
+            let src_full_size = find_data_item_size(&c_src, data_items);
+            let c_len = if let Some(len) = length {
+                emit_expr(len)
+            } else {
+                format!("({src_full_size} - ({c_start} - 1))")
+            };
+            (format!("(const uint8_t*){c_src} + ({c_start} - 1)"), c_len)
+        }
+        _ => {
+            // Fallback for non-alphanumeric expressions used in mixed comparisons.
+            // Use a statement expression to create a temporary so we can take its address
+            // (rvalues like `(int64_t)'B'` cannot have their address taken directly).
+            let e = emit_expr(expr);
+            (
+                format!("({{ int64_t _cmp_tmp = {e}; (const uint8_t*)&_cmp_tmp; }})"),
+                "sizeof(int64_t)".to_string(),
+            )
+        }
+    }
+}
+
+/// Generate code to initialize a CobolDecimal _tcmp from a non-decimal expression.
+/// Handles decimal literals properly via cobol_decimal_from_string.
+pub(crate) fn emit_decimal_init_expr(expr: &HirExpr, c_expr: &str) -> String {
+    match expr {
+        HirExpr::Literal(HirLiteral::Decimal(d)) => {
+            let len = d.len();
+            format!("cobol_decimal_from_string((const uint8_t*)\"{d}\", {len}, &_tcmp);")
+        }
+        _ => {
+            format!("cobol_decimal_from_int({c_expr}, 0, &_tcmp);")
+        }
+    }
+}
+
+pub(crate) fn emit_condition(
+    cond: &HirCondition,
+    data_items: &[HirDataItem],
+) -> String {
+    with_active_context(|ctx| emit_condition_with_ctx(cond, data_items, ctx))
+}
+
+pub(crate) fn emit_condition_with_ctx(
+    cond: &HirCondition,
+    data_items: &[HirDataItem],
+    ctx: &CodegenContext,
+) -> String {
+    let emit_expr = |expr| super::emit_expr_with_ctx(expr, ctx);
+    match cond {
+        HirCondition::Compare { left, op, right } => {
+            if is_alphanumeric_expr(left, data_items) || is_alphanumeric_expr(right, data_items) {
+                // Alphanumeric comparison via runtime function
+                let (a_ptr, a_len) = emit_alphanumeric_operand(left, data_items);
+                let (b_ptr, b_len) = emit_alphanumeric_operand(right, data_items);
+                let cmp = format!("cobol_compare_alphanumeric({a_ptr}, {a_len}, {b_ptr}, {b_len})");
+                let op_str = match op {
+                    HirCompareOp::Eq => "== 0",
+                    HirCompareOp::Ne => "!= 0",
+                    HirCompareOp::Gt => "> 0",
+                    HirCompareOp::Lt => "< 0",
+                    HirCompareOp::Ge => ">= 0",
+                    HirCompareOp::Le => "<= 0",
+                };
+                format!("({cmp} {op_str})")
+            } else if is_decimal_expr(left, data_items) || is_decimal_expr(right, data_items) {
+                // CobolDecimal comparison via runtime function
+                let left_is_dec = is_decimal_expr(left, data_items);
+                let right_is_dec = is_decimal_expr(right, data_items);
+                // For decimal sides, use emit_expr to get the struct;
+                // for non-decimal sides, use emit_int_compatible_expr to
+                // ensure CobolDecimal sub-expressions are converted to int64.
+                let l = if left_is_dec {
+                    emit_expr(left)
+                } else {
+                    emit_int_compatible_expr(left, data_items)
+                };
+                let r = if right_is_dec {
+                    emit_expr(right)
+                } else {
+                    emit_int_compatible_expr(right, data_items)
+                };
+                let op_str = match op {
+                    HirCompareOp::Eq => "== 0",
+                    HirCompareOp::Ne => "!= 0",
+                    HirCompareOp::Gt => "> 0",
+                    HirCompareOp::Lt => "< 0",
+                    HirCompareOp::Ge => ">= 0",
+                    HirCompareOp::Le => "<= 0",
+                };
+                if left_is_dec && right_is_dec {
+                    format!("(cobol_decimal_cmp(&{l}, &{r}) {op_str})")
+                } else if left_is_dec {
+                    // left is decimal, right is not: convert right to temp
+                    let init = emit_decimal_init_expr(right, &r);
+                    format!(
+                        "(({{ CobolDecimal _tcmp; {init} \
+                         cobol_decimal_cmp(&{l}, &_tcmp); }}) {op_str})"
+                    )
+                } else {
+                    // right is decimal, left is not: convert left to temp
+                    let init = emit_decimal_init_expr(left, &l);
+                    format!(
+                        "(({{ CobolDecimal _tcmp; {init} \
+                         cobol_decimal_cmp(&_tcmp, &{r}); }}) {op_str})"
+                    )
+                }
+            } else {
+                let l = emit_int_compatible_expr(left, data_items);
+                let r = emit_int_compatible_expr(right, data_items);
+                let op_str = match op {
+                    HirCompareOp::Eq => "==",
+                    HirCompareOp::Ne => "!=",
+                    HirCompareOp::Gt => ">",
+                    HirCompareOp::Lt => "<",
+                    HirCompareOp::Ge => ">=",
+                    HirCompareOp::Le => "<=",
+                };
+                format!("{l} {op_str} {r}")
+            }
+        }
+        HirCondition::ClassCondition { operand, class } => {
+            let (ptr, len) = emit_alphanumeric_operand(operand, data_items);
+            let func = match class {
+                HirClassType::Numeric => "cobol_is_numeric",
+                HirClassType::Alphabetic => "cobol_is_alphabetic",
+                HirClassType::AlphabeticLower => "cobol_is_alphabetic_lower",
+                HirClassType::AlphabeticUpper => "cobol_is_alphabetic_upper",
+            };
+            format!("({func}({ptr}, {len}))")
+        }
+        HirCondition::And(a, b) => {
+            let a = emit_condition(a, data_items);
+            let b = emit_condition(b, data_items);
+            format!("({a} && {b})")
+        }
+        HirCondition::Or(a, b) => {
+            let a = emit_condition(a, data_items);
+            let b = emit_condition(b, data_items);
+            format!("({a} || {b})")
+        }
+        HirCondition::Not(inner) => {
+            let c = emit_condition(inner, data_items);
+            format!("(!({c}))")
+        }
+    }
+}
+
+/// Build a map from sanitized file name to sanitized FILE STATUS variable name.
+pub(crate) fn build_file_status_map(file_status_vars: &[HirFileInfo]) -> FileStatusMap {
+    file_status_vars
+        .iter()
+        .map(|info| {
+            (
+                sanitize_name(&info.file_name),
+                sanitize_name(&info.status_var),
+            )
+        })
+        .collect()
+}
+
+/// Emit a FILE STATUS variable update after a file I/O operation.
+/// `fs_val` is the C expression (typically `_fs`) holding the uint32_t status.
+pub(crate) fn emit_file_status_update(
+    out: &mut String,
+    file_c_name: &str,
+    fs_val: &str,
+    fs_map: &FileStatusMap,
+    has_declaratives: bool,
+    pad: &str,
+) {
+    if let Some(status_var) = fs_map.get(file_c_name) {
+        // Convert numeric status code to 2-digit string: e.g. 0 → "00", 10 → "10"
+        // Use an intermediate buffer + memcpy so this works even when the status
+        // variable is a union (group item with REDEFINES) rather than a plain char[].
+        out.push_str(&format!(
+            "{pad}{{ char _fs_buf[4]; snprintf(_fs_buf, sizeof(_fs_buf), \"%02u\", (unsigned){fs_val}); memcpy(&{status_var}, _fs_buf, 2); }}\n"
+        ));
+    }
+    if has_declaratives {
+        out.push_str(&format!(
+            "{pad}_check_file_declarative(\"{file_c_name}\", {fs_val});\n"
+        ));
+    }
+}
+
+/// Collect all CALL target program names across the program body and
+/// paragraphs. Returns sanitized, unique C identifiers for weak forward
+/// declarations.
+pub(crate) fn collect_call_targets(program: &HirProgram) -> Vec<String> {
+    let mut targets = BTreeSet::new();
+    for stmt in &program.body {
+        collect_call_targets_stmt(stmt, &mut targets);
+    }
+    for para in &program.paragraphs {
+        for stmt in &para.body {
+            collect_call_targets_stmt(stmt, &mut targets);
+        }
+    }
+    for decl in &program.declaratives {
+        for stmt in &decl.body {
+            collect_call_targets_stmt(stmt, &mut targets);
+        }
+    }
+    // Exclude nested program names (they are defined in this compilation unit)
+    let nested_names: BTreeSet<String> = program
+        .nested_programs
+        .iter()
+        .map(|p| sanitize_name(&p.name))
+        .collect();
+    targets
+        .into_iter()
+        .filter(|t| !nested_names.contains(t))
+        .collect()
+}
+
+pub(crate) fn collect_call_targets_stmt(stmt: &HirStatement, targets: &mut BTreeSet<String>) {
+    match stmt {
+        HirStatement::Call {
+            program,
+            on_exception,
+            not_on_exception,
+            ..
+        } => {
+            let prog_name = match program {
+                HirExpr::Literal(HirLiteral::String(s)) => Some(sanitize_name(s)),
+                _ => None,
+            };
+            if let Some(name) = prog_name {
+                targets.insert(name);
+            }
+            for s in on_exception {
+                collect_call_targets_stmt(s, targets);
+            }
+            for s in not_on_exception {
+                collect_call_targets_stmt(s, targets);
+            }
+        }
+        HirStatement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                collect_call_targets_stmt(s, targets);
+            }
+            for s in else_body {
+                collect_call_targets_stmt(s, targets);
+            }
+        }
+        HirStatement::Perform {
+            kind:
+                HirPerformKind::Inline { body }
+                | HirPerformKind::Times { body, .. }
+                | HirPerformKind::Until { body, .. }
+                | HirPerformKind::Varying { body, .. },
+            ..
+        } => {
+            for s in body {
+                collect_call_targets_stmt(s, targets);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect all file names referenced in file I/O statements across
+/// the program body,  and nested constructs. Returns a
+/// sorted, deduplicated list of file names.
+pub(crate) fn collect_file_names(program: &HirProgram) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    for stmt in &program.body {
+        collect_file_names_stmt(stmt, &mut names);
+    }
+    for para in &program.paragraphs {
+        for stmt in &para.body {
+            collect_file_names_stmt(stmt, &mut names);
+        }
+    }
+    names.into_iter().collect()
+}
+
+pub(crate) fn collect_file_names_stmt(stmt: &HirStatement, names: &mut BTreeSet<String>) {
+    match stmt {
+        HirStatement::Open { entries, .. } => {
+            for entry in entries {
+                names.insert(entry.file_name.to_string());
+            }
+        }
+        HirStatement::Close { files, .. } => {
+            for f in files {
+                names.insert(f.to_string());
+            }
+        }
+        HirStatement::Read {
+            file_name,
+            at_end,
+            not_at_end,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for s in at_end {
+                collect_file_names_stmt(s, names);
+            }
+            for s in not_at_end {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Write {
+            file_name,
+            record_name,
+            ..
+        } => {
+            if file_name.is_empty() {
+                names.insert(record_name.to_string());
+            } else {
+                names.insert(file_name.to_string());
+            }
+        }
+        HirStatement::Rewrite {
+            file_name,
+            record_name,
+            ..
+        } => {
+            if file_name.is_empty() {
+                names.insert(record_name.to_string());
+            } else {
+                names.insert(file_name.to_string());
+            }
+        }
+        HirStatement::Delete { file_name, .. } => {
+            names.insert(file_name.to_string());
+        }
+        HirStatement::Sort {
+            file_name,
+            using,
+            giving,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for u in using {
+                names.insert(u.to_string());
+            }
+            for g in giving {
+                names.insert(g.to_string());
+            }
+        }
+        HirStatement::Search {
+            at_end,
+            when_clauses,
+            ..
+        } => {
+            for s in at_end {
+                collect_file_names_stmt(s, names);
+            }
+            for w in when_clauses {
+                for s in &w.body {
+                    collect_file_names_stmt(s, names);
+                }
+            }
+        }
+        HirStatement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                collect_file_names_stmt(s, names);
+            }
+            for s in else_body {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Perform { kind, .. } => {
+            let body = match kind {
+                HirPerformKind::Inline { body } => body.as_slice(),
+                HirPerformKind::Times { body, .. } => body.as_slice(),
+                HirPerformKind::Until { body, .. } => body.as_slice(),
+                HirPerformKind::Varying { body, .. } => body.as_slice(),
+                HirPerformKind::ProcedureName { .. } => &[],
+            };
+            for s in body {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Start {
+            file_name,
+            invalid_key,
+            not_invalid_key,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for s in invalid_key {
+                collect_file_names_stmt(s, names);
+            }
+            for s in not_invalid_key {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Return {
+            file_name,
+            at_end,
+            not_at_end,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for s in at_end {
+                collect_file_names_stmt(s, names);
+            }
+            for s in not_at_end {
+                collect_file_names_stmt(s, names);
+            }
+        }
+        HirStatement::Merge {
+            file_name,
+            using,
+            giving,
+            ..
+        } => {
+            names.insert(file_name.to_string());
+            for f in using {
+                names.insert(f.to_string());
+            }
+            for f in giving {
+                names.insert(f.to_string());
+            }
+        }
+        HirStatement::Release { record_name, .. } => {
+            names.insert(record_name.to_string());
+        }
+        _ => {}
+    }
+}
+
+/// Collect unique XML PARSE processing procedure names from the program.
+pub(crate) fn collect_xml_parse_procedures(program: &HirProgram) -> Vec<String> {
+    let mut procs = BTreeSet::new();
+    for stmt in &program.body {
+        collect_xml_parse_stmt(stmt, &mut procs);
+    }
+    for para in &program.paragraphs {
+        for stmt in &para.body {
+            collect_xml_parse_stmt(stmt, &mut procs);
+        }
+    }
+    procs.into_iter().collect()
+}
+
+pub(crate) fn collect_xml_parse_stmt(stmt: &HirStatement, procs: &mut BTreeSet<String>) {
+    match stmt {
+        HirStatement::XmlParse {
+            processing_procedure,
+            ..
+        } => {
+            procs.insert(sanitize_name(processing_procedure));
+        }
+        HirStatement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                collect_xml_parse_stmt(s, procs);
+            }
+            for s in else_body {
+                collect_xml_parse_stmt(s, procs);
+            }
+        }
+        HirStatement::Perform { kind, .. } => {
+            let body = match kind {
+                HirPerformKind::Inline { body } => body.as_slice(),
+                HirPerformKind::Times { body, .. } => body.as_slice(),
+                HirPerformKind::Until { body, .. } => body.as_slice(),
+                HirPerformKind::Varying { body, .. } => body.as_slice(),
+                HirPerformKind::ProcedureName { .. } => &[],
+            };
+            for s in body {
+                collect_xml_parse_stmt(s, procs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Find the record length for a file/record name by looking up
+/// the data item with a matching (sanitized) name. Returns the
+/// size in bytes (default 80 if not found).
+pub(crate) fn find_record_len(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    find_data_item_size(c_name, data_items)
+}
+
+/// Find the OCCURS count for a table by its sanitized C name.
+/// Returns a reasonable default (10) if the item is not found.
+pub(crate) fn find_occurs_count(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    for item in data_items {
+        if sanitize_name(&item.name) == c_name {
+            return item.occurs.unwrap_or(10);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            let found = find_occurs_count_in(c_name, members);
+            if found > 0 {
+                return found;
+            }
+        }
+    }
+    10
+}
+
+pub(crate) fn find_occurs_count_in(c_name: &str, members: &[HirDataItem]) -> u32 {
+    for item in members {
+        if sanitize_name(&item.name) == c_name {
+            return item.occurs.unwrap_or(0);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            let found = find_occurs_count_in(c_name, members);
+            if found > 0 {
+                return found;
+            }
+        }
+    }
+    0
+}
+
+/// Find the first INDEXED BY name for a given table (OCCURS item) name.
+pub(crate) fn find_first_index_name(c_name: &str, data_items: &[HirDataItem]) -> Option<String> {
+    for item in data_items {
+        if sanitize_name(&item.name) == c_name {
+            if let Some(first) = item.indexed_by.first() {
+                return Some(sanitize_name(first));
+            }
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if let Some(found) = find_first_index_name(c_name, members) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Find the byte size of a data item by its sanitized C name.
+/// Returns a reasonable default (80) if the item is not found.
+pub(crate) fn find_data_item_size(
+    c_name: &str,
+    data_items: &[HirDataItem],
+) -> u32 {
+    // Extract leaf name from complex expressions like
+    // "TABLE.members._m_FOO[(I)-1].members._m_BAR"
+    let lookup_name = if c_name.contains('[') || c_name.contains(".members.") {
+        if let Some(pos) = c_name.rfind(".members._m_") {
+            let leaf = &c_name[pos + ".members._m_".len()..];
+            let leaf_name = if let Some(br) = leaf.find('[') {
+                &leaf[..br]
+            } else {
+                leaf
+            };
+            if !leaf_name.is_empty() {
+                leaf_name
+            } else {
+                c_name
+            }
+        } else {
+            c_name
+        }
+    } else {
+        c_name
+    };
+
+    // Check cache first
+    let cached = with_active_context(|ctx| ctx.data_item_size(lookup_name));
+    if let Some(size) = cached {
+        return size;
+    }
+
+    // Handle qualified C names like "WS_DST__FIELD_B"
+    if lookup_name.contains("__") {
+        if let Some(pos) = lookup_name.find("__") {
+            let group_c = &lookup_name[..pos];
+            let member_c = &lookup_name[pos + 2..];
+            // Try cache for the member part
+            let member_cached = with_active_context(|ctx| ctx.data_item_size(member_c));
+            if let Some(size) = member_cached {
+                return size;
+            }
+            for item in data_items {
+                if sanitize_name(&item.name) == group_c {
+                    if let HirType::Group { members, .. } = &item.data_type {
+                        let found = find_data_item_size_in(member_c, members);
+                        if found > 0 {
+                            return found;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to recursive search (shouldn't normally happen after init)
+    let found = find_data_item_size_in(lookup_name, data_items);
+    if found > 0 {
+        return found;
+    }
+    // If lookup_name differs from c_name, try the original c_name as well
+    if lookup_name != c_name {
+        let found2 = find_data_item_size_in(c_name, data_items);
+        if found2 > 0 {
+            return found2;
+        }
+    }
+    80 // Default record length
+}
+
+pub(crate) fn find_data_item_size_in(c_name: &str, items: &[HirDataItem]) -> u32 {
+    for item in items {
+        let item_c_name = sanitize_name(&item.name);
+        if item_c_name == c_name {
+            return data_item_byte_size(&item.data_type);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            let found = find_data_item_size_in(c_name, members);
+            if found > 0 {
+                return found;
+            }
+        }
+    }
+    0
+}
+
+/// Compute the byte size of an HIR type.
+pub(crate) fn data_item_byte_size(data_type: &HirType) -> u32 {
+    match data_type {
+        HirType::Alphanumeric { size } => *size,
+        HirType::Numeric { size, .. } => *size,
+        HirType::Group { size, .. } => *size,
+        HirType::Comp3 { size, .. } => *size,
+        HirType::Binary { size } => *size,
+        HirType::Index => 8,
+        HirType::Pointer => 8,
+        HirType::Boolean => 1,
+        HirType::FloatShort => 4,
+        HirType::FloatLong => 8,
+        HirType::FloatExtended => 16,
+        HirType::National { size } => size * 2, // UTF-16: 2 bytes per character
+    }
+}
+
+/// Convert a COBOL data name to a valid C identifier.
+///
+/// COBOL names use hyphens which are not valid in C, so we replace
+/// them with underscores. Additionally, names starting with a digit
+/// are prefixed with `cob_`, and C reserved words are prefixed to
+/// avoid collisions.
+pub(crate) fn sanitize_name(name: &str) -> String {
+    let mut result = name.replace("::", "__").replace('-', "_");
+    // C identifiers cannot start with a digit
+    if result.starts_with(|c: char| c.is_ascii_digit()) {
+        result.insert_str(0, "cob_");
+    }
+    // Avoid C reserved words
+    match result.as_str() {
+        "auto" | "break" | "case" | "char" | "const" | "continue" | "default" | "do" | "double"
+        | "else" | "enum" | "extern" | "float" | "for" | "goto" | "if" | "int" | "long"
+        | "register" | "return" | "short" | "signed" | "sizeof" | "static" | "struct"
+        | "switch" | "typedef" | "union" | "unsigned" | "void" | "volatile" | "while"
+        | "inline" | "restrict" | "_Bool" | "_Complex" | "_Imaginary" | "main" => {
+            result.insert_str(0, "cob_");
+        }
+        _ => {}
+    }
+    result
+}
+
+/// Resolve the FD/SD record buffer variable name for a file.
+/// Returns the first record name from the FILE_RECORD_MAP if available,
+/// otherwise falls back to the file name itself.
+pub(crate) fn resolve_file_record(
+    sanitized_file_name: &str,
+) -> String {
+    with_active_context(|ctx| ctx.resolve_file_record(sanitized_file_name))
+}
+
+/// Escape special characters for use in a C string literal.
+pub(crate) fn escape_c_string(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\0' => escaped.push_str("\\0"),
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
