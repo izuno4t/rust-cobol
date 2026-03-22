@@ -1,0 +1,9 @@
+*
+!.gitignore
+!README.md
+!extract.pl
+!newcob.val.tar.gz
+!prepare.sh
+!preprocess.sh
+!run_compare.sh
+!run_nist.sh

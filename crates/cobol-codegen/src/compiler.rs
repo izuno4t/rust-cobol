@@ -142,6 +142,124 @@ PROCEDURE DIVISION.
         assert!(c_code.contains("} else {"));
     }
 
+    #[test]
+    fn test_generate_decimal_perform_varying_increment() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-PERF-DEC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-I PIC 99V9 VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM VARYING WS-I FROM 0.1 BY 0.1 UNTIL WS-I > 0.3
+        CONTINUE
+    END-PERFORM.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("WS_I.value += (1)")
+                || c_code.contains("cobol_decimal_from_int(1, 1, &_tmp)"),
+            "decimal BY literal should preserve scale in generated C: {c_code}"
+        );
+    }
+
+    #[test]
+    fn test_generate_decimal_condition_uses_fractional_compare() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-PERF-COND.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-I PIC 99V9 VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM VARYING WS-I FROM 0.1 BY 0.1 UNTIL WS-I + 11.1 > 12.1
+        CONTINUE
+    END-PERFORM.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            !c_code.contains("cobol_decimal_to_int64(&WS_I) + 11.1"),
+            "decimal condition should not be lowered to int-truncating compare: {c_code}"
+        );
+        assert!(
+            c_code.contains("cobol_decimal_to_double(&WS_I)")
+                || c_code.contains("WS_I.value")
+                || c_code.contains("111"),
+            "decimal condition should preserve fractional comparison or use a scale-aware integer fast path: {c_code}"
+        );
+    }
+
+    #[test]
+    fn test_generate_decimal_add_uses_scaled_value_fast_path() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-ADD-DEC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-I PIC 99V9 VALUE 1.0.
+PROCEDURE DIVISION.
+    ADD 0.5 TO WS-I.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("WS_I.value += (5)")
+                || c_code.contains("WS_I.value += (((5)"),
+            "decimal ADD literal should use scaled integer update when possible: {c_code}"
+        );
+    }
+
+    #[test]
+    fn test_generate_decimal_multiply_giving_uses_scaled_value_fast_path() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-MUL-DEC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-A PIC 99V9 VALUE 1.0.
+01  WS-B PIC 999V9 VALUE 0.
+PROCEDURE DIVISION.
+    MULTIPLY WS-A BY 10 GIVING WS-B.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("WS_B.value =")
+                && !c_code.contains("cobol_decimal_mul(&_ma, &_mb, &_mr)"),
+            "decimal MULTIPLY GIVING should avoid runtime mul for simple scaled operands: {c_code}"
+        );
+    }
+
+    #[test]
+    fn test_generate_test_after_varying_checks_before_increment() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-AFTER-VARY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  I PIC 99 VALUE 0.
+01  J PIC 99 VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM WITH TEST AFTER
+        VARYING I FROM 2 BY -1 UNTIL I = 1
+        AFTER J FROM 2 BY 6 UNTIL J > 19
+        MOVE 1 TO I
+        MOVE 99 TO J
+    END-PERFORM.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        let incr_pos = c_code
+            .find("J += ")
+            .expect("expected inner increment");
+        assert!(
+            c_code[..incr_pos].contains("break;"),
+            "TEST AFTER inner condition must be checked before increment: {c_code}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // COBOL 2002+ codegen tests
     // -----------------------------------------------------------------------

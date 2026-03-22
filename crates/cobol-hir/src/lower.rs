@@ -14,7 +14,8 @@ use cobol_ast::{
     statement::{
         AcceptStatement, AddStatement, CallStatement, ComputeStatement, DisplayStatement,
         DivideStatement, EvaluateStatement, GoToStatement, IfStatement, InitializeStatement,
-        MoveStatement, MultiplyStatement, PerformKind, PerformStatement, SetStatement,
+        MoveStatement, MultiplyStatement, PerformKind, PerformStatement, PerformTest,
+        SetStatement,
         SubtractStatement,
     },
     CobolProgram, DataDivision, DataItem, Expr, Literal, Statement, Usage,
@@ -26,9 +27,10 @@ use crate::hir::{
     HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCompareOp,
     HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
     HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
-    HirParagraph, HirParam, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind,
-    HirScreenInfo, HirSearchWhen, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
-    HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
+    HirParagraph, HirParam, HirParamMode, HirPerformKind, HirPerformTest, HirProgram,
+    HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSortKey, HirSortOrder, HirStartRelation,
+    HirStatement, HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
+    HirVaryingAfter,
 };
 
 /// A single or range value for an 88-level condition.
@@ -1286,7 +1288,9 @@ fn lower_perform(
             }
         }
         PerformKind::Until {
-            condition, body, ..
+            test,
+            condition,
+            body,
         } => {
             let hir_cond = lower_condition(condition, condition_names);
             let hir_body: Vec<_> = body
@@ -1294,11 +1298,16 @@ fn lower_perform(
                 .filter_map(|s| lower_statement(s, condition_names))
                 .collect();
             HirPerformKind::Until {
+                test: lower_perform_test(*test),
                 condition: hir_cond,
                 body: hir_body,
             }
         }
-        PerformKind::Varying { varying, body, .. } => {
+        PerformKind::Varying {
+            test,
+            varying,
+            body,
+        } => {
             if let Some(clause) = varying.first() {
                 let var = clause.identifier.name.clone();
                 let from = lower_expr(&clause.from);
@@ -1318,6 +1327,7 @@ fn lower_perform(
                     })
                     .collect();
                 HirPerformKind::Varying {
+                    test: lower_perform_test(*test),
                     var,
                     from,
                     by,
@@ -1337,6 +1347,13 @@ fn lower_perform(
     HirStatement::Perform {
         kind,
         span: perform.span,
+    }
+}
+
+fn lower_perform_test(test: PerformTest) -> HirPerformTest {
+    match test {
+        PerformTest::Before => HirPerformTest::Before,
+        PerformTest::After => HirPerformTest::After,
     }
 }
 

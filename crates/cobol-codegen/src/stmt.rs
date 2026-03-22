@@ -1,4 +1,5 @@
 use super::*;
+use cobol_hir::HirPerformTest;
 
 pub(crate) fn emit_statement(
     out: &mut String,
@@ -258,14 +259,18 @@ pub(crate) fn emit_statement_with_ctx(
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         for op in operands {
-                            emit_decimal_arith(
-                                out,
-                                &c_target,
-                                op,
-                                "cobol_decimal_add",
-                                data_items,
-                                &pad,
-                            );
+                            if !emit_fast_decimal_add_assign(
+                                out, &c_target, target, op, data_items, &pad,
+                            ) {
+                                emit_decimal_arith(
+                                    out,
+                                    &c_target,
+                                    op,
+                                    "cobol_decimal_add",
+                                    data_items,
+                                    &pad,
+                                );
+                            }
                         }
                     } else {
                         let sum: Vec<_> = operands
@@ -523,6 +528,19 @@ pub(crate) fn emit_statement_with_ctx(
                     let target_is_decimal = find_data_item(var_name, data_items)
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal || any_src_decimal {
+                        if target_is_decimal
+                            && emit_fast_decimal_multiply_giving(
+                                out,
+                                &c_target,
+                                target,
+                                operand,
+                                by.first(),
+                                data_items,
+                                &pad,
+                            )
+                        {
+                            continue;
+                        }
                         // Decimal path: convert operands to CobolDecimal
                         let init_a = if op_is_dec {
                             format!("CobolDecimal _ma = {c_operand_raw};")
@@ -3366,23 +3384,48 @@ pub(crate) fn emit_perform(
             }
             out.push_str(&format!("{pad}}}\n"));
         }
-        HirPerformKind::Until { condition, body } => {
+        HirPerformKind::Until {
+            test,
+            condition,
+            body,
+        } => {
             let cond = emit_condition(condition, data_items);
-            out.push_str(&format!("{pad}while (!({cond})) {{\n"));
-            for s in body {
-                emit_statement(
-                    out,
-                    s,
-                    data_items,
-                    paragraphs,
-                    fs_map,
-                    has_declaratives,
-                    indent + 1,
-                );
+            match test {
+                HirPerformTest::Before => {
+                    out.push_str(&format!("{pad}while (!({cond})) {{\n"));
+                    for s in body {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 1,
+                        );
+                    }
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                HirPerformTest::After => {
+                    out.push_str(&format!("{pad}for (;;) {{\n"));
+                    for s in body {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 1,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    if ({cond}) break;\n"));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
             }
-            out.push_str(&format!("{pad}}}\n"));
         }
         HirPerformKind::Varying {
+            test,
             var,
             from,
             by,
@@ -3397,36 +3440,87 @@ pub(crate) fn emit_perform(
             if var_is_decimal {
                 // Decimal VARYING: use cobol_decimal operations
                 emit_assign_to_decimal(out, from, &c_var_target, data_items, &pad);
-                out.push_str(&format!("{pad}while (!({cond})) {{\n"));
-                for s in body {
-                    emit_statement(
-                        out,
-                        s,
-                        data_items,
-                        paragraphs,
-                        fs_map,
-                        has_declaratives,
-                        indent + 1,
-                    );
+                let loop_cond = fast_decimal_varying_condition(var, &c_var_target, until, data_items)
+                    .unwrap_or(cond);
+                match test {
+                    HirPerformTest::Before => {
+                        out.push_str(&format!("{pad}while (!({loop_cond})) {{\n"));
+                        for s in body {
+                            emit_statement(
+                                out,
+                                s,
+                                data_items,
+                                paragraphs,
+                                fs_map,
+                                has_declaratives,
+                                indent + 1,
+                            );
+                        }
+                        let inner_pad = format!("{pad}    ");
+                        if !emit_fast_decimal_varying_increment(
+                            out,
+                            var,
+                            &c_var_target,
+                            by,
+                            data_items,
+                            &inner_pad,
+                        ) {
+                            emit_decimal_arith(
+                                out,
+                                &c_var_target,
+                                by,
+                                "cobol_decimal_add",
+                                data_items,
+                                &inner_pad,
+                            );
+                        }
+                        out.push_str(&format!("{pad}}}\n"));
+                    }
+                    HirPerformTest::After => {
+                        out.push_str(&format!("{pad}for (;;) {{\n"));
+                        for s in body {
+                            emit_statement(
+                                out,
+                                s,
+                                data_items,
+                                paragraphs,
+                                fs_map,
+                                has_declaratives,
+                                indent + 1,
+                            );
+                        }
+                        out.push_str(&format!("{pad}    if ({loop_cond}) break;\n"));
+                        let inner_pad = format!("{pad}    ");
+                        if !emit_fast_decimal_varying_increment(
+                            out,
+                            var,
+                            &c_var_target,
+                            by,
+                            data_items,
+                            &inner_pad,
+                        ) {
+                            emit_decimal_arith(
+                                out,
+                                &c_var_target,
+                                by,
+                                "cobol_decimal_add",
+                                data_items,
+                                &inner_pad,
+                            );
+                        }
+                        out.push_str(&format!("{pad}}}\n"));
+                    }
                 }
-                // Increment: convert BY to a temp decimal and add
-                let inner_pad = format!("{pad}    ");
-                emit_decimal_arith(
-                    out,
-                    &c_var_target,
-                    by,
-                    "cobol_decimal_add",
-                    data_items,
-                    &inner_pad,
-                );
-                out.push_str(&format!("{pad}}}\n"));
             } else {
                 let c_from = emit_int_compatible_expr(from, data_items);
                 let c_by = emit_int_compatible_expr(by, data_items);
                 // Initialize outer VARYING variable
                 emit_store_int(out, &c_var_target, &c_from, data_items, &pad);
-                out.push_str(&format!("{pad}while (!({cond})) {{\n"));
-                // Initialize AFTER variables at start of each outer iteration
+                let loop_keyword = match test {
+                    HirPerformTest::Before => format!("while (!({cond}))"),
+                    HirPerformTest::After => "for (;;)".to_string(),
+                };
+                out.push_str(&format!("{pad}{loop_keyword} {{\n"));
                 let after_indent = indent + 1;
                 let after_pad = "    ".repeat(after_indent);
                 for ac in after_clauses {
@@ -3434,20 +3528,20 @@ pub(crate) fn emit_perform(
                     let ac_from = emit_int_compatible_expr(&ac.from, data_items);
                     emit_store_int(out, &ac_var, &ac_from, data_items, &after_pad);
                 }
-                // Generate nested AFTER loops
                 let mut current_indent = after_indent;
                 for ac in after_clauses {
-                    let _ac_var = sanitize_name(&ac.var);
-                    let ac_by = emit_int_compatible_expr(&ac.by, data_items);
                     let ac_cond = emit_condition(&ac.until, data_items);
                     let lpad = "    ".repeat(current_indent);
-                    out.push_str(&format!("{lpad}while (!({ac_cond})) {{\n"));
+                    match test {
+                        HirPerformTest::Before => {
+                            out.push_str(&format!("{lpad}while (!({ac_cond})) {{\n"));
+                        }
+                        HirPerformTest::After => {
+                            out.push_str(&format!("{lpad}for (;;) {{\n"));
+                        }
+                    }
                     current_indent += 1;
-                    let _ = ac_by; // used below for increment
                 }
-                // Emit body at the innermost level
-                let body_pad = "    ".repeat(current_indent);
-                let _ = body_pad;
                 for s in body {
                     emit_statement(
                         out,
@@ -3459,17 +3553,22 @@ pub(crate) fn emit_perform(
                         current_indent,
                     );
                 }
-                // Close AFTER loops (innermost first) with increments
                 for ac in after_clauses.iter().rev() {
                     current_indent -= 1;
                     let ac_var = varying_target_c_expr(&ac.var, &ac.until);
                     let ac_by = emit_int_compatible_expr(&ac.by, data_items);
+                    let ac_cond = emit_condition(&ac.until, data_items);
                     let lpad = "    ".repeat(current_indent + 1);
+                    if matches!(test, HirPerformTest::After) {
+                        out.push_str(&format!("{lpad}if ({ac_cond}) break;\n"));
+                    }
                     emit_store_int_op(out, &ac_var, "+", &ac_by, data_items, &lpad);
                     let lpad_close = "    ".repeat(current_indent);
                     out.push_str(&format!("{lpad_close}}}\n"));
                 }
-                // Increment outer VARYING variable
+                if matches!(test, HirPerformTest::After) {
+                    out.push_str(&format!("{after_pad}if ({cond}) break;\n"));
+                }
                 emit_store_int_op(out, &c_var_target, "+", &c_by, data_items, &after_pad);
                 out.push_str(&format!("{pad}}}\n"));
             }
@@ -3578,6 +3677,253 @@ fn varying_target_c_expr(var: &str, until: &HirCondition) -> String {
     find_subscripted_var_in_condition(until, var)
         .map(super::emit_expr)
         .unwrap_or_else(|| sanitize_name(var))
+}
+
+fn decimal_item_scale(name: &str, data_items: &[HirDataItem]) -> Option<u32> {
+    find_data_item(name, data_items).and_then(|item| match item.data_type {
+        HirType::Numeric { decimal_places, .. } => Some(decimal_places),
+        HirType::Comp3 { decimal_places, .. } => Some(decimal_places),
+        _ => None,
+    })
+}
+
+fn signed_decimal_literal_expr(expr: &HirExpr) -> Option<(i64, u32)> {
+    match expr {
+        HirExpr::Literal(HirLiteral::Decimal(d)) => Some(parse_decimal_literal(d)),
+        HirExpr::UnaryOp {
+            op: HirUnaryOp::Neg,
+            operand,
+        } => signed_decimal_literal_expr(operand).map(|(scaled, scale)| (-scaled, scale)),
+        _ => None,
+    }
+}
+
+fn expr_mentions_var(expr: &HirExpr, var: &str) -> bool {
+    match expr {
+        HirExpr::Variable(name) => name == var,
+        HirExpr::Subscript { variable, .. } => variable == var,
+        HirExpr::UnaryOp { operand, .. } => expr_mentions_var(operand, var),
+        HirExpr::BinaryOp { left, right, .. } => {
+            expr_mentions_var(left, var) || expr_mentions_var(right, var)
+        }
+        HirExpr::FunctionCall { args, .. } => args.iter().any(|arg| expr_mentions_var(arg, var)),
+        HirExpr::ReferenceModification { start, length, .. } => {
+            expr_mentions_var(start, var)
+                || length
+                    .as_ref()
+                    .is_some_and(|len| expr_mentions_var(len, var))
+        }
+        _ => false,
+    }
+}
+
+fn pow10_i64_literal(exp: u32) -> String {
+    match exp {
+        0 => "1LL".to_string(),
+        1 => "10LL".to_string(),
+        2 => "100LL".to_string(),
+        3 => "1000LL".to_string(),
+        4 => "10000LL".to_string(),
+        5 => "100000LL".to_string(),
+        6 => "1000000LL".to_string(),
+        7 => "10000000LL".to_string(),
+        8 => "100000000LL".to_string(),
+        9 => "1000000000LL".to_string(),
+        10 => "10000000000LL".to_string(),
+        11 => "100000000000LL".to_string(),
+        12 => "1000000000000LL".to_string(),
+        13 => "10000000000000LL".to_string(),
+        14 => "100000000000000LL".to_string(),
+        15 => "1000000000000000LL".to_string(),
+        16 => "10000000000000000LL".to_string(),
+        17 => "100000000000000000LL".to_string(),
+        18 => "1000000000000000000LL".to_string(),
+        _ => format!("((int64_t)pow(10.0, {exp}))"),
+    }
+}
+
+fn decimal_expr_as_scaled_int64(
+    expr: &HirExpr,
+    target_scale: u32,
+    data_items: &[HirDataItem],
+) -> Option<String> {
+    match expr {
+        HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+            if is_decimal_expr(expr, data_items) {
+                let c_expr = emit_expr(expr);
+                let scale = decimal_item_scale(expr_var_name(expr), data_items)?;
+                if scale > target_scale {
+                    return None;
+                }
+                let factor = pow10_i64_literal(target_scale - scale);
+                Some(if target_scale == scale {
+                    format!("{c_expr}.value")
+                } else {
+                    format!("({c_expr}.value * {factor})")
+                })
+            } else {
+                let value = emit_int_compatible_expr(expr, data_items);
+                let factor = pow10_i64_literal(target_scale);
+                Some(format!("(({value}) * {factor})"))
+            }
+        }
+        HirExpr::Literal(HirLiteral::Integer(n)) => {
+            let factor = pow10_i64_literal(target_scale);
+            Some(format!("(({n}) * {factor})"))
+        }
+        HirExpr::Literal(HirLiteral::Decimal(_)) | HirExpr::UnaryOp { .. } => {
+            if let Some((scaled, scale)) = signed_decimal_literal_expr(expr) {
+                if scale > target_scale {
+                    None
+                } else if scale == target_scale {
+                    Some(scaled.to_string())
+                } else {
+                    let factor = pow10_i64_literal(target_scale - scale);
+                    Some(format!("(({scaled}) * {factor})"))
+                }
+            } else {
+                match expr {
+                    HirExpr::UnaryOp {
+                        op: HirUnaryOp::Neg,
+                        operand,
+                    } => decimal_expr_as_scaled_int64(operand, target_scale, data_items)
+                        .map(|inner| format!("(-({inner}))")),
+                    _ => None,
+                }
+            }
+        }
+        HirExpr::BinaryOp { op, left, right } => {
+            let l = decimal_expr_as_scaled_int64(left, target_scale, data_items)?;
+            let r = decimal_expr_as_scaled_int64(right, target_scale, data_items)?;
+            let op_str = match op {
+                HirBinOp::Add => "+",
+                HirBinOp::Sub => "-",
+                _ => return None,
+            };
+            Some(format!("(({l}) {op_str} ({r}))"))
+        }
+        _ => None,
+    }
+}
+
+fn emit_fast_decimal_add_assign(
+    out: &mut String,
+    c_target: &str,
+    target: &HirExpr,
+    operand: &HirExpr,
+    data_items: &[HirDataItem],
+    pad: &str,
+) -> bool {
+    let target_scale = match decimal_item_scale(expr_var_name(target), data_items) {
+        Some(scale) => scale,
+        None => return false,
+    };
+    let scaled_operand = match decimal_expr_as_scaled_int64(operand, target_scale, data_items) {
+        Some(expr) => expr,
+        None => return false,
+    };
+    out.push_str(&format!("{pad}{c_target}.value += ({scaled_operand});\n"));
+    true
+}
+
+fn emit_fast_decimal_multiply_giving(
+    out: &mut String,
+    c_target: &str,
+    target: &HirExpr,
+    operand: &HirExpr,
+    by_operand: Option<&HirExpr>,
+    data_items: &[HirDataItem],
+    pad: &str,
+) -> bool {
+    let target_scale = match decimal_item_scale(expr_var_name(target), data_items) {
+        Some(scale) => scale,
+        None => return false,
+    };
+    let by_operand = match by_operand {
+        Some(expr) => expr,
+        None => return false,
+    };
+    let left = match decimal_expr_as_scaled_int64(operand, target_scale, data_items) {
+        Some(expr) => expr,
+        None => return false,
+    };
+    let right = match decimal_expr_as_scaled_int64(by_operand, target_scale, data_items) {
+        Some(expr) => expr,
+        None => return false,
+    };
+    let divisor = pow10_i64_literal(target_scale);
+    out.push_str(&format!(
+        "{pad}{c_target}.value = (((int64_t)({left})) * ((int64_t)({right}))) / {divisor};\n"
+    ));
+    true
+}
+
+fn invert_compare_op(op: HirCompareOp) -> HirCompareOp {
+    match op {
+        HirCompareOp::Eq => HirCompareOp::Eq,
+        HirCompareOp::Ne => HirCompareOp::Ne,
+        HirCompareOp::Gt => HirCompareOp::Lt,
+        HirCompareOp::Lt => HirCompareOp::Gt,
+        HirCompareOp::Ge => HirCompareOp::Le,
+        HirCompareOp::Le => HirCompareOp::Ge,
+    }
+}
+
+fn compare_op_str(op: HirCompareOp) -> &'static str {
+    match op {
+        HirCompareOp::Eq => "==",
+        HirCompareOp::Ne => "!=",
+        HirCompareOp::Gt => ">",
+        HirCompareOp::Lt => "<",
+        HirCompareOp::Ge => ">=",
+        HirCompareOp::Le => "<=",
+    }
+}
+
+fn fast_decimal_varying_condition(
+    var: &str,
+    _c_var_target: &str,
+    until: &HirCondition,
+    data_items: &[HirDataItem],
+) -> Option<String> {
+    let target_scale = decimal_item_scale(var, data_items)?;
+    match until {
+        HirCondition::Compare { left, op, right } => {
+            if expr_mentions_var(left, var) {
+                let l = decimal_expr_as_scaled_int64(left, target_scale, data_items)?;
+                let r = decimal_expr_as_scaled_int64(right, target_scale, data_items)?;
+                Some(format!("(({l}) {} ({r}))", compare_op_str(*op)))
+            } else if expr_mentions_var(right, var) {
+                let l = decimal_expr_as_scaled_int64(left, target_scale, data_items)?;
+                let r = decimal_expr_as_scaled_int64(right, target_scale, data_items)?;
+                Some(format!(
+                    "(({l}) {} ({r}))",
+                    compare_op_str(invert_compare_op(*op))
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn emit_fast_decimal_varying_increment(
+    out: &mut String,
+    var: &str,
+    c_var_target: &str,
+    by: &HirExpr,
+    data_items: &[HirDataItem],
+    pad: &str,
+) -> bool {
+    let Some(target_scale) = decimal_item_scale(var, data_items) else {
+        return false;
+    };
+    let Some(delta) = decimal_expr_as_scaled_int64(by, target_scale, data_items) else {
+        return false;
+    };
+    out.push_str(&format!("{pad}{c_var_target}.value += ({delta});\n"));
+    true
 }
 
 fn find_subscripted_var_in_condition<'a>(cond: &'a HirCondition, var: &str) -> Option<&'a HirExpr> {

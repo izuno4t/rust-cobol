@@ -1,30 +1,13 @@
 #!/usr/bin/env bash
 # preprocess.sh — Replace XXXXX placeholders in NIST test programs
-#
-# NIST CCVS 85 test programs use XXXXX placeholders for environment-specific
-# values. This script replaces them with values suitable for rust-cobol.
-#
-# Usage: ./preprocess.sh <input.cob> <output.cob>
 
 set -euo pipefail
 
 INPUT="$1"
 OUTPUT="$2"
-PROG_NAME=$(basename "$INPUT" .cob)
-# COBOL fixed-format has a 72-column limit, so file paths embedded in
-# ASSIGN TO clauses must be short. Use /tmp/nist for runtime I/O files.
-TMPDIR="/tmp/nist"
+PROG_NAME="$(basename "$INPUT" .cob)"
+TMPDIR="${NIST_TMPDIR:-/tmp/nist/default}"
 mkdir -p "$TMPDIR"
-
-# Replacement table (based on GnuCOBOL's test configuration)
-# XXXXX082 = SOURCE-COMPUTER name
-# XXXXX083 = OBJECT-COMPUTER name
-# XXXXX084 = OBJECT-COMPUTER MEMORY SIZE
-# XXXXX055 = PRINT-FILE (main report output)
-# XXXXX001-XXXXX004 = data files
-# XXXXX051-XXXXX057 = additional output files
-# XXXXX081 = line sequential marker (not needed)
-# XXXXX090/091 = implementor names
 
 sed \
     -e "s|XXXXX082|COMPUTER|g" \
@@ -78,7 +61,7 @@ sed \
     -e "s|XXXXX0[[:space:]]|00000000|g" \
     "$INPUT" | \
     sed -e 's/^\(.\{6\}\)P/\1*/' \
-    -e 's/^\(.\{6\}\)C/\1*/' \
+        -e 's/^\(.\{6\}\)C/\1*/' \
         -e 's/^\(.\{6\}\)Y/\1 /' \
         -e 's/^\(.\{6\}\)S/\1 /' \
         -e 's/^\(.\{6\}\)A/\1 /' \

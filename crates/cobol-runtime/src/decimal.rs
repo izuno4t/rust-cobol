@@ -23,6 +23,92 @@ pub struct CobolDecimal {
     pub is_signed: bool,
 }
 
+const POW10_I64: [i64; 19] = [
+    1,
+    10,
+    100,
+    1_000,
+    10_000,
+    100_000,
+    1_000_000,
+    10_000_000,
+    100_000_000,
+    1_000_000_000,
+    10_000_000_000,
+    100_000_000_000,
+    1_000_000_000_000,
+    10_000_000_000_000,
+    100_000_000_000_000,
+    1_000_000_000_000_000,
+    10_000_000_000_000_000,
+    100_000_000_000_000_000,
+    1_000_000_000_000_000_000,
+];
+
+const POW10_I128: [i128; 39] = [
+    1,
+    10,
+    100,
+    1_000,
+    10_000,
+    100_000,
+    1_000_000,
+    10_000_000,
+    100_000_000,
+    1_000_000_000,
+    10_000_000_000,
+    100_000_000_000,
+    1_000_000_000_000,
+    10_000_000_000_000,
+    100_000_000_000_000,
+    1_000_000_000_000_000,
+    10_000_000_000_000_000,
+    100_000_000_000_000_000,
+    1_000_000_000_000_000_000,
+    10_000_000_000_000_000_000,
+    100_000_000_000_000_000_000,
+    1_000_000_000_000_000_000_000,
+    10_000_000_000_000_000_000_000,
+    100_000_000_000_000_000_000_000,
+    1_000_000_000_000_000_000_000_000,
+    10_000_000_000_000_000_000_000_000,
+    100_000_000_000_000_000_000_000_000,
+    1_000_000_000_000_000_000_000_000_000,
+    10_000_000_000_000_000_000_000_000_000,
+    100_000_000_000_000_000_000_000_000_000,
+    1_000_000_000_000_000_000_000_000_000_000,
+    10_000_000_000_000_000_000_000_000_000_000,
+    100_000_000_000_000_000_000_000_000_000_000,
+    1_000_000_000_000_000_000_000_000_000_000_000,
+    10_000_000_000_000_000_000_000_000_000_000_000,
+    100_000_000_000_000_000_000_000_000_000_000_000,
+    1_000_000_000_000_000_000_000_000_000_000_000_000,
+    10_000_000_000_000_000_000_000_000_000_000_000_000,
+    100_000_000_000_000_000_000_000_000_000_000_000_000,
+];
+
+const POW10_F64: [f64; 19] = [
+    1.0,
+    10.0,
+    100.0,
+    1_000.0,
+    10_000.0,
+    100_000.0,
+    1_000_000.0,
+    10_000_000.0,
+    100_000_000.0,
+    1_000_000_000.0,
+    10_000_000_000.0,
+    100_000_000_000.0,
+    1_000_000_000_000.0,
+    10_000_000_000_000.0,
+    100_000_000_000_000.0,
+    1_000_000_000_000_000.0,
+    10_000_000_000_000_000.0,
+    100_000_000_000_000_000.0,
+    1_000_000_000_000_000_000.0,
+];
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -36,12 +122,40 @@ fn align_scales(a: &CobolDecimal, b: &CobolDecimal) -> (i128, i128, i32) {
         (a.value as i128, b.value as i128, a.scale)
     } else if a.scale < b.scale {
         let diff = (b.scale - a.scale) as u32;
-        let factor = 10_i128.pow(diff);
+        let factor = pow10_i128(diff);
         (a.value as i128 * factor, b.value as i128, b.scale)
     } else {
         let diff = (a.scale - b.scale) as u32;
-        let factor = 10_i128.pow(diff);
+        let factor = pow10_i128(diff);
         (a.value as i128, b.value as i128 * factor, a.scale)
+    }
+}
+
+#[inline]
+fn pow10_i64(exp: u32) -> i64 {
+    POW10_I64
+        .get(exp as usize)
+        .copied()
+        .unwrap_or_else(|| 10_i64.saturating_pow(exp))
+}
+
+#[inline]
+fn pow10_i128(exp: u32) -> i128 {
+    POW10_I128
+        .get(exp as usize)
+        .copied()
+        .unwrap_or_else(|| 10_i128.saturating_pow(exp))
+}
+
+#[inline]
+fn pow10_f64(exp: i32) -> f64 {
+    if exp <= 0 {
+        1.0
+    } else {
+        POW10_F64
+            .get(exp as usize)
+            .copied()
+            .unwrap_or_else(|| 10_f64.powi(exp))
     }
 }
 
@@ -148,7 +262,7 @@ pub unsafe extern "C" fn cobol_decimal_mul(
     let target_scale = a.scale.max(b.scale);
     let excess = combined_scale - target_scale;
     let truncated = if excess > 0 {
-        let divisor = 10_i128.pow(excess as u32);
+        let divisor = pow10_i128(excess as u32);
         (raw / divisor) as i64
     } else {
         raw as i64
@@ -190,7 +304,7 @@ pub unsafe extern "C" fn cobol_decimal_div(
     // After aligning, both are at common_scale. Dividing two numbers at the
     // same scale would give an integer result (scale 0). To get the answer at
     // common_scale, multiply the numerator by 10^common_scale first.
-    let factor = 10_i128.pow(common_scale as u32);
+    let factor = pow10_i128(common_scale as u32);
     let numerator = av * factor;
     let raw = (numerator / bv) as i64;
 
@@ -256,10 +370,7 @@ pub unsafe extern "C" fn cobol_decimal_to_int64(d: *const CobolDecimal) -> i64 {
     if d.scale <= 0 {
         d.value
     } else {
-        match 10_i64.checked_pow(d.scale as u32) {
-            Some(divisor) if divisor != 0 => d.value / divisor,
-            _ => 0,
-        }
+        d.value / pow10_i64(d.scale as u32)
     }
 }
 
@@ -277,7 +388,7 @@ pub unsafe extern "C" fn cobol_decimal_to_double(d: *const CobolDecimal) -> f64 
     if d.scale <= 0 {
         d.value as f64
     } else {
-        d.value as f64 / 10_f64.powi(d.scale)
+        d.value as f64 / pow10_f64(d.scale)
     }
 }
 
@@ -294,7 +405,7 @@ pub unsafe extern "C" fn cobol_decimal_to_double(d: *const CobolDecimal) -> f64 
 #[no_mangle]
 pub unsafe extern "C" fn cobol_decimal_from_double(val: f64, result: *mut CobolDecimal) {
     let r = &mut *result;
-    let factor = 10_f64.powi(r.scale);
+    let factor = pow10_f64(r.scale);
     let scaled = (val * factor).round() as i64;
     r.value = clamp_to_size(scaled, r.size, r.is_signed);
 }
@@ -312,39 +423,75 @@ pub unsafe extern "C" fn cobol_decimal_from_string(
 ) {
     let r = &mut *result;
     let slice = std::slice::from_raw_parts(ptr, len as usize);
-    let s = match std::str::from_utf8(slice) {
-        Ok(s) => s.trim(),
-        Err(_) => {
-            *r = CobolDecimal {
-                value: 0,
-                scale: 0,
-                size: 1,
-                is_signed: false,
-            };
-            return;
+    let mut start = 0usize;
+    let mut end = slice.len();
+    while start < end && slice[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && slice[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    if start == end {
+        *r = CobolDecimal {
+            value: 0,
+            scale: 0,
+            size: 1,
+            is_signed: false,
+        };
+        return;
+    }
+
+    let trimmed = &slice[start..end];
+    let mut idx = 0usize;
+    let mut negative = false;
+    let mut is_signed = false;
+    match trimmed.first().copied() {
+        Some(b'-') => {
+            negative = true;
+            is_signed = true;
+            idx = 1;
         }
-    };
+        Some(b'+') => {
+            is_signed = true;
+            idx = 1;
+        }
+        _ => {}
+    }
 
-    let is_signed = s.starts_with('-') || s.starts_with('+');
-    let negative = s.starts_with('-');
-    let body = s.trim_start_matches(['+', '-']);
+    let mut value: i64 = 0;
+    let mut scale: i32 = 0;
+    let mut total_digits: i32 = 0;
+    let mut seen_dot = false;
 
-    let (int_part, frac_part) = if let Some(dot_pos) = body.find('.') {
-        (&body[..dot_pos], &body[dot_pos + 1..])
-    } else {
-        (body, "")
-    };
+    for &b in &trimmed[idx..] {
+        match b {
+            b'0'..=b'9' => {
+                value = value.saturating_mul(10).saturating_add((b - b'0') as i64);
+                total_digits += 1;
+                if seen_dot {
+                    scale += 1;
+                }
+            }
+            b'.' if !seen_dot => {
+                seen_dot = true;
+            }
+            _ => {
+                *r = CobolDecimal {
+                    value: 0,
+                    scale: 0,
+                    size: 1,
+                    is_signed: false,
+                };
+                return;
+            }
+        }
+    }
 
-    let scale = frac_part.len() as i32;
-    let digits_str: String = int_part.chars().chain(frac_part.chars()).collect();
-    let abs_value: i64 = digits_str.parse().unwrap_or(0);
-    let value = if negative { -abs_value } else { abs_value };
-    let total_digits = (int_part.len() + frac_part.len()) as i32;
-
-    r.value = value;
+    r.value = if negative { -value } else { value };
     r.scale = scale;
     r.size = total_digits.max(1);
-    r.is_signed = is_signed || negative;
+    r.is_signed = is_signed;
 }
 
 /// Format a CobolDecimal as a display string according to a PICTURE clause.
@@ -419,7 +566,7 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     }
 
     // Extract integer and fractional parts from the value.
-    let frac_factor = 10u64.pow(dec.scale.max(0) as u32);
+    let frac_factor = pow10_i64(dec.scale.max(0) as u32) as u64;
     let int_val = abs_value / frac_factor;
     let frac_val = abs_value % frac_factor;
 

@@ -1618,11 +1618,35 @@ pub(crate) fn emit_decimal_arith(
             "{pad}{func}(&{c_target}, &{c_op}, &{c_target});\n"
         ));
     } else {
-        // Convert operand to a temporary CobolDecimal (use int-compatible for mixed exprs)
-        let c_op = emit_int_compatible_expr(operand, data_items);
-        out.push_str(&format!(
-            "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_int({c_op}, 0, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
-        ));
+        match signed_decimal_literal_expr(operand) {
+            Some((scaled, scale)) => {
+                out.push_str(&format!(
+                    "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_int({scaled}, {scale}, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
+                ));
+            }
+            None => match operand {
+                HirExpr::Literal(HirLiteral::String(s)) => {
+                let escaped = escape_c_string(s);
+                let len = s.len();
+                out.push_str(&format!(
+                    "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_string((const uint8_t*)\"{escaped}\", {len}, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
+                ));
+                }
+                _ if expr_contains_decimal(operand) => {
+                    let c_op = emit_expr_as_double(operand);
+                    out.push_str(&format!(
+                        "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_double({c_op}, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
+                    ));
+                }
+                _ => {
+                    // Convert operand to a temporary CobolDecimal.
+                    let c_op = emit_int_compatible_expr(operand, data_items);
+                    out.push_str(&format!(
+                        "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_int({c_op}, 0, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
+                    ));
+                }
+            },
+        }
     }
 }
 
@@ -1697,6 +1721,17 @@ pub(crate) fn parse_decimal_literal(s: &str) -> (i64, u32) {
         } else {
             (abs_value, 0)
         }
+    }
+}
+
+fn signed_decimal_literal_expr(expr: &HirExpr) -> Option<(i64, u32)> {
+    match expr {
+        HirExpr::Literal(HirLiteral::Decimal(d)) => Some(parse_decimal_literal(d)),
+        HirExpr::UnaryOp {
+            op: HirUnaryOp::Neg,
+            operand,
+        } => signed_decimal_literal_expr(operand).map(|(scaled, scale)| (-scaled, scale)),
+        _ => None,
     }
 }
 
@@ -2210,6 +2245,7 @@ pub(crate) fn emit_condition_with_ctx(
     ctx: &CodegenContext,
 ) -> String {
     let emit_expr = |expr| super::emit_expr_with_ctx(expr, ctx);
+    let emit_expr_as_double = |expr| super::emit_expr_as_double_with_ctx(expr, ctx);
     match cond {
         HirCondition::Compare { left, op, right } => {
             if is_alphanumeric_expr(left, data_items) || is_alphanumeric_expr(right, data_items) {
@@ -2226,6 +2262,18 @@ pub(crate) fn emit_condition_with_ctx(
                     HirCompareOp::Le => "<= 0",
                 };
                 format!("({cmp} {op_str})")
+            } else if expr_contains_decimal(left) || expr_contains_decimal(right) {
+                let l = emit_expr_as_double(left);
+                let r = emit_expr_as_double(right);
+                let op_str = match op {
+                    HirCompareOp::Eq => "==",
+                    HirCompareOp::Ne => "!=",
+                    HirCompareOp::Gt => ">",
+                    HirCompareOp::Lt => "<",
+                    HirCompareOp::Ge => ">=",
+                    HirCompareOp::Le => "<=",
+                };
+                format!("({l} {op_str} {r})")
             } else if is_decimal_expr(left, data_items) || is_decimal_expr(right, data_items) {
                 // CobolDecimal comparison via runtime function
                 let left_is_dec = is_decimal_expr(left, data_items);

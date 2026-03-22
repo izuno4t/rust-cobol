@@ -729,11 +729,13 @@ pub enum HirPerformKind {
     },
     /// PERFORM ... UNTIL.
     Until {
+        test: HirPerformTest,
         condition: HirCondition,
         body: Vec<HirStatement>,
     },
     /// PERFORM ... VARYING.
     Varying {
+        test: HirPerformTest,
         var: SmolStr,
         from: HirExpr,
         by: HirExpr,
@@ -746,6 +748,12 @@ pub enum HirPerformKind {
         name: SmolStr,
         through: Option<SmolStr>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirPerformTest {
+    Before,
+    After,
 }
 
 /// An AFTER clause in PERFORM VARYING ... AFTER.

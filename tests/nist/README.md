@@ -1,85 +1,61 @@
-# NIST CCVS 85 Conformance Testing
+# GnuCOBOL-Style NIST Environment
 
-COBOL-85 Compiler Validation System (CCVS 85) によるコンパイラ適合性検証。
+This directory provides the primary NIST CCVS 85 execution environment
+for `rust-cobol`.
 
-## セットアップ
+It keeps generated COBOL sources and test results under `target/nist`,
+not in this directory.
 
-### 1. newcob.val の入手
+## Goal
 
-GnuCOBOL SourceForge から `newcob.val` をダウンロード:
+This environment applies GnuCOBOL-style CCVS judgment rules to
+`rust-cobol`. The primary decision source is the CCVS report summary:
+summary counts first, report layout second.
 
-```bash
-# GnuCOBOL SourceForge の nist ディレクトリから取得
-curl -L -o newcob.val.Z \
-  "https://sourceforge.net/projects/gnucobol/files/nist/newcob.val.Z/download"
-uncompress newcob.val.Z
-# または gzip 版
-# gunzip newcob.val.gz
-```
+## Files
 
-### 2. テストプログラムの抽出
+- `extract.pl` — extracts the NIST programs from `newcob.val`
+- `prepare.sh` — extracts a dedicated `programs/` tree under `target/`
+- `preprocess.sh` — applies the NIST placeholder replacements with an
+  isolated temporary root
+- `run_nist.sh` — compiles, runs, and classifies programs with
+  GnuCOBOL-style CCVS judgment rules
+- `run_compare.sh` — optional audit tool for direct comparison with
+  GnuCOBOL
 
-```bash
-perl extract.pl newcob.val programs/
-```
-
-抽出結果:
-
-```text
-programs/
-  NC/    — Nucleus (核文法)
-  SM/    — Source Manipulation (COPY文)
-  IC/    — Inter-program Communication (CALL文)
-  SQ/    — Sequential I/O
-  IF/    — Intrinsic Functions
-  IX/    — Indexed I/O
-  RL/    — Relative I/O
-  ST/    — SORT/MERGE
-  RW/    — Report Writer
-  DB/    — Debugging
-  SG/    — Segmentation
-  OB/    — Obsolete Features
-```
-
-### 3. テスト実行
+## Setup
 
 ```bash
-# 単一モジュール実行
-./run_nist.sh NC
-
-# 単一プログラム実行
-./run_nist.sh NC NC101A
-
-# 全モジュール実行
-./run_nist.sh --all
-
-# 結果サマリー表示
-./run_nist.sh --summary
+tests/nist/prepare.sh
 ```
 
-各実行の終了時に、モジュール別の失敗一覧や単一プログラムの結果要約も標準出力へ表示される。
+By default this reads `tests/nist/newcob.val` and extracts programs into
+`target/nist/programs`.
 
-## 目標通過率
+## Usage
 
-| モジュール | 目標 | 備考 |
-| --- | --- | --- |
-| NC (Nucleus) | 95%+ | 最優先。COBOL核文法の網羅テスト |
-| IF (Intrinsic Functions) | 95%+ | 組み込み関数テスト |
-| SQ (Sequential I/O) | 95%+ | 順編成ファイルI/O |
-| IC (Inter-program Comm) | 90%+ | CALL文テスト |
-| SM (Source Manipulation) | 80%+ | COPY文テスト |
+```bash
+bash tests/nist/run_nist.sh NC
+bash tests/nist/run_nist.sh NC NC101A
+bash tests/nist/run_nist.sh --all
+bash tests/nist/run_nist.sh --summary
+```
 
-参考: GnuCOBOL v2.2 は全体で 99.79% (9,688/9,708) を通過。
+## Result Model
 
-## 結果の読み方
+- `PASS` — CCVS summary says there are no failures and no inspections
+- `FAIL` — CCVS summary or `FAIL*` lines report failures
+- `INSPECT` — the run completed, but the report still requires
+  inspection or has no decisive summary
+- `COMPILE_ERROR` — compilation failed
+- `RUNTIME_ERROR` — execution returned non-zero
+- `TIMEOUT` — execution exceeded the timeout
 
-`results/` ディレクトリに各プログラムの実行結果が保存される:
+`INSPECT` stores an additional `*.reason` file to separate manual-report
+cases, subprogram-only cases, dummy outputs, and other unresolved runs.
 
-- `*.status` — PASS / FAIL / COMPILE_ERROR / RUNTIME_ERROR / TIMEOUT
-- `*.log` — プログラムの標準出力
-- `*.compile.log` — コンパイルエラー出力
-- `summary.txt` — モジュール別の集計
+## Output Location
 
-## 環境変数
-
-- `COBOLC` — コンパイラのパス (デフォルト: `cargo run --release --package cobol-driver --`)
+- extracted programs: `target/nist/programs`
+- run results: `target/nist/results`
+- compare results: `target/nist/results-compare`
