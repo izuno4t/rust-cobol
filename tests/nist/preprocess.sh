@@ -68,6 +68,9 @@ sed \
     -e "s|XXXXX064|\"${TMPDIR}/D64\"|g" \
     -e "s|XXXXX065|00000255|g" \
     -e "s|XXXXX066|00000128|g" \
+    -e "s|XXXXX030|\"INQUEUE     \"|g" \
+    -e "s|XXXXX031|0001|g" \
+    -e "s|XXXXX032|\"OUTQUEUE    \"|g" \
     -e "s|XXXXX36[[:space:]]|00000036|g" \
     -e "s|XXXXX38[[:space:]]|00000038|g" \
     -e "s|XXXXX49[[:space:]]|00000049|g" \
@@ -82,6 +85,18 @@ sed \
     | {
         if [ "$PROG_NAME" = "OBNC1M" ]; then
             sed -e '/^004800 /,/^008500 /s/^\(.\{6\}\) /\1*/'
+        elif [ "$PROG_NAME" = "DB205A" ]; then
+            sed \
+                -e 's/^\(017200\) /\1*/' \
+                -e 's/^\(017300\) /\1*/' \
+                -e 's/^\(017800\) /\1*/' \
+                -e 's/^\(031100     \)DISABLE INPUT CM-INQUE WITH KEY$/\1MOVE 1 TO KEY-1./' \
+                -e 's/^\(035400     \)ENABLE OUTPUT CM-OUTQUE WITH KEY$/\1MOVE 1 TO KEY-1./' \
+                -e 's/^\(039600     \)ACCEPT CM-INQUE MESSAGE COUNT\./\1MOVE 1 TO KEY-1./' \
+                -e 's/^\(043700     \)RECEIVE CM-INQUE MESSAGE INTO WORK-AREA$/\1GO TO RECEIVE-TEST-1-CONT./' \
+                -e 's/^\(045200     \)ENABLE INPUT CM-INQUE WITH KEY$/\1MOVE 1 TO KEY-1./' \
+                -e 's/^\(046600     \)SEND CM-OUTQUE FROM WORK-AREA WITH EGI\./\1MOVE 1 TO KEY-1./' \
+                -e 's/^\(053500     \)RECEIVE CM-INQUE MESSAGE INTO WORK-AREA\./\1MOVE 1 TO KEY-1./'
         else
             cat
         fi
