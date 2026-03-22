@@ -27,6 +27,7 @@ ALL_MODULES=(NC SM IC SQ IF IX RL ST RW DB SG OB)
 
 mkdir -p "$RESULTS_DIR"
 mkdir -p "$NIST_WORKDIR"
+mkdir -p /tmp/nist
 
 print_status_group() {
     local module="$1"
@@ -100,6 +101,30 @@ print_single_result_summary() {
     fi
 }
 
+ccvs_summary_count() {
+    local file="$1"
+    local pattern="$2"
+    local value
+
+    value=$(
+        awk -v pat="$pattern" '
+            $0 ~ pat {
+                if ($1 == "NO") {
+                    print 0
+                } else {
+                    print $1
+                }
+            }
+        ' "$file" | tail -n 1
+    )
+
+    if [ -n "$value" ]; then
+        printf '%s\n' "$value"
+    else
+        printf '0\n'
+    fi
+}
+
 # Compile and run a single test program
 run_program() {
     local module="$1"
@@ -108,6 +133,7 @@ run_program() {
     local bin="$NIST_WORKDIR/nist_${program}"
     local log="$RESULTS_DIR/${module}/${program}.log"
     local status_file="$RESULTS_DIR/${module}/${program}.status"
+    local print_file="/tmp/nist/P"
 
     mkdir -p "$RESULTS_DIR/$module"
 
@@ -116,6 +142,8 @@ run_program() {
         echo "  $program: SKIP (source not found)"
         return
     fi
+
+    rm -f "$print_file"
 
     # Preprocess (replace XXXXX placeholders)
     local preprocessed="$NIST_WORKDIR/nist_preproc_${program}.cob"
@@ -138,11 +166,10 @@ run_program() {
 
         if [ "$exit_code" -eq 0 ]; then
             # NIST programs write to PRINT-FILE, also check stdout
-            local print_file="/tmp/nist/P"
             local result_file="$log"
             if [ -f "$print_file" ] && [ -s "$print_file" ]; then
                 result_file="$print_file"
-                cp "$print_file" "$log"
+                cp "$print_file" "$log" || true
             fi
 
             # Parse results — count PASS/FAIL in output
@@ -150,6 +177,21 @@ run_program() {
             pass=$(grep -ca " PASS " "$result_file" 2>/dev/null) || pass=0
             local fail
             fail=$(grep -ca "FAIL\*" "$result_file" 2>/dev/null) || fail=0
+            local ccvs_failed
+            ccvs_failed=$(ccvs_summary_count "$result_file" 'TEST\(S\) FAILED')
+            local ccvs_inspect
+            ccvs_inspect=$(ccvs_summary_count "$result_file" 'TEST\(S\) REQUIRE INSPECTION')
+            local ccvs_pass
+            ccvs_pass=$(awk '
+                /TESTS WERE EXECUTED SUCCESSFULLY/ {
+                    if ($1 == "NO") {
+                        print 0
+                    } else {
+                        print $1
+                    }
+                }
+            ' "$result_file" | tail -n 1)
+            ccvs_pass=${ccvs_pass:-0}
 
             # Clean up print file for next test
             rm -f "$print_file"
@@ -157,6 +199,15 @@ run_program() {
             if [ "$fail" -eq 0 ] && [ "$pass" -gt 0 ]; then
                 echo "PASS" > "$status_file"
                 echo "  $program: PASS ($pass passed)"
+            elif [ "$ccvs_failed" -gt 0 ]; then
+                echo "FAIL" > "$status_file"
+                echo "  $program: FAIL ($ccvs_pass passed, $ccvs_failed failed)"
+            elif [ "$ccvs_inspect" -gt 0 ]; then
+                echo "INSPECT" > "$status_file"
+                echo "  $program: INSPECT ($ccvs_inspect test(s) require inspection)"
+            elif [ "$ccvs_pass" -gt 0 ]; then
+                echo "PASS" > "$status_file"
+                echo "  $program: PASS ($ccvs_pass passed)"
             elif [ "$fail" -gt 0 ]; then
                 echo "FAIL" > "$status_file"
                 echo "  $program: FAIL ($pass passed, $fail failed)"
