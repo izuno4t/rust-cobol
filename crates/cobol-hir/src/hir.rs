@@ -438,7 +438,7 @@ pub enum HirStatement {
     },
     /// SET statement (simplified to assignment).
     Set {
-        targets: Vec<SmolStr>,
+        targets: Vec<HirExpr>,
         value: HirExpr,
         span: Span,
     },
@@ -1094,7 +1094,7 @@ fn write_stmt(
                 "{pad}SET {} TO {}",
                 targets
                     .iter()
-                    .map(|s| s.as_str())
+                    .map(format_expr)
                     .collect::<Vec<_>>()
                     .join(", "),
                 format_expr(value)

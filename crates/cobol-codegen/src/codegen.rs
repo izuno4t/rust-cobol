@@ -3121,35 +3121,41 @@ fn emit_statement(
         }
         HirStatement::Set { targets, value, .. } => {
             for target in targets {
-                let c_target = sanitize_name(target);
-                let target_item = find_data_item(target.as_str(), data_items);
+                let target_name = expr_var_name(target);
+                let c_target = emit_expr(target);
+                let target_item = find_data_item(target_name, data_items);
                 let target_is_decimal = target_item.is_some_and(|i| needs_decimal(&i.data_type));
                 let target_is_alpha = target_item
                     .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
                 let target_is_group =
                     target_item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
+                let c_tgt_base = sanitize_name(target_name);
                 if target_is_decimal {
                     emit_assign_to_decimal(out, value, &c_target, data_items, &pad);
                 } else if target_is_alpha {
-                    // SET index-value TO alphanumeric target: convert via
-                    // cobol_move_numeric_to_display
                     let c_value = emit_int_compatible_expr(value, data_items);
-                    let tgt_size = find_data_item_size(&c_target, data_items);
+                    let tgt_size = find_data_item_size(&c_tgt_base, data_items);
                     out.push_str(&format!(
                         "{pad}cobol_move_numeric_to_display({c_value}, 0, \
                          (uint8_t*){c_target}, {tgt_size});\n"
                     ));
                 } else if target_is_group {
-                    // SET to group target: treat as alphanumeric bytes
                     let c_value = emit_int_compatible_expr(value, data_items);
-                    let tgt_size = find_data_item_size(&c_target, data_items);
+                    let tgt_size = find_data_item_size(&c_tgt_base, data_items);
                     out.push_str(&format!(
                         "{pad}cobol_move_numeric_to_display({c_value}, 0, \
                          (uint8_t*)&{c_target}, {tgt_size});\n"
                     ));
                 } else {
                     let c_value = emit_int_compatible_expr(value, data_items);
-                    emit_store_int(out, &c_target, &c_value, data_items, &pad);
+                    if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                        out.push_str(&format!(
+                            "{pad}cobol_store_numeric_display({c_value}, \
+                             (uint8_t*){c_target}, {disp_size});\n"
+                        ));
+                    } else {
+                        out.push_str(&format!("{pad}{c_target} = {c_value};\n"));
+                    }
                 }
             }
         }

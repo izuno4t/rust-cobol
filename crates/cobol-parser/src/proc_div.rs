@@ -1433,13 +1433,19 @@ impl Parser {
                 })));
             }
 
-            // PERFORM proc-name VARYING ... (treat as inline varying
-            // with proc call as body; existing parse_perform_varying parses
-            // its own body, so we skip this rare form for now)
+            // PERFORM proc-name VARYING ... — out-of-line varying.
+            // Parse VARYING clauses and use the procedure call as the body.
             if self.check(TokenKind::Varying) {
-                // Fall through to parse_perform_varying which parses body
-                // The procedure call will be lost, but this is a rare form.
-                return self.parse_perform_varying(start_span, test2);
+                let varying = self.parse_varying_clauses()?;
+                let end_span = self.span();
+                return Ok(Statement::Perform(Box::new(PerformStatement {
+                    kind: PerformKind::Varying {
+                        test: test2,
+                        varying,
+                        body: vec![proc_call],
+                    },
+                    span: start_span.merge(&end_span),
+                })));
             }
 
             // Simple out-of-line PERFORM (no modifier)
@@ -1493,11 +1499,8 @@ impl Parser {
         PerformTest::Before
     }
 
-    fn parse_perform_varying(
-        &mut self,
-        start_span: Span,
-        test: PerformTest,
-    ) -> Result<Statement, ()> {
+    /// Parse VARYING ... FROM ... BY ... UNTIL ... [AFTER ...] clauses.
+    fn parse_varying_clauses(&mut self) -> Result<Vec<VaryingClause>, ()> {
         self.expect(TokenKind::Varying)?;
 
         let mut varying = Vec::new();
@@ -1532,6 +1535,16 @@ impl Parser {
                 until,
             });
         }
+
+        Ok(varying)
+    }
+
+    fn parse_perform_varying(
+        &mut self,
+        start_span: Span,
+        test: PerformTest,
+    ) -> Result<Statement, ()> {
+        let varying = self.parse_varying_clauses()?;
 
         let mut body = Vec::new();
         while !self.at_eof() && !self.check(TokenKind::EndPerform) && !self.check(TokenKind::Period)

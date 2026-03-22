@@ -1537,10 +1537,13 @@ fn lower_set(
     use cobol_ast::statement::SetKind;
     match &set.kind {
         SetKind::To { targets, value } => {
-            let target_names = targets.iter().map(|q| q.name.clone()).collect();
+            let target_exprs = targets
+                .iter()
+                .map(|q| lower_qualified_name_to_expr(q))
+                .collect();
             let hir_value = lower_expr(value);
             HirStatement::Set {
-                targets: target_names,
+                targets: target_exprs,
                 value: hir_value,
                 span: set.span,
             }
