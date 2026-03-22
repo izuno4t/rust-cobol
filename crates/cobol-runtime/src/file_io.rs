@@ -92,6 +92,27 @@ struct CobolFile {
 // Global file table -- lazily initialised.
 static FILE_TABLE: Mutex<Option<HashMap<u32, CobolFile>>> = Mutex::new(None);
 
+fn file_debug_enabled() -> bool {
+    std::env::var_os("COBOL_FILE_DEBUG").is_some()
+}
+
+fn file_debug_log(message: &str) {
+    if file_debug_enabled() {
+        eprintln!("[FILE] {message}");
+    }
+}
+
+fn file_debug_preview(data: &[u8]) -> String {
+    let preview_len = data.len().min(40);
+    data[..preview_len]
+        .iter()
+        .map(|&b| match b {
+            b' '..=b'~' => b as char,
+            _ => '.',
+        })
+        .collect()
+}
+
 fn with_file_table<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, CobolFile>) -> R,
@@ -144,6 +165,7 @@ pub unsafe extern "C" fn cobol_file_open(
 
     with_file_table(|table| {
         if table.contains_key(&file_id) {
+            file_debug_log(&format!("open id={file_id} path={path} rc={FS_ALREADY_OPEN}"));
             return FS_ALREADY_OPEN;
         }
 
@@ -186,13 +208,18 @@ pub unsafe extern "C" fn cobol_file_open(
                         index: Vec::new(),
                     },
                 );
+                file_debug_log(&format!("open id={file_id} path={path} mode={mode:?} org={org:?} rc={FS_OK}"));
                 FS_OK
             }
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::NotFound => FS_NOT_FOUND,
-                std::io::ErrorKind::PermissionDenied => 37, // permission
-                _ => FS_IO_ERROR,
-            },
+            Err(e) => {
+                let rc = match e.kind() {
+                    std::io::ErrorKind::NotFound => FS_NOT_FOUND,
+                    std::io::ErrorKind::PermissionDenied => 37, // permission
+                    _ => FS_IO_ERROR,
+                };
+                file_debug_log(&format!("open id={file_id} path={path} mode={mode:?} org={org:?} rc={rc} err={e}"));
+                rc
+            }
         }
     })
 }
@@ -299,8 +326,10 @@ pub extern "C" fn cobol_file_close(file_id: u32) -> u32 {
             if let CobolFileInner::Writer(ref mut w) = f.inner {
                 let _ = w.flush();
             }
+            file_debug_log(&format!("close id={file_id} rc={FS_OK}"));
             FS_OK
         } else {
+            file_debug_log(&format!("close id={file_id} rc={FS_NOT_OPEN}"));
             FS_NOT_OPEN
         }
     })
@@ -327,7 +356,10 @@ pub unsafe extern "C" fn cobol_file_read_next(
     with_file_table(|table| {
         let file = match table.get_mut(&file_id) {
             Some(f) => f,
-            None => return FS_NOT_OPEN,
+            None => {
+                file_debug_log(&format!("write id={file_id} len={record_len} rc={FS_NOT_OPEN}"));
+                return FS_NOT_OPEN;
+            }
         };
 
         match file.org {
@@ -569,7 +601,10 @@ pub unsafe extern "C" fn cobol_file_write(
 
         match file.mode {
             FileOpenMode::Output | FileOpenMode::Extend | FileOpenMode::IoMode => {}
-            _ => return FS_WRITE_NOT_PERMITTED,
+            _ => {
+                file_debug_log(&format!("write id={file_id} len={record_len} rc={FS_WRITE_NOT_PERMITTED}"));
+                return FS_WRITE_NOT_PERMITTED;
+            }
         }
 
         let write_result = match &mut file.inner {
@@ -596,9 +631,16 @@ pub unsafe extern "C" fn cobol_file_write(
         match write_result {
             Ok(()) => {
                 file.current_record += 1;
+                file_debug_log(&format!(
+                    "write id={file_id} len={record_len} rc={FS_OK} preview={:?}",
+                    file_debug_preview(data)
+                ));
                 FS_OK
             }
-            Err(_) => FS_IO_ERROR,
+            Err(err) => {
+                file_debug_log(&format!("write id={file_id} len={record_len} rc={FS_IO_ERROR} err={err}"));
+                FS_IO_ERROR
+            }
         }
     })
 }

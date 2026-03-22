@@ -8,6 +8,7 @@
 // the CLI driver) and a staticlib (for linking with generated object
 // files).
 
+pub mod clock;
 pub mod communication;
 pub mod decimal;
 pub mod display;

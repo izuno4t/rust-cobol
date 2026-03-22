@@ -1610,11 +1610,13 @@ pub(crate) fn emit_statement_with_ctx(
                     // ACCEPT FROM DATE: YYMMDD (6 digits)
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                        "{pad}    int32_t _year = 0, _month = 0, _day = 0;\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    int64_t _dv = (_tm->tm_year % 100) * 10000 \
-                         + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
+                        "{pad}    cobol_runtime_now_parts(&_year, &_month, &_day, NULL, NULL, NULL, NULL, NULL);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    int64_t _dv = (_year % 100) * 10000 + _month * 100 + _day;\n"
                     ));
                     emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
@@ -1623,11 +1625,13 @@ pub(crate) fn emit_statement_with_ctx(
                     // ACCEPT FROM DATE YYYYMMDD: 8 digits
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                        "{pad}    int32_t _year = 0, _month = 0, _day = 0;\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    int64_t _dv = (_tm->tm_year + 1900) * 10000 \
-                         + (_tm->tm_mon + 1) * 100 + _tm->tm_mday;\n"
+                        "{pad}    cobol_runtime_now_parts(&_year, &_month, &_day, NULL, NULL, NULL, NULL, NULL);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    int64_t _dv = _year * 10000 + _month * 100 + _day;\n"
                     ));
                     emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
@@ -1636,11 +1640,13 @@ pub(crate) fn emit_statement_with_ctx(
                     // ACCEPT FROM DAY: YYDDD (Julian day)
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                        "{pad}    int32_t _year = 0, _yday1 = 0;\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    int64_t _dv = (_tm->tm_year % 100) * 1000 \
-                         + _tm->tm_yday + 1;\n"
+                        "{pad}    cobol_runtime_now_parts(&_year, NULL, NULL, &_yday1, NULL, NULL, NULL, NULL);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    int64_t _dv = (_year % 100) * 1000 + _yday1;\n"
                     ));
                     emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
@@ -1649,10 +1655,13 @@ pub(crate) fn emit_statement_with_ctx(
                     // ACCEPT FROM DAY-OF-WEEK: 1=Monday ... 7=Sunday
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                        "{pad}    int32_t _wday1 = 0;\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    int64_t _dv = _tm->tm_wday == 0 ? 7 : _tm->tm_wday;\n"
+                        "{pad}    cobol_runtime_now_parts(NULL, NULL, NULL, NULL, &_wday1, NULL, NULL, NULL);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    int64_t _dv = _wday1;\n"
                     ));
                     emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     out.push_str(&format!("{pad}}}\n"));
@@ -1661,7 +1670,10 @@ pub(crate) fn emit_statement_with_ctx(
                     // ACCEPT FROM TIME: HHMMSScc (8 digits)
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
+                        "{pad}    int32_t _hour = 0, _minute = 0, _sec_centis = 0;\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    cobol_runtime_now_parts(NULL, NULL, NULL, NULL, NULL, &_hour, &_minute, &_sec_centis);\n"
                     ));
                     if let Some(item) = find_data_item(target, data_items) {
                         if let HirType::Group { members, .. } = &item.data_type {
@@ -1689,21 +1701,20 @@ pub(crate) fn emit_statement_with_ctx(
                                 let mins_ptr = display_numeric_ptr(&mins_ref);
                                 let secs_ptr = display_numeric_ptr(&secs_ref);
                                 out.push_str(&format!(
-                                    "{pad}    cobol_store_numeric_display(_tm->tm_hour, {hrs_ptr}, {});\n",
+                                    "{pad}    cobol_store_numeric_display(_hour, {hrs_ptr}, {});\n",
                                     numeric_members[0].1
                                 ));
                                 out.push_str(&format!(
-                                    "{pad}    cobol_store_numeric_display(_tm->tm_min, {mins_ptr}, {});\n",
+                                    "{pad}    cobol_store_numeric_display(_minute, {mins_ptr}, {});\n",
                                     numeric_members[1].1
                                 ));
                                 out.push_str(&format!(
-                                    "{pad}    cobol_store_numeric_display(_tm->tm_sec * 100, {secs_ptr}, {});\n",
+                                    "{pad}    cobol_store_numeric_display(_sec_centis, {secs_ptr}, {});\n",
                                     numeric_members[2].1
                                 ));
                             } else {
                                 out.push_str(&format!(
-                                    "{pad}    int64_t _dv = _tm->tm_hour * 1000000 \
-                                     + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
+                                    "{pad}    int64_t _dv = _hour * 1000000 + _minute * 10000 + _sec_centis;\n"
                                 ));
                                 emit_store_int(
                                     out,
@@ -1715,8 +1726,7 @@ pub(crate) fn emit_statement_with_ctx(
                             }
                         } else {
                             out.push_str(&format!(
-                                "{pad}    int64_t _dv = _tm->tm_hour * 1000000 \
-                                 + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
+                                "{pad}    int64_t _dv = _hour * 1000000 + _minute * 10000 + _sec_centis;\n"
                             ));
                             emit_store_int(
                                 out,
@@ -1728,8 +1738,7 @@ pub(crate) fn emit_statement_with_ctx(
                         }
                     } else {
                         out.push_str(&format!(
-                            "{pad}    int64_t _dv = _tm->tm_hour * 1000000 \
-                             + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
+                            "{pad}    int64_t _dv = _hour * 1000000 + _minute * 10000 + _sec_centis;\n"
                         ));
                         emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
                     }
@@ -4087,6 +4096,7 @@ fn expr_mentions_var(expr: &HirExpr, var: &str) -> bool {
         _ => false,
     }
 }
+
 
 fn pow10_i64_literal(exp: u32) -> String {
     match exp {

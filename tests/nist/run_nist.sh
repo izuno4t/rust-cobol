@@ -477,6 +477,11 @@ run_program() {
         else
             unset COBOL_COMM_SCRIPT || true
         fi
+        if [ "$module" = "CM" ]; then
+            export COBOL_TEST_FAST_TIME_SCALE="${COBOL_TEST_FAST_TIME_SCALE:-100000}"
+        else
+            unset COBOL_TEST_FAST_TIME_SCALE || true
+        fi
         exec setsid timeout -k 5s "$TIMEOUT_SECONDS" perl -e '
             chdir $ARGV[0] or die "chdir failed: $!";
             exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";

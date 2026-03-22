@@ -1,5 +1,23 @@
 use super::*;
 
+pub(crate) fn emit_fd_alias_macros(
+    out: &mut String,
+    fd_record_aliases: &std::collections::HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+) {
+    if fd_record_aliases.is_empty() {
+        return;
+    }
+    out.push_str("/* FD record aliases (shared record area) */\n");
+    for (alias, primary) in fd_record_aliases {
+        let c_alias = sanitize_name(alias);
+        let c_primary = sanitize_name(primary);
+        out.push_str(&format!(
+            "#define {c_alias} {c_primary} /* FD shared record area */\n"
+        ));
+    }
+    out.push('\n');
+}
+
 pub(crate) fn emit_data_items(
     out: &mut String,
     items: &[HirDataItem],
