@@ -2556,6 +2556,7 @@ fn test_c2_move_corresponding() {
                 span: Span::dummy(),
             },
         ],
+        communication_descriptions: Vec::new(),
         paragraphs: Vec::new(),
         body: vec![HirStatement::MoveCorresponding {
             from: "WS-SRC".into(),
@@ -2663,6 +2664,7 @@ fn test_c2_add_corresponding() {
                 span: Span::dummy(),
             },
         ],
+        communication_descriptions: Vec::new(),
         paragraphs: Vec::new(),
         body: vec![HirStatement::AddCorresponding {
             from: "GRP-A".into(),
@@ -4408,6 +4410,7 @@ fn test_typedef_codegen() {
         let hir = cobol_hir::HirProgram {
             name: "TDTEST".into(),
             data_items: vec![],
+            communication_descriptions: vec![],
             paragraphs: vec![],
             body: vec![],
             using_params: vec![],

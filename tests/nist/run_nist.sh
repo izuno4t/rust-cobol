@@ -105,7 +105,7 @@ print_inspect_groups() {
     local reason_file reason
     local matches=()
     [ -d "$mod_results" ] || return 0
-    for reason in subprogram-only manual-report dummy-display no-output unclassified; do
+    for reason in subprogram-only manual-report dummy-display missing-fixture no-output unclassified; do
         matches=()
         for reason_file in "$mod_results"/*.reason; do
             [ -f "$reason_file" ] || continue
@@ -118,6 +118,105 @@ print_inspect_groups() {
             echo "  INSPECT/$reason: ${matches[*]}"
         fi
     done
+}
+
+stage_nist_aliases() {
+    local dst_dir="$1"
+    mkdir -p "$dst_dir"
+    local code src dst
+    for code in \
+        001 002 003 004 005 006 007 008 009 014 015 016 017 018 019 020 027 \
+        051 052 053 054 055 056 057 058 059 060 063 064 068 069
+    do
+        src="$ENV_ROOT/XXXXX${code}"
+        case "$code" in
+            001) dst="$dst_dir/D1" ;;
+            002) dst="$dst_dir/D2" ;;
+            003) dst="$dst_dir/D3" ;;
+            004) dst="$dst_dir/D4" ;;
+            005) dst="$dst_dir/D5" ;;
+            006) dst="$dst_dir/D6" ;;
+            007) dst="$dst_dir/D7" ;;
+            008) dst="$dst_dir/D8" ;;
+            009) dst="$dst_dir/D9" ;;
+            014) dst="$dst_dir/D14" ;;
+            015) dst="$dst_dir/D15" ;;
+            016) dst="$dst_dir/D16" ;;
+            017) dst="$dst_dir/D17" ;;
+            018) dst="$dst_dir/D18" ;;
+            019) dst="$dst_dir/D19" ;;
+            020) dst="$dst_dir/D20" ;;
+            027) dst="$dst_dir/S1" ;;
+            051) dst="$dst_dir/O51" ;;
+            052) dst="$dst_dir/O52" ;;
+            053) dst="$dst_dir/O53" ;;
+            054) dst="$dst_dir/O54" ;;
+            055) dst="$dst_dir/P" ;;
+            056) dst="$dst_dir/O56" ;;
+            057) dst="$dst_dir/O57" ;;
+            058) dst="$dst_dir/O58" ;;
+            059) dst="$dst_dir/O59" ;;
+            060) dst="$dst_dir/O60" ;;
+            063) dst="$dst_dir/D63" ;;
+            064) dst="$dst_dir/D64" ;;
+            068) dst="$dst_dir/O68" ;;
+            069) dst="$dst_dir/O69" ;;
+            *) continue ;;
+        esac
+        rm -f "$dst"
+        if [ -e "$src" ]; then
+            ln -s "$src" "$dst"
+        fi
+    done
+}
+
+find_missing_input_fixture() {
+    local preprocessed="$1"
+    local current_file=""
+    local line trimmed token mode path
+    declare -A assign_map=()
+
+    while IFS= read -r line; do
+        trimmed="${line#[0-9[:space:]]}"
+        trimmed="$(printf '%s\n' "$line" | sed 's/^[0-9[:space:]]*//')"
+
+        case "$trimmed" in
+            SELECT\ *)
+                current_file="${trimmed#SELECT }"
+                current_file="${current_file%% *}"
+                ;;
+            ASSIGN\ TO)
+                ;;
+            \"*\".)
+                if [ -n "$current_file" ]; then
+                    path="${trimmed#\"}"
+                    path="${path%%\"*}"
+                    assign_map["$current_file"]="$path"
+                    current_file=""
+                fi
+                ;;
+            OPEN\ *)
+                mode=""
+                for token in $trimmed; do
+                    case "$token" in
+                        OPEN) continue ;;
+                        INPUT|I-O|EXTEND|OUTPUT)
+                            mode="$token"
+                            continue
+                            ;;
+                    esac
+                    token="${token%.}"
+                    if [ "$mode" = "INPUT" ] || [ "$mode" = "I-O" ] || [ "$mode" = "EXTEND" ]; then
+                        path="${assign_map[$token]:-}"
+                        if [ -n "$path" ] && [ ! -e "$path" ]; then
+                            printf '%s|%s\n' "$token" "$path"
+                            return 0
+                        fi
+                    fi
+                done
+                ;;
+        esac
+    done < "$preprocessed"
 }
 
 print_module_diagnostics() {
@@ -178,6 +277,16 @@ run_program() {
 
     rm -rf "$NIST_TMPDIR"/*
     NIST_TMPDIR="$NIST_TMPDIR" "$PREPROCESS" "$src" "$preprocessed"
+    stage_nist_aliases "$NIST_TMPDIR"
+
+    local missing_fixture=""
+    missing_fixture="$(find_missing_input_fixture "$preprocessed" || true)"
+    if [ -n "$missing_fixture" ]; then
+        echo "INSPECT" > "$status_file"
+        printf '%s\n' "missing-fixture" > "$reason_file"
+        echo "  $program: INSPECT (missing input fixture: ${missing_fixture#*|})"
+        return
+    fi
 
     if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
         2>"$compile_log"; then
