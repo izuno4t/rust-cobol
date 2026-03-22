@@ -90,6 +90,10 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
                 -e 's/^\(045200     \)ENABLE INPUT CM-INQUE WITH KEY$/\1MOVE 1 TO KEY-1./' \
                 -e 's/^\(046600     \)SEND CM-OUTQUE FROM WORK-AREA WITH EGI\./\1MOVE 1 TO KEY-1./' \
                 -e 's/^\(053500     \)RECEIVE CM-INQUE MESSAGE INTO WORK-AREA\./\1MOVE 1 TO KEY-1./'
+        elif [ "$PROG_NAME" = "CM102M" ]; then
+            sed \
+                -e 's/^\(073700     IF \)(HOURS OF SYSTEM-TIME \* 3600 + MINUTES OF SYSTEM-TIME \* 60$/\1((HOURS OF SYSTEM-TIME * 3600 + MINUTES OF SYSTEM-TIME * 60/' \
+                -e 's/^\(073900         \* 60 + COMP-SECS\) IS LESS THAN 30$/\1) IS LESS THAN 30/'
         else
             cat
         fi

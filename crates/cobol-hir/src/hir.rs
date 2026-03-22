@@ -47,6 +47,10 @@ pub struct HirProgram {
 #[derive(Debug, Clone)]
 pub struct HirCommunicationDescription {
     pub name: SmolStr,
+    pub symbolic_queue: Option<SmolStr>,
+    pub symbolic_sub_queue_1: Option<SmolStr>,
+    pub symbolic_sub_queue_2: Option<SmolStr>,
+    pub symbolic_sub_queue_3: Option<SmolStr>,
     pub status_key: Option<SmolStr>,
     pub message_count: Option<SmolStr>,
     pub text_length: Option<SmolStr>,
@@ -54,6 +58,8 @@ pub struct HirCommunicationDescription {
     pub error_key: Option<SmolStr>,
     pub symbolic_source: Option<SmolStr>,
     pub destination_count: Option<SmolStr>,
+    pub destination: Option<SmolStr>,
+    pub destination_table_count: Option<u32>,
 }
 
 /// A USE AFTER EXCEPTION declarative section.

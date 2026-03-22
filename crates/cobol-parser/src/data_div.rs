@@ -168,6 +168,7 @@ impl Parser {
         let mut end_key = None;
         let mut status_key = None;
         let mut message_count = None;
+        let mut message_count_named_below = false;
         let mut destination_count = None;
         let mut destination_table_count = None;
         let mut destination_table_indexed_by = Vec::new();
@@ -247,6 +248,15 @@ impl Parser {
                 self.advance();
                 self.eat_is();
                 status_key = Some(self.expect_identifier()?);
+            } else if self.check(TokenKind::Count) {
+                self.advance();
+                self.eat_is();
+                let count_name = self.expect_identifier()?;
+                if count_name.eq_ignore_ascii_case("NAMED-BELOW") {
+                    message_count_named_below = true;
+                } else {
+                    message_count = Some(count_name);
+                }
             } else if self.check_identifier("STATUS") {
                 self.advance();
                 self.eat(TokenKind::Key);
@@ -311,6 +321,9 @@ impl Parser {
 
         self.expect(TokenKind::Period)?;
         let mut data_items = self.parse_data_items()?;
+        if message_count_named_below && message_count.is_none() {
+            message_count = infer_named_below_message_count(&data_items);
+        }
         let synthetic_items = build_communication_data_items(
             symbolic_queue.as_ref(),
             symbolic_sub_queue_1.as_ref(),
@@ -1221,6 +1234,29 @@ fn apply_positional_communication_fields(
         }
         CommunicationDirection::Output | CommunicationDirection::InputOutput => {}
     }
+}
+
+fn infer_named_below_message_count(items: &[DataItem]) -> Option<SmolStr> {
+    fn visit(item: &DataItem) -> Option<SmolStr> {
+        if let Some(name) = &item.name {
+            if name.to_ascii_uppercase().contains("COUNT") {
+                return Some(name.clone());
+            }
+        }
+        for child in &item.children {
+            if let Some(found) = visit(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    for item in items {
+        if let Some(found) = visit(item) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]

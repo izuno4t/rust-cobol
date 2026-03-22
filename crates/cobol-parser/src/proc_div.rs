@@ -1073,7 +1073,7 @@ impl Parser {
             self.advance();
             self.expect(TokenKind::Count)?;
             Some(AcceptSource::MessageCount)
-        } else if self.check(TokenKind::Count) {
+        } else if self.check(TokenKind::Count) || self.check_identifier("COUNT") {
             self.advance();
             Some(AcceptSource::MessageCount)
         } else if self.check(TokenKind::From) {

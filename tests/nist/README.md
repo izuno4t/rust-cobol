@@ -52,6 +52,8 @@ modules in parallel while keeping per-module work directories isolated.
 Compilation is cached by default per program. If the preprocessed source,
 compiler binary, and `COPYLIB` inputs are unchanged, `run_nist.sh` reuses
 the existing executable. Set `NIST_COMPILE_CACHE=0` to force recompiling.
+The preprocessed COBOL source and fixture scan results are also reused
+when the source file and `preprocess.sh` are unchanged.
 
 ## Result Model
 

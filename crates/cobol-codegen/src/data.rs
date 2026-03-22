@@ -830,6 +830,18 @@ pub(crate) fn emit_single_data_init_with_prefix(
                     ));
                 }
             }
+            (HirType::Alphanumeric { size }, HirLiteral::Integer(n)) => {
+                let digits = escape_c_string(&n.to_string());
+                if in_group {
+                    out.push_str(&format!(
+                        "    memset({c_name}, ' ', {size});\n    strncpy({c_name}, \"{digits}\", {size});\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "    memset({c_name}, ' ', {size});\n    strncpy({c_name}, \"{digits}\", {size});\n    {c_name}[{size}] = '\\0';\n"
+                    ));
+                }
+            }
             (
                 HirType::Numeric {
                     size,

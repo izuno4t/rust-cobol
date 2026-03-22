@@ -1597,6 +1597,13 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::Accept { target, source, .. } => {
             let c_target = sanitize_name(target);
             let size = find_data_item_size(&c_target, data_items);
+            let comm_binding = ctx.communication_binding(&c_target);
+            let implicit_message_count = matches!(source, HirAcceptSource::Console)
+                && size == 0
+                && comm_binding
+                    .as_ref()
+                    .and_then(|binding| binding.message_count.as_ref())
+                    .is_some();
             out.push_str(&format!("{pad}/* ACCEPT {c_target} */\n"));
             match source {
                 HirAcceptSource::Date => {
@@ -1738,7 +1745,7 @@ pub(crate) fn emit_statement_with_ctx(
                         "{pad}  if (_env) {{ strncpy((char*){tgt_ptr}, _env, {size}); }} }}\n"
                     ));
                 }
-                HirAcceptSource::Console => {
+                HirAcceptSource::Console if !implicit_message_count => {
                     let tgt_ptr = c_ptr_expr(&c_target, data_items);
                     out.push_str(&format!("{pad}fgets((char*){tgt_ptr}, {size}, stdin);\n"));
                     out.push_str(&format!(
@@ -1746,17 +1753,33 @@ pub(crate) fn emit_statement_with_ctx(
                     ));
                 }
                 HirAcceptSource::MessageCount => {
-                    let binding = ctx.communication_binding(&c_target);
-                    if let Some(binding) = binding {
-                        if let Some(message_count) = binding.message_count {
+                    if let Some(binding) = comm_binding.clone() {
+                        if let Some(ref message_count) = binding.message_count {
+                            let selectors = emit_comm_selectors(&binding, data_items);
                             out.push_str(&format!(
-                                "{pad}{{ uint32_t _count = cobol_comm_message_count((const uint8_t*)\"{c_target}\", {});\n",
-                                c_target.len()
+                                "{pad}{{ uint32_t _count = 0; uint32_t _rc = cobol_comm_accept_count((const uint8_t*)\"{c_target}\", {}, &_count, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                                c_target.len(),
+                                selectors.queue_ptr,
+                                selectors.queue_len,
+                                selectors.sub1_ptr,
+                                selectors.sub1_len,
+                                selectors.sub2_ptr,
+                                selectors.sub2_len,
+                                selectors.sub3_ptr,
+                                selectors.sub3_len
                             ));
                             emit_store_int(
                                 out,
-                                &message_count,
+                                message_count,
                                 "(int64_t)_count",
+                                data_items,
+                                &format!("{pad}    "),
+                            );
+                            emit_comm_status_updates(
+                                out,
+                                &c_target,
+                                "_rc",
+                                None,
                                 data_items,
                                 &format!("{pad}    "),
                             );
@@ -1764,6 +1787,42 @@ pub(crate) fn emit_statement_with_ctx(
                         }
                     }
                 }
+                HirAcceptSource::Console if implicit_message_count => {
+                    if let Some(binding) = comm_binding {
+                        if let Some(ref message_count) = binding.message_count {
+                            let selectors = emit_comm_selectors(&binding, data_items);
+                            out.push_str(&format!(
+                                "{pad}{{ uint32_t _count = 0; uint32_t _rc = cobol_comm_accept_count((const uint8_t*)\"{c_target}\", {}, &_count, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                                c_target.len(),
+                                selectors.queue_ptr,
+                                selectors.queue_len,
+                                selectors.sub1_ptr,
+                                selectors.sub1_len,
+                                selectors.sub2_ptr,
+                                selectors.sub2_len,
+                                selectors.sub3_ptr,
+                                selectors.sub3_len
+                            ));
+                            emit_store_int(
+                                out,
+                                message_count,
+                                "(int64_t)_count",
+                                data_items,
+                                &format!("{pad}    "),
+                            );
+                            emit_comm_status_updates(
+                                out,
+                                &c_target,
+                                "_rc",
+                                None,
+                                data_items,
+                                &format!("{pad}    "),
+                            );
+                            out.push_str(&format!("{pad}}}\n"));
+                        }
+                    }
+                }
+                HirAcceptSource::Console => {}
             }
         }
         HirStatement::Enable {
@@ -1775,11 +1834,30 @@ pub(crate) fn emit_statement_with_ctx(
         } => {
             let c_target = sanitize_name(target);
             let (c_key_ptr, c_key_len) = emit_comm_arg(key, data_items);
+            let binding = ctx.communication_binding(&c_target);
+            let selectors = binding
+                .as_ref()
+                .map(|binding| emit_comm_selectors(binding, data_items))
+                .unwrap_or_default();
+            let source = binding
+                .as_ref()
+                .map(|binding| emit_optional_comm_item(binding.symbolic_source.as_deref(), data_items))
+                .unwrap_or_else(null_comm_arg);
             out.push_str(&format!(
-                "{pad}{{ uint32_t _rc = cobol_comm_enable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len});\n",
+                "{pad}{{ uint32_t _rc = cobol_comm_enable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
                 emit_comm_mode(mode),
-                if *terminal { 1 } else { 0 }
+                if *terminal { 1 } else { 0 },
+                selectors.queue_ptr,
+                selectors.queue_len,
+                selectors.sub1_ptr,
+                selectors.sub1_len,
+                selectors.sub2_ptr,
+                selectors.sub2_len,
+                selectors.sub3_ptr,
+                selectors.sub3_len,
+                source.0,
+                source.1
             ));
             emit_comm_status_updates(
                 out,
@@ -1800,11 +1878,30 @@ pub(crate) fn emit_statement_with_ctx(
         } => {
             let c_target = sanitize_name(target);
             let (c_key_ptr, c_key_len) = emit_comm_arg(key, data_items);
+            let binding = ctx.communication_binding(&c_target);
+            let selectors = binding
+                .as_ref()
+                .map(|binding| emit_comm_selectors(binding, data_items))
+                .unwrap_or_default();
+            let source = binding
+                .as_ref()
+                .map(|binding| emit_optional_comm_item(binding.symbolic_source.as_deref(), data_items))
+                .unwrap_or_else(null_comm_arg);
             out.push_str(&format!(
-                "{pad}{{ uint32_t _rc = cobol_comm_disable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len});\n",
+                "{pad}{{ uint32_t _rc = cobol_comm_disable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
                 emit_comm_mode(mode),
-                if *terminal { 1 } else { 0 }
+                if *terminal { 1 } else { 0 },
+                selectors.queue_ptr,
+                selectors.queue_len,
+                selectors.sub1_ptr,
+                selectors.sub1_len,
+                selectors.sub2_ptr,
+                selectors.sub2_len,
+                selectors.sub3_ptr,
+                selectors.sub3_len,
+                source.0,
+                source.1
             ));
             emit_comm_status_updates(
                 out,
@@ -1829,6 +1926,27 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 ("NULL".to_string(), "0".to_string())
             };
+            let binding = ctx.communication_binding(&c_target);
+            let effective_len = binding
+                .as_ref()
+                .and_then(|binding| binding.text_length.as_ref())
+                .map(|name| emit_numeric_expr_for_var(name, data_items))
+                .unwrap_or_else(|| c_from_len.clone());
+            let (dest_arg, dest_table_count, dest_count_expr, error_key_arg) = binding
+                .as_ref()
+                .map(|binding| {
+                    (
+                        emit_optional_comm_item(binding.destination.as_deref(), data_items),
+                        binding.destination_table_count.unwrap_or(0),
+                        binding
+                            .destination_count
+                            .as_ref()
+                            .map(|name| emit_numeric_expr_for_var(name, data_items))
+                            .unwrap_or_else(|| "0".to_string()),
+                        emit_optional_comm_item(binding.error_key.as_deref(), data_items),
+                    )
+                })
+                .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
             let (option_kind, option_value) = match with {
                 Some(cobol_hir::HirSendOption::Emi) => ("1".to_string(), "0".to_string()),
                 Some(cobol_hir::HirSendOption::Egi) => ("2".to_string(), "0".to_string()),
@@ -1839,9 +1957,15 @@ pub(crate) fn emit_statement_with_ctx(
                 None => ("0".to_string(), "0".to_string()),
             };
             out.push_str(&format!(
-                "{pad}{{ uint32_t _rc = cobol_comm_send((const uint8_t*)\"{c_target}\", {}, {c_from_ptr}, {c_from_len}, {option_kind}, {option_value}, {});\n",
+                "{pad}{{ uint32_t _rc = cobol_comm_send((const uint8_t*)\"{c_target}\", {}, {c_from_ptr}, {c_from_len}, {effective_len}, {option_kind}, {option_value}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
-                if *replacing_line { 1 } else { 0 }
+                if *replacing_line { 1 } else { 0 },
+                dest_arg.0,
+                dest_arg.1,
+                dest_count_expr,
+                dest_table_count,
+                error_key_arg.0,
+                error_key_arg.1
             ));
             emit_comm_status_updates(
                 out,
@@ -1863,9 +1987,22 @@ pub(crate) fn emit_statement_with_ctx(
             let c_into = sanitize_name(into);
             let into_ptr = c_ptr_expr(&c_into, data_items);
             let into_len = find_data_item_size(&c_into, data_items);
+            let binding = ctx.communication_binding(&c_target);
+            let selectors = binding
+                .as_ref()
+                .map(|binding| emit_comm_selectors(binding, data_items))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "{pad}{{ uint32_t _text_len = 0; uint32_t _rc = cobol_comm_receive((const uint8_t*)\"{c_target}\", {}, {into_ptr}, {into_len}, &_text_len);\n",
-                c_target.len()
+                "{pad}{{ uint32_t _text_len = 0; uint32_t _rc = cobol_comm_receive((const uint8_t*)\"{c_target}\", {}, (uint8_t*){into_ptr}, {into_len}, &_text_len, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                c_target.len(),
+                selectors.queue_ptr,
+                selectors.queue_len,
+                selectors.sub1_ptr,
+                selectors.sub1_len,
+                selectors.sub2_ptr,
+                selectors.sub2_len,
+                selectors.sub3_ptr,
+                selectors.sub3_len
             ));
             emit_comm_status_updates(
                 out,
@@ -4517,17 +4654,17 @@ fn emit_comm_status_updates(
 
     if let Some(status_key) = binding.status_key {
         out.push_str(&format!(
-            "{pad}cobol_move_string((const uint8_t*)(({rc_expr}) == 0 ? \"00\" : (({rc_expr}) == 10 ? \"10\" : \"99\")), 2, (uint8_t*){}, {});\n",
+            "{pad}cobol_move_string((const uint8_t*)((({rc_expr}) == 0) ? \"00\" : (({rc_expr}) == 10 ? \"10\" : (({rc_expr}) == 20 ? \"20\" : (({rc_expr}) == 21 ? \"21\" : (({rc_expr}) == 30 ? \"30\" : (({rc_expr}) == 40 ? \"40\" : (({rc_expr}) == 60 ? \"60\" : \"99\"))))))), 2, (uint8_t*){}, {});\n",
             c_ptr_expr(&status_key, data_items),
             find_data_item_size(&status_key, data_items)
         ));
     }
     if let Some(message_count) = binding.message_count {
         out.push_str(&format!(
-            "{pad}uint32_t _count = cobol_comm_message_count((const uint8_t*)\"{c_target}\", {});\n",
+            "{pad}uint32_t _comm_count = cobol_comm_message_count((const uint8_t*)\"{c_target}\", {});\n",
             c_target.len()
         ));
-        emit_store_int(out, &message_count, "(int64_t)_count", data_items, pad);
+        emit_store_int(out, &message_count, "(int64_t)_comm_count", data_items, pad);
     }
     if let (Some(text_length), Some(text_len_expr)) = (binding.text_length, text_len_expr) {
         emit_store_int(
@@ -4547,7 +4684,7 @@ fn emit_comm_status_updates(
     }
     if let Some(error_key) = binding.error_key {
         out.push_str(&format!(
-            "{pad}cobol_move_string((const uint8_t*)((({rc_expr}) != 0 && ({rc_expr}) != 10) ? \"1\" : \"0\"), 1, (uint8_t*){}, {});\n",
+            "{pad}if (({rc_expr}) != 20) cobol_move_string((const uint8_t*)((({rc_expr}) != 0 && ({rc_expr}) != 10) ? \"1\" : \"0\"), 1, (uint8_t*){}, {});\n",
             c_ptr_expr(&error_key, data_items),
             find_data_item_size(&error_key, data_items)
         ));
@@ -4561,6 +4698,68 @@ fn emit_comm_status_updates(
     }
     if let Some(destination_count) = binding.destination_count {
         emit_store_int(out, &destination_count, "0", data_items, pad);
+    }
+}
+
+#[derive(Default)]
+struct CommSelectors {
+    queue_ptr: String,
+    queue_len: String,
+    sub1_ptr: String,
+    sub1_len: String,
+    sub2_ptr: String,
+    sub2_len: String,
+    sub3_ptr: String,
+    sub3_len: String,
+}
+
+fn null_comm_arg() -> (String, String) {
+    ("NULL".to_string(), "0".to_string())
+}
+
+fn emit_optional_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -> (String, String) {
+    name.map(|name| {
+        (
+            format!("(const uint8_t*){}", c_ptr_expr(name, data_items)),
+            find_data_item_size(name, data_items).to_string(),
+        )
+    })
+    .unwrap_or_else(null_comm_arg)
+}
+
+fn emit_comm_selectors(binding: &CommunicationBinding, data_items: &[HirDataItem]) -> CommSelectors {
+    let (queue_ptr, queue_len) = emit_optional_comm_item(binding.symbolic_queue.as_deref(), data_items);
+    let (sub1_ptr, sub1_len) =
+        emit_optional_comm_item(binding.symbolic_sub_queue_1.as_deref(), data_items);
+    let (sub2_ptr, sub2_len) =
+        emit_optional_comm_item(binding.symbolic_sub_queue_2.as_deref(), data_items);
+    let (sub3_ptr, sub3_len) =
+        emit_optional_comm_item(binding.symbolic_sub_queue_3.as_deref(), data_items);
+    CommSelectors {
+        queue_ptr,
+        queue_len,
+        sub1_ptr,
+        sub1_len,
+        sub2_ptr,
+        sub2_len,
+        sub3_ptr,
+        sub3_len,
+    }
+}
+
+fn emit_numeric_expr_for_var(name: &str, data_items: &[HirDataItem]) -> String {
+    let size = grp_display_size(name, data_items)
+        .or_else(|| with_active_context(|ctx| ctx.display_numeric_size(name)))
+        .unwrap_or(0);
+    if size > 0 {
+        format!(
+            "cobol_display_to_int64((const uint8_t*){}, {})",
+            display_numeric_ptr(name),
+            size
+        )
+    } else {
+        let ptr = c_ptr_expr(name, data_items);
+        format!("(*(const int64_t*){ptr})")
     }
 }
 

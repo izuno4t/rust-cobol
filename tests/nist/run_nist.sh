@@ -105,6 +105,13 @@ compute_copylib_signature() {
     printf '%s\n' "$COPYLIB_SIGNATURE"
 }
 
+compute_preprocess_signature() {
+    local src="$1"
+    printf 'source:%s\npreprocess:%s\n' \
+        "$(sha256_of_file "$src")" \
+        "$(sha256_of_file "$PREPROCESS")"
+}
+
 ccvs_summary_count() {
     local file="$1"
     local pattern="$2"
@@ -383,6 +390,9 @@ run_program() {
     local reason_file="$RESULTS_DIR/${module}/${program}.reason"
     local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
     local compile_meta="$RESULTS_DIR/${module}/${program}.compile.meta"
+    local preprocess_meta="$RESULTS_DIR/${module}/${program}.preprocess.meta"
+    local fixture_meta="$RESULTS_DIR/${module}/${program}.fixture.meta"
+    local fixture_result="$RESULTS_DIR/${module}/${program}.fixture.result"
     local program_tmpdir="$NIST_TMPROOT/${module}_${program}"
     local print_file="$program_tmpdir/P"
     local preprocessed="$module_workdir/nist_preproc_${program}.cob"
@@ -390,7 +400,7 @@ run_program() {
 
     mkdir -p "$RESULTS_DIR/$module"
     mkdir -p "$module_workdir"
-    rm -f "$status_file" "$reason_file" "$log" "$preprocessed"
+    rm -f "$status_file" "$reason_file" "$log"
 
     if [ ! -f "$src" ]; then
         echo "SKIP" > "$status_file"
@@ -400,12 +410,28 @@ run_program() {
 
     rm -rf "$program_tmpdir"
     mkdir -p "$program_tmpdir"
-    NIST_TMPDIR="$program_tmpdir" "$PREPROCESS" "$src" "$preprocessed"
+    local preprocess_key
+    preprocess_key="$(compute_preprocess_signature "$src")"
+    if [ ! -f "$preprocessed" ] || [ ! -f "$preprocess_meta" ] || \
+        [ "$(cat "$preprocess_meta")" != "$preprocess_key" ]; then
+        rm -f "$preprocessed" "$preprocess_meta" "$fixture_meta" "$fixture_result"
+        NIST_TMPDIR="$program_tmpdir" "$PREPROCESS" "$src" "$preprocessed"
+        printf '%s\n' "$preprocess_key" > "$preprocess_meta"
+    fi
     stage_nist_aliases "$program_tmpdir"
     prepare_print_file "$print_file"
 
     local missing_fixture=""
-    missing_fixture="$(find_missing_input_fixture "$preprocessed" || true)"
+    local fixture_key
+    fixture_key="preprocessed:$(sha256_of_file "$preprocessed")"
+    if [ -f "$fixture_meta" ] && [ -f "$fixture_result" ] && \
+        [ "$(cat "$fixture_meta")" = "$fixture_key" ]; then
+        missing_fixture="$(cat "$fixture_result")"
+    else
+        missing_fixture="$(find_missing_input_fixture "$preprocessed" || true)"
+        printf '%s\n' "$fixture_key" > "$fixture_meta"
+        printf '%s\n' "$missing_fixture" > "$fixture_result"
+    fi
     if [ -n "$missing_fixture" ]; then
         echo "INSPECT" > "$status_file"
         printf '%s\n' "missing-fixture" > "$reason_file"
@@ -433,12 +459,12 @@ run_program() {
 
     if [ "$compile_cache_hit" -eq 0 ]; then
         rm -f "$bin" "$compile_log" "$compile_meta"
-        if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
-            2>"$compile_log"; then
-            echo "COMPILE_ERROR" > "$status_file"
-            echo "  $program: COMPILE ERROR"
-            return
-        fi
+    if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
+        2>"$compile_log" || grep -q 'COBC-E' "$compile_log"; then
+        echo "COMPILE_ERROR" > "$status_file"
+        echo "  $program: COMPILE ERROR"
+        return
+    fi
         if [ -n "$compile_cache_key" ]; then
             printf '%s\n' "$compile_cache_key" > "$compile_meta"
         fi

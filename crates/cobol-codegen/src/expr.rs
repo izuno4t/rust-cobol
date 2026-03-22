@@ -2101,6 +2101,52 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
     }
 }
 
+fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
+    match expr {
+        HirExpr::Variable(name) => {
+            let c_name = sanitize_name(name);
+            Some(find_data_item_size(&c_name, data_items))
+        }
+        HirExpr::Subscript { variable, .. } => {
+            let c_name = sanitize_name(variable);
+            Some(find_data_item_size(&c_name, data_items))
+        }
+        HirExpr::ReferenceModification { length, variable, .. } => {
+            if let Some(len) = length {
+                if let HirExpr::Literal(HirLiteral::Integer(n)) = len.as_ref() {
+                    Some((*n).max(0) as u32)
+                } else {
+                    let c_name = sanitize_name(variable);
+                    Some(find_data_item_size(&c_name, data_items))
+                }
+            } else {
+                let c_name = sanitize_name(variable);
+                Some(find_data_item_size(&c_name, data_items))
+            }
+        }
+        HirExpr::Literal(HirLiteral::String(s)) => Some(s.len() as u32),
+        HirExpr::Literal(HirLiteral::Space)
+        | HirExpr::Literal(HirLiteral::HighValue)
+        | HirExpr::Literal(HirLiteral::LowValue)
+        | HirExpr::Literal(HirLiteral::Quote)
+        | HirExpr::Literal(HirLiteral::Zero) => Some(1),
+        HirExpr::Literal(HirLiteral::Integer(n)) => Some(n.to_string().len() as u32),
+        HirExpr::Literal(HirLiteral::Decimal(d)) => Some(d.len() as u32),
+        _ => None,
+    }
+}
+
+fn padded_numeric_literal_for_alphanumeric(expr: &HirExpr, width: u32) -> Option<String> {
+    let width = width as usize;
+    match expr {
+        HirExpr::Literal(HirLiteral::Zero) => Some(format!("{:0width$}", 0, width = width.max(1))),
+        HirExpr::Literal(HirLiteral::Integer(n)) if *n >= 0 => {
+            Some(format!("{:0width$}", n, width = width.max(1)))
+        }
+        _ => None,
+    }
+}
+
 /// Produce `(ptr_expr, len_expr)` for an alphanumeric comparison operand.
 pub(crate) fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (String, String) {
     match expr {
@@ -2263,8 +2309,30 @@ pub(crate) fn emit_condition_with_ctx(
         HirCondition::Compare { left, op, right } => {
             if is_alphanumeric_expr(left, data_items) || is_alphanumeric_expr(right, data_items) {
                 // Alphanumeric comparison via runtime function
-                let (a_ptr, a_len) = emit_alphanumeric_operand(left, data_items);
-                let (b_ptr, b_len) = emit_alphanumeric_operand(right, data_items);
+                let (a_ptr, a_len) = if is_alphanumeric_expr(left, data_items) {
+                    emit_alphanumeric_operand(left, data_items)
+                } else if let Some(width) = alphanumeric_expr_len(right, data_items) {
+                    if let Some(s) = padded_numeric_literal_for_alphanumeric(left, width) {
+                        let len = s.len();
+                        (format!("(const uint8_t*)\"{s}\""), format!("{len}"))
+                    } else {
+                        emit_alphanumeric_operand(left, data_items)
+                    }
+                } else {
+                    emit_alphanumeric_operand(left, data_items)
+                };
+                let (b_ptr, b_len) = if is_alphanumeric_expr(right, data_items) {
+                    emit_alphanumeric_operand(right, data_items)
+                } else if let Some(width) = alphanumeric_expr_len(left, data_items) {
+                    if let Some(s) = padded_numeric_literal_for_alphanumeric(right, width) {
+                        let len = s.len();
+                        (format!("(const uint8_t*)\"{s}\""), format!("{len}"))
+                    } else {
+                        emit_alphanumeric_operand(right, data_items)
+                    }
+                } else {
+                    emit_alphanumeric_operand(right, data_items)
+                };
                 let cmp = format!("cobol_compare_alphanumeric({a_ptr}, {a_len}, {b_ptr}, {b_len})");
                 let op_str = match op {
                     HirCompareOp::Eq => "== 0",

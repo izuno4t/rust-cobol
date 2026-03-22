@@ -263,17 +263,66 @@ fn lower_communication_descriptions(
     };
     data.communication
         .iter()
-        .map(|cd| crate::hir::HirCommunicationDescription {
-            name: cd.name.clone(),
-            status_key: cd.status_key.clone(),
-            message_count: cd.message_count.clone(),
-            text_length: cd.text_length.clone(),
-            end_key: cd.end_key.clone(),
-            error_key: cd.error_key.clone(),
-            symbolic_source: cd.symbolic_source.clone(),
-            destination_count: cd.destination_count.clone(),
+        .map(|cd| {
+            let mut names = Vec::new();
+            for item in &cd.data_items {
+                collect_data_item_names(item, &mut names);
+            }
+            crate::hir::HirCommunicationDescription {
+                name: cd.name.clone(),
+                symbolic_queue: cd
+                    .symbolic_queue
+                    .clone()
+                    .or_else(|| infer_comm_item_name(&names, &["QUEUE_SET"])),
+                symbolic_sub_queue_1: cd.symbolic_sub_queue_1.clone(),
+                symbolic_sub_queue_2: cd.symbolic_sub_queue_2.clone(),
+                symbolic_sub_queue_3: cd.symbolic_sub_queue_3.clone(),
+                status_key: cd
+                    .status_key
+                    .clone()
+                    .or_else(|| infer_comm_item_name(&names, &["IN_STATUS", "OUT_STATUS", "STATUS_KEY"])),
+                message_count: cd
+                    .message_count
+                    .clone()
+                    .or_else(|| infer_comm_item_name(&names, &["MSG_COUNT", "MESSAGE_COUNT"])),
+                text_length: cd
+                    .text_length
+                    .clone()
+                    .or_else(|| infer_comm_item_name(&names, &["IN_LENGTH", "OUT_LENGTH", "TEXT_LENGTH"])),
+                end_key: cd
+                    .end_key
+                    .clone()
+                    .or_else(|| infer_comm_item_name(&names, &["END_KEY"])),
+                error_key: cd.error_key.clone(),
+                symbolic_source: cd
+                    .symbolic_source
+                    .clone()
+                    .or_else(|| infer_comm_item_name(&names, &["SYM_SOURCE", "SYMBOLIC_SOURCE", "WHERE_FROM"])),
+                destination_count: cd.destination_count.clone(),
+                destination: cd.destination.clone(),
+                destination_table_count: cd.destination_table_count,
+            }
         })
         .collect()
+}
+
+fn collect_data_item_names(item: &DataItem, names: &mut Vec<SmolStr>) {
+    if let Some(name) = &item.name {
+        names.push(name.clone());
+    }
+    for child in &item.children {
+        collect_data_item_names(child, names);
+    }
+}
+
+fn infer_comm_item_name(names: &[SmolStr], candidates: &[&str]) -> Option<SmolStr> {
+    names.iter().find_map(|name| {
+        let normalized = name.replace('-', "_").to_ascii_uppercase();
+        candidates
+            .iter()
+            .any(|candidate| normalized == *candidate)
+            .then(|| name.clone())
+    })
 }
 
 /// Collect 88-level condition name information from the DATA DIVISION.
