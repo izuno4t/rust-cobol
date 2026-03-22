@@ -39,6 +39,48 @@ impl CodegenContext {
         Self::new(&program.data_items, &program.file_records)
     }
 
+    pub(crate) fn merged_with_program(parent: &CodegenContext, program: &HirProgram) -> Self {
+        let mut subscript_paths = parent.subscript_paths.clone();
+        subscript_paths.extend(build_subscript_paths(&program.data_items));
+
+        let mut file_record_map = parent.file_record_map.clone();
+        file_record_map.extend(
+            program
+                .file_records
+                .iter()
+                .map(|(f, r)| (sanitize_name(f), sanitize_name(r))),
+        );
+
+        let mut decimal_names = parent.decimal_names.clone();
+        decimal_names.extend(build_decimal_names(&program.data_items));
+
+        let mut group_names = parent.group_names.clone();
+        group_names.extend(build_group_names(&program.data_items));
+
+        let mut display_numeric_sizes = parent.display_numeric_sizes.clone();
+        display_numeric_sizes.extend(build_display_numeric_sizes(&program.data_items));
+
+        let mut group_alpha_names = parent.group_alpha_names.clone();
+        group_alpha_names.extend(build_group_alpha_names(&program.data_items));
+
+        let mut data_item_size_cache = parent.data_item_size_cache.clone();
+        data_item_size_cache.extend(build_data_item_size_cache(&program.data_items));
+
+        Self {
+            subscript_paths,
+            file_record_map,
+            decimal_names,
+            group_names,
+            display_numeric_sizes,
+            group_alpha_names,
+            data_item_size_cache,
+            in_body_context: Cell::new(false),
+            goto_label_map: RefCell::new(HashMap::new()),
+            perform_thru_counter: Cell::new(0),
+            emitted_labels: RefCell::new(HashSet::new()),
+        }
+    }
+
     pub(crate) fn new(
         data_items: &[HirDataItem],
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,

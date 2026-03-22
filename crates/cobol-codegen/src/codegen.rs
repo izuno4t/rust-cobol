@@ -362,6 +362,9 @@ pub fn generate_c(program: &HirProgram) -> String {
         let prog_name = sanitize_name(&program.name);
         out.push_str(&format!("\nvoid {prog_name}(void) {{\n"));
         out.push_str("    /* Sub-program entry point */\n");
+        if has_labels {
+            with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
+        }
         with_active_context(|ctx| ctx.set_in_body_context(true));
         for stmt in &program.body {
             emit_statement_with_ctx(
@@ -403,7 +406,7 @@ pub fn generate_c(program: &HirProgram) -> String {
 /// Emit a nested (contained) program as a callable C function.
 fn emit_nested_program(out: &mut String, program: &HirProgram) {
     let prog_name = sanitize_name(&program.name);
-    let ctx = CodegenContext::from_program(program);
+    let ctx = with_active_context(|parent| CodegenContext::merged_with_program(parent, program));
     with_pushed_context(&ctx, || {
 
     // Emit data items as function-scope statics
@@ -428,6 +431,9 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
     let fs_map = build_file_status_map(&program.file_status_vars);
     let label_map = build_body_label_map(&program.body);
     let has_decl = !program.declaratives.is_empty();
+    if !label_map.is_empty() {
+        with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
+    }
 
     // Generate the param signature based on USING params
     let param_sig = if program.using_params.is_empty() {
@@ -462,7 +468,6 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
     with_active_context(|ctx| ctx.set_in_body_context(false));
 
     if !label_map.is_empty() {
-        with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
         out.push_str("_goto_dispatch:\n");
         out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
         out.push_str("      switch(_t) {\n");

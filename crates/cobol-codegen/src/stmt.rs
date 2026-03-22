@@ -2602,11 +2602,15 @@ pub(crate) fn emit_move_to(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
+    let target_c_name = sanitize_name(target_name);
     let target_type = find_data_item(target_name.as_str(), data_items).map(|item| &item.data_type);
-    let is_target_alpha = matches!(target_type, Some(HirType::Alphanumeric { .. }));
-    let is_target_group = matches!(target_type, Some(HirType::Group { .. }));
+    let inherited_target_alpha = with_active_context(|ctx| ctx.is_group_alpha_name(&target_c_name));
+    let inherited_target_group = with_active_context(|ctx| ctx.is_group_name(&target_c_name));
+    let is_target_alpha = matches!(target_type, Some(HirType::Alphanumeric { .. })) || inherited_target_alpha;
+    let is_target_group = matches!(target_type, Some(HirType::Group { .. })) || inherited_target_group;
     let is_target_national = matches!(target_type, Some(HirType::National { .. }));
-    let is_target_decimal = target_type.is_some_and(needs_decimal);
+    let is_target_decimal =
+        target_type.is_some_and(needs_decimal) || with_active_context(|ctx| ctx.is_decimal_name(&target_c_name));
 
     // NATIONAL target: convert source to national
     if is_target_national {
@@ -3047,7 +3051,10 @@ pub(crate) fn emit_move_to(
                     "MAX" | "MIN" => {
                         let has_alpha = args
                             .iter()
-                            .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                            .any(|a| {
+                                matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                                    || is_alphanumeric_expr(a, data_items)
+                            });
                         if has_alpha && is_target_alpha {
                             let func = if upper_fn == "MAX" {
                                 "cobol_func_max_alpha"
@@ -3704,10 +3711,14 @@ pub(crate) fn emit_expr_as_numeric_with_ctx(expr: &HirExpr, ctx: &CodegenContext
     let emit_expr = |expr| super::emit_expr_with_ctx(expr, ctx);
     let emit_expr_as_numeric = |expr| super::emit_expr_as_numeric_with_ctx(expr, ctx);
     match expr {
-        HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
-            let is_dec = with_active_context(|ctx| ctx.is_decimal_name(&c_name));
-            let is_grp = with_active_context(|ctx| ctx.is_group_name(&c_name));
+        HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
+            let c_name = match expr {
+                HirExpr::Variable(_) => sanitize_name(name),
+                _ => emit_expr(expr),
+            };
+            let base_name = sanitize_name(name);
+            let is_dec = with_active_context(|ctx| ctx.is_decimal_name(&base_name));
+            let is_grp = with_active_context(|ctx| ctx.is_group_name(&base_name));
             if is_dec {
                 format!("cobol_decimal_to_int64(&{c_name})")
             } else if is_grp {
@@ -3715,12 +3726,8 @@ pub(crate) fn emit_expr_as_numeric_with_ctx(expr: &HirExpr, ctx: &CodegenContext
                 // (groups used in arithmetic are unusual; default to 0).
                 "((int64_t)0)".to_string()
             } else {
-                let disp_size = with_active_context(|ctx| {
-                    ctx.display_numeric_size(&c_name).or_else(|| {
-                        c_name
-                            .rfind("__")
-                            .and_then(|pos| ctx.display_numeric_size(&c_name[pos + 2..]))
-                    })
+                let disp_size = grp_display_size(&c_name, &[]).or_else(|| {
+                    with_active_context(|ctx| ctx.display_numeric_size(&base_name))
                 });
                 if let Some(size) = disp_size {
                     format!(
@@ -3764,23 +3771,34 @@ pub(crate) fn emit_expr_as_double_with_ctx(expr: &HirExpr, ctx: &CodegenContext)
     let emit_expr_as_numeric = |expr| super::emit_expr_as_numeric_with_ctx(expr, ctx);
     let emit_expr_as_double = |expr| super::emit_expr_as_double_with_ctx(expr, ctx);
     match expr {
-        HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
-            let is_dec = with_active_context(|ctx| ctx.is_decimal_name(&c_name));
+        HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+            let c_name = super::emit_expr_with_ctx(expr, ctx);
+            let var_name = expr_var_name(expr);
+            let base_name = sanitize_name(var_name);
+            let is_dec = !base_name.is_empty() && ctx.is_decimal_name(&base_name);
             if is_dec {
                 format!("cobol_decimal_to_double(&{c_name})")
+            } else if !base_name.is_empty() && ctx.is_group_name(&base_name) {
+                let size = ctx.data_item_size(&base_name).unwrap_or(0);
+                format!("(double)cobol_func_numval((const uint8_t*)&{c_name}, {size})")
             } else {
-                let disp_size = with_active_context(|ctx| {
-                    ctx.display_numeric_size(&c_name).or_else(|| {
-                        c_name
-                            .rfind("__")
-                            .and_then(|pos| ctx.display_numeric_size(&c_name[pos + 2..]))
-                    })
+                let disp_size = grp_display_size(&c_name, &[]).or_else(|| {
+                    if base_name.is_empty() {
+                        None
+                    } else {
+                        ctx.display_numeric_size(&base_name)
+                    }
                 });
                 if let Some(size) = disp_size {
                     format!(
                         "(double)cobol_display_to_int64((const uint8_t*){c_name}, {size})"
                     )
+                } else if !base_name.is_empty()
+                    && (c_name.contains('[') || c_name.contains(".members._m_"))
+                    && ctx.data_item_size(&base_name).is_some()
+                {
+                    let size = ctx.data_item_size(&base_name).unwrap_or(0);
+                    format!("(double)cobol_func_numval((const uint8_t*){c_name}, {size})")
                 } else {
                     format!("(double){c_name}")
                 }

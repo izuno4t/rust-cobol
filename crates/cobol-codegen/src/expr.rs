@@ -123,7 +123,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                 "MAX" => {
                     let has_alpha = args
                         .iter()
-                        .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                        .any(|a| {
+                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                                || is_alphanumeric_expr(a, &[])
+                        });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_max_min(args, "cobol_func_max_alpha")
                     } else if c_args.len() >= 2 {
@@ -140,7 +143,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                 "MIN" => {
                     let has_alpha = args
                         .iter()
-                        .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                        .any(|a| {
+                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                                || is_alphanumeric_expr(a, &[])
+                        });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_max_min(args, "cobol_func_min_alpha")
                     } else if c_args.len() >= 2 {
@@ -347,22 +353,26 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "CEILING" | "CEIL" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_ceiling((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_ceiling({d})")
                     } else {
                         "0".to_string()
                     }
                 }
                 "FLOOR" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_floor((double){arg})")
+                    if let Some(arg) = args.first() {
+                        let d = emit_expr_as_double(arg);
+                        format!("cobol_func_floor({d})")
                     } else {
                         "0".to_string()
                     }
                 }
                 "ANNUITY" => {
-                    if c_args.len() >= 2 {
-                        format!("cobol_func_annuity((double){}, {})", c_args[0], c_args[1])
+                    if args.len() >= 2 {
+                        let rate = emit_expr_as_double(&args[0]);
+                        let periods = emit_expr_as_numeric(&args[1]);
+                        format!("cobol_func_annuity({rate}, {periods})")
                     } else {
                         "0.0".to_string()
                     }
@@ -378,86 +388,88 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "MEAN" => {
-                    let arg_list = c_args
+                    let arg_list = args
                         .iter()
-                        .map(|a| format!("(double){a}"))
+                        .map(|a| emit_expr_as_double(a))
                         .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_mean(_mv, {}); }})",
-                        c_args.len()
+                        args.len()
                     )
                 }
                 "MEDIAN" => {
-                    let arg_list = c_args
+                    let arg_list = args
                         .iter()
-                        .map(|a| format!("(double){a}"))
+                        .map(|a| emit_expr_as_double(a))
                         .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_median(_mv, {}); }})",
-                        c_args.len()
+                        args.len()
                     )
                 }
                 "RANGE" => {
-                    let arg_list = c_args
+                    let arg_list = args
                         .iter()
-                        .map(|a| format!("(double){a}"))
+                        .map(|a| emit_expr_as_double(a))
                         .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _rv[] = {{{joined}}}; \
                          cobol_func_range(_rv, {}); }})",
-                        c_args.len()
+                        args.len()
                     )
                 }
                 "MIDRANGE" => {
-                    let arg_list = c_args
+                    let arg_list = args
                         .iter()
-                        .map(|a| format!("(double){a}"))
+                        .map(|a| emit_expr_as_double(a))
                         .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_midrange(_mv, {}); }})",
-                        c_args.len()
+                        args.len()
                     )
                 }
                 "STANDARD-DEVIATION" => {
-                    let arg_list = c_args
+                    let arg_list = args
                         .iter()
-                        .map(|a| format!("(double){a}"))
+                        .map(|a| emit_expr_as_double(a))
                         .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_standard_deviation(_mv, {}); }})",
-                        c_args.len()
+                        args.len()
                     )
                 }
                 "VARIANCE" => {
-                    let arg_list = c_args
+                    let arg_list = args
                         .iter()
-                        .map(|a| format!("(double){a}"))
+                        .map(|a| emit_expr_as_double(a))
                         .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_variance(_mv, {}); }})",
-                        c_args.len()
+                        args.len()
                     )
                 }
                 "PRESENT-VALUE" => {
                     if c_args.len() >= 2 {
-                        let rate = &c_args[0];
-                        let rest: Vec<_> =
-                            c_args[1..].iter().map(|a| format!("(double){a}")).collect();
+                        let rate = emit_expr_as_double(&args[0]);
+                        let rest: Vec<_> = args[1..]
+                            .iter()
+                            .map(|a| emit_expr_as_double(a))
+                            .collect();
                         let joined = rest.join(", ");
                         format!(
                             "({{ double _pv[] = {{{joined}}}; \
-                             cobol_func_present_value((double){rate}, _pv, {}); }})",
+                             cobol_func_present_value({rate}, _pv, {}); }})",
                             rest.len()
                         )
                     } else {
@@ -465,21 +477,24 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "SUM" => {
-                    let arg_list = c_args
+                    let arg_list = args
                         .iter()
-                        .map(|a| format!("(double){a}"))
+                        .map(|a| emit_expr_as_double(a))
                         .collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _sv[] = {{{joined}}}; \
                          cobol_func_sum_float(_sv, {}); }})",
-                        c_args.len()
+                        args.len()
                     )
                 }
                 "ORD-MAX" => {
                     let has_alpha = args
                         .iter()
-                        .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                        .any(|a| {
+                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                                || is_alphanumeric_expr(a, &[])
+                        });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_ord_max_min(args, "cobol_func_ord_max_alpha")
                     } else {
@@ -494,7 +509,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                 "ORD-MIN" => {
                     let has_alpha = args
                         .iter()
-                        .any(|a| matches!(a, HirExpr::Literal(HirLiteral::String(_))));
+                        .any(|a| {
+                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                                || is_alphanumeric_expr(a, &[])
+                        });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_ord_max_min(args, "cobol_func_ord_min_alpha")
                     } else {
@@ -919,13 +937,15 @@ pub(crate) fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem
                 format!("cobol_func_numval((const uint8_t*){c}, {size})")
             } else {
                 // Check if this is a display numeric stored as char[] in a group
+                let c = emit_expr(expr);
                 let var_name = expr_var_name(expr);
                 let c_var = sanitize_name(var_name);
-                if let Some(disp_size) = grp_display_size(&c_var, data_items) {
-                    let c = emit_expr(expr);
+                if let Some(disp_size) =
+                    grp_display_size(&c, data_items).or_else(|| grp_display_size(&c_var, data_items))
+                {
                     format!("cobol_display_to_int64((const uint8_t*){c}, {disp_size})")
                 } else {
-                    emit_expr(expr)
+                    c
                 }
             }
         }
@@ -1967,6 +1987,16 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
     match expr {
         HirExpr::Variable(name) => {
             if let Some(item) = find_data_item(name.as_str(), data_items) {
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. }
+                )
+            } else {
+                false
+            }
+        }
+        HirExpr::Subscript { variable, .. } => {
+            if let Some(item) = find_data_item(variable.as_str(), data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
