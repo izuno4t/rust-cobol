@@ -161,7 +161,6 @@ impl Parser {
 
                 // Check for next section (section-name SECTION)
                 if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
-                    && !self.at_statement_start()
                     && self.peek(1).kind == TokenKind::Section
                 {
                     break;
@@ -267,6 +266,7 @@ impl Parser {
             UseStatement::BeforeReporting { report_group }
         } else if self.check(TokenKind::ForKw) {
             // USE FOR DEBUGGING ON debug-items
+            let warning_span = self.span();
             self.advance(); // FOR
             if self.check_identifier("DEBUGGING") {
                 self.advance();
@@ -279,6 +279,10 @@ impl Parser {
                 let name = self.expect_identifier()?;
                 debug_items.push(name);
             }
+            self.warning_at(
+                warning_span,
+                "USE FOR DEBUGGING is an obsolete or non-conforming debugging feature",
+            );
             UseStatement::ForDebugging { debug_items }
         } else {
             // Fallback: try AFTER EXCEPTION
@@ -301,9 +305,7 @@ impl Parser {
 
         while !self.at_eof() && !self.at_end_program() && !self.at_identification_division() {
             // Check for paragraph or section header
-            if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
-                && !self.at_statement_start()
-            {
+            if self.check(TokenKind::Identifier) || self.current().kind.is_keyword() {
                 if self.peek(1).kind == TokenKind::Section {
                     // Section header: flush current paragraph
                     if current_para_name.is_some() || !current_sentences.is_empty() {
@@ -334,7 +336,6 @@ impl Parser {
                         && !self.at_identification_division()
                     {
                         if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
-                            && !self.at_statement_start()
                             && self.peek(1).kind == TokenKind::Section
                         {
                             break;

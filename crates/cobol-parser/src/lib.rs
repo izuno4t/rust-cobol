@@ -1109,6 +1109,33 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_parse_declaratives_with_keyword_section_name() {
+        let source = r#"
+            IDENTIFICATION DIVISION.
+            PROGRAM-ID. DECLDBG.
+            PROCEDURE DIVISION.
+            DECLARATIVES.
+            GO-TO SECTION.
+                USE FOR DEBUGGING ON GO-TO-TEST.
+            DBG-PARA.
+                DISPLAY "TRACE".
+            END DECLARATIVES.
+            MAIN-PARA.
+                STOP RUN.
+        "#;
+        let program = parse_free(source).expect("parse failed");
+        let proc = program.procedure.expect("no procedure division");
+        assert_eq!(proc.declaratives.len(), 1);
+        assert_eq!(proc.declaratives[0].name.to_ascii_uppercase(), "GO-TO");
+        match &proc.declaratives[0].use_statement {
+            cobol_ast::proc_div::UseStatement::ForDebugging { debug_items } => {
+                assert_eq!(debug_items, &vec![smol_str::SmolStr::new("GO-TO-TEST")]);
+            }
+            other => panic!("expected ForDebugging, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_parse_evaluate_also() {
         let source = r#"
             IDENTIFICATION DIVISION.

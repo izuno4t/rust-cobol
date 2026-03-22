@@ -220,6 +220,11 @@ impl Parser {
         report_error(&mut self.reporter, span, msg);
     }
 
+    /// Report a warning at the given span.
+    pub(crate) fn warning_at(&mut self, span: Span, msg: &str) {
+        crate::error::report_warning(&mut self.reporter, span, msg);
+    }
+
     /// Returns the text of the current token as a SmolStr.
     pub(crate) fn current_text(&self) -> SmolStr {
         self.current().text.clone()

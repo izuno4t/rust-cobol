@@ -97,7 +97,7 @@ pub fn generate_c(program: &HirProgram) -> String {
         .map(|k| sanitize_name(k))
         .collect();
     emit_data_items(&mut out, &program.data_items, &top_level_fd_aliases);
-    emit_fd_alias_macros(&mut out, &program.fd_record_aliases);
+    emit_fd_alias_macros(&mut out, &program.data_items, &program.fd_record_aliases);
     cg_timing!("emit_data_items", t_data);
 
     // COBOL 2002+: Emit class definitions (struct + vtable)
@@ -438,7 +438,7 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
         .map(|k| sanitize_name(k))
         .collect();
     emit_data_items(out, &program.data_items, &nested_fd_aliases);
-    emit_fd_alias_macros(out, &program.fd_record_aliases);
+    emit_fd_alias_macros(out, &program.data_items, &program.fd_record_aliases);
 
     for nested in &program.nested_programs {
         let nested_name = sanitize_name(&nested.name);

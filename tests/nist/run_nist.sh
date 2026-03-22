@@ -162,6 +162,44 @@ ccvs_footer_error_count() {
     fi
 }
 
+expected_flag_count() {
+    local src="$1"
+    local value
+    value=$(
+        awk '
+            /TOTAL NUMBER OF FLAGS EXPECTED[[:space:]]*=/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[0-9]+\.?$/) {
+                        gsub(/\./, "", $i)
+                        print $i + 0
+                        exit
+                    }
+                }
+            }
+        ' "$src" 2>/dev/null | tail -n 1
+    )
+    if [ -n "$value" ]; then
+        printf '%s\n' "$value"
+    else
+        printf '0\n'
+    fi
+}
+
+compile_warning_count() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        printf '0\n'
+        return
+    fi
+    local count
+    count="$(grep -c 'COBC-W' "$file" 2>/dev/null || true)"
+    if [ -n "$count" ]; then
+        printf '%s\n' "$count"
+    else
+        printf '0\n'
+    fi
+}
+
 run_custom_judge() {
     local module="$1"
     local program="$2"
@@ -570,6 +608,18 @@ run_program() {
             no-output|subprogram-only)
                 echo "PASS" > "$status_file"
                 echo "  $program: PASS (completed without report output)"
+                ;;
+            dummy-display)
+                local expected_flags warning_count
+                expected_flags="$(expected_flag_count "$src")"
+                warning_count="$(compile_warning_count "$compile_log")"
+                if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
+                    echo "PASS" > "$status_file"
+                    echo "  $program: PASS ($warning_count warning flag(s) matched expected count)"
+                else
+                    echo "FAIL" > "$status_file"
+                    echo "  $program: FAIL (expected $expected_flags warning flag(s), got $warning_count)"
+                fi
                 ;;
             *)
                 echo "INSPECT" > "$status_file"

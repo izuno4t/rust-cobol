@@ -21,3 +21,9 @@ pub(crate) fn report_expected(
         Diagnostic::error("COBC-E002", msg).with_label(span, format!("expected {} here", expected));
     reporter.report(diag);
 }
+
+/// Report a parse warning with span information.
+pub(crate) fn report_warning(reporter: &mut DiagnosticReporter, span: Span, msg: &str) {
+    let diag = Diagnostic::warning("COBC-W001", msg).with_span(span);
+    reporter.report(diag);
+}

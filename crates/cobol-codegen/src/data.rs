@@ -2,18 +2,55 @@ use super::*;
 
 pub(crate) fn emit_fd_alias_macros(
     out: &mut String,
+    items: &[HirDataItem],
     fd_record_aliases: &std::collections::HashMap<smol_str::SmolStr, smol_str::SmolStr>,
 ) {
     if fd_record_aliases.is_empty() {
         return;
     }
+    let group_member_names = collect_group_member_names(items);
+    let duplicate_member_names = collect_duplicate_member_names(items, &group_member_names);
+    let mut emitted_typedefs = HashSet::new();
     out.push_str("/* FD record aliases (shared record area) */\n");
     for (alias, primary) in fd_record_aliases {
         let c_alias = sanitize_name(alias);
         let c_primary = sanitize_name(primary);
-        out.push_str(&format!(
-            "#define {c_alias} {c_primary} /* FD shared record area */\n"
-        ));
+        let Some(alias_item) = items.iter().find(|item| item.name.eq_ignore_ascii_case(alias)) else {
+            out.push_str(&format!(
+                "#define {c_alias} {c_primary} /* FD shared record area */\n"
+            ));
+            continue;
+        };
+        if let HirType::Group { members, .. } = &alias_item.data_type {
+            emit_group_typedefs(out, &c_alias, members, &mut emitted_typedefs);
+            let td = group_typedef_name(&c_alias, members);
+            let union_td = format!("_fd_alias_{c_alias}_t");
+            out.push_str(&format!(
+                "typedef union {{ {td} members; uint8_t _bytes[sizeof({td})]; }} {union_td};\n"
+            ));
+            out.push_str(&format!(
+                "#define {c_alias} (*({union_td}*)&{c_primary}) /* FD shared record area */\n"
+            ));
+            emit_group_macros(
+                out,
+                members,
+                std::slice::from_ref(&c_alias),
+                &format!("{c_alias}.members"),
+                &duplicate_member_names,
+            );
+            emit_group_redefines(
+                out,
+                members,
+                std::slice::from_ref(&c_alias),
+                &format!("{c_alias}.members"),
+                &duplicate_member_names,
+                &mut emitted_typedefs,
+            );
+        } else {
+            out.push_str(&format!(
+                "#define {c_alias} {c_primary} /* FD shared record area */\n"
+            ));
+        }
     }
     out.push('\n');
 }
