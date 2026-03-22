@@ -45,6 +45,9 @@ pub(crate) fn collect_group_member_names(items: &[HirDataItem]) -> BTreeSet<Stri
 pub(crate) fn collect_member_names_recursive(members: &[HirDataItem], names: &mut BTreeSet<String>) {
     for member in members {
         names.insert(sanitize_name(&member.name));
+        if member.renames.is_some() {
+            continue;
+        }
         if let HirType::Group {
             members: sub_members,
             ..
@@ -53,6 +56,27 @@ pub(crate) fn collect_member_names_recursive(members: &[HirDataItem], names: &mu
             collect_member_names_recursive(sub_members, names);
         }
     }
+}
+
+pub(crate) fn find_group_member_by_sanitized_name<'a>(
+    c_name: &str,
+    members: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    for member in members {
+        if sanitize_name(&member.name) == c_name {
+            return Some(member);
+        }
+        if let HirType::Group {
+            members: sub_members,
+            ..
+        } = &member.data_type
+        {
+            if let Some(found) = find_group_member_by_sanitized_name(c_name, sub_members) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 /// Collect member names that appear in more than one top-level group.
@@ -132,7 +156,7 @@ pub(crate) fn emit_single_data_item(
                     out,
                     members,
                     std::slice::from_ref(&c_name),
-                    &c_redef,
+                    &format!("(*({td}*)&{c_redef})"),
                     duplicate_member_names,
                     emitted_typedefs,
                 );
@@ -274,7 +298,7 @@ pub(crate) fn emit_group_typedefs(
     out.push_str("typedef struct {\n");
     let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
-        if member.redefines.is_some() {
+        if member.redefines.is_some() || member.renames.is_some() {
             continue; // REDEFINES handled separately
         }
         emit_group_struct_member(out, member, &mut member_name_counts);
@@ -382,6 +406,29 @@ pub(crate) fn emit_group_macros(
 ) {
     let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
+        if let Some((from, thru)) = &member.renames {
+            let c_name = sanitize_name(&member.name);
+            let c_from = sanitize_name(from);
+            let alias_expr = match find_group_member_by_sanitized_name(&c_from, members) {
+                Some(HirDataItem {
+                    data_type: HirType::Group { .. },
+                    ..
+                }) => format!("((char*)&{c_from})"),
+                Some(_) if thru.is_some() => format!("((char*)&{c_from})"),
+                Some(_) => c_from.clone(),
+                None if thru.is_some() => format!("((char*)&{c_from})"),
+                None => c_from.clone(),
+            };
+            if member.name != "FILLER" && member.name != "PIC" {
+                out.push_str(&format!("#define {c_name} {alias_expr} /* RENAMES {c_from} */\n"));
+            }
+            for qualifier in qualifier_names {
+                out.push_str(&format!(
+                    "#define {qualifier}__{c_name} {alias_expr} /* RENAMES {c_from} */\n"
+                ));
+            }
+            continue;
+        }
         if member.redefines.is_some() {
             continue;
         }
@@ -447,6 +494,9 @@ pub(crate) fn emit_group_redefines(
     emitted_typedefs: &mut HashSet<String>,
 ) {
     for member in members {
+        if member.renames.is_some() {
+            continue;
+        }
         if let Some(ref redef_name) = member.redefines {
             let c_name = sanitize_name(&member.name);
             let c_redef = sanitize_name(redef_name);
@@ -612,6 +662,9 @@ pub(crate) fn emit_single_data_init_with_prefix(
     } else {
         base_c_name.clone()
     };
+    if item.renames.is_some() {
+        return;
+    }
     if let HirType::Group { members, .. } = &item.data_type {
         // If this group itself has OCCURS, zero-init the entire array of structs
         // rather than recursing into members (which would fail because we can't
@@ -631,7 +684,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
         let mut member_name_counts: HashMap<String, u32> = HashMap::new();
         for member in members {
             // Skip REDEFINES members — they share memory with the redefined item
-            if member.redefines.is_some() {
+            if member.redefines.is_some() || member.renames.is_some() {
                 continue;
             }
             let member_base = sanitize_name(&member.name);
@@ -775,7 +828,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
                     ..
                 },
                 HirLiteral::Integer(n),
-            ) if group_prefix.is_some() => {
+            ) if group_prefix.is_some() || c_name.contains("__") || c_name.contains("._m_") => {
                 out.push_str(&format!(
                     "    cobol_store_numeric_display({n}, \
                      (uint8_t*)&({c_name}), {size});\n"
@@ -788,7 +841,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
                     ..
                 },
                 HirLiteral::Zero,
-            ) if group_prefix.is_some() => {
+            ) if group_prefix.is_some() || c_name.contains("__") || c_name.contains("._m_") => {
                 out.push_str(&format!(
                     "    cobol_store_numeric_display(0, \
                      (uint8_t*)&({c_name}), {size});\n"
@@ -858,7 +911,7 @@ pub(crate) fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &
             size,
             decimal_places: 0,
             ..
-        } if in_group => {
+        } if in_group || c_name.contains("__") || c_name.contains("._m_") => {
             out.push_str(&format!(
                 "    cobol_store_numeric_display(0, (uint8_t*)&({c_name}), {size});\n"
             ));

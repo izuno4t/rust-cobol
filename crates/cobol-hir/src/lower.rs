@@ -258,36 +258,38 @@ fn collect_condition_names(data: &DataDivision) -> HashMap<SmolStr, ConditionNam
     let mut map = HashMap::new();
     for fd in &data.file_section {
         for item in &fd.items {
-            collect_condition_names_from_item(item, &mut map);
+            collect_condition_names_from_item(item, None, &mut map);
         }
     }
     for item in &data.working_storage {
-        collect_condition_names_from_item(item, &mut map);
+        collect_condition_names_from_item(item, None, &mut map);
     }
     for item in &data.local_storage {
-        collect_condition_names_from_item(item, &mut map);
+        collect_condition_names_from_item(item, None, &mut map);
     }
     for item in &data.linkage {
-        collect_condition_names_from_item(item, &mut map);
+        collect_condition_names_from_item(item, None, &mut map);
     }
     for item in &data.screen {
-        collect_condition_names_from_item(item, &mut map);
+        collect_condition_names_from_item(item, None, &mut map);
     }
     for item in &data.communication {
-        collect_condition_names_from_item(item, &mut map);
+        collect_condition_names_from_item(item, None, &mut map);
     }
     for item in &data.report {
-        collect_condition_names_from_item(item, &mut map);
+        collect_condition_names_from_item(item, None, &mut map);
     }
     map
 }
 
 fn collect_condition_names_from_item(
     item: &DataItem,
+    inherited_parent_name: Option<&SmolStr>,
     map: &mut HashMap<SmolStr, ConditionNameInfo>,
 ) {
+    let current_parent_name = item.name.as_ref().or(inherited_parent_name);
     // Check children for 88-level items that belong to this parent
-    if let Some(parent_name) = &item.name {
+    if let Some(parent_name) = current_parent_name {
         for child in &item.children {
             if child.level == 88 {
                 if let Some(cond_name) = &child.name {
@@ -322,7 +324,7 @@ fn collect_condition_names_from_item(
     // Recurse into non-88 children
     for child in &item.children {
         if child.level != 88 {
-            collect_condition_names_from_item(child, map);
+            collect_condition_names_from_item(child, current_parent_name, map);
         }
     }
 }
@@ -518,6 +520,78 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
 }
 
 fn determine_hir_type(item: &DataItem) -> HirType {
+    if item.picture.is_none() && !item.children.is_empty() {
+        // Group items stay groups even when USAGE is specified on the group.
+        // The usage affects descendants semantically, but collapsing the
+        // group into a scalar loses nested OCCURS structure needed by codegen.
+        let mut members = Vec::new();
+        for child in &item.children {
+            if child.level == 88 {
+                continue;
+            }
+            let member_name = child
+                .name
+                .clone()
+                .unwrap_or_else(|| SmolStr::from("FILLER"));
+            let data_type = determine_hir_type(child);
+            let initial_value = child.value.as_ref().map(lower_value_clause);
+            let occurs = child.occurs.as_ref().map(|o| o.max);
+            let renames = child
+                .renames
+                .as_ref()
+                .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
+            let indexed_by_child = child
+                .occurs
+                .as_ref()
+                .map(|o| o.indexed_by.clone())
+                .unwrap_or_default();
+            members.push(HirDataItem {
+                name: member_name,
+                data_type,
+                initial_value,
+                occurs,
+                indexed_by: indexed_by_child,
+                redefines: child.redefines.clone(),
+                renames,
+                screen_info: None,
+                span: child.span,
+            });
+        }
+        let total: u32 = members
+            .iter()
+            .filter(|m| m.redefines.is_none())
+            .map(|m| {
+                let element_size = match &m.data_type {
+                    HirType::Alphanumeric { size } => *size,
+                    HirType::Numeric { size, .. } => *size,
+                    HirType::Group { size, .. } => *size,
+                    HirType::Comp3 { size, .. } => (*size + 2) / 2,
+                    HirType::Binary { size } => {
+                        if *size <= 4 {
+                            2
+                        } else if *size <= 9 {
+                            4
+                        } else {
+                            8
+                        }
+                    }
+                    HirType::Index => 4,
+                    HirType::Pointer => 8,
+                    HirType::Boolean => 1,
+                    HirType::FloatShort => 4,
+                    HirType::FloatLong => 8,
+                    HirType::FloatExtended => 16,
+                    HirType::National { size } => *size * 2,
+                };
+                element_size * m.occurs.unwrap_or(1)
+            })
+            .sum();
+        return HirType::Group {
+            members,
+            size: if total == 0 { 1 } else { total },
+        };
+    }
+
     // Check USAGE first for special types
     if let Some(usage) = &item.usage {
         match usage {
@@ -562,76 +636,6 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 HirType::National { size: pic.size }
             }
             _ => HirType::Alphanumeric { size: pic.size },
-        }
-    } else if !item.children.is_empty() {
-        // Group item: build members list and compute total size
-        let mut members = Vec::new();
-        for child in &item.children {
-            if child.level == 88 {
-                continue;
-            }
-            let member_name = child
-                .name
-                .clone()
-                .unwrap_or_else(|| SmolStr::from("FILLER"));
-            let data_type = determine_hir_type(child);
-            let initial_value = child.value.as_ref().map(lower_value_clause);
-            let occurs = child.occurs.as_ref().map(|o| o.max);
-            let renames = child
-                .renames
-                .as_ref()
-                .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
-            let indexed_by_child = child
-                .occurs
-                .as_ref()
-                .map(|o| o.indexed_by.clone())
-                .unwrap_or_default();
-            members.push(HirDataItem {
-                name: member_name,
-                data_type,
-                initial_value,
-                occurs,
-                indexed_by: indexed_by_child,
-                redefines: child.redefines.clone(),
-                renames,
-                screen_info: None,
-                span: child.span,
-            });
-        }
-        let total: u32 = members
-            .iter()
-            .filter(|m| m.redefines.is_none()) // REDEFINES overlay same storage
-            .map(|m| {
-                let element_size = match &m.data_type {
-                    HirType::Alphanumeric { size } => *size,
-                    HirType::Numeric { size, .. } => *size,
-                    HirType::Group { size, .. } => *size,
-                    HirType::Comp3 { size, .. } => (*size + 2) / 2, // packed decimal byte size
-                    HirType::Binary { size } => {
-                        if *size <= 4 {
-                            2
-                        } else if *size <= 9 {
-                            4
-                        } else {
-                            8
-                        }
-                    }
-                    HirType::Index => 4,
-                    HirType::Pointer => 8,
-                    HirType::Boolean => 1,
-                    HirType::FloatShort => 4,
-                    HirType::FloatLong => 8,
-                    HirType::FloatExtended => 16,
-                    HirType::National { size } => *size * 2, // national chars are 2 bytes
-                };
-                // OCCURS multiplies the element size
-                let count = m.occurs.unwrap_or(1);
-                element_size * count
-            })
-            .sum();
-        HirType::Group {
-            members,
-            size: if total == 0 { 1 } else { total },
         }
     } else {
         // Default: single character alphanumeric
@@ -2216,23 +2220,31 @@ fn lower_condition(
         Condition::ConditionName(qname) => {
             // 88-level condition name: look up the parent variable and values
             if let Some(info) = condition_names.get(&qname.name) {
+                let parent_expr = if qname.subscripts.is_empty() {
+                    HirExpr::Variable(info.parent_name.clone())
+                } else {
+                    HirExpr::Subscript {
+                        variable: info.parent_name.clone(),
+                        subscripts: qname.subscripts.iter().map(lower_expr).collect(),
+                    }
+                };
                 let conditions: Vec<HirCondition> = info
                     .values
                     .iter()
                     .map(|v| match v {
                         ConditionValue::Single(lit) => HirCondition::Compare {
-                            left: HirExpr::Variable(info.parent_name.clone()),
+                            left: parent_expr.clone(),
                             op: HirCompareOp::Eq,
                             right: HirExpr::Literal(lit.clone()),
                         },
                         ConditionValue::Range { from, to } => HirCondition::And(
                             Box::new(HirCondition::Compare {
-                                left: HirExpr::Variable(info.parent_name.clone()),
+                                left: parent_expr.clone(),
                                 op: HirCompareOp::Ge,
                                 right: HirExpr::Literal(from.clone()),
                             }),
                             Box::new(HirCondition::Compare {
-                                left: HirExpr::Variable(info.parent_name.clone()),
+                                left: parent_expr.clone(),
                                 op: HirCompareOp::Le,
                                 right: HirExpr::Literal(to.clone()),
                             }),
@@ -2240,9 +2252,9 @@ fn lower_condition(
                     })
                     .collect();
                 if conditions.is_empty() {
-                    // No values found, fall back to variable == 1
+                    // No values found, fall back to the parent storage item.
                     HirCondition::Compare {
-                        left: HirExpr::Variable(qname.name.clone()),
+                        left: parent_expr,
                         op: HirCompareOp::Eq,
                         right: HirExpr::Literal(HirLiteral::Integer(1)),
                     }

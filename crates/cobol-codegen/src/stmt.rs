@@ -169,7 +169,7 @@ pub(crate) fn emit_statement_with_ctx(
                 } else {
                     let c_expr = emit_int_compatible_expr(expr, data_items);
                     let c_tgt_base = sanitize_name(target_name);
-                    if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                    if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                         let c_target_ptr = display_numeric_ptr(&c_target);
                         out.push_str(&format!(
                             "{pad}cobol_store_numeric_display({c_expr}, \
@@ -229,7 +229,7 @@ pub(crate) fn emit_statement_with_ctx(
                         emit_decimal_giving_add(out, operands, to, &c_target, data_items, &pad);
                     } else if has_size_error {
                         let c_tgt_base = sanitize_name(var_name);
-                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                        if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                             let c_target_const_ptr = display_numeric_const_ptr(&c_target);
                             let c_target_ptr = display_numeric_ptr(&c_target);
                             out.push_str(&format!(
@@ -275,7 +275,7 @@ pub(crate) fn emit_statement_with_ctx(
                         let sum_expr = sum.join(" + ");
                         if has_size_error {
                             let c_tgt_base = sanitize_name(var_name);
-                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 let c_target_const_ptr = display_numeric_const_ptr(&c_target);
                                 let c_target_ptr = display_numeric_ptr(&c_target);
                                 out.push_str(&format!(
@@ -353,7 +353,7 @@ pub(crate) fn emit_statement_with_ctx(
                     } else if has_size_error {
                         let result_expr = format!("{from_val} - ({sub_expr})");
                         let c_tgt_base = sanitize_name(var_name);
-                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                        if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                             let c_target_const_ptr = display_numeric_const_ptr(&c_target);
                             let c_target_ptr = display_numeric_ptr(&c_target);
                             out.push_str(&format!(
@@ -400,7 +400,7 @@ pub(crate) fn emit_statement_with_ctx(
                         let sum_expr = sum.join(" + ");
                         if has_size_error {
                             let c_tgt_base = sanitize_name(var_name);
-                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 let c_target_const_ptr = display_numeric_const_ptr(&c_target);
                                 let c_target_ptr = display_numeric_ptr(&c_target);
                                 out.push_str(&format!(
@@ -544,7 +544,7 @@ pub(crate) fn emit_statement_with_ctx(
                             out.push_str(&format!("{c_target} = _mr; }}\n"));
                         } else {
                             let c_tgt_base = sanitize_name(var_name);
-                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 out.push_str(&format!(
                                     "cobol_store_numeric_display(\
                                      cobol_decimal_to_int64(&_mr), \
@@ -560,7 +560,7 @@ pub(crate) fn emit_statement_with_ctx(
                         let mul_expr = format!("{first_by_int} * {c_operand_int}");
                         if has_size_error {
                             let c_tgt_base = sanitize_name(var_name);
-                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 out.push_str(&format!(
                                     "{pad}{{ int64_t _prev = cobol_display_to_int64(\
                                      (const uint8_t*){c_target}, {disp_size});\n"
@@ -599,7 +599,7 @@ pub(crate) fn emit_statement_with_ctx(
                         // int64 target *= CobolDecimal operand: use decimal path
                         let c_operand = emit_expr(operand);
                         let c_tgt_base = sanitize_name(var_name);
-                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                        if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                             out.push_str(&format!(
                                 "{pad}{{ CobolDecimal _td; cobol_decimal_from_int(\
                                  cobol_display_to_int64(\
@@ -620,7 +620,7 @@ pub(crate) fn emit_statement_with_ctx(
                         let c_operand = emit_int_compatible_expr(operand, data_items);
                         if has_size_error {
                             let c_tgt_base = sanitize_name(var_name);
-                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 out.push_str(&format!(
                                     "{pad}{{ int64_t _prev = cobol_display_to_int64(\
                                      (const uint8_t*){c_target}, {disp_size});\n"
@@ -725,7 +725,7 @@ pub(crate) fn emit_statement_with_ctx(
                     } else if has_size_error {
                         let div_expr = format!("{first_into_int} / {c_operand_int}");
                         let c_tgt_base = sanitize_name(var_name);
-                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                        if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                             out.push_str(&format!(
                                 "{pad}{{ int64_t _prev = cobol_display_to_int64(\
                                  (const uint8_t*){c_target}, {disp_size});\n"
@@ -767,7 +767,7 @@ pub(crate) fn emit_statement_with_ctx(
                     } else if is_decimal_expr(operand, data_items) {
                         // int64 target /= CobolDecimal operand
                         let c_tgt_base = sanitize_name(var_name);
-                        if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                        if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                             out.push_str(&format!(
                                 "{pad}{{ CobolDecimal _td; cobol_decimal_from_int(\
                                  cobol_display_to_int64(\
@@ -789,7 +789,7 @@ pub(crate) fn emit_statement_with_ctx(
                             let c_rem = emit_expr(rem);
                             let rem_name = expr_var_name(rem);
                             let c_tgt_base = sanitize_name(var_name);
-                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 let rem_expr = format!(
                                     "cobol_display_to_int64(\
                                      (const uint8_t*){c_target}, {disp_size}) % {c_operand_int}"
@@ -803,7 +803,7 @@ pub(crate) fn emit_statement_with_ctx(
                         }
                         if has_size_error {
                             let c_tgt_base = sanitize_name(var_name);
-                            if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                            if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 out.push_str(&format!(
                                     "{pad}{{ int64_t _prev = cobol_display_to_int64(\
                                      (const uint8_t*){c_target}, {disp_size});\n"
@@ -1417,7 +1417,7 @@ pub(crate) fn emit_statement_with_ctx(
                     ));
                 } else {
                     let c_value = emit_int_compatible_expr(value, data_items);
-                    if let Some(disp_size) = grp_display_size(&c_tgt_base, data_items) {
+                    if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                         out.push_str(&format!(
                             "{pad}cobol_store_numeric_display({c_value}, \
                              (uint8_t*){c_target}, {disp_size});\n"
@@ -3365,13 +3365,13 @@ pub(crate) fn emit_perform(
             after_clauses,
             body,
         } => {
-            let c_var = sanitize_name(var);
+            let c_var_target = varying_target_c_expr(var, until);
             let var_is_decimal =
                 find_data_item(var, data_items).is_some_and(|i| needs_decimal(&i.data_type));
             let cond = emit_condition(until, data_items);
             if var_is_decimal {
                 // Decimal VARYING: use cobol_decimal operations
-                emit_assign_to_decimal(out, from, &c_var, data_items, &pad);
+                emit_assign_to_decimal(out, from, &c_var_target, data_items, &pad);
                 out.push_str(&format!("{pad}while (!({cond})) {{\n"));
                 for s in body {
                     emit_statement(
@@ -3386,19 +3386,26 @@ pub(crate) fn emit_perform(
                 }
                 // Increment: convert BY to a temp decimal and add
                 let inner_pad = format!("{pad}    ");
-                emit_decimal_arith(out, &c_var, by, "cobol_decimal_add", data_items, &inner_pad);
+                emit_decimal_arith(
+                    out,
+                    &c_var_target,
+                    by,
+                    "cobol_decimal_add",
+                    data_items,
+                    &inner_pad,
+                );
                 out.push_str(&format!("{pad}}}\n"));
             } else {
                 let c_from = emit_int_compatible_expr(from, data_items);
                 let c_by = emit_int_compatible_expr(by, data_items);
                 // Initialize outer VARYING variable
-                emit_store_int(out, &c_var, &c_from, data_items, &pad);
+                emit_store_int(out, &c_var_target, &c_from, data_items, &pad);
                 out.push_str(&format!("{pad}while (!({cond})) {{\n"));
                 // Initialize AFTER variables at start of each outer iteration
                 let after_indent = indent + 1;
                 let after_pad = "    ".repeat(after_indent);
                 for ac in after_clauses {
-                    let ac_var = sanitize_name(&ac.var);
+                    let ac_var = varying_target_c_expr(&ac.var, &ac.until);
                     let ac_from = emit_int_compatible_expr(&ac.from, data_items);
                     emit_store_int(out, &ac_var, &ac_from, data_items, &after_pad);
                 }
@@ -3430,7 +3437,7 @@ pub(crate) fn emit_perform(
                 // Close AFTER loops (innermost first) with increments
                 for ac in after_clauses.iter().rev() {
                     current_indent -= 1;
-                    let ac_var = sanitize_name(&ac.var);
+                    let ac_var = varying_target_c_expr(&ac.var, &ac.until);
                     let ac_by = emit_int_compatible_expr(&ac.by, data_items);
                     let lpad = "    ".repeat(current_indent + 1);
                     emit_store_int_op(out, &ac_var, "+", &ac_by, data_items, &lpad);
@@ -3438,7 +3445,7 @@ pub(crate) fn emit_perform(
                     out.push_str(&format!("{lpad_close}}}\n"));
                 }
                 // Increment outer VARYING variable
-                emit_store_int_op(out, &c_var, "+", &c_by, data_items, &after_pad);
+                emit_store_int_op(out, &c_var_target, "+", &c_by, data_items, &after_pad);
                 out.push_str(&format!("{pad}}}\n"));
             }
         }
@@ -3539,6 +3546,46 @@ pub(crate) fn emit_perform(
                 }
             }
         }
+    }
+}
+
+fn varying_target_c_expr(var: &str, until: &HirCondition) -> String {
+    find_subscripted_var_in_condition(until, var)
+        .map(super::emit_expr)
+        .unwrap_or_else(|| sanitize_name(var))
+}
+
+fn find_subscripted_var_in_condition<'a>(cond: &'a HirCondition, var: &str) -> Option<&'a HirExpr> {
+    match cond {
+        HirCondition::Compare { left, right, .. } => {
+            find_subscripted_var_in_expr(left, var).or_else(|| find_subscripted_var_in_expr(right, var))
+        }
+        HirCondition::ClassCondition { operand, .. } => find_subscripted_var_in_expr(operand, var),
+        HirCondition::Not(inner) => find_subscripted_var_in_condition(inner, var),
+        HirCondition::And(a, b) | HirCondition::Or(a, b) => {
+            find_subscripted_var_in_condition(a, var).or_else(|| find_subscripted_var_in_condition(b, var))
+        }
+    }
+}
+
+fn find_subscripted_var_in_expr<'a>(expr: &'a HirExpr, var: &str) -> Option<&'a HirExpr> {
+    match expr {
+        HirExpr::Subscript { variable, .. } if variable == var => Some(expr),
+        HirExpr::UnaryOp { operand, .. } => find_subscripted_var_in_expr(operand, var),
+        HirExpr::BinaryOp { left, right, .. } => {
+            find_subscripted_var_in_expr(left, var).or_else(|| find_subscripted_var_in_expr(right, var))
+        }
+        HirExpr::ReferenceModification { start, length, .. } => {
+            find_subscripted_var_in_expr(start, var).or_else(|| {
+                length
+                    .as_ref()
+                    .and_then(|len| find_subscripted_var_in_expr(len, var))
+            })
+        }
+        HirExpr::FunctionCall { args, .. } => args
+            .iter()
+            .find_map(|arg| find_subscripted_var_in_expr(arg, var)),
+        _ => None,
     }
 }
 

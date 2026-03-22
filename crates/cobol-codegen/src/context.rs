@@ -290,6 +290,14 @@ pub(crate) fn collect_subscript_paths(
                 Some(existing) => {
                     let existing_count = existing.segments.iter().filter(|(_, has)| *has).count();
                     new_occurs_count > existing_count
+                        || (new_occurs_count == existing_count
+                            && matches!(
+                                member.data_type,
+                                HirType::Numeric {
+                                    decimal_places: 0,
+                                    ..
+                                }
+                            ))
                 }
                 None => true,
             };

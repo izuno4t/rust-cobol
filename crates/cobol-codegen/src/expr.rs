@@ -715,10 +715,14 @@ pub(crate) fn grp_display_size(
 
     // Handle qualified names like "WS_DST__FIELD_A" by extracting the member
     // part after the last "__".
-    let base_name = c_name
-        .rfind("__")
-        .map(|pos| &c_name[pos + 2..])
-        .unwrap_or(c_name);
+    let base_name = if c_name.contains(".members._m_") {
+        extract_leaf_member(c_name)
+    } else {
+        c_name
+            .rfind("__")
+            .map(|pos| &c_name[pos + 2..])
+            .unwrap_or(c_name)
+    };
     // Strip any trailing subscripts: NAME[...] -> NAME
     let base_name = base_name.split('[').next().unwrap_or(base_name);
     // Search within groups first — if it exists as a display numeric
@@ -738,7 +742,6 @@ pub(crate) fn grp_display_size(
                 {
                     return Some(*size);
                 }
-                return None;
             }
             if let HirType::Group {
                 members: sub_members,
@@ -796,14 +799,14 @@ pub(crate) fn emit_store_int(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    // Extract base (leaf) name from c_target for type lookup.
-    // For paths like "GRP.members._m_X[(i)-1].members._m_Y",
-    // we want the final member name "Y".
-    let base = extract_leaf_member(c_target);
-    if let Some(disp_size) = grp_display_size(base, data_items) {
+    if let Some(disp_size) = grp_display_size(c_target, data_items) {
         let c_target_ptr = display_numeric_ptr(c_target);
         out.push_str(&format!(
             "{pad}cobol_store_numeric_display({value_expr}, {c_target_ptr}, {disp_size});\n"
+        ));
+    } else if is_group_member_field(c_target) {
+        out.push_str(&format!(
+            "{pad}cobol_move_numeric_to_display({value_expr}, 0, (uint8_t*){c_target}, sizeof({c_target}));\n"
         ));
     } else {
         out.push_str(&format!("{pad}{c_target} = {value_expr};\n"));
@@ -827,14 +830,19 @@ pub(crate) fn emit_store_int_op(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    let base = extract_leaf_member(c_target);
-    if let Some(disp_size) = grp_display_size(base, data_items) {
+    if let Some(disp_size) = grp_display_size(c_target, data_items) {
         let c_target_const_ptr = display_numeric_const_ptr(c_target);
         let c_target_ptr = display_numeric_ptr(c_target);
         out.push_str(&format!(
             "{pad}cobol_store_numeric_display(\
              cobol_display_to_int64({c_target_const_ptr}, {disp_size}) {op} ({value_expr}), \
              {c_target_ptr}, {disp_size});\n"
+        ));
+    } else if is_group_member_field(c_target) {
+        out.push_str(&format!(
+            "{pad}cobol_store_numeric_display(\
+             cobol_display_to_int64((const uint8_t*){c_target}, sizeof({c_target})) {op} ({value_expr}), \
+             (uint8_t*){c_target}, sizeof({c_target}));\n"
         ));
     } else {
         out.push_str(&format!("{pad}{c_target} {op}= {value_expr};\n"));
@@ -1143,9 +1151,18 @@ pub(crate) fn is_numeric_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool 
 /// to pointers directly. For elementary items (arrays/scalars), returns `name`.
 pub(crate) fn c_ptr_expr(c_name: &str, data_items: &[HirDataItem]) -> String {
     let lookup = extract_leaf_member(c_name);
-    let is_display_numeric = with_active_context(|ctx| ctx.has_display_numeric(lookup));
-    if is_display_numeric {
-        return c_name.to_string();
+    if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {
+        if let Some((from, thru)) = &item.renames {
+            if thru.is_some() {
+                return c_name.to_string();
+            }
+            let from_c = sanitize_name(from);
+            if let Some(from_item) = find_data_item_by_sanitized_name(&from_c, data_items) {
+                if matches!(from_item.data_type, HirType::Group { .. }) {
+                    return c_name.to_string();
+                }
+            }
+        }
     }
 
     if let Some(item) = find_data_item_by_c_name(c_name, data_items) {
@@ -1162,11 +1179,34 @@ pub(crate) fn c_ptr_expr(c_name: &str, data_items: &[HirDataItem]) -> String {
             | HirType::FloatExtended => format!("&{c_name}"),
             HirType::Pointer => c_name.to_string(),
         }
-    } else if is_group_item_c(c_name, data_items) || is_numeric_item_c(c_name, data_items) {
-        format!("&{c_name}")
     } else {
-        c_name.to_string()
+        let lookup = extract_leaf_member(c_name);
+        let is_display_numeric = with_active_context(|ctx| ctx.has_display_numeric(lookup));
+        if is_display_numeric {
+            c_name.to_string()
+        } else if is_group_item_c(c_name, data_items) || is_numeric_item_c(c_name, data_items) {
+            format!("&{c_name}")
+        } else {
+            c_name.to_string()
+        }
     }
+}
+
+pub(crate) fn find_original_data_item_by_sanitized_name<'a>(
+    c_name: &str,
+    items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    for item in items {
+        if sanitize_name(&item.name) == c_name {
+            return Some(item);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if let Some(found) = find_original_data_item_by_sanitized_name(c_name, members) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn find_data_item_by_c_name<'a>(
@@ -1195,6 +1235,14 @@ pub(crate) fn find_data_item_by_sanitized_name<'a>(
 ) -> Option<&'a HirDataItem> {
     for item in items {
         if sanitize_name(&item.name) == c_name {
+            if let Some((from, _thru)) = &item.renames {
+                let from_c = sanitize_name(from);
+                if from_c != c_name {
+                    if let Some(found) = find_data_item_by_sanitized_name(&from_c, items) {
+                        return Some(found);
+                    }
+                }
+            }
             return Some(item);
         }
         if let HirType::Group { members, .. } = &item.data_type {
@@ -1330,6 +1378,15 @@ pub(crate) fn emit_corresponding_arith(
                 // are addressed through the same path resolution as MOVE CORR.
                 let src_ref = format!("{c_from}__{member_c}");
                 let tgt_ref = format!("{c_to}__{member_c}");
+                let src_value = if needs_decimal(&src_item.data_type) {
+                    format!("cobol_decimal_to_int64(&{src_ref})")
+                } else if let Some(src_disp_size) =
+                    grp_display_size(&sanitize_name(&src_item.name), data_items)
+                {
+                    format!("cobol_display_to_int64((const uint8_t*){src_ref}, {src_disp_size})")
+                } else {
+                    src_ref.clone()
+                };
                 if needs_decimal(&tgt_item.data_type) {
                     // CobolDecimal: use runtime functions
                     let func = if op == "+" {
@@ -1345,12 +1402,11 @@ pub(crate) fn emit_corresponding_arith(
                         "{pad}cobol_store_numeric_display(\
                          cobol_display_to_int64(\
                          (const uint8_t*){tgt_ref}, {disp_size}) {op} \
-                         cobol_display_to_int64(\
-                         (const uint8_t*){src_ref}, {disp_size}), \
+                         ({src_value}), \
                          (uint8_t*){tgt_ref}, {disp_size});\n"
                     ));
                 } else {
-                    out.push_str(&format!("{pad}{tgt_ref} = {tgt_ref} {op} {src_ref};\n"));
+                    out.push_str(&format!("{pad}{tgt_ref} = {tgt_ref} {op} {src_value};\n"));
                 }
             }
         }
@@ -1614,6 +1670,33 @@ pub(crate) fn emit_initialize_field(
     pad: &str,
 ) {
     if let Some(item) = find_data_item(name.as_str(), data_items) {
+        if item.occurs.is_some() && !matches!(item.data_type, HirType::Group { .. }) {
+            match &item.data_type {
+                HirType::Alphanumeric { size } => {
+                    out.push_str(&format!(
+                        "{pad}for (size_t _i = 0; _i < {}; _i++) {{ memset({c_name}[_i], ' ', {size}); }} /* INITIALIZE */\n",
+                        item.occurs.unwrap_or(0)
+                    ));
+                }
+                HirType::National { size } => {
+                    out.push_str(&format!(
+                        "{pad}for (size_t _i = 0; _i < {}; _i++) {{ for (uint32_t _j = 0; _j < {size}; _j++) {{ {c_name}[_i][_j] = 0x0020; }} }} /* INITIALIZE */\n",
+                        item.occurs.unwrap_or(0)
+                    ));
+                }
+                dt if needs_decimal(dt) => {
+                    out.push_str(&format!(
+                        "{pad}memset({c_name}, 0, sizeof({c_name})); /* INITIALIZE */\n"
+                    ));
+                }
+                _ => {
+                    out.push_str(&format!(
+                        "{pad}memset({c_name}, 0, sizeof({c_name})); /* INITIALIZE */\n"
+                    ));
+                }
+            }
+            return;
+        }
         match &item.data_type {
             HirType::Alphanumeric { size } => {
                 let is_grp_member =
@@ -2640,6 +2723,15 @@ pub(crate) fn find_data_item_size_in(c_name: &str, items: &[HirDataItem]) -> u32
     for item in items {
         let item_c_name = sanitize_name(&item.name);
         if item_c_name == c_name {
+            if let Some((from, _thru)) = &item.renames {
+                let from_c = sanitize_name(from);
+                if from_c != c_name {
+                    let renamed_size = find_data_item_size_in(&from_c, items);
+                    if renamed_size > 0 {
+                        return renamed_size;
+                    }
+                }
+            }
             return data_item_byte_size(&item.data_type);
         }
         if let HirType::Group { members, .. } = &item.data_type {
