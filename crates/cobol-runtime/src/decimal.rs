@@ -83,11 +83,11 @@ pub unsafe extern "C" fn cobol_decimal_add(
     b: *const CobolDecimal,
     result: *mut CobolDecimal,
 ) {
-    let a = &*a;
-    let b = &*b;
+    let a = *a;
+    let b = *b;
     let r = &mut *result;
 
-    let (av, bv, scale) = align_scales(a, b);
+    let (av, bv, scale) = align_scales(&a, &b);
     let raw = av + bv;
 
     r.scale = scale;
@@ -110,11 +110,11 @@ pub unsafe extern "C" fn cobol_decimal_sub(
     b: *const CobolDecimal,
     result: *mut CobolDecimal,
 ) {
-    let a = &*a;
-    let b = &*b;
+    let a = *a;
+    let b = *b;
     let r = &mut *result;
 
-    let (av, bv, scale) = align_scales(a, b);
+    let (av, bv, scale) = align_scales(&a, &b);
     let raw = av - bv;
 
     r.scale = scale;
@@ -136,8 +136,8 @@ pub unsafe extern "C" fn cobol_decimal_mul(
     b: *const CobolDecimal,
     result: *mut CobolDecimal,
 ) {
-    let a = &*a;
-    let b = &*b;
+    let a = *a;
+    let b = *b;
     let r = &mut *result;
 
     let raw = a.value as i128 * b.value as i128;
@@ -171,8 +171,8 @@ pub unsafe extern "C" fn cobol_decimal_div(
     b: *const CobolDecimal,
     result: *mut CobolDecimal,
 ) {
-    let a = &*a;
-    let b = &*b;
+    let a = *a;
+    let b = *b;
     let r = &mut *result;
 
     if b.value == 0 {
@@ -186,7 +186,7 @@ pub unsafe extern "C" fn cobol_decimal_div(
 
     // To preserve precision, scale the dividend up before dividing.
     // Target scale = a.scale (the receiver's scale).
-    let (av, bv, common_scale) = align_scales(a, b);
+    let (av, bv, common_scale) = align_scales(&a, &b);
     // After aligning, both are at common_scale. Dividing two numbers at the
     // same scale would give an integer result (scale 0). To get the answer at
     // common_scale, multiply the numerator by 10^common_scale first.
