@@ -112,6 +112,11 @@ thread_local! {
     static GROUP_NAMES: RefCell<HashSet<String>> =
         RefCell::new(HashSet::new());
 
+    /// Cached map from sanitized data item name to its byte size.
+    /// Populated at the start of `generate_c` to avoid repeated recursive
+    /// linear searches through all data items.
+    static DATA_ITEM_SIZE_CACHE: RefCell<HashMap<String, u32>> =
+        RefCell::new(HashMap::new());
 }
 
 /// Build the subscript path map for all data items inside groups with OCCURS.
@@ -232,6 +237,36 @@ fn collect_subscript_paths(
     }
 }
 
+/// Populate the thread-local data item size cache from the given HIR data items.
+fn init_data_item_size_cache(items: &[HirDataItem]) {
+    DATA_ITEM_SIZE_CACHE.with(|cache| {
+        let mut map = cache.borrow_mut();
+        map.clear();
+        populate_size_cache(items, &mut map);
+    });
+}
+
+/// Recursively walk data items and insert each sanitized name → byte size into the map.
+fn populate_size_cache(items: &[HirDataItem], map: &mut HashMap<String, u32>) {
+    for item in items {
+        let c_name = sanitize_name(&item.name);
+        let size = data_item_byte_size(&item.data_type);
+        map.entry(c_name).or_insert(size);
+        if let HirType::Group { members, .. } = &item.data_type {
+            populate_size_cache(members, map);
+        }
+    }
+}
+
+/// Helper macro: print timing if COBOL_DEBUG_TIMING=1
+macro_rules! cg_timing {
+    ($label:expr, $start:expr) => {
+        if std::env::var("COBOL_DEBUG_TIMING").as_deref() == Ok("1") {
+            eprintln!("[CG-TIMING] {}: {:?}", $label, $start.elapsed());
+        }
+    };
+}
+
 /// Generates C source code from a HIR program.
 pub fn generate_c(program: &HirProgram) -> String {
     let mut out = String::new();
@@ -266,6 +301,9 @@ pub fn generate_c(program: &HirProgram) -> String {
         *cell.borrow_mut() = group_names;
     });
 
+    // Pre-compute data item sizes for fast lookup during code generation.
+    init_data_item_size_cache(&program.data_items);
+
     // Header
     emit_header(&mut out);
 
@@ -280,7 +318,9 @@ pub fn generate_c(program: &HirProgram) -> String {
         .collect();
 
     // Global data items (skip FD record aliases — they'll be #defined below)
+    let t_data = std::time::Instant::now();
     emit_data_items(&mut out, &program.data_items, &fd_alias_set);
+    cg_timing!("emit_data_items", t_data);
 
     // FD record aliases: multiple 01-level items under the same FD share storage.
     // Emit #define macros so they all reference the first record's variable.
@@ -456,11 +496,14 @@ pub fn generate_c(program: &HirProgram) -> String {
     out.push_str("int main(int argc, char** argv) {\n");
 
     // Initialize data items
+    let t_init = std::time::Instant::now();
     emit_data_init(&mut out, &program.data_items);
+    cg_timing!("emit_data_init", t_init);
 
     let has_decl = !program.declaratives.is_empty();
 
     // Emit body statements (with GO TO -> C goto support)
+    let t_body = std::time::Instant::now();
     IN_BODY_CONTEXT.with(|flag| *flag.borrow_mut() = true);
     for stmt in &program.body {
         emit_statement(
@@ -474,6 +517,7 @@ pub fn generate_c(program: &HirProgram) -> String {
         );
     }
     IN_BODY_CONTEXT.with(|flag| *flag.borrow_mut() = false);
+    cg_timing!("emit_body_statements", t_body);
 
     // Fallthrough return
     out.push_str("    return 0;\n");
@@ -494,6 +538,7 @@ pub fn generate_c(program: &HirProgram) -> String {
     out.push_str("}\n");
 
     // Emit paragraph function definitions
+    let t_para = std::time::Instant::now();
     for para in &program.paragraphs {
         let c_name = sanitize_name(&para.name);
         out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
@@ -510,6 +555,8 @@ pub fn generate_c(program: &HirProgram) -> String {
         }
         out.push_str("}\n");
     }
+
+    cg_timing!("emit_paragraphs", t_para);
 
     // Emit declarative handler function definitions
     for decl in &program.declaratives {
@@ -979,7 +1026,7 @@ fn emit_data_items(out: &mut String, items: &[HirDataItem], fd_aliases: &HashSet
     let group_member_names = collect_group_member_names(items);
     // Collect member names that appear in multiple groups — these should
     // NOT get unqualified #define macros to avoid redefinition warnings.
-    let duplicate_member_names = collect_duplicate_member_names(items);
+    let duplicate_member_names = collect_duplicate_member_names(items, &group_member_names);
 
     let mut emitted_typedefs = HashSet::new();
     out.push_str("/* Data items */\n");
@@ -1023,8 +1070,10 @@ fn collect_member_names_recursive(members: &[HirDataItem], names: &mut BTreeSet<
 /// Collect member names that appear in more than one top-level group.
 /// These names should only get qualified #define macros, not unqualified ones.
 /// Sub-groups that are members of other groups are excluded to avoid false duplicates.
-fn collect_duplicate_member_names(items: &[HirDataItem]) -> BTreeSet<String> {
-    let group_member_names = collect_group_member_names(items);
+fn collect_duplicate_member_names(
+    items: &[HirDataItem],
+    group_member_names: &BTreeSet<String>,
+) -> BTreeSet<String> {
     let mut seen = BTreeSet::new();
     let mut duplicates = BTreeSet::new();
     for item in items {
@@ -1083,7 +1132,13 @@ fn emit_single_data_item(
                 ));
                 // Emit #define macros for children of this REDEFINES group
                 // Note: REDEFINES group is a struct, not a union, so no .members wrapper
-                emit_group_macros(out, members, &c_name, &c_name, duplicate_member_names);
+                emit_group_macros(
+                    out,
+                    members,
+                    std::slice::from_ref(&c_name),
+                    &c_name,
+                    duplicate_member_names,
+                );
                 // Emit nested REDEFINES within this top-level REDEFINES group
                 emit_group_redefines(
                     out,
@@ -1155,7 +1210,7 @@ fn emit_single_data_item(
             emit_group_macros(
                 out,
                 members,
-                &c_name,
+                std::slice::from_ref(&c_name),
                 &format!("{c_name}.members"),
                 duplicate_member_names,
             );
@@ -1259,9 +1314,7 @@ fn emit_group_struct_member(
             // Group members must match COBOL byte layout exactly so that
             // group-level MOVE/COMPARE operations work correctly.
             if member.occurs.is_some() {
-                out.push_str(&format!(
-                    "    char _m_{c_name}{array_suffix}[{size}];\n"
-                ));
+                out.push_str(&format!("    char _m_{c_name}{array_suffix}[{size}];\n"));
             } else {
                 out.push_str(&format!("    char _m_{c_name}[{size}];\n"));
             }
@@ -1333,7 +1386,7 @@ fn emit_group_struct_member(
 fn emit_group_macros(
     out: &mut String,
     members: &[HirDataItem],
-    group_c_name: &str,
+    qualifier_names: &[String],
     path_prefix: &str,
     duplicate_names: &BTreeSet<String>,
 ) {
@@ -1352,8 +1405,12 @@ fn emit_group_macros(
         if !duplicate_names.contains(&c_name) {
             out.push_str(&format!("#define {c_name} {access_path}\n"));
         }
-        // Qualified macro: GROUP__FIELD (always unique)
-        out.push_str(&format!("#define {group_c_name}__{c_name} {access_path}\n"));
+        // Qualified macros: QUALIFIER__FIELD for each ancestor group name.
+        // This supports COBOL qualified references like FIELD OF GROUP-A,
+        // FIELD OF GROUP-B, etc.
+        for qualifier in qualifier_names {
+            out.push_str(&format!("#define {qualifier}__{c_name} {access_path}\n"));
+        }
         if let HirType::Group {
             members: sub_members,
             ..
@@ -1368,18 +1425,19 @@ fn emit_group_macros(
             } else {
                 format!("{access_path}.members")
             };
-            // Emit macros with both the top-level group qualifier and the
-            // immediate sub-group qualifier.  This allows references like
-            // `ALPHAN-KEY OF KEY-1` (which becomes KEY_1__ALPHAN_KEY in C)
-            // to resolve correctly even when the same leaf name exists
-            // under multiple sub-groups of the same top-level group.
-            emit_group_macros(out, sub_members, group_c_name, &sub_prefix, duplicate_names);
-            // Also emit macros qualified by the immediate parent sub-group
-            // (e.g., KEY_1__ALPHAN_KEY) so that COBOL qualified references
-            // like `ALPHAN-KEY OF KEY-1` map to the correct macro.
-            if c_name != group_c_name {
-                emit_group_macros(out, sub_members, &c_name, &sub_prefix, duplicate_names);
+            // Add current member name as qualifier for children, then
+            // recurse once (avoids exponential blowup from double recursion).
+            let mut child_qualifiers = qualifier_names.to_vec();
+            if !child_qualifiers.contains(&c_name) {
+                child_qualifiers.push(c_name);
             }
+            emit_group_macros(
+                out,
+                sub_members,
+                &child_qualifiers,
+                &sub_prefix,
+                duplicate_names,
+            );
         }
     }
 }
@@ -1413,7 +1471,13 @@ fn emit_group_redefines(
                     out.push_str(&format!(
                         "#define {c_name} (*({td}*)&{qualified_target}) /* REDEFINES {c_redef} */\n"
                     ));
-                    emit_group_macros(out, grp_members, &c_name, &c_name, duplicate_names);
+                    emit_group_macros(
+                        out,
+                        grp_members,
+                        std::slice::from_ref(&c_name),
+                        &c_name,
+                        duplicate_names,
+                    );
                     // Recurse into REDEFINES group children to emit nested
                     // REDEFINES macros (e.g. RDF3-5-1 REDEFINES RDF3-5).
                     let sub_prefix = c_name.clone();
@@ -5085,7 +5149,7 @@ fn emit_perform(
                 // Generate nested AFTER loops
                 let mut current_indent = after_indent;
                 for ac in after_clauses {
-                    let ac_var = sanitize_name(&ac.var);
+                    let _ac_var = sanitize_name(&ac.var);
                     let ac_by = emit_int_compatible_expr(&ac.by, data_items);
                     let ac_cond = emit_condition(&ac.until, data_items);
                     let lpad = "    ".repeat(current_indent);
@@ -7907,52 +7971,68 @@ fn find_first_index_name(c_name: &str, data_items: &[HirDataItem]) -> Option<Str
 /// Find the byte size of a data item by its sanitized C name.
 /// Returns a reasonable default (80) if the item is not found.
 fn find_data_item_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
-    // Handle subscript/struct-access expressions like
-    // "TABLE.members._m_FOO[(I)-1].members._m_BAR" by extracting the
-    // final member name ("_m_BAR") and looking it up without the prefix.
-    if c_name.contains('[') || c_name.contains(".members.") {
+    // Extract leaf name from complex expressions like
+    // "TABLE.members._m_FOO[(I)-1].members._m_BAR"
+    let lookup_name = if c_name.contains('[') || c_name.contains(".members.") {
         if let Some(pos) = c_name.rfind(".members._m_") {
             let leaf = &c_name[pos + ".members._m_".len()..];
-            // Remove any trailing subscript like "[(I)-1]"
             let leaf_name = if let Some(br) = leaf.find('[') {
                 &leaf[..br]
             } else {
                 leaf
             };
             if !leaf_name.is_empty() {
-                let found = find_data_item_size_in(leaf_name, data_items);
-                if found > 0 {
-                    return found;
-                }
+                leaf_name
+            } else {
+                c_name
             }
+        } else {
+            c_name
         }
+    } else {
+        c_name
+    };
+
+    // Check cache first
+    let cached = DATA_ITEM_SIZE_CACHE.with(|cache| cache.borrow().get(lookup_name).copied());
+    if let Some(size) = cached {
+        return size;
     }
+
     // Handle qualified C names like "WS_DST__FIELD_B"
-    if let Some(pos) = c_name.find("__") {
-        let group_c = &c_name[..pos];
-        let member_c = &c_name[pos + 2..];
-        for item in data_items {
-            if sanitize_name(&item.name) == group_c {
-                if let HirType::Group { members, .. } = &item.data_type {
-                    let found = find_data_item_size_in(member_c, members);
-                    if found > 0 {
-                        return found;
+    if lookup_name.contains("__") {
+        if let Some(pos) = lookup_name.find("__") {
+            let group_c = &lookup_name[..pos];
+            let member_c = &lookup_name[pos + 2..];
+            // Try cache for the member part
+            let member_cached =
+                DATA_ITEM_SIZE_CACHE.with(|cache| cache.borrow().get(member_c).copied());
+            if let Some(size) = member_cached {
+                return size;
+            }
+            for item in data_items {
+                if sanitize_name(&item.name) == group_c {
+                    if let HirType::Group { members, .. } = &item.data_type {
+                        let found = find_data_item_size_in(member_c, members);
+                        if found > 0 {
+                            return found;
+                        }
                     }
                 }
             }
         }
     }
-    for item in data_items {
-        let item_c_name = sanitize_name(&item.name);
-        if item_c_name == c_name {
-            return data_item_byte_size(&item.data_type);
-        }
-        // Also search in group members
-        if let HirType::Group { members, .. } = &item.data_type {
-            let found = find_data_item_size_in(c_name, members);
-            if found > 0 {
-                return found;
-            }
+
+    // Fallback to recursive search (shouldn't normally happen after init)
+    let found = find_data_item_size_in(lookup_name, data_items);
+    if found > 0 {
+        return found;
+    }
+    // If lookup_name differs from c_name, try the original c_name as well
+    if lookup_name != c_name {
+        let found2 = find_data_item_size_in(c_name, data_items);
+        if found2 > 0 {
+            return found2;
         }
     }
     80 // Default record length

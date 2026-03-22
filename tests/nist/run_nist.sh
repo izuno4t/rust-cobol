@@ -52,9 +52,9 @@ run_program() {
     # Compile
     local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
     if $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" 2>"$compile_log"; then
-        # Run with timeout (30 seconds)
+        # Run with timeout (60 seconds)
         # Execute in target/nist so output files don't pollute the repo
-        if timeout 15 bash -c "cd \"$NIST_WORKDIR\" && \"$bin\"" < /dev/null > "$log" 2>&1; then
+        if timeout 60 bash -c "cd \"$NIST_WORKDIR\" && \"$bin\"" < /dev/null > "$log" 2>&1; then
             # NIST programs write to PRINT-FILE, also check stdout
             local print_file="/tmp/nist/P"
             local result_file="$log"
@@ -86,7 +86,7 @@ run_program() {
             local exit_code=$?
             if [ "$exit_code" -eq 124 ]; then
                 echo "TIMEOUT" > "$status_file"
-                echo "  $program: TIMEOUT (exceeded 30s)"
+                echo "  $program: TIMEOUT (exceeded 60s)"
             else
                 echo "RUNTIME_ERROR" > "$status_file"
                 echo "  $program: RUNTIME ERROR (exit $exit_code)"

@@ -144,8 +144,13 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         // Phase 1: Lexing
         // ---------------------------------------------------------------
+        let debug_timing = std::env::var("COBOL_DEBUG_TIMING").as_deref() == Ok("1");
+        let t_lex = std::time::Instant::now();
         let mut lexer = Lexer::new(&source, file_id, source_format);
         let tokens = lexer.lex_all();
+        if debug_timing {
+            eprintln!("[TIMING] Lexing: {:?}", t_lex.elapsed());
+        }
 
         if cli.dump_tokens {
             println!("=== Tokens ({}) ===", file_path);
@@ -160,6 +165,7 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         // Phase 2: Parsing
         // ---------------------------------------------------------------
+        let t_parse = std::time::Instant::now();
         let mut parser = Parser::new(tokens, file_id);
         let program = match parser.parse_program() {
             Ok(p) => {
@@ -193,6 +199,10 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         // Phase 3: Semantic analysis
         // ---------------------------------------------------------------
+        if debug_timing {
+            eprintln!("[TIMING] Parsing: {:?}", t_parse.elapsed());
+        }
+        let t_sema = std::time::Instant::now();
         let mut analyzer = SemanticAnalyzer::with_warning_level(warning_level);
         let result = analyzer.analyze(&program);
         let diagnostics = analyzer.take_diagnostics();
@@ -208,7 +218,14 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         // Phase 4: HIR lowering
         // ---------------------------------------------------------------
+        if debug_timing {
+            eprintln!("[TIMING] Sema + diagnostics: {:?}", t_sema.elapsed());
+        }
+        let t_hir = std::time::Instant::now();
         let hir = lower_to_hir(&program);
+        if debug_timing {
+            eprintln!("[TIMING] HIR lowering: {:?}", t_hir.elapsed());
+        }
 
         if cli.dump_hir {
             println!("=== HIR ({}) ===", file_path);
@@ -221,7 +238,11 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         // Phase 5: Code generation (C output)
         // ---------------------------------------------------------------
+        let t_cg = std::time::Instant::now();
         let c_code = generate_c(&hir);
+        if debug_timing {
+            eprintln!("[TIMING] C codegen: {:?}", t_cg.elapsed());
+        }
 
         if cli.emit_c {
             println!("=== Generated C ({}) ===", file_path);

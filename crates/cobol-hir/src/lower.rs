@@ -28,8 +28,7 @@ use crate::hir::{
     HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
     HirParagraph, HirParam, HirParamMode, HirPerformKind, HirProgram, HirReplacingKind,
     HirScreenInfo, HirSearchWhen, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
-    HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
-    HirVaryingAfter,
+    HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
 };
 
 /// A single or range value for an 88-level condition.
@@ -1537,10 +1536,7 @@ fn lower_set(
     use cobol_ast::statement::SetKind;
     match &set.kind {
         SetKind::To { targets, value } => {
-            let target_exprs = targets
-                .iter()
-                .map(|q| lower_qualified_name_to_expr(q))
-                .collect();
+            let target_exprs = targets.iter().map(lower_qualified_name_to_expr).collect();
             let hir_value = lower_expr(value);
             HirStatement::Set {
                 targets: target_exprs,

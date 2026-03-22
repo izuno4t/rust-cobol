@@ -138,10 +138,14 @@ impl SymbolTable {
     }
 
     /// Defines a symbol in the current scope.
+    ///
+    /// The HashMap key is always uppercase for case-insensitive lookup,
+    /// but `Symbol.name` retains the original case for display/diagnostics.
     pub fn define(&mut self, symbol: Symbol) {
+        let key = SmolStr::new(symbol.name.to_ascii_uppercase());
         self.scopes[self.current_scope]
             .symbols
-            .entry(symbol.name.clone())
+            .entry(key)
             .or_default()
             .push(symbol);
     }
@@ -149,9 +153,10 @@ impl SymbolTable {
     /// Looks up a symbol by name, searching from the current scope up to
     /// ancestor scopes. Returns the first match (or the unique one if only one exists).
     pub fn lookup(&self, name: &SmolStr) -> Option<&Symbol> {
+        let key = SmolStr::new(name.to_ascii_uppercase());
         let mut scope_idx = self.current_scope;
         loop {
-            if let Some(syms) = self.scopes[scope_idx].symbols.get(name) {
+            if let Some(syms) = self.scopes[scope_idx].symbols.get(&key) {
                 if let Some(first) = syms.first() {
                     return Some(first);
                 }
@@ -177,10 +182,11 @@ impl SymbolTable {
         }
 
         // Collect all candidate symbols with the matching name from all scopes.
+        let key = SmolStr::new(name.to_ascii_uppercase());
         let candidates: Vec<&Symbol> = self
             .scopes
             .iter()
-            .filter_map(|scope| scope.symbols.get(name))
+            .filter_map(|scope| scope.symbols.get(&key))
             .flat_map(|syms| syms.iter())
             .collect();
 
@@ -258,30 +264,20 @@ impl SymbolTable {
     }
 
     /// Searches all scopes for ALL symbols with the given name.
+    ///
+    /// Since keys are stored as uppercase, this is a simple HashMap lookup per scope.
     fn find_all_symbols(&self, name: &SmolStr) -> Vec<&Symbol> {
+        let key = SmolStr::new(name.to_ascii_uppercase());
         let mut result: Vec<&Symbol> = Vec::new();
         for scope in &self.scopes {
-            if let Some(syms) = scope.symbols.get(name) {
+            if let Some(syms) = scope.symbols.get(&key) {
                 result.extend(syms.iter());
-            }
-        }
-        if !result.is_empty() {
-            return result;
-        }
-        // Fall back to case-insensitive search.
-        let upper = name.to_ascii_uppercase();
-        for scope in &self.scopes {
-            for (key, syms) in &scope.symbols {
-                if key.to_ascii_uppercase() == upper {
-                    result.extend(syms.iter());
-                }
             }
         }
         result
     }
 
     /// Searches all scopes for a symbol with the given name.
-    // TODO: Normalize symbol names to uppercase at registration time to avoid 2-pass lookup
     pub fn find_symbol_anywhere(&self, name: &SmolStr) -> Option<&Symbol> {
         self.find_all_symbols(name).into_iter().next()
     }
@@ -545,5 +541,51 @@ mod tests {
     fn test_detail_name_float() {
         assert_eq!(CobolType::FloatShort.detail_name(), "FLOAT-SHORT (COMP-1)");
         assert_eq!(CobolType::FloatLong.detail_name(), "FLOAT-LONG (COMP-2)");
+    }
+
+    #[test]
+    fn test_case_insensitive_lookup() {
+        let mut table = SymbolTable::new();
+        table.define(make_symbol("WS-NAME", None));
+
+        // All case variants should find the same symbol.
+        assert!(table.lookup(&SmolStr::new("ws-name")).is_some());
+        assert!(table.lookup(&SmolStr::new("WS-NAME")).is_some());
+        assert!(table.lookup(&SmolStr::new("Ws-Name")).is_some());
+    }
+
+    #[test]
+    fn test_case_insensitive_find_last_symbol() {
+        let mut table = SymbolTable::new();
+        table.define(Symbol {
+            name: SmolStr::new("RECORD-A"),
+            kind: SymbolKind::DataItem {
+                level: 1,
+                is_group: true,
+            },
+            data_type: Some(CobolType::Group { size: 20 }),
+            span: Span::new(0, 10, FileId(0)),
+            parent_name: None,
+            parent_span: None,
+        });
+        table.define(Symbol {
+            name: SmolStr::new("RECORD-A"),
+            kind: SymbolKind::DataItem {
+                level: 1,
+                is_group: true,
+            },
+            data_type: Some(CobolType::Group { size: 40 }),
+            span: Span::new(20, 30, FileId(0)),
+            parent_name: None,
+            parent_span: None,
+        });
+
+        // find_last_symbol should return the second one (span 20..30).
+        let last = table.find_last_symbol(&SmolStr::new("RECORD-A")).unwrap();
+        assert_eq!(last.span, Span::new(20, 30, FileId(0)));
+
+        // Same result with lowercase key.
+        let last_lower = table.find_last_symbol(&SmolStr::new("record-a")).unwrap();
+        assert_eq!(last_lower.span, Span::new(20, 30, FileId(0)));
     }
 }
