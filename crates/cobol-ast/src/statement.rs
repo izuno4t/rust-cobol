@@ -23,6 +23,11 @@ pub enum Statement {
     // --- Input/output ---
     Display(DisplayStatement),
     Accept(AcceptStatement),
+    Enable(EnableStatement),
+    Disable(DisableStatement),
+    Send(SendStatement),
+    Receive(ReceiveStatement),
+    Purge(PurgeStatement),
 
     // --- Control flow ---
     If(Box<IfStatement>),
@@ -216,6 +221,69 @@ pub enum AcceptSource {
     Time,
     Console,
     Environment(SmolStr),
+    MessageCount,
+}
+
+/// ENABLE statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnableStatement {
+    pub mode: CommunicationMode,
+    pub terminal: bool,
+    pub target: QualifiedName,
+    pub key: Expr,
+    pub span: Span,
+}
+
+/// DISABLE statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisableStatement {
+    pub mode: CommunicationMode,
+    pub terminal: bool,
+    pub target: QualifiedName,
+    pub key: Expr,
+    pub span: Span,
+}
+
+/// SEND statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendStatement {
+    pub target: QualifiedName,
+    pub from: Option<Expr>,
+    pub with: Option<SendOption>,
+    pub replacing_line: bool,
+    pub span: Span,
+}
+
+/// RECEIVE statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReceiveStatement {
+    pub target: QualifiedName,
+    pub into: QualifiedName,
+    pub span: Span,
+}
+
+/// PURGE statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PurgeStatement {
+    pub target: QualifiedName,
+    pub span: Span,
+}
+
+/// Communication mode used by ENABLE/DISABLE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommunicationMode {
+    Input,
+    Output,
+    InputOutput,
+}
+
+/// SEND modifiers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SendOption {
+    Emi,
+    Egi,
+    Esi,
+    Identifier(Expr),
 }
 
 // ---------------------------------------------------------------------------

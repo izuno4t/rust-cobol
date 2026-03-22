@@ -249,6 +249,11 @@ impl Parser {
                 | TokenKind::Divide
                 | TokenKind::Display
                 | TokenKind::Accept
+                | TokenKind::Enable
+                | TokenKind::Disable
+                | TokenKind::Send
+                | TokenKind::Receive
+                | TokenKind::Purge
                 | TokenKind::If
                 | TokenKind::Evaluate
                 | TokenKind::Perform

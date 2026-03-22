@@ -12,10 +12,11 @@ use cobol_ast::{
     expr::{ArithOp, ClassType, CompareOp, Condition, FigurativeConstant, SignType, UnaryArithOp},
     proc_div::{Paragraph, ProcedureDivision, UseStatement},
     statement::{
-        AcceptStatement, AddStatement, CallStatement, ComputeStatement, DisplayStatement,
-        DivideStatement, EvaluateStatement, GoToStatement, IfStatement, InitializeStatement,
-        MoveStatement, MultiplyStatement, PerformKind, PerformStatement, PerformTest,
-        SetStatement,
+        AcceptStatement, AddStatement, CallStatement, CommunicationMode, ComputeStatement,
+        DisableStatement, DisplayStatement, DivideStatement, EnableStatement, EvaluateStatement,
+        GoToStatement, IfStatement, InitializeStatement, MoveStatement, MultiplyStatement,
+        PerformKind, PerformStatement, PerformTest, PurgeStatement, ReceiveStatement,
+        SendOption, SendStatement, SetStatement,
         SubtractStatement,
     },
     CobolProgram, DataDivision, DataItem, Expr, Literal, Statement, Usage,
@@ -24,13 +25,13 @@ use cobol_common::Span;
 use smol_str::SmolStr;
 
 use crate::hir::{
-    HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCompareOp,
-    HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
-    HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
-    HirParagraph, HirParam, HirParamMode, HirPerformKind, HirPerformTest, HirProgram,
-    HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSortKey, HirSortOrder, HirStartRelation,
-    HirStatement, HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter,
-    HirVaryingAfter,
+    HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCommunicationMode,
+    HirCompareOp, HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo,
+    HirInspectKind, HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget,
+    HirOpenEntry, HirOpenMode, HirParagraph, HirParam, HirParamMode, HirPerformKind,
+    HirPerformTest, HirProgram, HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption,
+    HirSortKey, HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind,
+    HirType, HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
 };
 
 /// A single or range value for an 88-level condition.
@@ -275,8 +276,10 @@ fn collect_condition_names(data: &DataDivision) -> HashMap<SmolStr, ConditionNam
     for item in &data.screen {
         collect_condition_names_from_item(item, None, &mut map);
     }
-    for item in &data.communication {
-        collect_condition_names_from_item(item, None, &mut map);
+    for cd in &data.communication {
+        for item in &cd.data_items {
+            collect_condition_names_from_item(item, None, &mut map);
+        }
     }
     for item in &data.report {
         collect_condition_names_from_item(item, None, &mut map);
@@ -354,8 +357,10 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
     for item in &data.screen {
         lower_screen_data_item(item, &mut items);
     }
-    for item in &data.communication {
-        lower_data_item(item, &mut items);
+    for cd in &data.communication {
+        for item in &cd.data_items {
+            lower_data_item(item, &mut items);
+        }
     }
     for item in &data.report {
         lower_data_item(item, &mut items);
@@ -806,6 +811,11 @@ fn lower_statement(
     match stmt {
         Statement::Display(display) => Some(lower_display(display)),
         Statement::Accept(accept) => Some(lower_accept(accept)),
+        Statement::Enable(enable) => Some(lower_enable(enable)),
+        Statement::Disable(disable) => Some(lower_disable(disable)),
+        Statement::Send(send) => Some(lower_send(send)),
+        Statement::Receive(receive) => Some(lower_receive(receive)),
+        Statement::Purge(purge) => Some(lower_purge(purge)),
         Statement::Move(mv) => Some(lower_move(mv)),
         Statement::Compute(compute) => lower_compute(compute, condition_names),
         Statement::Add(add) => Some(lower_add(add, condition_names)),
@@ -1461,6 +1471,7 @@ fn lower_accept(accept: &AcceptStatement) -> HirStatement {
         Some(AstSource::Day) => HirAcceptSource::Day,
         Some(AstSource::DayOfWeek) => HirAcceptSource::DayOfWeek,
         Some(AstSource::Time) => HirAcceptSource::Time,
+        Some(AstSource::MessageCount) => HirAcceptSource::MessageCount,
         Some(AstSource::Environment(name)) => HirAcceptSource::Environment(name.clone()),
         Some(AstSource::Console) | None => HirAcceptSource::Console,
     };
@@ -1468,6 +1479,68 @@ fn lower_accept(accept: &AcceptStatement) -> HirStatement {
         target: accept.target.name.clone(),
         source,
         span: accept.span,
+    }
+}
+
+fn lower_communication_mode(mode: CommunicationMode) -> HirCommunicationMode {
+    match mode {
+        CommunicationMode::Input => HirCommunicationMode::Input,
+        CommunicationMode::Output => HirCommunicationMode::Output,
+        CommunicationMode::InputOutput => HirCommunicationMode::InputOutput,
+    }
+}
+
+fn lower_send_option(option: &SendOption) -> HirSendOption {
+    match option {
+        SendOption::Emi => HirSendOption::Emi,
+        SendOption::Egi => HirSendOption::Egi,
+        SendOption::Esi => HirSendOption::Esi,
+        SendOption::Identifier(expr) => HirSendOption::Identifier(lower_expr(expr)),
+    }
+}
+
+fn lower_enable(enable: &EnableStatement) -> HirStatement {
+    HirStatement::Enable {
+        mode: lower_communication_mode(enable.mode),
+        terminal: enable.terminal,
+        target: enable.target.name.clone(),
+        key: lower_expr(&enable.key),
+        span: enable.span,
+    }
+}
+
+fn lower_disable(disable: &DisableStatement) -> HirStatement {
+    HirStatement::Disable {
+        mode: lower_communication_mode(disable.mode),
+        terminal: disable.terminal,
+        target: disable.target.name.clone(),
+        key: lower_expr(&disable.key),
+        span: disable.span,
+    }
+}
+
+fn lower_send(send: &SendStatement) -> HirStatement {
+    HirStatement::Send {
+        target: send.target.name.clone(),
+        from: send.from.as_ref().map(lower_expr),
+        with: send.with.as_ref().map(lower_send_option),
+        replacing_line: send.replacing_line,
+        span: send.span,
+    }
+}
+
+fn lower_receive(receive: &ReceiveStatement) -> HirStatement {
+    HirStatement::Receive {
+        target: receive.target.name.clone(),
+        into: receive.into.name.clone(),
+        span: receive.span,
+    }
+}
+
+fn lower_purge(purge: &PurgeStatement) -> HirStatement {
+    HirStatement::Purge {
+        target: purge.target.name.clone(),
+        span: purge.span,
     }
 }
 

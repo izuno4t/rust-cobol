@@ -6,7 +6,9 @@
 // 3. Verify that names referenced in statements are defined
 // 4. Handle qualified names (e.g. MOVE A OF B TO C)
 
-use cobol_ast::data_div::{ConditionValueItem, DataDivision, DataItem, FileDescription, Usage};
+use cobol_ast::data_div::{
+    CommunicationDescription, ConditionValueItem, DataDivision, DataItem, FileDescription, Usage,
+};
 use cobol_ast::expr::{Condition, Expr, FigurativeConstant, Literal, QualifiedName};
 use cobol_ast::picture::{PictureCategory, PictureClause};
 use cobol_ast::proc_div::{Paragraph, ProcedureDivision};
@@ -144,8 +146,8 @@ impl<'a> NameResolver<'a> {
         }
 
         // Communication section.
-        for item in &data.communication {
-            self.register_data_item(item, None);
+        for cd in &data.communication {
+            self.register_communication_description(cd);
         }
 
         // Report section.
@@ -225,6 +227,24 @@ impl<'a> NameResolver<'a> {
         // Register record items under the file.
         for item in &fd.items {
             self.register_data_item(item, Some(&fd.file_name));
+        }
+    }
+
+    fn register_communication_description(&mut self, cd: &CommunicationDescription) {
+        self.table.define(Symbol {
+            name: cd.name.clone(),
+            kind: SymbolKind::DataItem {
+                level: 1,
+                is_group: false,
+            },
+            data_type: None,
+            span: cd.span,
+            parent_name: None,
+            parent_span: None,
+        });
+
+        for item in &cd.data_items {
+            self.register_data_item(item, None);
         }
     }
 
@@ -495,6 +515,27 @@ impl<'a> NameResolver<'a> {
             }
             Statement::Accept(a) => {
                 self.resolve_qualified_name(&a.target);
+            }
+            Statement::Enable(s) => {
+                self.resolve_qualified_name(&s.target);
+                self.resolve_expr(&s.key);
+            }
+            Statement::Disable(s) => {
+                self.resolve_qualified_name(&s.target);
+                self.resolve_expr(&s.key);
+            }
+            Statement::Send(s) => {
+                self.resolve_qualified_name(&s.target);
+                if let Some(from) = &s.from {
+                    self.resolve_expr(from);
+                }
+            }
+            Statement::Receive(s) => {
+                self.resolve_qualified_name(&s.target);
+                self.resolve_qualified_name(&s.into);
+            }
+            Statement::Purge(s) => {
+                self.resolve_qualified_name(&s.target);
             }
             Statement::If(i) => {
                 self.resolve_condition(&i.condition);

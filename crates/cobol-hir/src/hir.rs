@@ -269,6 +269,22 @@ pub enum HirAcceptSource {
     DayOfWeek,
     Time,
     Environment(SmolStr),
+    MessageCount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirCommunicationMode {
+    Input,
+    Output,
+    InputOutput,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirSendOption {
+    Emi,
+    Egi,
+    Esi,
+    Identifier(HirExpr),
 }
 
 /// An executable statement in the HIR.
@@ -471,6 +487,36 @@ pub enum HirStatement {
     Accept {
         target: SmolStr,
         source: HirAcceptSource,
+        span: Span,
+    },
+    Enable {
+        mode: HirCommunicationMode,
+        terminal: bool,
+        target: SmolStr,
+        key: HirExpr,
+        span: Span,
+    },
+    Disable {
+        mode: HirCommunicationMode,
+        terminal: bool,
+        target: SmolStr,
+        key: HirExpr,
+        span: Span,
+    },
+    Send {
+        target: SmolStr,
+        from: Option<HirExpr>,
+        with: Option<HirSendOption>,
+        replacing_line: bool,
+        span: Span,
+    },
+    Receive {
+        target: SmolStr,
+        into: SmolStr,
+        span: Span,
+    },
+    Purge {
+        target: SmolStr,
         span: Span,
     },
     /// SORT statement.
@@ -970,6 +1016,85 @@ fn write_stmt(
                 write!(f, " WITH NO ADVANCING")?;
             }
             writeln!(f)
+        }
+        HirStatement::Enable {
+            mode,
+            terminal,
+            target,
+            key,
+            ..
+        } => {
+            let mode = match mode {
+                HirCommunicationMode::Input => "INPUT",
+                HirCommunicationMode::Output => "OUTPUT",
+                HirCommunicationMode::InputOutput => "I-O",
+            };
+            let terminal = if *terminal { " TERMINAL" } else { "" };
+            writeln!(
+                f,
+                "{pad}ENABLE {mode}{terminal} {target} WITH KEY {}",
+                format_expr(key)
+            )
+        }
+        HirStatement::Disable {
+            mode,
+            terminal,
+            target,
+            key,
+            ..
+        } => {
+            let mode = match mode {
+                HirCommunicationMode::Input => "INPUT",
+                HirCommunicationMode::Output => "OUTPUT",
+                HirCommunicationMode::InputOutput => "I-O",
+            };
+            let terminal = if *terminal { " TERMINAL" } else { "" };
+            writeln!(
+                f,
+                "{pad}DISABLE {mode}{terminal} {target} WITH KEY {}",
+                format_expr(key)
+            )
+        }
+        HirStatement::Send {
+            target,
+            from,
+            with,
+            replacing_line,
+            ..
+        } => {
+            write!(f, "{pad}SEND {target}")?;
+            if let Some(from) = from {
+                write!(f, " FROM {}", format_expr(from))?;
+            }
+            if let Some(with) = with {
+                let with = match with {
+                    HirSendOption::Emi => "EMI",
+                    HirSendOption::Egi => "EGI",
+                    HirSendOption::Esi => "ESI",
+                    HirSendOption::Identifier(expr) => {
+                        return writeln!(
+                            f,
+                            "{pad}SEND {target}{} WITH {}{}",
+                            from.as_ref()
+                                .map(|from| format!(" FROM {}", format_expr(from)))
+                                .unwrap_or_default(),
+                            format_expr(expr),
+                            if *replacing_line { " REPLACING LINE" } else { "" }
+                        );
+                    }
+                };
+                write!(f, " WITH {with}")?;
+            }
+            if *replacing_line {
+                write!(f, " REPLACING LINE")?;
+            }
+            writeln!(f)
+        }
+        HirStatement::Receive { target, into, .. } => {
+            writeln!(f, "{pad}RECEIVE {target} MESSAGE INTO {into}")
+        }
+        HirStatement::Purge { target, .. } => {
+            writeln!(f, "{pad}PURGE {target}")
         }
         HirStatement::Move { from, to, .. } => {
             let targets: Vec<_> = to.iter().map(format_move_target).collect();

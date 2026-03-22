@@ -484,6 +484,11 @@ impl Parser {
             TokenKind::Divide => self.parse_divide_statement(),
             TokenKind::Display => self.parse_display_statement(),
             TokenKind::Accept => self.parse_accept_statement(),
+            TokenKind::Enable => self.parse_enable_statement(),
+            TokenKind::Disable => self.parse_disable_statement(),
+            TokenKind::Send => self.parse_send_statement(),
+            TokenKind::Receive => self.parse_receive_statement(),
+            TokenKind::Purge => self.parse_purge_statement(),
             TokenKind::If => self.parse_if_statement(),
             TokenKind::Evaluate => self.parse_evaluate_statement(),
             TokenKind::Perform => self.parse_perform_statement(),
@@ -1043,7 +1048,11 @@ impl Parser {
 
         let target = self.parse_qualified_name()?;
 
-        let from = if self.check(TokenKind::From) {
+        let from = if self.check(TokenKind::Message) {
+            self.advance();
+            self.expect(TokenKind::Count)?;
+            Some(AcceptSource::MessageCount)
+        } else if self.check(TokenKind::From) {
             self.advance();
             if self.check_identifier("DATE") {
                 self.advance();
@@ -1078,6 +1087,130 @@ impl Parser {
         Ok(Statement::Accept(AcceptStatement {
             target,
             from,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_communication_mode(&mut self) -> Result<CommunicationMode, ()> {
+        if self.check(TokenKind::Input) {
+            self.advance();
+            Ok(CommunicationMode::Input)
+        } else if self.check(TokenKind::Output) {
+            self.advance();
+            Ok(CommunicationMode::Output)
+        } else if self.check(TokenKind::IoMode) {
+            self.advance();
+            Ok(CommunicationMode::InputOutput)
+        } else {
+            self.error("expected INPUT, OUTPUT, or I-O");
+            Err(())
+        }
+    }
+
+    fn parse_enable_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Enable)?;
+        let mode = self.parse_communication_mode()?;
+        let terminal = self.eat(TokenKind::Terminal).is_some();
+        let target = self.parse_qualified_name()?;
+        self.expect(TokenKind::With)?;
+        self.expect(TokenKind::Key)?;
+        let key = self.parse_expr()?;
+        let end_span = self.span();
+        Ok(Statement::Enable(EnableStatement {
+            mode,
+            terminal,
+            target,
+            key,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_disable_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Disable)?;
+        let mode = self.parse_communication_mode()?;
+        let terminal = self.eat(TokenKind::Terminal).is_some();
+        let target = self.parse_qualified_name()?;
+        self.expect(TokenKind::With)?;
+        self.expect(TokenKind::Key)?;
+        let key = self.parse_expr()?;
+        let end_span = self.span();
+        Ok(Statement::Disable(DisableStatement {
+            mode,
+            terminal,
+            target,
+            key,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_send_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Send)?;
+        let target = self.parse_qualified_name()?;
+        let from = if self.check(TokenKind::From) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        let with = if self.check(TokenKind::With) {
+            self.advance();
+            if self.check(TokenKind::Emi) {
+                self.advance();
+                Some(SendOption::Emi)
+            } else if self.check(TokenKind::Egi) {
+                self.advance();
+                Some(SendOption::Egi)
+            } else if self.check(TokenKind::Esi) {
+                self.advance();
+                Some(SendOption::Esi)
+            } else {
+                Some(SendOption::Identifier(self.parse_expr()?))
+            }
+        } else {
+            None
+        };
+        let replacing_line = if self.check(TokenKind::Replacing) {
+            self.advance();
+            self.eat(TokenKind::Line);
+            true
+        } else {
+            false
+        };
+        let end_span = self.span();
+        Ok(Statement::Send(SendStatement {
+            target,
+            from,
+            with,
+            replacing_line,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_receive_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Receive)?;
+        let target = self.parse_qualified_name()?;
+        self.expect(TokenKind::Message)?;
+        self.expect(TokenKind::Into)?;
+        let into = self.parse_qualified_name()?;
+        let end_span = self.span();
+        Ok(Statement::Receive(ReceiveStatement {
+            target,
+            into,
+            span: start_span.merge(&end_span),
+        }))
+    }
+
+    fn parse_purge_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
+        self.expect(TokenKind::Purge)?;
+        let target = self.parse_qualified_name()?;
+        let end_span = self.span();
+        Ok(Statement::Purge(PurgeStatement {
+            target,
             span: start_span.merge(&end_span),
         }))
     }

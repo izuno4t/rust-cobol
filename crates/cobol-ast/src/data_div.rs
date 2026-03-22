@@ -22,11 +22,45 @@ pub struct DataDivision {
     pub linkage: Vec<DataItem>,
     /// SCREEN SECTION: screen layout definitions.
     pub screen: Vec<DataItem>,
-    /// COMMUNICATION SECTION: message handling (deprecated).
-    pub communication: Vec<DataItem>,
+    /// COMMUNICATION SECTION: message handling definitions.
+    pub communication: Vec<CommunicationDescription>,
     /// REPORT SECTION: report writer definitions.
     pub report: Vec<DataItem>,
     pub span: Span,
+}
+
+/// A CD entry in the COMMUNICATION SECTION.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommunicationDescription {
+    pub name: SmolStr,
+    pub direction: CommunicationDirection,
+    pub symbolic_queue: Option<SmolStr>,
+    pub symbolic_sub_queue_1: Option<SmolStr>,
+    pub symbolic_sub_queue_2: Option<SmolStr>,
+    pub symbolic_sub_queue_3: Option<SmolStr>,
+    pub message_date: Option<SmolStr>,
+    pub message_time: Option<SmolStr>,
+    pub symbolic_source: Option<SmolStr>,
+    pub text_length: Option<SmolStr>,
+    pub end_key: Option<SmolStr>,
+    pub status_key: Option<SmolStr>,
+    pub message_count: Option<SmolStr>,
+    pub destination_count: Option<SmolStr>,
+    pub destination_table_count: Option<u32>,
+    pub destination_table_indexed_by: Vec<SmolStr>,
+    pub error_key: Option<SmolStr>,
+    pub destination: Option<SmolStr>,
+    pub data_items: Vec<DataItem>,
+    pub span: Span,
+}
+
+/// Direction/type of communication description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommunicationDirection {
+    Input,
+    Output,
+    InitialInput,
+    InputOutput,
 }
 
 /// A file description (FD) or sort description (SD) entry.

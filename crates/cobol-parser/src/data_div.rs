@@ -20,7 +20,7 @@ impl Parser {
         let mut local_storage = Vec::new();
         let mut linkage = Vec::new();
         let mut screen = Vec::new();
-        let communication = Vec::new();
+        let mut communication = Vec::new();
         let mut report = Vec::new();
 
         loop {
@@ -57,7 +57,7 @@ impl Parser {
                 self.advance();
                 self.expect(TokenKind::Section)?;
                 self.expect(TokenKind::Period)?;
-                self.skip_section_content();
+                communication = self.parse_communication_section()?;
             } else if self.check(TokenKind::Report) {
                 let rpt_span = self.span();
                 self.advance();
@@ -121,6 +121,172 @@ impl Parser {
         }
 
         Ok(fds)
+    }
+
+    fn parse_communication_section(&mut self) -> Result<Vec<CommunicationDescription>, ()> {
+        let mut entries = Vec::new();
+
+        while self.check_identifier("CD") && !self.at_division_header() && !self.at_eof() {
+            entries.push(self.parse_communication_description()?);
+        }
+
+        Ok(entries)
+    }
+
+    fn parse_communication_description(&mut self) -> Result<CommunicationDescription, ()> {
+        let start_span = self.span();
+        self.eat_identifier("CD");
+        let name = self.expect_identifier()?;
+        self.eat(TokenKind::ForKw);
+        let direction = if self.check(TokenKind::Initial) {
+            self.advance();
+            self.expect(TokenKind::Input)?;
+            CommunicationDirection::InitialInput
+        } else if self.check(TokenKind::Input) {
+            self.advance();
+            CommunicationDirection::Input
+        } else if self.check(TokenKind::Output) {
+            self.advance();
+            CommunicationDirection::Output
+        } else if self.check(TokenKind::IoMode) {
+            self.advance();
+            CommunicationDirection::InputOutput
+        } else {
+            self.error("expected communication direction");
+            return Err(());
+        };
+
+        let mut symbolic_queue = None;
+        let mut symbolic_sub_queue_1 = None;
+        let mut symbolic_sub_queue_2 = None;
+        let mut symbolic_sub_queue_3 = None;
+        let mut message_date = None;
+        let mut message_time = None;
+        let mut symbolic_source = None;
+        let mut text_length = None;
+        let mut end_key = None;
+        let mut status_key = None;
+        let mut message_count = None;
+        let mut destination_count = None;
+        let mut destination_table_count = None;
+        let mut destination_table_indexed_by = Vec::new();
+        let mut error_key = None;
+        let mut destination = None;
+
+        while !self.check(TokenKind::Period) && !self.at_eof() {
+            if self.check(TokenKind::Symbolic) {
+                self.advance();
+                if self.check(TokenKind::Queue) {
+                    self.advance();
+                    self.eat_is();
+                    symbolic_queue = Some(self.expect_identifier()?);
+                } else if self.check(TokenKind::SubQueue1) {
+                    self.advance();
+                    self.eat_is();
+                    symbolic_sub_queue_1 = Some(self.expect_identifier()?);
+                } else if self.check(TokenKind::SubQueue2) {
+                    self.advance();
+                    self.eat_is();
+                    symbolic_sub_queue_2 = Some(self.expect_identifier()?);
+                } else if self.check(TokenKind::SubQueue3) {
+                    self.advance();
+                    self.eat_is();
+                    symbolic_sub_queue_3 = Some(self.expect_identifier()?);
+                } else if self.check(TokenKind::SourceField) {
+                    self.advance();
+                    self.eat_is();
+                    symbolic_source = Some(self.expect_identifier()?);
+                } else {
+                    self.advance();
+                }
+            } else if self.check(TokenKind::Message) {
+                self.advance();
+                if self.check(TokenKind::DateKw) {
+                    self.advance();
+                    self.eat_is();
+                    message_date = Some(self.expect_identifier()?);
+                } else if self.check(TokenKind::TimeKw) {
+                    self.advance();
+                    self.eat_is();
+                    message_time = Some(self.expect_identifier()?);
+                } else if self.check(TokenKind::Count) {
+                    self.advance();
+                    self.eat_is();
+                    message_count = Some(self.expect_identifier()?);
+                } else {
+                    self.advance();
+                }
+            } else if self.check(TokenKind::Text) {
+                self.advance();
+                self.eat(TokenKind::Length);
+                self.eat_is();
+                text_length = Some(self.expect_identifier()?);
+            } else if self.check(TokenKind::EndKey) {
+                self.advance();
+                self.eat_is();
+                end_key = Some(self.expect_identifier()?);
+            } else if self.check(TokenKind::StatusKey) {
+                self.advance();
+                self.eat_is();
+                status_key = Some(self.expect_identifier()?);
+            } else if self.check(TokenKind::Destination) {
+                self.advance();
+                if self.check(TokenKind::Count) {
+                    self.advance();
+                    self.eat_is();
+                    destination_count = Some(self.expect_identifier()?);
+                } else if self.check(TokenKind::Table) {
+                    self.advance();
+                    self.expect(TokenKind::Occurs)?;
+                    destination_table_count = Some(self.parse_integer()?);
+                    self.eat(TokenKind::Times);
+                    if self.check(TokenKind::Index) || self.check_identifier("INDEXED") {
+                        self.eat(TokenKind::Index);
+                        self.eat_identifier("BY");
+                        destination_table_indexed_by.push(self.expect_identifier()?);
+                    } else if self.check_identifier("INDEXED") {
+                        self.advance();
+                        self.eat_identifier("BY");
+                        destination_table_indexed_by.push(self.expect_identifier()?);
+                    }
+                } else {
+                    destination = Some(self.expect_identifier()?);
+                }
+            } else if self.check(TokenKind::ErrorKey) {
+                self.advance();
+                self.eat_is();
+                error_key = Some(self.expect_identifier()?);
+            } else {
+                self.advance();
+            }
+        }
+
+        self.expect(TokenKind::Period)?;
+        let data_items = self.parse_data_items()?;
+        let end_span = self.span();
+
+        Ok(CommunicationDescription {
+            name,
+            direction,
+            symbolic_queue,
+            symbolic_sub_queue_1,
+            symbolic_sub_queue_2,
+            symbolic_sub_queue_3,
+            message_date,
+            message_time,
+            symbolic_source,
+            text_length,
+            end_key,
+            status_key,
+            message_count,
+            destination_count,
+            destination_table_count,
+            destination_table_indexed_by,
+            error_key,
+            destination,
+            data_items,
+            span: start_span.merge(&end_span),
+        })
     }
 
     fn parse_file_description(&mut self) -> Result<FileDescription, ()> {
