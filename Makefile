@@ -9,6 +9,7 @@ NIST_COBOLC := $(CURDIR)/target/release/cobol-driver
 .PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary help
 
 NIST_ENV_ROOT ?= $(CURDIR)/target/nist
+NIST_JOBS ?= 1
 NIST_SOURCE_VAL ?=
 
 ## デフォルト: リリースビルド
@@ -89,6 +90,7 @@ nist-run:
 		  echo "Run 'make nist-prepare' first."; \
 		  exit 1 )
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
+	NIST_JOBS="$(NIST_JOBS)" \
 	COBOLC="$(NIST_COBOLC)" \
 	bash tests/nist/run_nist.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
@@ -116,6 +118,7 @@ help:
 	@echo "  make example     - examples/hello.cob をコンパイル・実行"
 	@echo "  make nist-prepare - NIST 資材を target/nist/programs に展開"
 	@echo "  make nist-run     - NIST CCVS 85 全モジュール実行"
+	@echo "  make nist-run NIST_JOBS=4 - NIST 全モジュールを4並列で実行"
 	@echo "  make nist-run MODULE=NC - NIST 特定モジュール実行"
 	@echo "  make nist-run MODULE=NC PROGRAM=NC101A - NIST 単一プログラム実行"
 	@echo "  make nist-summary - NIST 結果サマリー表示"

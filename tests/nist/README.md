@@ -37,6 +37,7 @@ By default this reads `tests/nist/newcob.val` and extracts programs into
 ```bash
 make nist-prepare
 make nist-run
+make nist-run NIST_JOBS=4
 make nist-run MODULE=NC
 make nist-run MODULE=NC PROGRAM=NC101A
 make nist-summary
@@ -44,6 +45,13 @@ make nist-summary
 
 The same `make nist-prepare` and `make nist-run` flow is intended for
 both local execution and CI jobs.
+
+`NIST_JOBS` is optional and only affects `--all` execution. It runs
+modules in parallel while keeping per-module work directories isolated.
+
+Compilation is cached by default per program. If the preprocessed source,
+compiler binary, and `COPYLIB` inputs are unchanged, `run_nist.sh` reuses
+the existing executable. Set `NIST_COMPILE_CACHE=0` to force recompiling.
 
 ## Result Model
 
