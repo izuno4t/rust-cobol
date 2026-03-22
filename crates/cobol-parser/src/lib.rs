@@ -1222,6 +1222,43 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_parse_nested_if_without_end_if() {
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-NESTED-IF.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 A PIC X.
+       01 B PIC X.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           IF A = \"Y\"
+               IF B = \"Y\"
+                   DISPLAY \"BOTH\"
+               ELSE
+                   NEXT SENTENCE
+           ELSE
+               DISPLAY \"OUTER\"
+           .
+           STOP RUN.";
+        let program = parse_free(src).unwrap();
+        let proc = program.procedure.unwrap();
+        let stmts: Vec<_> = proc.paragraphs[0]
+            .sentences
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .collect();
+        match &stmts[0] {
+            statement::Statement::If(if_stmt) => {
+                assert_eq!(if_stmt.then_body.len(), 1);
+                assert_eq!(if_stmt.else_body.len(), 1);
+                assert!(matches!(if_stmt.then_body[0], statement::Statement::If(_)));
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_perform_proc_followed_by_move() {
         // PERFORM proc-name MOVE X TO Y — PERFORM followed by MOVE on same line.
         let src = "\

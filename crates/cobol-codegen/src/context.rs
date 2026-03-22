@@ -361,16 +361,24 @@ pub(crate) fn collect_subscript_paths(
     root_has_occurs: bool,
     parent_is_redefines: bool,
 ) {
+    let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
         if member.redefines.is_some() {
             continue;
         }
-        let c_name = sanitize_name(&member.name);
+        let base_c_name = sanitize_name(&member.name);
+        let count = member_name_counts.entry(base_c_name.clone()).or_insert(0);
+        *count += 1;
+        let member_c_name = if *count > 1 {
+            format!("{}_{}", base_c_name, count)
+        } else {
+            base_c_name.clone()
+        };
         let member_has_occurs = member.occurs.is_some();
         let segment_suffix = if parent_is_redefines {
-            format!("._m_{c_name}")
+            format!("._m_{member_c_name}")
         } else {
-            format!(".members._m_{c_name}")
+            format!(".members._m_{member_c_name}")
         };
         let mut segments: Vec<(String, bool)> = ancestor_segments.to_vec();
         segments.push((segment_suffix, member_has_occurs));
@@ -378,7 +386,7 @@ pub(crate) fn collect_subscript_paths(
         let any_occurs = root_has_occurs || segments.iter().any(|(_, has)| *has);
         if any_occurs {
             let new_occurs_count = segments.iter().filter(|(_, has)| *has).count();
-            let should_insert = match map.get(&c_name) {
+            let should_insert = match map.get(&base_c_name) {
                 Some(existing) => {
                     let existing_count = existing.segments.iter().filter(|(_, has)| *has).count();
                     new_occurs_count > existing_count
@@ -395,7 +403,7 @@ pub(crate) fn collect_subscript_paths(
             };
             if should_insert {
                 map.insert(
-                    c_name.clone(),
+                    base_c_name.clone(),
                     SubscriptPathInfo {
                         segments: segments.clone(),
                         root: root.to_string(),

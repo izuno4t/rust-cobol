@@ -588,7 +588,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
         }
         let total: u32 = members
             .iter()
-            .filter(|m| m.redefines.is_none())
+            .filter(|m| m.redefines.is_none() && m.renames.is_none())
             .map(|m| {
                 let element_size = match &m.data_type {
                     HirType::Alphanumeric { size } => *size,

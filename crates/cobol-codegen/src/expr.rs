@@ -724,10 +724,7 @@ pub(crate) fn grp_display_size(
     if is_simple_name {
         let lookup = extract_leaf_member(c_name);
         let display_size = with_active_context(|ctx| ctx.display_numeric_size(lookup));
-        if data_items
-            .iter()
-            .any(|item| sanitize_name(&item.name) == lookup)
-        {
+        if display_size.is_some() {
             return display_size;
         }
         if let Some(item) = find_data_item_by_sanitized_name(lookup, data_items) {
@@ -2866,6 +2863,21 @@ pub(crate) fn find_data_item_size_in(c_name: &str, items: &[HirDataItem]) -> u32
         }
     }
     0
+}
+
+pub(crate) fn find_data_item_storage_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    let lookup = extract_leaf_member(c_name);
+    if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {
+        if let Some(redef_name) = &item.redefines {
+            let redef_c = sanitize_name(redef_name);
+            let resolved = find_data_item_storage_size(&redef_c, data_items);
+            if resolved > 0 {
+                return resolved;
+            }
+        }
+        return data_item_byte_size(&item.data_type);
+    }
+    find_data_item_size(c_name, data_items)
 }
 
 /// Compute the byte size of an HIR type.

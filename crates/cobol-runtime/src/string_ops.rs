@@ -273,15 +273,14 @@ pub unsafe extern "C" fn cobol_store_numeric_display(value: i64, dst_ptr: *mut u
         return;
     }
     let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
-    let abs_val = value.unsigned_abs();
-    let formatted = format!("{:0>width$}", abs_val, width = dst.len());
-    let bytes = formatted.as_bytes();
-    // Take the rightmost dst_len digits
-    if bytes.len() >= dst.len() {
-        let offset = bytes.len() - dst.len();
-        dst.copy_from_slice(&bytes[offset..]);
-    } else {
-        dst.copy_from_slice(bytes);
+    dst.fill(b'0');
+    let mut n = value.unsigned_abs();
+    for slot in dst.iter_mut().rev() {
+        *slot = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
     }
 }
 
@@ -296,11 +295,43 @@ pub unsafe extern "C" fn cobol_display_to_int64(src_ptr: *const u8, src_len: u32
         return 0;
     }
     let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
-    let s = std::str::from_utf8_unchecked(src).trim();
-    if s.is_empty() {
+    let mut start = 0usize;
+    let mut end = src.len();
+    while start < end && src[start] == b' ' {
+        start += 1;
+    }
+    while start < end && src[end - 1] == b' ' {
+        end -= 1;
+    }
+    if start == end {
         return 0;
     }
-    s.parse::<i64>().unwrap_or(0)
+    let mut negative = false;
+    if src[start] == b'+' || src[start] == b'-' {
+        negative = src[start] == b'-';
+        start += 1;
+    }
+    if start < end && (src[end - 1] == b'+' || src[end - 1] == b'-') {
+        negative = src[end - 1] == b'-';
+        end -= 1;
+    }
+    let mut value = 0i64;
+    let mut saw_digit = false;
+    for &b in &src[start..end] {
+        if b.is_ascii_digit() {
+            saw_digit = true;
+            value = value.saturating_mul(10).saturating_add((b - b'0') as i64);
+        } else {
+            return 0;
+        }
+    }
+    if !saw_digit {
+        0
+    } else if negative {
+        -value
+    } else {
+        value
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -700,6 +731,24 @@ mod tests {
         let b = b"ABC";
         let r = unsafe { cobol_compare_alphanumeric(a.as_ptr(), 2, b.as_ptr(), 3) };
         assert!(r < 0, "AB (space-padded) should be less than ABC");
+    }
+
+    #[test]
+    fn test_store_numeric_display_zero_pads_without_allocating() {
+        let mut buf = [b' '; 4];
+        unsafe {
+            cobol_store_numeric_display(7, buf.as_mut_ptr(), buf.len() as u32);
+        }
+        assert_eq!(&buf, b"0007");
+    }
+
+    #[test]
+    fn test_display_to_int64_handles_spaces_and_signs() {
+        unsafe {
+            assert_eq!(cobol_display_to_int64(b"  +123".as_ptr(), 6), 123);
+            assert_eq!(cobol_display_to_int64(b"456- ".as_ptr(), 5), -456);
+            assert_eq!(cobol_display_to_int64(b"   ".as_ptr(), 3), 0);
+        }
     }
 
     #[test]

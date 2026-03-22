@@ -2926,8 +2926,8 @@ pub(crate) fn emit_move_to(
         return;
     }
 
-    // Group-to-group move: use memcpy with space-padding per COBOL rules.
-    // Use sizeof() for C struct sizes to account for null terminators and padding.
+    // Group-to-group move: use logical storage sizes so REDEFINES overlays
+    // copy only the backing storage, not the overlay's expanded view.
     if is_target_group {
         if let HirExpr::Variable(src_name) = from {
             let c_src = sanitize_name(src_name);
@@ -2936,11 +2936,12 @@ pub(crate) fn emit_move_to(
             if is_source_group {
                 let src_ptr = c_ptr_expr(&c_src, data_items);
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
-                // Both are groups: use sizeof() for correct C-level byte copy
+                let src_size = find_data_item_storage_size(&c_src, data_items);
+                let tgt_size = find_data_item_storage_size(c_target, data_items);
                 out.push_str(&format!(
                     "{pad}{{\n\
-                     {pad}    size_t _src_sz = sizeof({c_src});\n\
-                     {pad}    size_t _tgt_sz = sizeof({c_target});\n\
+                     {pad}    size_t _src_sz = {src_size};\n\
+                     {pad}    size_t _tgt_sz = {tgt_size};\n\
                      {pad}    size_t _cp_sz = _src_sz < _tgt_sz ? _src_sz : _tgt_sz;\n\
                      {pad}    memcpy({tgt_ptr}, {src_ptr}, _cp_sz);\n\
                      {pad}    if (_src_sz < _tgt_sz) {{\n\
@@ -2952,7 +2953,7 @@ pub(crate) fn emit_move_to(
             } else {
                 // Non-group source to group target: copy by COBOL data size
                 let src_size = find_data_item_size(&c_src, data_items);
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_storage_size(c_target, data_items);
                 let copy_size = src_size.min(tgt_size);
                 let src_ptr = c_ptr_expr(&c_src, data_items);
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
@@ -2970,7 +2971,7 @@ pub(crate) fn emit_move_to(
                 src_item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
             if is_src_alpha || is_src_group {
                 let src_size = find_data_item_size(&sanitize_name(variable), data_items);
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_storage_size(c_target, data_items);
                 let copy_size = src_size.min(tgt_size);
                 let src_ptr = if is_src_group {
                     c_ptr_expr(&c_src, data_items)
@@ -2979,16 +2980,17 @@ pub(crate) fn emit_move_to(
                 };
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
                 out.push_str(&format!(
-                    "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                    "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
                      {pad}memcpy({tgt_ptr}, {src_ptr}, {copy_size});\n"
                 ));
             } else {
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
+                let tgt_size = find_data_item_size(c_target, data_items);
                 let e = emit_int_compatible_expr(from, data_items);
                 out.push_str(&format!(
-                    "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                    "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
                      {pad}{{ int64_t _v = {e}; memcpy({tgt_ptr}, &_v, \
-                     sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
+                     sizeof(_v) < {tgt_size} ? sizeof(_v) : {tgt_size}); }}\n"
                 ));
             }
         } else if let HirExpr::ReferenceModification {
@@ -3007,10 +3009,10 @@ pub(crate) fn emit_move_to(
             } else {
                 format!("({src_full_size} - ({c_start} - 1))")
             };
-            let tgt_size = find_data_item_size(c_target, data_items);
+            let tgt_size = find_data_item_storage_size(c_target, data_items);
             let tgt_ptr = c_ptr_expr(c_target, data_items);
             out.push_str(&format!(
-                "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
                  {pad}memcpy({tgt_ptr}, (const uint8_t*){src_ptr} + ({c_start} - 1), \
                  {c_len} < {tgt_size} ? {c_len} : {tgt_size});\n"
             ));
@@ -3019,36 +3021,41 @@ pub(crate) fn emit_move_to(
             match from {
                 HirExpr::Literal(HirLiteral::Space) => {
                     let tgt_ptr = c_ptr_expr(c_target, data_items);
+                    let tgt_size = find_data_item_storage_size(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n"
+                        "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n"
                     ));
                 }
                 HirExpr::Literal(HirLiteral::Zero) => {
                     let tgt_ptr = c_ptr_expr(c_target, data_items);
+                    let tgt_size = find_data_item_storage_size(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset({tgt_ptr}, '0', sizeof({c_target}));\n"
+                        "{pad}memset({tgt_ptr}, '0', {tgt_size});\n"
                     ));
                 }
                 HirExpr::Literal(HirLiteral::HighValue) => {
                     let tgt_ptr = c_ptr_expr(c_target, data_items);
+                    let tgt_size = find_data_item_storage_size(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset({tgt_ptr}, 0xFF, sizeof({c_target}));\n"
+                        "{pad}memset({tgt_ptr}, 0xFF, {tgt_size});\n"
                     ));
                 }
                 HirExpr::Literal(HirLiteral::LowValue) => {
                     let tgt_ptr = c_ptr_expr(c_target, data_items);
+                    let tgt_size = find_data_item_storage_size(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset({tgt_ptr}, 0x00, sizeof({c_target}));\n"
+                        "{pad}memset({tgt_ptr}, 0x00, {tgt_size});\n"
                     ));
                 }
                 HirExpr::Literal(HirLiteral::String(s)) => {
                     let escaped = escape_c_string(s);
                     let src_len = s.len();
                     let tgt_ptr = c_ptr_expr(c_target, data_items);
+                    let tgt_size = find_data_item_storage_size(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                        "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
                          {pad}memcpy({tgt_ptr}, \"{escaped}\", \
-                         {src_len} < sizeof({c_target}) ? {src_len} : sizeof({c_target}));\n"
+                         {src_len} < {tgt_size} ? {src_len} : {tgt_size});\n"
                     ));
                 }
                 _ => {
@@ -3057,7 +3064,7 @@ pub(crate) fn emit_move_to(
                         let e = emit_expr(from);
                         let src_name = expr_var_name(from);
                         let src_size = find_data_item_size(&sanitize_name(src_name), data_items);
-                        let tgt_size = find_data_item_size(c_target, data_items);
+                        let tgt_size = find_data_item_storage_size(c_target, data_items);
                         let copy_size = src_size.min(tgt_size);
                         let src_ptr = if is_group_expr(from, data_items) {
                             c_ptr_expr(&e, data_items)
@@ -3066,16 +3073,17 @@ pub(crate) fn emit_move_to(
                         };
                         let tgt_ptr = c_ptr_expr(c_target, data_items);
                         out.push_str(&format!(
-                            "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                            "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
                              {pad}memcpy({tgt_ptr}, {src_ptr}, {copy_size});\n"
                         ));
                     } else {
                         let tgt_ptr = c_ptr_expr(c_target, data_items);
+                        let tgt_size = find_data_item_storage_size(c_target, data_items);
                         let e = emit_int_compatible_expr(from, data_items);
                         out.push_str(&format!(
-                            "{pad}memset({tgt_ptr}, ' ', sizeof({c_target}));\n\
+                            "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
                              {pad}{{ int64_t _v = {e}; memcpy({tgt_ptr}, &_v, \
-                             sizeof(_v) < sizeof({c_target}) ? sizeof(_v) : sizeof({c_target})); }}\n"
+                             sizeof(_v) < {tgt_size} ? sizeof(_v) : {tgt_size}); }}\n"
                         ));
                     }
                 }
@@ -4307,8 +4315,9 @@ pub(crate) fn emit_expr_as_numeric_with_ctx(expr: &HirExpr, ctx: &CodegenContext
                 _ => emit_expr(expr),
             };
             let base_name = sanitize_name(name);
-            let is_dec = with_active_context(|ctx| ctx.is_decimal_name(&base_name));
-            let is_grp = with_active_context(|ctx| ctx.is_group_name(&base_name));
+            let leaf_name = extract_leaf_member(&c_name);
+            let is_dec = ctx.is_decimal_name(&base_name) || ctx.is_decimal_name(leaf_name);
+            let is_grp = ctx.is_group_name(&base_name) || ctx.is_group_name(leaf_name);
             if is_dec {
                 format!("cobol_decimal_to_int64(&{c_name})")
             } else if is_grp {
@@ -4366,18 +4375,26 @@ pub(crate) fn emit_expr_as_double_with_ctx(expr: &HirExpr, ctx: &CodegenContext)
             let c_name = super::emit_expr_with_ctx(expr, ctx);
             let var_name = expr_var_name(expr);
             let base_name = sanitize_name(var_name);
-            let is_dec = !base_name.is_empty() && ctx.is_decimal_name(&base_name);
+            let leaf_name = extract_leaf_member(&c_name);
+            let is_dec = (!base_name.is_empty() && ctx.is_decimal_name(&base_name))
+                || ctx.is_decimal_name(leaf_name);
             if is_dec {
                 format!("cobol_decimal_to_double(&{c_name})")
-            } else if !base_name.is_empty() && ctx.is_group_name(&base_name) {
-                let size = ctx.data_item_size(&base_name).unwrap_or(0);
+            } else if (!base_name.is_empty() && ctx.is_group_name(&base_name))
+                || ctx.is_group_name(leaf_name)
+            {
+                let size = ctx
+                    .data_item_size(&base_name)
+                    .or_else(|| ctx.data_item_size(leaf_name))
+                    .unwrap_or(0);
                 format!("(double)cobol_func_numval((const uint8_t*)&{c_name}, {size})")
             } else {
                 let disp_size = grp_display_size(&c_name, &[]).or_else(|| {
                     if base_name.is_empty() {
-                        None
+                        ctx.display_numeric_size(leaf_name)
                     } else {
                         ctx.display_numeric_size(&base_name)
+                            .or_else(|| ctx.display_numeric_size(leaf_name))
                     }
                 });
                 if let Some(size) = disp_size {
@@ -4387,9 +4404,15 @@ pub(crate) fn emit_expr_as_double_with_ctx(expr: &HirExpr, ctx: &CodegenContext)
                     )
                 } else if !base_name.is_empty()
                     && (c_name.contains('[') || c_name.contains(".members._m_"))
-                    && ctx.data_item_size(&base_name).is_some()
+                    && ctx
+                        .data_item_size(&base_name)
+                        .or_else(|| ctx.data_item_size(leaf_name))
+                        .is_some()
                 {
-                    let size = ctx.data_item_size(&base_name).unwrap_or(0);
+                    let size = ctx
+                        .data_item_size(&base_name)
+                        .or_else(|| ctx.data_item_size(leaf_name))
+                        .unwrap_or(0);
                     format!("(double)cobol_func_numval((const uint8_t*){c_name}, {size})")
                 } else {
                     format!("(double){c_name}")

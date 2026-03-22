@@ -275,17 +275,26 @@ pub(crate) fn emit_group_typedefs(
     members: &[HirDataItem],
     emitted_typedefs: &mut HashSet<String>,
 ) {
-    // First, recurse into nested groups
+    // First, recurse into nested groups using the same duplicate-name
+    // disambiguation as the enclosing struct members.
+    let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
         if member.redefines.is_some() {
             continue;
         }
+        let member_base = sanitize_name(&member.name);
+        let count = member_name_counts.entry(member_base.clone()).or_insert(0);
+        *count += 1;
+        let member_c_name = if *count > 1 {
+            format!("{}_{}", member_base, count)
+        } else {
+            member_base
+        };
         if let HirType::Group {
             members: sub_members,
             ..
         } = &member.data_type
         {
-            let member_c_name = sanitize_name(&member.name);
             emit_group_typedefs(out, &member_c_name, sub_members, emitted_typedefs);
         }
     }

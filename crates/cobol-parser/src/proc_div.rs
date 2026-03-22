@@ -1286,7 +1286,10 @@ impl Parser {
         }
 
         if self.eat(TokenKind::Else).is_some() {
-            while !self.at_eof() && !self.check(TokenKind::EndIf) && !self.check(TokenKind::Period)
+            while !self.at_eof()
+                && !self.check(TokenKind::Else)
+                && !self.check(TokenKind::EndIf)
+                && !self.check(TokenKind::Period)
             {
                 else_body.push(self.parse_statement()?);
             }
