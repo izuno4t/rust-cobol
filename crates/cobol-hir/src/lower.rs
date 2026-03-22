@@ -199,6 +199,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let mut hir = HirProgram {
         name,
         data_items,
+        communication_descriptions: lower_communication_descriptions(program.data.as_ref()),
         paragraphs,
         body,
         using_params,
@@ -252,6 +253,27 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     }
 
     hir
+}
+
+fn lower_communication_descriptions(
+    data: Option<&DataDivision>,
+) -> Vec<crate::hir::HirCommunicationDescription> {
+    let Some(data) = data else {
+        return Vec::new();
+    };
+    data.communication
+        .iter()
+        .map(|cd| crate::hir::HirCommunicationDescription {
+            name: cd.name.clone(),
+            status_key: cd.status_key.clone(),
+            message_count: cd.message_count.clone(),
+            text_length: cd.text_length.clone(),
+            end_key: cd.end_key.clone(),
+            error_key: cd.error_key.clone(),
+            symbolic_source: cd.symbolic_source.clone(),
+            destination_count: cd.destination_count.clone(),
+        })
+        .collect()
 }
 
 /// Collect 88-level condition name information from the DATA DIVISION.
@@ -814,7 +836,7 @@ fn lower_statement(
         Statement::Enable(enable) => Some(lower_enable(enable)),
         Statement::Disable(disable) => Some(lower_disable(disable)),
         Statement::Send(send) => Some(lower_send(send)),
-        Statement::Receive(receive) => Some(lower_receive(receive)),
+        Statement::Receive(receive) => Some(lower_receive(receive, condition_names)),
         Statement::Purge(purge) => Some(lower_purge(purge)),
         Statement::Move(mv) => Some(lower_move(mv)),
         Statement::Compute(compute) => lower_compute(compute, condition_names),
@@ -1529,10 +1551,18 @@ fn lower_send(send: &SendStatement) -> HirStatement {
     }
 }
 
-fn lower_receive(receive: &ReceiveStatement) -> HirStatement {
+fn lower_receive(
+    receive: &ReceiveStatement,
+    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+) -> HirStatement {
     HirStatement::Receive {
         target: receive.target.name.clone(),
         into: receive.into.name.clone(),
+        no_data: receive
+            .no_data
+            .iter()
+            .filter_map(|stmt| lower_statement(stmt, condition_names))
+            .collect(),
         span: receive.span,
     }
 }

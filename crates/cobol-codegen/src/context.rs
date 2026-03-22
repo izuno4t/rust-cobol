@@ -4,6 +4,17 @@ use std::cell::{Cell, RefCell};
 pub(crate) type FileStatusMap = HashMap<String, String>;
 pub(crate) type FileRecordMap = HashMap<String, String>;
 
+#[derive(Debug, Clone)]
+pub(crate) struct CommunicationBinding {
+    pub(crate) status_key: Option<String>,
+    pub(crate) message_count: Option<String>,
+    pub(crate) text_length: Option<String>,
+    pub(crate) end_key: Option<String>,
+    pub(crate) error_key: Option<String>,
+    pub(crate) symbolic_source: Option<String>,
+    pub(crate) destination_count: Option<String>,
+}
+
 /// Describes the path segments from a top-level group root to a data item,
 /// recording which segments carry an OCCURS dimension.
 #[derive(Debug, Clone)]
@@ -19,6 +30,7 @@ pub(crate) struct SubscriptPathInfo {
 pub(crate) struct CodegenContext {
     subscript_paths: HashMap<String, SubscriptPathInfo>,
     file_record_map: FileRecordMap,
+    communication_map: HashMap<String, CommunicationBinding>,
     decimal_names: HashSet<String>,
     group_names: HashSet<String>,
     display_numeric_sizes: HashMap<String, u32>,
@@ -36,7 +48,11 @@ thread_local! {
 
 impl CodegenContext {
     pub(crate) fn from_program(program: &HirProgram) -> Self {
-        Self::new(&program.data_items, &program.file_records)
+        Self::new(
+            &program.data_items,
+            &program.file_records,
+            &program.communication_descriptions,
+        )
     }
 
     pub(crate) fn merged_with_program(parent: &CodegenContext, program: &HirProgram) -> Self {
@@ -50,6 +66,11 @@ impl CodegenContext {
                 .iter()
                 .map(|(f, r)| (sanitize_name(f), sanitize_name(r))),
         );
+
+        let mut communication_map = parent.communication_map.clone();
+        communication_map.extend(build_communication_map(
+            &program.communication_descriptions,
+        ));
 
         let mut decimal_names = parent.decimal_names.clone();
         decimal_names.extend(build_decimal_names(&program.data_items));
@@ -69,6 +90,7 @@ impl CodegenContext {
         Self {
             subscript_paths,
             file_record_map,
+            communication_map,
             decimal_names,
             group_names,
             display_numeric_sizes,
@@ -84,6 +106,7 @@ impl CodegenContext {
     pub(crate) fn new(
         data_items: &[HirDataItem],
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+        communication_descriptions: &[cobol_hir::HirCommunicationDescription],
     ) -> Self {
         Self {
             subscript_paths: build_subscript_paths(data_items),
@@ -91,6 +114,7 @@ impl CodegenContext {
                 .iter()
                 .map(|(f, r)| (sanitize_name(f), sanitize_name(r)))
                 .collect(),
+            communication_map: build_communication_map(communication_descriptions),
             decimal_names: build_decimal_names(data_items),
             group_names: build_group_names(data_items),
             display_numeric_sizes: build_display_numeric_sizes(data_items),
@@ -146,6 +170,10 @@ impl CodegenContext {
             .unwrap_or_else(|| sanitized_file_name.to_string())
     }
 
+    pub(crate) fn communication_binding(&self, sanitized_name: &str) -> Option<CommunicationBinding> {
+        self.communication_map.get(sanitized_name).cloned()
+    }
+
     pub(crate) fn is_decimal_name(&self, c_name: &str) -> bool {
         self.decimal_names.contains(c_name)
     }
@@ -169,6 +197,28 @@ impl CodegenContext {
     pub(crate) fn data_item_size(&self, c_name: &str) -> Option<u32> {
         self.data_item_size_cache.get(c_name).copied()
     }
+}
+
+fn build_communication_map(
+    communication_descriptions: &[cobol_hir::HirCommunicationDescription],
+) -> HashMap<String, CommunicationBinding> {
+    communication_descriptions
+        .iter()
+        .map(|cd| {
+            (
+                sanitize_name(&cd.name),
+                CommunicationBinding {
+                    status_key: cd.status_key.as_ref().map(|v| sanitize_name(v)),
+                    message_count: cd.message_count.as_ref().map(|v| sanitize_name(v)),
+                    text_length: cd.text_length.as_ref().map(|v| sanitize_name(v)),
+                    end_key: cd.end_key.as_ref().map(|v| sanitize_name(v)),
+                    error_key: cd.error_key.as_ref().map(|v| sanitize_name(v)),
+                    symbolic_source: cd.symbolic_source.as_ref().map(|v| sanitize_name(v)),
+                    destination_count: cd.destination_count.as_ref().map(|v| sanitize_name(v)),
+                },
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn with_pushed_context<R>(ctx: &CodegenContext, f: impl FnOnce() -> R) -> R {

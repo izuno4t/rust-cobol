@@ -12,6 +12,7 @@ use smol_str::SmolStr;
 pub struct HirProgram {
     pub name: SmolStr,
     pub data_items: Vec<HirDataItem>,
+    pub communication_descriptions: Vec<HirCommunicationDescription>,
     pub paragraphs: Vec<HirParagraph>,
     pub body: Vec<HirStatement>,
     /// PROCEDURE DIVISION USING parameters (non-empty means sub-program).
@@ -41,6 +42,18 @@ pub struct HirProgram {
     /// Nested programs (COBOL 85 inter-program communication).
     pub nested_programs: Vec<HirProgram>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirCommunicationDescription {
+    pub name: SmolStr,
+    pub status_key: Option<SmolStr>,
+    pub message_count: Option<SmolStr>,
+    pub text_length: Option<SmolStr>,
+    pub end_key: Option<SmolStr>,
+    pub error_key: Option<SmolStr>,
+    pub symbolic_source: Option<SmolStr>,
+    pub destination_count: Option<SmolStr>,
 }
 
 /// A USE AFTER EXCEPTION declarative section.
@@ -513,6 +526,7 @@ pub enum HirStatement {
     Receive {
         target: SmolStr,
         into: SmolStr,
+        no_data: Vec<HirStatement>,
         span: Span,
     },
     Purge {
@@ -1090,8 +1104,19 @@ fn write_stmt(
             }
             writeln!(f)
         }
-        HirStatement::Receive { target, into, .. } => {
-            writeln!(f, "{pad}RECEIVE {target} MESSAGE INTO {into}")
+        HirStatement::Receive {
+            target,
+            into,
+            no_data,
+            ..
+        } => {
+            write!(f, "{pad}RECEIVE {target} MESSAGE INTO {into}")?;
+            if let Some(first) = no_data.first() {
+                write!(f, " NO DATA ")?;
+                write_stmt(f, first, indent)?;
+                return Ok(());
+            }
+            writeln!(f)
         }
         HirStatement::Purge { target, .. } => {
             writeln!(f, "{pad}PURGE {target}")

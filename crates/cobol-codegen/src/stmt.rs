@@ -1656,11 +1656,76 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!(
                         "{pad}    time_t _t = time(NULL); struct tm* _tm = localtime(&_t);\n"
                     ));
-                    out.push_str(&format!(
-                        "{pad}    int64_t _dv = _tm->tm_hour * 1000000 \
-                         + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
-                    ));
-                    emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
+                    if let Some(item) = find_data_item(target, data_items) {
+                        if let HirType::Group { members, .. } = &item.data_type {
+                            let numeric_members: Vec<_> = members
+                                .iter()
+                                .filter_map(|member| match member.data_type {
+                                    HirType::Numeric { size, .. } => Some((member, size)),
+                                    _ => None,
+                                })
+                                .collect();
+                            if numeric_members.len() >= 3 {
+                                let hrs_ref = format!(
+                                    "{c_target}__{}",
+                                    sanitize_name(&numeric_members[0].0.name)
+                                );
+                                let mins_ref = format!(
+                                    "{c_target}__{}",
+                                    sanitize_name(&numeric_members[1].0.name)
+                                );
+                                let secs_ref = format!(
+                                    "{c_target}__{}",
+                                    sanitize_name(&numeric_members[2].0.name)
+                                );
+                                let hrs_ptr = display_numeric_ptr(&hrs_ref);
+                                let mins_ptr = display_numeric_ptr(&mins_ref);
+                                let secs_ptr = display_numeric_ptr(&secs_ref);
+                                out.push_str(&format!(
+                                    "{pad}    cobol_store_numeric_display(_tm->tm_hour, {hrs_ptr}, {});\n",
+                                    numeric_members[0].1
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}    cobol_store_numeric_display(_tm->tm_min, {mins_ptr}, {});\n",
+                                    numeric_members[1].1
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}    cobol_store_numeric_display(_tm->tm_sec * 100, {secs_ptr}, {});\n",
+                                    numeric_members[2].1
+                                ));
+                            } else {
+                                out.push_str(&format!(
+                                    "{pad}    int64_t _dv = _tm->tm_hour * 1000000 \
+                                     + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
+                                ));
+                                emit_store_int(
+                                    out,
+                                    &c_target,
+                                    "_dv",
+                                    data_items,
+                                    &format!("{pad}    "),
+                                );
+                            }
+                        } else {
+                            out.push_str(&format!(
+                                "{pad}    int64_t _dv = _tm->tm_hour * 1000000 \
+                                 + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
+                            ));
+                            emit_store_int(
+                                out,
+                                &c_target,
+                                "_dv",
+                                data_items,
+                                &format!("{pad}    "),
+                            );
+                        }
+                    } else {
+                        out.push_str(&format!(
+                            "{pad}    int64_t _dv = _tm->tm_hour * 1000000 \
+                             + _tm->tm_min * 10000 + _tm->tm_sec * 100;\n"
+                        ));
+                        emit_store_int(out, &c_target, "_dv", data_items, &format!("{pad}    "));
+                    }
                     out.push_str(&format!("{pad}}}\n"));
                 }
                 HirAcceptSource::Environment(env_name) => {
@@ -1680,7 +1745,168 @@ pub(crate) fn emit_statement_with_ctx(
                         "{pad}((char*){tgt_ptr})[strcspn((char*){tgt_ptr}, \"\\n\")] = '\\0';\n"
                     ));
                 }
+                HirAcceptSource::MessageCount => {
+                    let binding = ctx.communication_binding(&c_target);
+                    if let Some(binding) = binding {
+                        if let Some(message_count) = binding.message_count {
+                            out.push_str(&format!(
+                                "{pad}{{ uint32_t _count = cobol_comm_message_count((const uint8_t*)\"{c_target}\", {});\n",
+                                c_target.len()
+                            ));
+                            emit_store_int(
+                                out,
+                                &message_count,
+                                "(int64_t)_count",
+                                data_items,
+                                &format!("{pad}    "),
+                            );
+                            out.push_str(&format!("{pad}}}\n"));
+                        }
+                    }
+                }
             }
+        }
+        HirStatement::Enable {
+            mode,
+            terminal,
+            target,
+            key,
+            ..
+        } => {
+            let c_target = sanitize_name(target);
+            let (c_key_ptr, c_key_len) = emit_comm_arg(key, data_items);
+            out.push_str(&format!(
+                "{pad}{{ uint32_t _rc = cobol_comm_enable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len});\n",
+                c_target.len(),
+                emit_comm_mode(mode),
+                if *terminal { 1 } else { 0 }
+            ));
+            emit_comm_status_updates(
+                out,
+                &c_target,
+                "_rc",
+                None,
+                data_items,
+                &format!("{pad}    "),
+            );
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        HirStatement::Disable {
+            mode,
+            terminal,
+            target,
+            key,
+            ..
+        } => {
+            let c_target = sanitize_name(target);
+            let (c_key_ptr, c_key_len) = emit_comm_arg(key, data_items);
+            out.push_str(&format!(
+                "{pad}{{ uint32_t _rc = cobol_comm_disable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len});\n",
+                c_target.len(),
+                emit_comm_mode(mode),
+                if *terminal { 1 } else { 0 }
+            ));
+            emit_comm_status_updates(
+                out,
+                &c_target,
+                "_rc",
+                None,
+                data_items,
+                &format!("{pad}    "),
+            );
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        HirStatement::Send {
+            target,
+            from,
+            with,
+            replacing_line,
+            ..
+        } => {
+            let c_target = sanitize_name(target);
+            let (c_from_ptr, c_from_len) = if let Some(from) = from {
+                emit_comm_arg(from, data_items)
+            } else {
+                ("NULL".to_string(), "0".to_string())
+            };
+            let (option_kind, option_value) = match with {
+                Some(cobol_hir::HirSendOption::Emi) => ("1".to_string(), "0".to_string()),
+                Some(cobol_hir::HirSendOption::Egi) => ("2".to_string(), "0".to_string()),
+                Some(cobol_hir::HirSendOption::Esi) => ("3".to_string(), "0".to_string()),
+                Some(cobol_hir::HirSendOption::Identifier(expr)) => {
+                    ("4".to_string(), emit_expr_as_numeric(expr))
+                }
+                None => ("0".to_string(), "0".to_string()),
+            };
+            out.push_str(&format!(
+                "{pad}{{ uint32_t _rc = cobol_comm_send((const uint8_t*)\"{c_target}\", {}, {c_from_ptr}, {c_from_len}, {option_kind}, {option_value}, {});\n",
+                c_target.len(),
+                if *replacing_line { 1 } else { 0 }
+            ));
+            emit_comm_status_updates(
+                out,
+                &c_target,
+                "_rc",
+                None,
+                data_items,
+                &format!("{pad}    "),
+            );
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        HirStatement::Receive {
+            target,
+            into,
+            no_data,
+            ..
+        } => {
+            let c_target = sanitize_name(target);
+            let c_into = sanitize_name(into);
+            let into_ptr = c_ptr_expr(&c_into, data_items);
+            let into_len = find_data_item_size(&c_into, data_items);
+            out.push_str(&format!(
+                "{pad}{{ uint32_t _text_len = 0; uint32_t _rc = cobol_comm_receive((const uint8_t*)\"{c_target}\", {}, {into_ptr}, {into_len}, &_text_len);\n",
+                c_target.len()
+            ));
+            emit_comm_status_updates(
+                out,
+                &c_target,
+                "_rc",
+                Some("_text_len"),
+                data_items,
+                &format!("{pad}    "),
+            );
+            if !no_data.is_empty() {
+                out.push_str(&format!("{pad}    if (_rc == 10) {{\n"));
+                for stmt in no_data {
+                    emit_statement(
+                        out,
+                        stmt,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 2,
+                    );
+                }
+                out.push_str(&format!("{pad}    }}\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        HirStatement::Purge { target, .. } => {
+            let c_target = sanitize_name(target);
+            out.push_str(&format!(
+                "{pad}{{ uint32_t _rc = cobol_comm_purge((const uint8_t*)\"{c_target}\", {});\n",
+                c_target.len()
+            ));
+            emit_comm_status_updates(
+                out,
+                &c_target,
+                "_rc",
+                None,
+                data_items,
+                &format!("{pad}    "),
+            );
+            out.push_str(&format!("{pad}}}\n"));
         }
         HirStatement::Sort {
             file_name,
@@ -4216,6 +4442,103 @@ pub(crate) fn emit_alpha_max_min(args: &[HirExpr], func: &str) -> String {
          int32_t _ai = {func}(_ap, _al, {n}); \
          _ap[_ai]; }})"
     )
+}
+
+fn emit_comm_mode(mode: &cobol_hir::HirCommunicationMode) -> i32 {
+    match mode {
+        cobol_hir::HirCommunicationMode::Input => 0,
+        cobol_hir::HirCommunicationMode::Output => 1,
+        cobol_hir::HirCommunicationMode::InputOutput => 2,
+    }
+}
+
+fn emit_comm_arg(expr: &HirExpr, data_items: &[HirDataItem]) -> (String, String) {
+    match expr {
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            (format!("(const uint8_t*)\"{escaped}\""), s.len().to_string())
+        }
+        HirExpr::Variable(name) => {
+            let c_name = sanitize_name(name);
+            let ptr = c_ptr_expr(&c_name, data_items);
+            let len = find_data_item_size(&c_name, data_items).to_string();
+            (format!("(const uint8_t*)(const void*){ptr}"), len)
+        }
+        HirExpr::Subscript { .. } => {
+            let c_name = emit_expr(expr);
+            let ptr = format!("(const uint8_t*)(const void*){c_name}");
+            let len = find_data_item_size(expr_var_name(expr), data_items).to_string();
+            (ptr, len)
+        }
+        _ => {
+            let c_expr = emit_expr(expr);
+            (
+                format!("(const uint8_t*)(const void*)&(int64_t){{ {c_expr} }}"),
+                "sizeof(int64_t)".to_string(),
+            )
+        }
+    }
+}
+
+fn emit_comm_status_updates(
+    out: &mut String,
+    c_target: &str,
+    rc_expr: &str,
+    text_len_expr: Option<&str>,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let Some(binding) = with_active_context(|ctx| ctx.communication_binding(c_target)) else {
+        return;
+    };
+
+    if let Some(status_key) = binding.status_key {
+        out.push_str(&format!(
+            "{pad}cobol_move_string((const uint8_t*)(({rc_expr}) == 0 ? \"00\" : (({rc_expr}) == 10 ? \"10\" : \"99\")), 2, (uint8_t*){}, {});\n",
+            c_ptr_expr(&status_key, data_items),
+            find_data_item_size(&status_key, data_items)
+        ));
+    }
+    if let Some(message_count) = binding.message_count {
+        out.push_str(&format!(
+            "{pad}uint32_t _count = cobol_comm_message_count((const uint8_t*)\"{c_target}\", {});\n",
+            c_target.len()
+        ));
+        emit_store_int(out, &message_count, "(int64_t)_count", data_items, pad);
+    }
+    if let (Some(text_length), Some(text_len_expr)) = (binding.text_length, text_len_expr) {
+        emit_store_int(
+            out,
+            &text_length,
+            &format!("(int64_t){text_len_expr}"),
+            data_items,
+            pad,
+        );
+    }
+    if let Some(end_key) = binding.end_key {
+        out.push_str(&format!(
+            "{pad}cobol_move_string((const uint8_t*)(({rc_expr}) == 10 ? \"1\" : \"0\"), 1, (uint8_t*){}, {});\n",
+            c_ptr_expr(&end_key, data_items),
+            find_data_item_size(&end_key, data_items)
+        ));
+    }
+    if let Some(error_key) = binding.error_key {
+        out.push_str(&format!(
+            "{pad}cobol_move_string((const uint8_t*)((({rc_expr}) != 0 && ({rc_expr}) != 10) ? \"1\" : \"0\"), 1, (uint8_t*){}, {});\n",
+            c_ptr_expr(&error_key, data_items),
+            find_data_item_size(&error_key, data_items)
+        ));
+    }
+    if let Some(symbolic_source) = binding.symbolic_source {
+        out.push_str(&format!(
+            "{pad}memset({}, ' ', {});\n",
+            c_ptr_expr(&symbolic_source, data_items),
+            find_data_item_size(&symbolic_source, data_items)
+        ));
+    }
+    if let Some(destination_count) = binding.destination_count {
+        emit_store_int(out, &destination_count, "0", data_items, pad);
+    }
 }
 
 /// Emit alphanumeric ORD-MAX/ORD-MIN: returns 1-based position.

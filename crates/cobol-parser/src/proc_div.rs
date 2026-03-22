@@ -1052,9 +1052,12 @@ impl Parser {
             self.advance();
             self.expect(TokenKind::Count)?;
             Some(AcceptSource::MessageCount)
+        } else if self.check(TokenKind::Count) {
+            self.advance();
+            Some(AcceptSource::MessageCount)
         } else if self.check(TokenKind::From) {
             self.advance();
-            if self.check_identifier("DATE") {
+            if self.check(TokenKind::DateKw) {
                 self.advance();
                 if self.check_identifier("YYYYMMDD") {
                     self.advance();
@@ -1068,7 +1071,7 @@ impl Parser {
             } else if self.check_identifier("DAY") {
                 self.advance();
                 Some(AcceptSource::Day)
-            } else if self.check_identifier("TIME") {
+            } else if self.check(TokenKind::TimeKw) {
                 self.advance();
                 Some(AcceptSource::Time)
             } else if self.check_identifier("CONSOLE") {
@@ -1113,7 +1116,7 @@ impl Parser {
         let mode = self.parse_communication_mode()?;
         let terminal = self.eat(TokenKind::Terminal).is_some();
         let target = self.parse_qualified_name()?;
-        self.expect(TokenKind::With)?;
+        self.eat(TokenKind::With);
         self.expect(TokenKind::Key)?;
         let key = self.parse_expr()?;
         let end_span = self.span();
@@ -1132,7 +1135,7 @@ impl Parser {
         let mode = self.parse_communication_mode()?;
         let terminal = self.eat(TokenKind::Terminal).is_some();
         let target = self.parse_qualified_name()?;
-        self.expect(TokenKind::With)?;
+        self.eat(TokenKind::With);
         self.expect(TokenKind::Key)?;
         let key = self.parse_expr()?;
         let end_span = self.span();
@@ -1193,13 +1196,37 @@ impl Parser {
         let start_span = self.span();
         self.expect(TokenKind::Receive)?;
         let target = self.parse_qualified_name()?;
-        self.expect(TokenKind::Message)?;
+        if self.check(TokenKind::Message) {
+            self.advance();
+        } else if self.check_identifier("SEGMENT") {
+            self.advance();
+        } else {
+            self.error("expected MESSAGE or SEGMENT in RECEIVE statement");
+            return Err(());
+        }
         self.expect(TokenKind::Into)?;
         let into = self.parse_qualified_name()?;
+        let mut no_data = Vec::new();
+        if self.check_identifier("NO") || self.check(TokenKind::Not) {
+            self.advance();
+            if self.check(TokenKind::Data) || self.check_identifier("DATA") {
+                self.advance();
+            } else {
+                self.error("expected DATA after NO in RECEIVE statement");
+                return Err(());
+            }
+            while !self.at_statement_terminator() && !self.at_eof() {
+                no_data.push(self.parse_statement()?);
+                if self.at_statement_terminator() {
+                    break;
+                }
+            }
+        }
         let end_span = self.span();
         Ok(Statement::Receive(ReceiveStatement {
             target,
             into,
+            no_data,
             span: start_span.merge(&end_span),
         }))
     }

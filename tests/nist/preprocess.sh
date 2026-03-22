@@ -9,7 +9,7 @@ PROG_NAME="$(basename "$INPUT" .cob)"
 TMPDIR="${NIST_TMPDIR:-/tmp/nist/default}"
 mkdir -p "$TMPDIR"
 
-sed \
+awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
     -e "s|XXXXX082|COMPUTER|g" \
     -e "s|XXXXX083|COMPUTER|g" \
     -e "s|XXXXX084|00032768|g" \
@@ -54,12 +54,22 @@ sed \
     -e "s|XXXXX030|\"INQUEUE     \"|g" \
     -e "s|XXXXX031|0001|g" \
     -e "s|XXXXX032|\"OUTQUEUE    \"|g" \
+    -e "s|XXXXX033|0001|g" \
+    -e "s|XXXXX034|\"INQUEUE-2 MESSAGE PAYLOAD                               \"|g" \
+    -e "s|XXXXX035|\"OUTQUEUE-2  \"|g" \
+    -e "s|XXXXX036|0002|g" \
+    -e "s|XXXXX037|0002|g" \
+    -e "s|XXXXX038|\"QUEUE-SET-1                                      \"|g" \
+    -e "s|XXXXX039|\"QUEUE-SET-2                                      \"|g" \
+    -e "s|XXXXX040|\"QUEUE-SET-3                                      \"|g" \
+    -e "s|XXXXX041|\"QUEUE-SET-4                                      \"|g" \
+    -e "s|XXXXX042|\"TERMINAL-0001 \"|g" \
+    -e "s|XXXXX043|\"TERMINAL-0002\"|g" \
     -e "s|XXXXX36[[:space:]]|00000036|g" \
     -e "s|XXXXX38[[:space:]]|00000038|g" \
     -e "s|XXXXX49[[:space:]]|00000049|g" \
     -e "s|XXXXX50[[:space:]]|00000050|g" \
-    -e "s|XXXXX0[[:space:]]|00000000|g" \
-    "$INPUT" | \
+    -e "s|XXXXX0[[:space:]]|00000000|g" | \
     sed -e 's/^\(.\{6\}\)P/\1*/' \
         -e 's/^\(.\{6\}\)C/\1*/' \
         -e 's/^\(.\{6\}\)Y/\1 /' \

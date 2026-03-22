@@ -389,6 +389,7 @@ PROCEDURE DIVISION.
         let hir = HirProgram {
             name: "TEST-CLASS".into(),
             data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: Vec::new(),
             classes: vec![cobol_hir::HirClass {
@@ -458,6 +459,7 @@ PROCEDURE DIVISION.
         let hir = HirProgram {
             name: "TEST-FUNC".into(),
             data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: Vec::new(),
             classes: Vec::new(),
@@ -653,6 +655,7 @@ PROCEDURE DIVISION.
                 screen_info: None,
                 span: Span::dummy(),
             }],
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: vec![HirStatement::Validate {
                 target: "WS-NAME".into(),
@@ -687,6 +690,7 @@ PROCEDURE DIVISION.
         let hir = HirProgram {
             name: "TEST-JSON-GEN".into(),
             data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: vec![HirStatement::JsonGenerate {
                 source: "WS-DATA".into(),
@@ -722,6 +726,7 @@ PROCEDURE DIVISION.
         let hir = HirProgram {
             name: "TEST-JSON-PARSE".into(),
             data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: vec![HirStatement::JsonParse {
                 source: "WS-JSON".into(),
@@ -757,6 +762,7 @@ PROCEDURE DIVISION.
         let hir = HirProgram {
             name: "TEST-XML-GEN".into(),
             data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: vec![HirStatement::XmlGenerate {
                 source: "WS-DATA".into(),
@@ -792,6 +798,7 @@ PROCEDURE DIVISION.
         let hir = HirProgram {
             name: "TEST-XML-PARSE".into(),
             data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: vec![HirStatement::XmlParse {
                 source: "WS-XML".into(),
@@ -831,6 +838,7 @@ PROCEDURE DIVISION.
         let hir = HirProgram {
             name: "TEST-TYPEDEF".into(),
             data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: Vec::new(),
             classes: Vec::new(),
@@ -870,6 +878,7 @@ PROCEDURE DIVISION.
         let hir = HirProgram {
             name: "TEST-IFACE".into(),
             data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: Vec::new(),
             classes: Vec::new(),

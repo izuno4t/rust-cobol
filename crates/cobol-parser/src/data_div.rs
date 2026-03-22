@@ -3,6 +3,7 @@
 use cobol_ast::data_div::*;
 use cobol_ast::picture::{PictureCategory, PictureClause};
 use cobol_lexer::token::TokenKind;
+use smol_str::SmolStr;
 
 use crate::parser::Parser;
 
@@ -172,6 +173,7 @@ impl Parser {
         let mut destination_table_indexed_by = Vec::new();
         let mut error_key = None;
         let mut destination = None;
+        let mut positional_fields = Vec::new();
 
         while !self.check(TokenKind::Period) && !self.at_eof() {
             if self.check(TokenKind::Symbolic) {
@@ -196,6 +198,10 @@ impl Parser {
                     self.advance();
                     self.eat_is();
                     symbolic_source = Some(self.expect_identifier()?);
+                } else if self.check(TokenKind::Destination) {
+                    self.advance();
+                    self.eat_is();
+                    destination = Some(self.expect_identifier()?);
                 } else {
                     self.advance();
                 }
@@ -221,12 +227,30 @@ impl Parser {
                 self.eat(TokenKind::Length);
                 self.eat_is();
                 text_length = Some(self.expect_identifier()?);
+            } else if self.check_identifier("TEXT") {
+                self.advance();
+                self.eat(TokenKind::Length);
+                self.eat_identifier("LENGTH");
+                self.eat_is();
+                text_length = Some(self.expect_identifier()?);
             } else if self.check(TokenKind::EndKey) {
                 self.advance();
                 self.eat_is();
                 end_key = Some(self.expect_identifier()?);
+            } else if self.check_identifier("END") {
+                self.advance();
+                self.eat(TokenKind::Key);
+                self.eat_identifier("KEY");
+                self.eat_is();
+                end_key = Some(self.expect_identifier()?);
             } else if self.check(TokenKind::StatusKey) {
                 self.advance();
+                self.eat_is();
+                status_key = Some(self.expect_identifier()?);
+            } else if self.check_identifier("STATUS") {
+                self.advance();
+                self.eat(TokenKind::Key);
+                self.eat_identifier("KEY");
                 self.eat_is();
                 status_key = Some(self.expect_identifier()?);
             } else if self.check(TokenKind::Destination) {
@@ -256,13 +280,55 @@ impl Parser {
                 self.advance();
                 self.eat_is();
                 error_key = Some(self.expect_identifier()?);
+            } else if self.check_identifier("ERROR") {
+                self.advance();
+                self.eat(TokenKind::Key);
+                self.eat_identifier("KEY");
+                self.eat_is();
+                error_key = Some(self.expect_identifier()?);
+            } else if self.check(TokenKind::Identifier) {
+                positional_fields.push(self.advance().text);
             } else {
                 self.advance();
             }
         }
 
+        apply_positional_communication_fields(
+            direction,
+            &positional_fields,
+            &mut symbolic_queue,
+            &mut symbolic_sub_queue_1,
+            &mut symbolic_sub_queue_2,
+            &mut symbolic_sub_queue_3,
+            &mut message_date,
+            &mut message_time,
+            &mut symbolic_source,
+            &mut text_length,
+            &mut end_key,
+            &mut status_key,
+            &mut message_count,
+        );
+
         self.expect(TokenKind::Period)?;
-        let data_items = self.parse_data_items()?;
+        let mut data_items = self.parse_data_items()?;
+        let synthetic_items = build_communication_data_items(
+            symbolic_queue.as_ref(),
+            symbolic_sub_queue_1.as_ref(),
+            symbolic_sub_queue_2.as_ref(),
+            symbolic_sub_queue_3.as_ref(),
+            message_date.as_ref(),
+            message_time.as_ref(),
+            symbolic_source.as_ref(),
+            text_length.as_ref(),
+            end_key.as_ref(),
+            status_key.as_ref(),
+            message_count.as_ref(),
+            destination_count.as_ref(),
+            error_key.as_ref(),
+            destination.as_ref(),
+            start_span,
+        );
+        data_items.splice(0..0, synthetic_items);
         let end_span = self.span();
 
         Ok(CommunicationDescription {
@@ -1087,6 +1153,252 @@ impl Parser {
             }
             self.advance();
         }
+    }
+}
+
+fn take_positional_field(fields: &[SmolStr], index: usize) -> Option<SmolStr> {
+    let value = fields.get(index)?.clone();
+    if value.eq_ignore_ascii_case("FILLER") {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_positional_communication_fields(
+    direction: CommunicationDirection,
+    fields: &[SmolStr],
+    symbolic_queue: &mut Option<SmolStr>,
+    symbolic_sub_queue_1: &mut Option<SmolStr>,
+    symbolic_sub_queue_2: &mut Option<SmolStr>,
+    symbolic_sub_queue_3: &mut Option<SmolStr>,
+    message_date: &mut Option<SmolStr>,
+    message_time: &mut Option<SmolStr>,
+    symbolic_source: &mut Option<SmolStr>,
+    text_length: &mut Option<SmolStr>,
+    end_key: &mut Option<SmolStr>,
+    status_key: &mut Option<SmolStr>,
+    message_count: &mut Option<SmolStr>,
+) {
+    match direction {
+        CommunicationDirection::Input | CommunicationDirection::InitialInput => {
+            if symbolic_queue.is_none() {
+                *symbolic_queue = take_positional_field(fields, 0);
+            }
+            if symbolic_sub_queue_1.is_none() {
+                *symbolic_sub_queue_1 = take_positional_field(fields, 1);
+            }
+            if symbolic_sub_queue_2.is_none() {
+                *symbolic_sub_queue_2 = take_positional_field(fields, 2);
+            }
+            if symbolic_sub_queue_3.is_none() {
+                *symbolic_sub_queue_3 = take_positional_field(fields, 3);
+            }
+            if message_date.is_none() {
+                *message_date = take_positional_field(fields, 4);
+            }
+            if message_time.is_none() {
+                *message_time = take_positional_field(fields, 5);
+            }
+            if symbolic_source.is_none() {
+                *symbolic_source = take_positional_field(fields, 6);
+            }
+            if text_length.is_none() {
+                *text_length = take_positional_field(fields, 7);
+            }
+            if end_key.is_none() {
+                *end_key = take_positional_field(fields, 8);
+            }
+            if status_key.is_none() {
+                *status_key = take_positional_field(fields, 9);
+            }
+            if message_count.is_none() {
+                *message_count = take_positional_field(fields, 10);
+            }
+        }
+        CommunicationDirection::Output | CommunicationDirection::InputOutput => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_communication_data_items(
+    symbolic_queue: Option<&SmolStr>,
+    symbolic_sub_queue_1: Option<&SmolStr>,
+    symbolic_sub_queue_2: Option<&SmolStr>,
+    symbolic_sub_queue_3: Option<&SmolStr>,
+    message_date: Option<&SmolStr>,
+    message_time: Option<&SmolStr>,
+    symbolic_source: Option<&SmolStr>,
+    text_length: Option<&SmolStr>,
+    end_key: Option<&SmolStr>,
+    status_key: Option<&SmolStr>,
+    message_count: Option<&SmolStr>,
+    destination_count: Option<&SmolStr>,
+    error_key: Option<&SmolStr>,
+    destination: Option<&SmolStr>,
+    span: cobol_common::Span,
+) -> Vec<DataItem> {
+    let mut items = Vec::new();
+
+    for name in [
+        symbolic_queue,
+        symbolic_sub_queue_1,
+        symbolic_sub_queue_2,
+        symbolic_sub_queue_3,
+        symbolic_source,
+        destination,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        items.push(make_alpha_item(name.clone(), 12, span));
+    }
+
+    if let Some(name) = message_date {
+        items.push(make_numeric_item(name.clone(), "9(8)", 8, span));
+    }
+    if let Some(name) = message_time {
+        items.push(make_time_group_item(name.clone(), span));
+    }
+    if let Some(name) = text_length {
+        items.push(make_numeric_item(name.clone(), "9(4)", 4, span));
+    }
+    if let Some(name) = end_key {
+        items.push(make_alpha_item(name.clone(), 1, span));
+    }
+    if let Some(name) = status_key {
+        items.push(make_alpha_item(name.clone(), 2, span));
+    }
+    if let Some(name) = message_count {
+        items.push(make_numeric_item(name.clone(), "9(6)", 6, span));
+    }
+    if let Some(name) = destination_count {
+        items.push(make_numeric_item(name.clone(), "9(4)", 4, span));
+    }
+    if let Some(name) = error_key {
+        items.push(make_alpha_item(name.clone(), 1, span));
+    }
+
+    items
+}
+
+fn make_picture(raw: &str, category: PictureCategory, size: u32, span: cobol_common::Span) -> PictureClause {
+    PictureClause {
+        raw_string: raw.into(),
+        category,
+        size,
+        decimal_positions: 0,
+        is_signed: false,
+        is_edited: false,
+        span,
+    }
+}
+
+fn make_alpha_item(name: SmolStr, size: u32, span: cobol_common::Span) -> DataItem {
+    make_item_with_picture(77, name, make_picture(&format!("X({size})"), PictureCategory::Alphanumeric, size, span), span)
+}
+
+fn make_numeric_item(name: SmolStr, raw: &str, size: u32, span: cobol_common::Span) -> DataItem {
+    make_item_with_picture(77, name, make_picture(raw, PictureCategory::Numeric, size, span), span)
+}
+
+fn make_group_numeric_item(level: u8, name: SmolStr, raw: &str, size: u32, span: cobol_common::Span) -> DataItem {
+    make_item_with_picture(level, name, make_picture(raw, PictureCategory::Numeric, size, span), span)
+}
+
+fn make_item_with_picture(level: u8, name: SmolStr, picture: PictureClause, span: cobol_common::Span) -> DataItem {
+    DataItem {
+        level,
+        name: Some(name),
+        picture: Some(picture),
+        usage: None,
+        value: None,
+        occurs: None,
+        redefines: None,
+        renames: None,
+        sign_clause: None,
+        justified: false,
+        blank_when_zero: false,
+        is_external: false,
+        is_global: false,
+        condition_values: Vec::new(),
+        line_clause: None,
+        column_clause: None,
+        blank_screen: false,
+        blank_line: false,
+        highlight: false,
+        reverse_video: false,
+        source_field: None,
+        using_field: None,
+        children: Vec::new(),
+        span,
+    }
+}
+
+fn make_time_group_item(name: SmolStr, span: cobol_common::Span) -> DataItem {
+    DataItem {
+        level: 1,
+        name: Some(name),
+        picture: None,
+        usage: None,
+        value: None,
+        occurs: None,
+        redefines: None,
+        renames: None,
+        sign_clause: None,
+        justified: false,
+        blank_when_zero: false,
+        is_external: false,
+        is_global: false,
+        condition_values: Vec::new(),
+        line_clause: None,
+        column_clause: None,
+        blank_screen: false,
+        blank_line: false,
+        highlight: false,
+        reverse_video: false,
+        source_field: None,
+        using_field: None,
+        children: vec![
+            make_group_numeric_item(2, "HRS".into(), "99", 2, span),
+            make_group_numeric_item(2, "MINS".into(), "99", 2, span),
+            DataItem {
+                level: 2,
+                name: Some("SECS".into()),
+                picture: Some(PictureClause {
+                    raw_string: "99V99".into(),
+                    category: PictureCategory::Numeric,
+                    size: 4,
+                    decimal_positions: 2,
+                    is_signed: false,
+                    is_edited: false,
+                    span,
+                }),
+                usage: None,
+                value: None,
+                occurs: None,
+                redefines: None,
+                renames: None,
+                sign_clause: None,
+                justified: false,
+                blank_when_zero: false,
+                is_external: false,
+                is_global: false,
+                condition_values: Vec::new(),
+                line_clause: None,
+                column_clause: None,
+                blank_screen: false,
+                blank_line: false,
+                highlight: false,
+                reverse_video: false,
+                source_field: None,
+                using_field: None,
+                children: Vec::new(),
+                span,
+            },
+        ],
+        span,
     }
 }
 

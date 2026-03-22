@@ -833,6 +833,13 @@ pub(crate) fn emit_store_int(
         out.push_str(&format!(
             "{pad}cobol_store_numeric_display({value_expr}, {c_target_ptr}, {disp_size});\n"
         ));
+    } else if find_data_item(c_target, data_items)
+        .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
+    {
+        let tgt_size = find_data_item_size(c_target, data_items);
+        out.push_str(&format!(
+            "{pad}cobol_move_numeric_to_display({value_expr}, 0, (uint8_t*)&{c_target}, {tgt_size});\n"
+        ));
     } else if is_group_member_field(c_target) {
         out.push_str(&format!(
             "{pad}cobol_move_numeric_to_display({value_expr}, 0, (uint8_t*){c_target}, sizeof({c_target}));\n"
@@ -1358,8 +1365,17 @@ pub(crate) fn emit_corresponding_move(
                         ));
                     }
                     (HirType::Numeric { .. }, HirType::Numeric { .. })
-                    | (HirType::Binary { .. }, HirType::Binary { .. })
+                        if is_group_member_field(&src_q) || is_group_member_field(&tgt_q) =>
+                    {
+                        out.push_str(&format!(
+                            "{pad}memcpy({tgt_ptr}, {src_ptr}, sizeof({tgt_q}));\n"
+                        ));
+                    }
+                    (HirType::Binary { .. }, HirType::Binary { .. })
                     | (HirType::Comp3 { .. }, HirType::Comp3 { .. }) => {
+                        out.push_str(&format!("{pad}{tgt_q} = {src_q};\n"));
+                    }
+                    (HirType::Numeric { .. }, HirType::Numeric { .. }) => {
                         out.push_str(&format!("{pad}{tgt_q} = {src_q};\n"));
                     }
                     (

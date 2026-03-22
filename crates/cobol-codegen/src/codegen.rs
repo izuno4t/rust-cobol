@@ -599,6 +599,25 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str("extern void cobol_goback(void);\n");
     out.push_str("extern void cobol_call_enter(uintptr_t jmp_buf_ptr);\n");
     out.push_str("extern void cobol_call_leave(void);\n");
+    out.push_str("/* Communication runtime declarations */\n");
+    out.push_str(
+        "extern uint32_t cobol_comm_enable(const uint8_t* name_ptr, uint32_t name_len, int32_t mode, int32_t terminal, const uint8_t* key_ptr, uint32_t key_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_comm_disable(const uint8_t* name_ptr, uint32_t name_len, int32_t mode, int32_t terminal, const uint8_t* key_ptr, uint32_t key_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_comm_send(const uint8_t* name_ptr, uint32_t name_len, const uint8_t* from_ptr, uint32_t from_len, int32_t option_kind, int64_t option_value, int32_t replacing_line);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_comm_receive(const uint8_t* name_ptr, uint32_t name_len, uint8_t* into_ptr, uint32_t into_len, uint32_t* text_length);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_comm_purge(const uint8_t* name_ptr, uint32_t name_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_comm_message_count(const uint8_t* name_ptr, uint32_t name_len);\n",
+    );
     // File I/O runtime declarations
     out.push_str("/* File I/O runtime declarations */\n");
     out.push_str(
@@ -827,7 +846,7 @@ fn emit_runtime_declarations(out: &mut String) {
 
 fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
-    let ctx = CodegenContext::new(&[], &empty_records);
+    let ctx = CodegenContext::new(&[], &empty_records, &[]);
     for class in classes {
         let c_name = sanitize_name(&class.name);
         out.push_str(&format!("/* CLASS {} */\n", c_name));
@@ -932,7 +951,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
 
 fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
-    let ctx = CodegenContext::new(&[], &empty_records);
+    let ctx = CodegenContext::new(&[], &empty_records, &[]);
     for func in functions {
         let c_name = sanitize_name(&func.name).to_lowercase();
         let ret_type = hir_type_to_c(&func.returning);

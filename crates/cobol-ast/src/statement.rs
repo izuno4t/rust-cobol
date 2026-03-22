@@ -259,6 +259,7 @@ pub struct SendStatement {
 pub struct ReceiveStatement {
     pub target: QualifiedName,
     pub into: QualifiedName,
+    pub no_data: Vec<Statement>,
     pub span: Span,
 }
 
