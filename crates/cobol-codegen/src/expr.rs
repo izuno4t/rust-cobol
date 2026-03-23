@@ -1081,7 +1081,7 @@ pub(crate) fn find_data_item<'a>(name: &str, data_items: &'a [HirDataItem]) -> O
         let member_name = &name[pos + 2..];
         // Find the group, then search within it
         for item in data_items {
-            if item.name.as_str() == group_name {
+            if item.name.as_str() == group_name || sanitize_name(&item.name) == group_name {
                 if let HirType::Group { members, .. } = &item.data_type {
                     return find_data_item(member_name, members);
                 }
@@ -1091,7 +1091,7 @@ pub(crate) fn find_data_item<'a>(name: &str, data_items: &'a [HirDataItem]) -> O
         return find_data_item(member_name, data_items);
     }
     for item in data_items {
-        if item.name.as_str() == name {
+        if item.name.as_str() == name || sanitize_name(&item.name) == name {
             return Some(item);
         }
         if let HirType::Group { members, .. } = &item.data_type {
@@ -1264,6 +1264,11 @@ pub(crate) fn find_data_item_by_c_name<'a>(
     }
 
     let lookup = extract_leaf_member(c_name);
+    for item in data_items {
+        if sanitize_name(&item.name) == lookup {
+            return Some(item);
+        }
+    }
     find_data_item_by_sanitized_name(lookup, data_items)
 }
 

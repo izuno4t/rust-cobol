@@ -63,8 +63,10 @@ mod tests {
         let proc = program.procedure.unwrap();
         // Should have statements
         let stmts: Vec<_> = proc
-            .paragraphs
+            .sections
             .iter()
+            .flat_map(|s| s.paragraphs.iter())
+            .chain(proc.paragraphs.iter())
             .flat_map(|p| p.sentences.iter())
             .flat_map(|s| s.statements.iter())
             .collect();
@@ -232,6 +234,35 @@ mod tests {
             .flat_map(|s| s.statements.iter())
             .collect();
         assert!(stmts.iter().any(|s| matches!(s, Statement::Perform(_))));
+    }
+
+    #[test]
+    fn test_parse_numeric_procedure_names() {
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-NUMPROC.
+       PROCEDURE DIVISION.
+       MAIN-SEC SECTION.
+       ENTRY-PARA.
+           PERFORM 00.
+           GO TO 00.
+       00 SECTION 00.
+       PARA-00.
+           STOP RUN.                                                    ";
+        let program = parse(src).unwrap();
+        let proc = program.procedure.unwrap();
+        assert!(proc.sections.iter().any(|s| s.name == "MAIN-SEC"));
+        assert!(proc.sections.iter().any(|s| s.name == "00"));
+        assert!(proc
+            .sections
+            .iter()
+            .flat_map(|s| s.paragraphs.iter())
+            .any(|p| p.name == "ENTRY-PARA"));
+        assert!(proc
+            .sections
+            .iter()
+            .flat_map(|s| s.paragraphs.iter())
+            .any(|p| p.name == "PARA-00"));
     }
 
     #[test]

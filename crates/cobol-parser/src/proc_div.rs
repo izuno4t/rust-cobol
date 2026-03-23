@@ -10,6 +10,22 @@ use smol_str::SmolStr;
 use crate::parser::Parser;
 
 impl Parser {
+    fn check_procedure_name_token(&self) -> bool {
+        self.check(TokenKind::Identifier)
+            || self.current().kind.is_keyword()
+            || self.check(TokenKind::IntegerLiteral)
+            || self.check(TokenKind::LevelNumber)
+    }
+
+    fn expect_procedure_name(&mut self) -> Result<SmolStr, ()> {
+        if self.check_procedure_name_token() {
+            Ok(self.advance().text)
+        } else {
+            self.error("expected procedure name");
+            Err(())
+        }
+    }
+
     fn parse_ignored_advancing_phrase(&mut self) {
         if !(self.check(TokenKind::Before) || self.check(TokenKind::After)) {
             return;
@@ -134,7 +150,7 @@ impl Parser {
 
             // Parse section-name SECTION.
             let section_start = self.span();
-            let section_name = self.expect_identifier()?;
+            let section_name = self.expect_procedure_name()?;
             self.expect(TokenKind::Section)?;
             // Optional segment/priority number (e.g., SECTION 00.)
             if self.check(TokenKind::IntegerLiteral) {
@@ -160,14 +176,14 @@ impl Parser {
                 }
 
                 // Check for next section (section-name SECTION)
-                if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                if self.check_procedure_name_token()
                     && self.peek(1).kind == TokenKind::Section
                 {
                     break;
                 }
 
                 // Check for paragraph header
-                if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                if self.check_procedure_name_token()
                     && !self.at_statement_start()
                     && self.peek(1).kind == TokenKind::Period
                 {
@@ -181,7 +197,7 @@ impl Parser {
                         paragraphs.push(para);
                     }
                     current_para_span = Some(self.span());
-                    current_para_name = Some(self.advance().text);
+                    current_para_name = Some(self.expect_procedure_name()?);
                     self.advance(); // period
                     continue;
                 }
@@ -305,7 +321,7 @@ impl Parser {
 
         while !self.at_eof() && !self.at_end_program() && !self.at_identification_division() {
             // Check for paragraph or section header
-            if self.check(TokenKind::Identifier) || self.current().kind.is_keyword() {
+            if self.check_procedure_name_token() {
                 if self.peek(1).kind == TokenKind::Section {
                     // Section header: flush current paragraph
                     if current_para_name.is_some() || !current_sentences.is_empty() {
@@ -317,7 +333,7 @@ impl Parser {
                         paragraphs.push(para);
                     }
 
-                    let section_name = self.advance().text;
+                    let section_name = self.expect_procedure_name()?;
                     self.advance(); // SECTION
                                     // Optional segment/priority number (e.g., SECTION 00.)
                     if self.check(TokenKind::IntegerLiteral) {
@@ -335,13 +351,13 @@ impl Parser {
                         && !self.at_end_program()
                         && !self.at_identification_division()
                     {
-                        if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                        if self.check_procedure_name_token()
                             && self.peek(1).kind == TokenKind::Section
                         {
                             break;
                         }
 
-                        if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+                        if self.check_procedure_name_token()
                             && !self.at_statement_start()
                             && self.peek(1).kind == TokenKind::Period
                         {
@@ -354,7 +370,7 @@ impl Parser {
                                 section_paragraphs.push(para);
                             }
                             sec_para_span = Some(self.span());
-                            sec_para_name = Some(self.advance().text);
+                            sec_para_name = Some(self.expect_procedure_name()?);
                             self.advance(); // period
                             continue;
                         }
@@ -393,7 +409,7 @@ impl Parser {
                     }
 
                     current_para_span = Some(self.span());
-                    current_para_name = Some(self.advance().text);
+                    current_para_name = Some(self.expect_procedure_name()?);
                     self.advance(); // period
                     continue;
                 }
@@ -454,7 +470,7 @@ impl Parser {
                 break;
             }
 
-            if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+            if self.check_procedure_name_token()
                 && !self.at_statement_start()
                 && (self.peek(1).kind == TokenKind::Period
                     || self.peek(1).kind == TokenKind::Section)
@@ -1523,8 +1539,8 @@ impl Parser {
         }
 
         // PERFORM n TIMES
-        if self.check(TokenKind::IntegerLiteral)
-            || (self.check(TokenKind::Identifier) && self.peek(1).kind == TokenKind::Times)
+        if (self.check(TokenKind::IntegerLiteral) || self.check(TokenKind::Identifier))
+            && self.peek(1).kind == TokenKind::Times
         {
             let times = self.parse_expr()?;
             self.expect(TokenKind::Times)?;
@@ -1546,7 +1562,7 @@ impl Parser {
         }
 
         // Out-of-line PERFORM (procedure name) with optional TIMES/UNTIL/VARYING
-        if (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+        if self.check_procedure_name_token()
             && !self.at_statement_start()
             && (self.peek(1).kind == TokenKind::Thru
                 || self.peek(1).kind == TokenKind::Period
@@ -1566,14 +1582,14 @@ impl Parser {
                 || self.peek(1).kind == TokenKind::In
                 || self.peek(1).kind == TokenKind::Eof)
         {
-            let procedure = self.advance().text;
+            let procedure = self.expect_procedure_name()?;
             // Consume optional IN/OF section-name qualifier
             if self.check(TokenKind::Of) || self.check(TokenKind::In) {
                 self.advance(); // OF or IN
-                let _ = self.expect_identifier(); // section name (ignored for now)
+                let _ = self.expect_procedure_name(); // section name (ignored for now)
             }
             let through = if self.eat(TokenKind::Thru).is_some() {
-                Some(self.expect_identifier()?)
+                Some(self.expect_procedure_name()?)
             } else {
                 None
             };
@@ -1793,16 +1809,18 @@ impl Parser {
         let mut targets = Vec::new();
         let mut depending_on = None;
 
-        while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
+        while self.check_procedure_name_token()
             && !self.check(TokenKind::Depending)
             && !self.at_statement_terminator()
+            && !Self::is_statement_start_keyword(self.current().kind)
+            && !self.is_end_keyword(self.current().kind)
         {
-            targets.push(self.advance().text);
+            targets.push(self.expect_procedure_name()?);
             // Consume optional IN/OF section-name qualifier
             if self.check(TokenKind::Of) || self.check(TokenKind::In) {
                 self.advance(); // OF or IN
-                if self.check(TokenKind::Identifier) {
-                    self.advance(); // section name (ignored)
+                if self.check_procedure_name_token() {
+                    let _ = self.expect_procedure_name(); // section name (ignored)
                 }
             }
         }

@@ -141,10 +141,55 @@ impl Parser {
                                 | TokenKind::Greater
                                 | TokenKind::Less
                                 | TokenKind::Equal
-                        );
+                                | TokenKind::Plus
+                                | TokenKind::Minus
+                                | TokenKind::Star
+                                | TokenKind::Slash
+                        ) || after.text.eq_ignore_ascii_case("IS");
                     }
                 }
                 TokenKind::Eof => return false,
+                _ => {}
+            }
+            offset += 1;
+        }
+    }
+
+    /// Look ahead from a `(` to detect the NIST-style form
+    /// `(<arith-expr> IS LESS THAN ...)`, where the leading `(` wraps the left
+    /// side of the comparison but is not closed before the comparison phrase.
+    fn is_unclosed_wrapped_expr_condition(&self) -> bool {
+        let mut offset = 1;
+        let mut depth = 0i32;
+        loop {
+            let tok = self.peek(offset);
+            match tok.kind {
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Equals
+                | TokenKind::GreaterThan
+                | TokenKind::LessThan
+                | TokenKind::GreaterEqual
+                | TokenKind::LessEqual
+                | TokenKind::NotEqual
+                | TokenKind::Greater
+                | TokenKind::Less
+                | TokenKind::Equal
+                    if depth == 0 =>
+                {
+                    return false;
+                }
+                TokenKind::Period | TokenKind::Then | TokenKind::Else | TokenKind::Eof => {
+                    return false;
+                }
+                _ if depth == 0 && tok.text.eq_ignore_ascii_case("IS") => {
+                    return true;
+                }
                 _ => {}
             }
             offset += 1;
@@ -676,8 +721,11 @@ impl Parser {
     }
 
     fn parse_primary_condition(&mut self) -> Result<Condition, ()> {
+        let wrapped_left_expr = self.check(TokenKind::LeftParen)
+            && self.is_unclosed_wrapped_expr_condition();
+
         // Parenthesized condition or parenthesized expression
-        if self.check(TokenKind::LeftParen) {
+        if self.check(TokenKind::LeftParen) && !wrapped_left_expr {
             // Look ahead past the matching ')' to see if a comparison operator
             // follows. If so, the parens group an expression (e.g. (A + B) = C),
             // not a condition. Fall through to parse_expr which will handle it.
@@ -687,6 +735,10 @@ impl Parser {
                 self.expect(TokenKind::RightParen)?;
                 return Ok(Condition::Paren(Box::new(cond)));
             }
+        }
+
+        if wrapped_left_expr {
+            self.advance();
         }
 
         // Parse an expression, then check for comparison/class/sign
