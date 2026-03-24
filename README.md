@@ -1,5 +1,7 @@
 # rust-cobol
 
+[![Build](https://github.com/izuno4t/rust-cobol/actions/workflows/rust.yml/badge.svg)](https://github.com/izuno4t/rust-cobol/actions/workflows/rust.yml)
+
 A COBOL compiler written in Rust, targeting COBOL-85 through
 COBOL 2023. It compiles COBOL source code to native binaries
 via C code generation.
