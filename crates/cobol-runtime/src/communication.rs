@@ -673,6 +673,9 @@ pub unsafe extern "C" fn cobol_comm_accept_count(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Mutex;
+
+    static COMM_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_runtime() {
         let mut guard = COMM_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -682,184 +685,197 @@ mod tests {
         }
     }
 
+    fn with_comm_test<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = COMM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_runtime();
+        let result = f();
+        reset_runtime();
+        result
+    }
+
     #[test]
     fn test_comm_script_preloads_messages() {
-        reset_runtime();
-        let mut script = tempfile::NamedTempFile::new().unwrap();
-        writeln!(script, "enable CM-INQUE-1").unwrap();
-        writeln!(script, "config CM-INQUE-1 queue INQUEUE").unwrap();
-        writeln!(script, "message CM-INQUE-1 KILL").unwrap();
-        unsafe {
-            std::env::set_var("COBOL_COMM_SCRIPT", script.path());
-        }
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "enable CM-INQUE-1").unwrap();
+            writeln!(script, "config CM-INQUE-1 queue INQUEUE").unwrap();
+            writeln!(script, "message CM-INQUE-1 KILL").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+            }
 
-        let mut buf = [b' '; 8];
-        let mut text_len = 0u32;
-        let rc = unsafe {
-            cobol_comm_receive(
-                b"CM_INQUE_1".as_ptr(),
-                10,
-                buf.as_mut_ptr(),
-                buf.len() as u32,
-                &mut text_len,
-                b"INQUEUE".as_ptr(),
-                7,
-                std::ptr::null(),
-                0,
-                std::ptr::null(),
-                0,
-                std::ptr::null(),
-                0,
-            )
-        };
-        assert_eq!(rc, 0);
-        assert_eq!(text_len, 4);
-        assert_eq!(&buf[..4], b"KILL");
+            let mut buf = [b' '; 8];
+            let mut text_len = 0u32;
+            let rc = unsafe {
+                cobol_comm_receive(
+                    b"CM_INQUE_1".as_ptr(),
+                    10,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    &mut text_len,
+                    b"INQUEUE".as_ptr(),
+                    7,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            assert_eq!(rc, 0);
+            assert_eq!(text_len, 4);
+            assert_eq!(&buf[..4], b"KILL");
+        });
     }
 
     #[test]
     fn test_comm_script_routes_output_to_input() {
-        reset_runtime();
-        let mut script = tempfile::NamedTempFile::new().unwrap();
-        writeln!(script, "enable CM-OUTQUE-1").unwrap();
-        writeln!(script, "enable CM-INQUE-1").unwrap();
-        writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE").unwrap();
-        writeln!(script, "link CM-OUTQUE-1 CM-INQUE-1").unwrap();
-        unsafe {
-            std::env::set_var("COBOL_COMM_SCRIPT", script.path());
-        }
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "enable CM-OUTQUE-1").unwrap();
+            writeln!(script, "enable CM-INQUE-1").unwrap();
+            writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE").unwrap();
+            writeln!(script, "link CM-OUTQUE-1 CM-INQUE-1").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+            }
 
-        let send_rc = unsafe {
-            cobol_comm_send(
-                b"CM_OUTQUE_1".as_ptr(),
-                11,
-                b"PING".as_ptr(),
-                4,
-                4,
-                0,
-                0,
-                0,
-                b"OUTQUEUE".as_ptr(),
-                8,
-                1,
-                1,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        assert_eq!(send_rc, 0);
-        assert_eq!(
-            unsafe { cobol_comm_message_count(b"CM_INQUE_1".as_ptr(), 10) },
-            1
-        );
+            let send_rc = unsafe {
+                cobol_comm_send(
+                    b"CM_OUTQUE_1".as_ptr(),
+                    11,
+                    b"PING".as_ptr(),
+                    4,
+                    4,
+                    0,
+                    0,
+                    0,
+                    b"OUTQUEUE".as_ptr(),
+                    8,
+                    1,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            assert_eq!(send_rc, 0);
+            assert_eq!(
+                unsafe { cobol_comm_message_count(b"CM_INQUE_1".as_ptr(), 10) },
+                1
+            );
+        });
     }
 
     #[test]
     fn test_comm_send_marks_invalid_destination() {
-        reset_runtime();
-        let mut script = tempfile::NamedTempFile::new().unwrap();
-        writeln!(script, "enable CM-OUTQUE-1").unwrap();
-        writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE").unwrap();
-        writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE-2").unwrap();
-        unsafe {
-            std::env::set_var("COBOL_COMM_SCRIPT", script.path());
-        }
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "enable CM-OUTQUE-1").unwrap();
+            writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE").unwrap();
+            writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE-2").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+            }
 
-        let mut error_key = [b'0'; 2];
-        let rc = unsafe {
-            cobol_comm_send(
-                b"CM_OUTQUE_1".as_ptr(),
-                11,
-                b"PING".as_ptr(),
-                4,
-                4,
-                0,
-                0,
-                0,
-                b"OUTQUEUE     GARBAGE     ".as_ptr(),
-                12,
-                2,
-                2,
-                error_key.as_mut_ptr(),
-                2,
-            )
-        };
-        assert_eq!(rc, 20);
-        assert_eq!(&error_key, b"01");
+            let mut error_key = [b'0'; 2];
+            let rc = unsafe {
+                cobol_comm_send(
+                    b"CM_OUTQUE_1".as_ptr(),
+                    11,
+                    b"PING".as_ptr(),
+                    4,
+                    4,
+                    0,
+                    0,
+                    0,
+                    b"OUTQUEUE     GARBAGE     ".as_ptr(),
+                    12,
+                    2,
+                    2,
+                    error_key.as_mut_ptr(),
+                    2,
+                )
+            };
+            assert_eq!(rc, 20);
+            assert_eq!(&error_key, b"01");
+        });
     }
 
     #[test]
     fn test_comm_enable_accepts_cm101_initial_values() {
-        reset_runtime();
-        let mut script = tempfile::NamedTempFile::new().unwrap();
-        writeln!(script, "config CM-INQUE-1 queue INQUEUE").unwrap();
-        writeln!(script, "config CM-INQUE-1 sub1 BLANK").unwrap();
-        writeln!(script, "config CM-INQUE-1 sub2 BLANK").unwrap();
-        writeln!(script, "config CM-INQUE-1 sub3 BLANK").unwrap();
-        writeln!(script, "config CM-INQUE-1 key 0001").unwrap();
-        unsafe {
-            std::env::set_var("COBOL_COMM_SCRIPT", script.path());
-        }
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "config CM-INQUE-1 queue INQUEUE").unwrap();
+            writeln!(script, "config CM-INQUE-1 sub1 BLANK").unwrap();
+            writeln!(script, "config CM-INQUE-1 sub2 BLANK").unwrap();
+            writeln!(script, "config CM-INQUE-1 sub3 BLANK").unwrap();
+            writeln!(script, "config CM-INQUE-1 key 0001").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+            }
 
-        let queue = *b"INQUEUE     \0";
-        let blank = *b"            \0";
-        let key = 1i64.to_ne_bytes();
-        let rc = unsafe {
-            cobol_comm_enable(
-                b"CM_INQUE_1".as_ptr(),
-                10,
-                0,
-                0,
-                key.as_ptr(),
-                key.len() as u32,
-                queue.as_ptr(),
-                12,
-                blank.as_ptr(),
-                12,
-                blank.as_ptr(),
-                12,
-                blank.as_ptr(),
-                12,
-                std::ptr::null(),
-                0,
-            )
-        };
-        assert_eq!(rc, 0);
+            let queue = *b"INQUEUE     \0";
+            let blank = *b"            \0";
+            let key = 1i64.to_ne_bytes();
+            let rc = unsafe {
+                cobol_comm_enable(
+                    b"CM_INQUE_1".as_ptr(),
+                    10,
+                    0,
+                    0,
+                    key.as_ptr(),
+                    key.len() as u32,
+                    queue.as_ptr(),
+                    12,
+                    blank.as_ptr(),
+                    12,
+                    blank.as_ptr(),
+                    12,
+                    blank.as_ptr(),
+                    12,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            assert_eq!(rc, 0);
+        });
     }
 
     #[test]
     fn test_comm_accept_count_accepts_cm101_initial_values() {
-        reset_runtime();
-        let mut script = tempfile::NamedTempFile::new().unwrap();
-        writeln!(script, "enable CM-INQUE-1").unwrap();
-        writeln!(script, "config CM-INQUE-1 queue INQUEUE").unwrap();
-        writeln!(script, "config CM-INQUE-1 sub1 BLANK").unwrap();
-        writeln!(script, "config CM-INQUE-1 sub2 BLANK").unwrap();
-        writeln!(script, "config CM-INQUE-1 sub3 BLANK").unwrap();
-        writeln!(script, "message CM-INQUE-1 KILL").unwrap();
-        unsafe {
-            std::env::set_var("COBOL_COMM_SCRIPT", script.path());
-        }
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "enable CM-INQUE-1").unwrap();
+            writeln!(script, "config CM-INQUE-1 queue INQUEUE").unwrap();
+            writeln!(script, "config CM-INQUE-1 sub1 BLANK").unwrap();
+            writeln!(script, "config CM-INQUE-1 sub2 BLANK").unwrap();
+            writeln!(script, "config CM-INQUE-1 sub3 BLANK").unwrap();
+            writeln!(script, "message CM-INQUE-1 KILL").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+            }
 
-        let queue = *b"INQUEUE     \0";
-        let blank = *b"            \0";
-        let mut count = 0u32;
-        let rc = unsafe {
-            cobol_comm_accept_count(
-                b"CM_INQUE_1".as_ptr(),
-                10,
-                &mut count,
-                queue.as_ptr(),
-                12,
-                blank.as_ptr(),
-                12,
-                blank.as_ptr(),
-                12,
-                blank.as_ptr(),
-                12,
-            )
-        };
-        assert_eq!(rc, 0);
-        assert_eq!(count, 1);
+            let queue = *b"INQUEUE     \0";
+            let blank = *b"            \0";
+            let mut count = 0u32;
+            let rc = unsafe {
+                cobol_comm_accept_count(
+                    b"CM_INQUE_1".as_ptr(),
+                    10,
+                    &mut count,
+                    queue.as_ptr(),
+                    12,
+                    blank.as_ptr(),
+                    12,
+                    blank.as_ptr(),
+                    12,
+                    blank.as_ptr(),
+                    12,
+                )
+            };
+            assert_eq!(rc, 0);
+            assert_eq!(count, 1);
+        });
     }
 }

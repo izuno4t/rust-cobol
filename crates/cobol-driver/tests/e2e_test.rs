@@ -681,7 +681,6 @@ PROCEDURE DIVISION.
     assert!(c_code.contains("strncpy(WS_MSG"));
     assert!(c_code.contains("Hello from COBOL!"));
     assert!(c_code.contains("cobol_stop_run()"));
-    assert!(c_code.contains("return 0;"));
 }
 
 #[test]

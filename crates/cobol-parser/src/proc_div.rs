@@ -320,7 +320,7 @@ impl Parser {
         while !self.at_eof() && !self.at_end_program() && !self.at_identification_division() {
             // Check for paragraph or section header
             if self.check_procedure_name_token() {
-                if self.peek(1).kind == TokenKind::Section {
+                if !self.at_statement_start() && self.peek(1).kind == TokenKind::Section {
                     // Section header: flush current paragraph
                     if current_para_name.is_some() || !current_sentences.is_empty() {
                         let para = self.make_paragraph(
@@ -395,7 +395,7 @@ impl Parser {
                         span: section_start,
                     });
                     continue;
-                } else if self.peek(1).kind == TokenKind::Period {
+                } else if !self.at_statement_start() && self.peek(1).kind == TokenKind::Period {
                     // Paragraph header
                     if current_para_name.is_some() || !current_sentences.is_empty() {
                         let para = self.make_paragraph(

@@ -693,16 +693,6 @@ pub(crate) fn grp_display_size(c_name: &str, data_items: &[HirDataItem]) -> Opti
         if display_size.is_some() {
             return display_size;
         }
-        if let Some(item) = find_data_item_by_sanitized_name(lookup, data_items) {
-            if let HirType::Numeric {
-                size,
-                decimal_places: 0,
-                ..
-            } = &item.data_type
-            {
-                return Some(*size);
-            }
-        }
     }
 
     // Handle qualified names like "WS_DST__FIELD_A" by extracting the member

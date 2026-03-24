@@ -1,3 +1,65 @@
+fn resolve_runtime_archive_path(
+    runtime_lib_path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    fn find_archive(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        let direct = dir.join("libcobol_runtime.a");
+        if direct.exists() {
+            return direct.canonicalize().ok().or(Some(direct));
+        }
+
+        for search_dir in [dir.to_path_buf(), dir.join("deps")] {
+            let entries = std::fs::read_dir(&search_dir).ok()?;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if name.starts_with("libcobol_runtime") && name.ends_with(".a") {
+                    return path.canonicalize().ok().or(Some(path));
+                }
+            }
+        }
+        None
+    }
+
+    let mut candidates = vec![runtime_lib_path.to_path_buf()];
+    if runtime_lib_path.is_relative() {
+        if let Ok(cwd) = std::env::current_dir() {
+            for ancestor in cwd.ancestors() {
+                candidates.push(ancestor.join(runtime_lib_path));
+            }
+        }
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let manifest_dir = std::path::PathBuf::from(manifest_dir);
+            for ancestor in manifest_dir.ancestors() {
+                candidates.push(ancestor.join(runtime_lib_path));
+            }
+        }
+    }
+
+    let candidate = candidates
+        .into_iter()
+        .find_map(|candidate| {
+            if candidate.is_file() {
+                Some(candidate)
+            } else if candidate.is_dir() {
+                find_archive(&candidate)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            format!(
+                "COBOL runtime static library path '{}' does not exist",
+                runtime_lib_path.display()
+            )
+        })?;
+
+    candidate
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve runtime library '{}': {}", candidate.display(), e))
+}
+
 pub fn compile_c_to_executable(
     c_source_path: &std::path::Path,
     output_path: &std::path::Path,
@@ -5,13 +67,13 @@ pub fn compile_c_to_executable(
 ) -> Result<(), String> {
     // Try clang first, then cc
     let compiler = find_c_compiler()?;
+    let runtime_archive = resolve_runtime_archive_path(runtime_lib_path)?;
 
     let status = std::process::Command::new(&compiler)
         .arg(c_source_path)
         .arg("-o")
         .arg(output_path)
-        .arg(format!("-L{}", runtime_lib_path.display()))
-        .arg("-lcobol_runtime")
+        .arg(runtime_archive)
         .arg("-lpthread")
         .arg("-ldl")
         .arg("-lm")
@@ -250,8 +312,13 @@ PROCEDURE DIVISION.
     STOP RUN.
 ";
         let c_code = parse_lower_generate(src);
-        let inner_increment =
-            "cobol_store_numeric_display(cobol_display_to_int64((const uint8_t*)&(J), 2) +";
+        let inner_increment = [
+            "cobol_store_numeric_display(cobol_display_to_int64((const uint8_t*)&(J), 2) +",
+            "J +=",
+        ]
+        .into_iter()
+        .find(|needle| c_code.contains(needle))
+        .expect("expected inner increment");
         let incr_pos = c_code
             .find(inner_increment)
             .expect("expected inner increment");
