@@ -205,8 +205,7 @@ PROCEDURE DIVISION.
 ";
         let c_code = parse_lower_generate(src);
         assert!(
-            c_code.contains("WS_I.value += (5)")
-                || c_code.contains("WS_I.value += (((5)"),
+            c_code.contains("WS_I.value += (5)") || c_code.contains("WS_I.value += (((5)"),
             "decimal ADD literal should use scaled integer update when possible: {c_code}"
         );
     }

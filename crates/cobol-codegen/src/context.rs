@@ -74,9 +74,7 @@ impl CodegenContext {
         );
 
         let mut communication_map = parent.communication_map.clone();
-        communication_map.extend(build_communication_map(
-            &program.communication_descriptions,
-        ));
+        communication_map.extend(build_communication_map(&program.communication_descriptions));
 
         let mut decimal_names = parent.decimal_names.clone();
         decimal_names.extend(build_decimal_names(&program.data_items));
@@ -176,7 +174,10 @@ impl CodegenContext {
             .unwrap_or_else(|| sanitized_file_name.to_string())
     }
 
-    pub(crate) fn communication_binding(&self, sanitized_name: &str) -> Option<CommunicationBinding> {
+    pub(crate) fn communication_binding(
+        &self,
+        sanitized_name: &str,
+    ) -> Option<CommunicationBinding> {
         self.communication_map.get(sanitized_name).cloned()
     }
 
@@ -215,9 +216,18 @@ fn build_communication_map(
                 sanitize_name(&cd.name),
                 CommunicationBinding {
                     symbolic_queue: cd.symbolic_queue.as_ref().map(|v| sanitize_name(v)),
-                    symbolic_sub_queue_1: cd.symbolic_sub_queue_1.as_ref().map(|v| sanitize_name(v)),
-                    symbolic_sub_queue_2: cd.symbolic_sub_queue_2.as_ref().map(|v| sanitize_name(v)),
-                    symbolic_sub_queue_3: cd.symbolic_sub_queue_3.as_ref().map(|v| sanitize_name(v)),
+                    symbolic_sub_queue_1: cd
+                        .symbolic_sub_queue_1
+                        .as_ref()
+                        .map(|v| sanitize_name(v)),
+                    symbolic_sub_queue_2: cd
+                        .symbolic_sub_queue_2
+                        .as_ref()
+                        .map(|v| sanitize_name(v)),
+                    symbolic_sub_queue_3: cd
+                        .symbolic_sub_queue_3
+                        .as_ref()
+                        .map(|v| sanitize_name(v)),
                     status_key: cd.status_key.as_ref().map(|v| sanitize_name(v)),
                     message_count: cd.message_count.as_ref().map(|v| sanitize_name(v)),
                     text_length: cd.text_length.as_ref().map(|v| sanitize_name(v)),
@@ -254,7 +264,9 @@ pub(crate) fn with_active_context<R>(f: impl FnOnce(&CodegenContext) -> R) -> R 
     })
 }
 
-pub(crate) fn build_subscript_paths(data_items: &[HirDataItem]) -> HashMap<String, SubscriptPathInfo> {
+pub(crate) fn build_subscript_paths(
+    data_items: &[HirDataItem],
+) -> HashMap<String, SubscriptPathInfo> {
     let mut map = HashMap::new();
     for item in data_items {
         if let HirType::Group { members, .. } = &item.data_type {

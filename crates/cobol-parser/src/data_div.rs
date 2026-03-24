@@ -1337,7 +1337,12 @@ fn build_communication_data_items(
     items
 }
 
-fn make_picture(raw: &str, category: PictureCategory, size: u32, span: cobol_common::Span) -> PictureClause {
+fn make_picture(
+    raw: &str,
+    category: PictureCategory,
+    size: u32,
+    span: cobol_common::Span,
+) -> PictureClause {
     PictureClause {
         raw_string: raw.into(),
         category,
@@ -1350,7 +1355,17 @@ fn make_picture(raw: &str, category: PictureCategory, size: u32, span: cobol_com
 }
 
 fn make_alpha_item(name: SmolStr, size: u32, span: cobol_common::Span) -> DataItem {
-    make_item_with_picture(77, name, make_picture(&format!("X({size})"), PictureCategory::Alphanumeric, size, span), span)
+    make_item_with_picture(
+        77,
+        name,
+        make_picture(
+            &format!("X({size})"),
+            PictureCategory::Alphanumeric,
+            size,
+            span,
+        ),
+        span,
+    )
 }
 
 fn make_alpha_item_with_occurs(
@@ -1376,14 +1391,35 @@ fn make_alpha_item_with_occurs(
 }
 
 fn make_numeric_item(name: SmolStr, raw: &str, size: u32, span: cobol_common::Span) -> DataItem {
-    make_item_with_picture(77, name, make_picture(raw, PictureCategory::Numeric, size, span), span)
+    make_item_with_picture(
+        77,
+        name,
+        make_picture(raw, PictureCategory::Numeric, size, span),
+        span,
+    )
 }
 
-fn make_group_numeric_item(level: u8, name: SmolStr, raw: &str, size: u32, span: cobol_common::Span) -> DataItem {
-    make_item_with_picture(level, name, make_picture(raw, PictureCategory::Numeric, size, span), span)
+fn make_group_numeric_item(
+    level: u8,
+    name: SmolStr,
+    raw: &str,
+    size: u32,
+    span: cobol_common::Span,
+) -> DataItem {
+    make_item_with_picture(
+        level,
+        name,
+        make_picture(raw, PictureCategory::Numeric, size, span),
+        span,
+    )
 }
 
-fn make_item_with_picture(level: u8, name: SmolStr, picture: PictureClause, span: cobol_common::Span) -> DataItem {
+fn make_item_with_picture(
+    level: u8,
+    name: SmolStr,
+    picture: PictureClause,
+    span: cobol_common::Span,
+) -> DataItem {
     DataItem {
         level,
         name: Some(name),

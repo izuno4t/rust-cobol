@@ -1099,7 +1099,11 @@ fn write_stmt(
                                 .map(|from| format!(" FROM {}", format_expr(from)))
                                 .unwrap_or_default(),
                             format_expr(expr),
-                            if *replacing_line { " REPLACING LINE" } else { "" }
+                            if *replacing_line {
+                                " REPLACING LINE"
+                            } else {
+                                ""
+                            }
                         );
                     }
                 };

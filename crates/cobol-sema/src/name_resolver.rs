@@ -243,7 +243,11 @@ impl<'a> NameResolver<'a> {
             parent_span: None,
         });
 
-        self.register_comm_item(cd.symbolic_queue.as_ref(), CobolType::Alphanumeric { size: 12 }, cd.span);
+        self.register_comm_item(
+            cd.symbolic_queue.as_ref(),
+            CobolType::Alphanumeric { size: 12 },
+            cd.span,
+        );
         self.register_comm_item(
             cd.symbolic_sub_queue_1.as_ref(),
             CobolType::Alphanumeric { size: 12 },
@@ -287,7 +291,11 @@ impl<'a> NameResolver<'a> {
             },
             cd.span,
         );
-        self.register_comm_item(cd.end_key.as_ref(), CobolType::Alphanumeric { size: 1 }, cd.span);
+        self.register_comm_item(
+            cd.end_key.as_ref(),
+            CobolType::Alphanumeric { size: 1 },
+            cd.span,
+        );
         self.register_comm_item(
             cd.status_key.as_ref(),
             CobolType::Alphanumeric { size: 2 },
@@ -311,7 +319,11 @@ impl<'a> NameResolver<'a> {
             },
             cd.span,
         );
-        self.register_comm_item(cd.error_key.as_ref(), CobolType::Alphanumeric { size: 1 }, cd.span);
+        self.register_comm_item(
+            cd.error_key.as_ref(),
+            CobolType::Alphanumeric { size: 1 },
+            cd.span,
+        );
         if let Some(name) = cd.message_time.as_ref() {
             self.table.define(Symbol {
                 name: name.clone(),

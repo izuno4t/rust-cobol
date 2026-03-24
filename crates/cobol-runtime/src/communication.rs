@@ -165,25 +165,34 @@ unsafe fn key_from_raw(ptr: *const u8, len: u32) -> Option<String> {
     parse_raw_value(ptr, len).map(|value| normalize_comm_name(&value))
 }
 
-fn validate_selectors(
-    config: Option<&CommunicationConfig>,
-    queue_ptr: *const u8,
-    queue_len: u32,
-    sub1_ptr: *const u8,
-    sub1_len: u32,
-    sub2_ptr: *const u8,
-    sub2_len: u32,
-    sub3_ptr: *const u8,
-    sub3_len: u32,
-) -> u32 {
+struct SelectorInputs {
+    queue: (*const u8, u32),
+    sub1: (*const u8, u32),
+    sub2: (*const u8, u32),
+    sub3: (*const u8, u32),
+}
+
+fn validate_selectors(config: Option<&CommunicationConfig>, selectors: SelectorInputs) -> u32 {
     let Some(config) = config else {
         return 0;
     };
     let validations = [
-        (&config.queue_name, parse_raw_value(queue_ptr, queue_len)),
-        (&config.sub_queue_1, parse_raw_value(sub1_ptr, sub1_len)),
-        (&config.sub_queue_2, parse_raw_value(sub2_ptr, sub2_len)),
-        (&config.sub_queue_3, parse_raw_value(sub3_ptr, sub3_len)),
+        (
+            &config.queue_name,
+            parse_raw_value(selectors.queue.0, selectors.queue.1),
+        ),
+        (
+            &config.sub_queue_1,
+            parse_raw_value(selectors.sub1.0, selectors.sub1.1),
+        ),
+        (
+            &config.sub_queue_2,
+            parse_raw_value(selectors.sub2.0, selectors.sub2.1),
+        ),
+        (
+            &config.sub_queue_3,
+            parse_raw_value(selectors.sub3.0, selectors.sub3.1),
+        ),
     ];
     for (expected, actual) in validations {
         if let Some(expected) = expected {
@@ -267,6 +276,11 @@ unsafe fn write_error_key_flags(
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `name_ptr`, `key_ptr`, `queue_ptr`, `sub1_ptr`, `sub2_ptr`, `sub3_ptr`, and
+/// `source_ptr` must each be either null with a zero length or valid for reads
+/// of the corresponding byte length for the duration of this call.
 pub unsafe extern "C" fn cobol_comm_enable(
     name_ptr: *const u8,
     name_len: u32,
@@ -291,8 +305,13 @@ pub unsafe extern "C" fn cobol_comm_enable(
     with_comm_runtime(|runtime| {
         let config = runtime.configs.get(&name);
         let selector_rc = validate_selectors(
-            config, queue_ptr, queue_len, sub1_ptr, sub1_len, sub2_ptr, sub2_len, sub3_ptr,
-            sub3_len,
+            config,
+            SelectorInputs {
+                queue: (queue_ptr, queue_len),
+                sub1: (sub1_ptr, sub1_len),
+                sub2: (sub2_ptr, sub2_len),
+                sub3: (sub3_ptr, sub3_len),
+            },
         );
         if selector_rc != 0 {
             if comm_debug_enabled() {
@@ -325,6 +344,11 @@ pub unsafe extern "C" fn cobol_comm_enable(
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `name_ptr`, `key_ptr`, `queue_ptr`, `sub1_ptr`, `sub2_ptr`, `sub3_ptr`, and
+/// `source_ptr` must each be either null with a zero length or valid for reads
+/// of the corresponding byte length for the duration of this call.
 pub unsafe extern "C" fn cobol_comm_disable(
     name_ptr: *const u8,
     name_len: u32,
@@ -349,8 +373,13 @@ pub unsafe extern "C" fn cobol_comm_disable(
     with_comm_runtime(|runtime| {
         let config = runtime.configs.get(&name);
         let selector_rc = validate_selectors(
-            config, queue_ptr, queue_len, sub1_ptr, sub1_len, sub2_ptr, sub2_len, sub3_ptr,
-            sub3_len,
+            config,
+            SelectorInputs {
+                queue: (queue_ptr, queue_len),
+                sub1: (sub1_ptr, sub1_len),
+                sub2: (sub2_ptr, sub2_len),
+                sub3: (sub3_ptr, sub3_len),
+            },
         );
         if selector_rc != 0 {
             if comm_debug_enabled() {
@@ -383,6 +412,12 @@ pub unsafe extern "C" fn cobol_comm_disable(
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `name_ptr`, `from_ptr`, and `dest_ptr` must be either null with a zero
+/// length or valid for reads of the supplied byte lengths. `error_key_ptr`
+/// must be either null with a zero length or valid for writes of
+/// `error_key_len` bytes for the duration of this call.
 pub unsafe extern "C" fn cobol_comm_send(
     name_ptr: *const u8,
     name_len: u32,
@@ -428,7 +463,8 @@ pub unsafe extern "C" fn cobol_comm_send(
             if !config.destinations.is_empty() && !dest_ptr.is_null() && dest_item_len != 0 {
                 for idx in 0..dest_count as usize {
                     let offset = idx * dest_item_len as usize;
-                    let raw = std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
+                    let raw =
+                        std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
                     let actual = normalize_comm_value(&String::from_utf8_lossy(raw));
                     if !config.destinations.iter().any(|dest| dest == &actual) {
                         write_error_key_flags(error_key_ptr, error_key_len, Some(idx));
@@ -467,6 +503,13 @@ pub unsafe extern "C" fn cobol_comm_send(
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `name_ptr`, `queue_ptr`, `sub1_ptr`, `sub2_ptr`, and `sub3_ptr` must be
+/// either null with a zero length or valid for reads of the supplied byte
+/// lengths. `into_ptr` must be valid for writes of `into_len` bytes when
+/// non-null, and `text_length` must be valid for writes of one `u32` when
+/// non-null.
 pub unsafe extern "C" fn cobol_comm_receive(
     name_ptr: *const u8,
     name_len: u32,
@@ -488,8 +531,13 @@ pub unsafe extern "C" fn cobol_comm_receive(
     with_comm_runtime(|runtime| {
         let config = runtime.configs.get(&name);
         let selector_rc = validate_selectors(
-            config, queue_ptr, queue_len, sub1_ptr, sub1_len, sub2_ptr, sub2_len, sub3_ptr,
-            sub3_len,
+            config,
+            SelectorInputs {
+                queue: (queue_ptr, queue_len),
+                sub1: (sub1_ptr, sub1_len),
+                sub2: (sub2_ptr, sub2_len),
+                sub3: (sub3_ptr, sub3_len),
+            },
         );
         if selector_rc != 0 {
             if !text_length.is_null() {
@@ -539,6 +587,10 @@ pub unsafe extern "C" fn cobol_comm_receive(
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `name_ptr` must be either null with a zero length or valid for reads of
+/// `name_len` bytes for the duration of this call.
 pub unsafe extern "C" fn cobol_comm_purge(name_ptr: *const u8, name_len: u32) -> u32 {
     let Some(name) = key_from_raw(name_ptr, name_len) else {
         return 99;
@@ -550,6 +602,10 @@ pub unsafe extern "C" fn cobol_comm_purge(name_ptr: *const u8, name_len: u32) ->
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `name_ptr` must be either null with a zero length or valid for reads of
+/// `name_len` bytes for the duration of this call.
 pub unsafe extern "C" fn cobol_comm_message_count(name_ptr: *const u8, name_len: u32) -> u32 {
     let Some(name) = key_from_raw(name_ptr, name_len) else {
         return 0;
@@ -564,6 +620,11 @@ pub unsafe extern "C" fn cobol_comm_message_count(name_ptr: *const u8, name_len:
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `name_ptr`, `queue_ptr`, `sub1_ptr`, `sub2_ptr`, and `sub3_ptr` must be
+/// either null with a zero length or valid for reads of the supplied byte
+/// lengths. `count_out` must be valid for writes of one `u32` when non-null.
 pub unsafe extern "C" fn cobol_comm_accept_count(
     name_ptr: *const u8,
     name_len: u32,
@@ -583,8 +644,13 @@ pub unsafe extern "C" fn cobol_comm_accept_count(
     with_comm_runtime(|runtime| {
         let config = runtime.configs.get(&name);
         let selector_rc = validate_selectors(
-            config, queue_ptr, queue_len, sub1_ptr, sub1_len, sub2_ptr, sub2_len, sub3_ptr,
-            sub3_len,
+            config,
+            SelectorInputs {
+                queue: (queue_ptr, queue_len),
+                sub1: (sub1_ptr, sub1_len),
+                sub2: (sub2_ptr, sub2_len),
+                sub3: (sub3_ptr, sub3_len),
+            },
         );
         let count = runtime
             .queues

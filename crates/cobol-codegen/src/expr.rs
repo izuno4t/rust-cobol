@@ -121,12 +121,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "MAX" => {
-                    let has_alpha = args
-                        .iter()
-                        .any(|a| {
-                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
-                                || is_alphanumeric_expr(a, &[])
-                        });
+                    let has_alpha = args.iter().any(|a| {
+                        matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                            || is_alphanumeric_expr(a, &[])
+                    });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_max_min(args, "cobol_func_max_alpha")
                     } else if c_args.len() >= 2 {
@@ -141,12 +139,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "MIN" => {
-                    let has_alpha = args
-                        .iter()
-                        .any(|a| {
-                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
-                                || is_alphanumeric_expr(a, &[])
-                        });
+                    let has_alpha = args.iter().any(|a| {
+                        matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                            || is_alphanumeric_expr(a, &[])
+                    });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_max_min(args, "cobol_func_min_alpha")
                     } else if c_args.len() >= 2 {
@@ -388,10 +384,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "MEAN" => {
-                    let arg_list = args
-                        .iter()
-                        .map(|a| emit_expr_as_double(a))
-                        .collect::<Vec<_>>();
+                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -400,10 +393,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     )
                 }
                 "MEDIAN" => {
-                    let arg_list = args
-                        .iter()
-                        .map(|a| emit_expr_as_double(a))
-                        .collect::<Vec<_>>();
+                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -412,10 +402,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     )
                 }
                 "RANGE" => {
-                    let arg_list = args
-                        .iter()
-                        .map(|a| emit_expr_as_double(a))
-                        .collect::<Vec<_>>();
+                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _rv[] = {{{joined}}}; \
@@ -424,10 +411,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     )
                 }
                 "MIDRANGE" => {
-                    let arg_list = args
-                        .iter()
-                        .map(|a| emit_expr_as_double(a))
-                        .collect::<Vec<_>>();
+                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -436,10 +420,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     )
                 }
                 "STANDARD-DEVIATION" => {
-                    let arg_list = args
-                        .iter()
-                        .map(|a| emit_expr_as_double(a))
-                        .collect::<Vec<_>>();
+                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -448,10 +429,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     )
                 }
                 "VARIANCE" => {
-                    let arg_list = args
-                        .iter()
-                        .map(|a| emit_expr_as_double(a))
-                        .collect::<Vec<_>>();
+                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
@@ -462,10 +440,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                 "PRESENT-VALUE" => {
                     if c_args.len() >= 2 {
                         let rate = emit_expr_as_double(&args[0]);
-                        let rest: Vec<_> = args[1..]
-                            .iter()
-                            .map(|a| emit_expr_as_double(a))
-                            .collect();
+                        let rest: Vec<_> = args[1..].iter().map(emit_expr_as_double).collect();
                         let joined = rest.join(", ");
                         format!(
                             "({{ double _pv[] = {{{joined}}}; \
@@ -477,10 +452,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "SUM" => {
-                    let arg_list = args
-                        .iter()
-                        .map(|a| emit_expr_as_double(a))
-                        .collect::<Vec<_>>();
+                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _sv[] = {{{joined}}}; \
@@ -489,12 +461,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     )
                 }
                 "ORD-MAX" => {
-                    let has_alpha = args
-                        .iter()
-                        .any(|a| {
-                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
-                                || is_alphanumeric_expr(a, &[])
-                        });
+                    let has_alpha = args.iter().any(|a| {
+                        matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                            || is_alphanumeric_expr(a, &[])
+                    });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_ord_max_min(args, "cobol_func_ord_max_alpha")
                     } else {
@@ -507,12 +477,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "ORD-MIN" => {
-                    let has_alpha = args
-                        .iter()
-                        .any(|a| {
-                            matches!(a, HirExpr::Literal(HirLiteral::String(_)))
-                                || is_alphanumeric_expr(a, &[])
-                        });
+                    let has_alpha = args.iter().any(|a| {
+                        matches!(a, HirExpr::Literal(HirLiteral::String(_)))
+                            || is_alphanumeric_expr(a, &[])
+                    });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_ord_max_min(args, "cobol_func_ord_min_alpha")
                     } else {
@@ -716,11 +684,9 @@ pub(crate) fn needs_decimal(data_type: &HirType) -> bool {
 /// Check if a variable is a USAGE DISPLAY numeric stored as char[] inside a group.
 /// Returns Some(display_size) if so, None otherwise.
 /// Top-level numeric items are stored as int64_t and return None.
-pub(crate) fn grp_display_size(
-    c_name: &str,
-    data_items: &[HirDataItem],
-) -> Option<u32> {
-    let is_simple_name = !c_name.contains("__") && !c_name.contains("._m_") && !c_name.contains('[');
+pub(crate) fn grp_display_size(c_name: &str, data_items: &[HirDataItem]) -> Option<u32> {
+    let is_simple_name =
+        !c_name.contains("__") && !c_name.contains("._m_") && !c_name.contains('[');
     if is_simple_name {
         let lookup = extract_leaf_member(c_name);
         let display_size = with_active_context(|ctx| ctx.display_numeric_size(lookup));
@@ -957,8 +923,8 @@ pub(crate) fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem
                 let c = emit_expr(expr);
                 let var_name = expr_var_name(expr);
                 let c_var = sanitize_name(var_name);
-                if let Some(disp_size) =
-                    grp_display_size(&c, data_items).or_else(|| grp_display_size(&c_var, data_items))
+                if let Some(disp_size) = grp_display_size(&c, data_items)
+                    .or_else(|| grp_display_size(&c_var, data_items))
                 {
                     let c_ptr = display_numeric_const_ptr(&c);
                     format!("cobol_display_to_int64({c_ptr}, {disp_size})")
@@ -1074,7 +1040,10 @@ pub(crate) fn expr_var_name(expr: &HirExpr) -> &str {
 }
 
 /// Look up a data item by name (searching flattened items including group members).
-pub(crate) fn find_data_item<'a>(name: &str, data_items: &'a [HirDataItem]) -> Option<&'a HirDataItem> {
+pub(crate) fn find_data_item<'a>(
+    name: &str,
+    data_items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
     // Handle qualified names like "WS-DST::FIELD-A"
     if let Some(pos) = name.find("::") {
         let group_name = &name[..pos];
@@ -1126,21 +1095,6 @@ pub(crate) fn is_group_item_c(c_name: &str, data_items: &[HirDataItem]) -> bool 
         .is_some_and(|item| matches!(item.data_type, HirType::Group { .. }))
 }
 
-pub(crate) fn is_group_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool {
-    for item in items {
-        let item_c = sanitize_name(&item.name);
-        if item_c == c_name {
-            return matches!(&item.data_type, HirType::Group { .. });
-        }
-        if let HirType::Group { members, .. } = &item.data_type {
-            if is_group_item_c_in(c_name, members) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Check if a sanitized C variable name corresponds to a numeric, binary,
 /// comp3, index, or other non-array type stored as int64_t/CobolDecimal.
 pub(crate) fn is_numeric_item_c(c_name: &str, data_items: &[HirDataItem]) -> bool {
@@ -1157,31 +1111,6 @@ pub(crate) fn is_numeric_item_c(c_name: &str, data_items: &[HirDataItem]) -> boo
                 | HirType::Boolean
         )
     })
-}
-
-pub(crate) fn is_numeric_item_c_in(c_name: &str, items: &[HirDataItem]) -> bool {
-    for item in items {
-        let item_c = sanitize_name(&item.name);
-        if item_c == c_name {
-            return matches!(
-                &item.data_type,
-                HirType::Numeric { .. }
-                    | HirType::Comp3 { .. }
-                    | HirType::Binary { .. }
-                    | HirType::Index
-                    | HirType::FloatShort
-                    | HirType::FloatLong
-                    | HirType::FloatExtended
-                    | HirType::Boolean
-            );
-        }
-        if let HirType::Group { members, .. } = &item.data_type {
-            if is_numeric_item_c_in(c_name, members) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// Return a C expression suitable for use in pointer casts.
@@ -1302,7 +1231,10 @@ pub(crate) fn find_data_item_by_sanitized_name<'a>(
 /// (e.g., `WS_SRC.members._m_FIELD_A`).
 /// If it's a top-level variable, returns `sanitize_name(name)`.
 /// Get the group members of a data item by COBOL name.
-pub(crate) fn get_group_members<'a>(name: &str, data_items: &'a [HirDataItem]) -> &'a [HirDataItem] {
+pub(crate) fn get_group_members<'a>(
+    name: &str,
+    data_items: &'a [HirDataItem],
+) -> &'a [HirDataItem] {
     if let Some(item) = find_data_item(name, data_items) {
         if let HirType::Group { members, .. } = &item.data_type {
             return members;
@@ -1644,9 +1576,9 @@ pub(crate) fn emit_decimal_arith(
             }
             None => match operand {
                 HirExpr::Literal(HirLiteral::String(s)) => {
-                let escaped = escape_c_string(s);
-                let len = s.len();
-                out.push_str(&format!(
+                    let escaped = escape_c_string(s);
+                    let len = s.len();
+                    out.push_str(&format!(
                     "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_string((const uint8_t*)\"{escaped}\", {len}, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
                 ));
                 }
@@ -1793,8 +1725,9 @@ pub(crate) fn emit_initialize_field(
         }
         match &item.data_type {
             HirType::Alphanumeric { size } => {
-                let is_grp_member =
-                    with_active_context(|ctx| ctx.is_group_alpha_name(&sanitize_name(name.as_str())));
+                let is_grp_member = with_active_context(|ctx| {
+                    ctx.is_group_alpha_name(&sanitize_name(name.as_str()))
+                });
                 if is_grp_member {
                     out.push_str(&format!(
                         "{pad}memset({c_name}, ' ', {size}); /* INITIALIZE */\n"
@@ -2116,7 +2049,9 @@ fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u
             let c_name = sanitize_name(variable);
             Some(find_data_item_size(&c_name, data_items))
         }
-        HirExpr::ReferenceModification { length, variable, .. } => {
+        HirExpr::ReferenceModification {
+            length, variable, ..
+        } => {
             if let Some(len) = length {
                 if let HirExpr::Literal(HirLiteral::Integer(n)) = len.as_ref() {
                     Some((*n).max(0) as u32)
@@ -2153,7 +2088,10 @@ fn padded_numeric_literal_for_alphanumeric(expr: &HirExpr, width: u32) -> Option
 }
 
 /// Produce `(ptr_expr, len_expr)` for an alphanumeric comparison operand.
-pub(crate) fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataItem]) -> (String, String) {
+pub(crate) fn emit_alphanumeric_operand(
+    expr: &HirExpr,
+    data_items: &[HirDataItem],
+) -> (String, String) {
     match expr {
         HirExpr::Variable(name) => {
             let c_name = sanitize_name(name);
@@ -2267,7 +2205,10 @@ pub(crate) fn emit_alphanumeric_operand(expr: &HirExpr, data_items: &[HirDataIte
             } else {
                 format!("({src_full_size} - ({c_start} - 1))")
             };
-            (format!("(const uint8_t*){src_ptr} + ({c_start} - 1)"), c_len)
+            (
+                format!("(const uint8_t*){src_ptr} + ({c_start} - 1)"),
+                c_len,
+            )
         }
         _ => {
             // Fallback for non-alphanumeric expressions used in mixed comparisons.
@@ -2296,10 +2237,7 @@ pub(crate) fn emit_decimal_init_expr(expr: &HirExpr, c_expr: &str) -> String {
     }
 }
 
-pub(crate) fn emit_condition(
-    cond: &HirCondition,
-    data_items: &[HirDataItem],
-) -> String {
+pub(crate) fn emit_condition(cond: &HirCondition, data_items: &[HirDataItem]) -> String {
     with_active_context(|ctx| emit_condition_with_ctx(cond, data_items, ctx))
 }
 
@@ -2841,10 +2779,7 @@ pub(crate) fn find_first_index_name(c_name: &str, data_items: &[HirDataItem]) ->
 
 /// Find the byte size of a data item by its sanitized C name.
 /// Returns a reasonable default (80) if the item is not found.
-pub(crate) fn find_data_item_size(
-    c_name: &str,
-    data_items: &[HirDataItem],
-) -> u32 {
+pub(crate) fn find_data_item_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
     // Extract leaf name from complex expressions like
     // "TABLE.members._m_FOO[(I)-1].members._m_BAR"
     let lookup_name = if c_name.contains('[') || c_name.contains(".members.") {
@@ -3000,9 +2935,7 @@ pub(crate) fn sanitize_name(name: &str) -> String {
 /// Resolve the FD/SD record buffer variable name for a file.
 /// Returns the first record name from the FILE_RECORD_MAP if available,
 /// otherwise falls back to the file name itself.
-pub(crate) fn resolve_file_record(
-    sanitized_file_name: &str,
-) -> String {
+pub(crate) fn resolve_file_record(sanitized_file_name: &str) -> String {
     with_active_context(|ctx| ctx.resolve_file_record(sanitized_file_name))
 }
 

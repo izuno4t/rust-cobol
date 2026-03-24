@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_parse_communication_destination_table_synthetic_items() {
-       let src = "\
+        let src = "\
        IDENTIFICATION DIVISION.
        PROGRAM-ID. TEST-COMM-OUT.
        DATA DIVISION.

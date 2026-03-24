@@ -721,8 +721,8 @@ impl Parser {
     }
 
     fn parse_primary_condition(&mut self) -> Result<Condition, ()> {
-        let wrapped_left_expr = self.check(TokenKind::LeftParen)
-            && self.is_unclosed_wrapped_expr_condition();
+        let wrapped_left_expr =
+            self.check(TokenKind::LeftParen) && self.is_unclosed_wrapped_expr_condition();
 
         // Parenthesized condition or parenthesized expression
         if self.check(TokenKind::LeftParen) && !wrapped_left_expr {

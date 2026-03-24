@@ -176,9 +176,7 @@ impl Parser {
                 }
 
                 // Check for next section (section-name SECTION)
-                if self.check_procedure_name_token()
-                    && self.peek(1).kind == TokenKind::Section
-                {
+                if self.check_procedure_name_token() && self.peek(1).kind == TokenKind::Section {
                     break;
                 }
 
@@ -1237,9 +1235,7 @@ impl Parser {
         let start_span = self.span();
         self.expect(TokenKind::Receive)?;
         let target = self.parse_qualified_name()?;
-        if self.check(TokenKind::Message) {
-            self.advance();
-        } else if self.check_identifier("SEGMENT") {
+        if self.check(TokenKind::Message) || self.check_identifier("SEGMENT") {
             self.advance();
         } else {
             self.error("expected MESSAGE or SEGMENT in RECEIVE statement");

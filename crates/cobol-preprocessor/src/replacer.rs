@@ -131,7 +131,8 @@ fn replace_pseudo_text(text: &str, old: &str, new: &str) -> String {
     let mut raw = text.to_string();
     loop {
         let normalized = normalize_for_matching(&raw);
-        let Some((start_norm, end_norm)) = find_pseudo_match(&normalized.text, &old_norm, token_only)
+        let Some((start_norm, end_norm)) =
+            find_pseudo_match(&normalized.text, &old_norm, token_only)
         else {
             break;
         };
@@ -196,12 +197,12 @@ fn normalize_for_matching(raw: &str) -> NormalizedText {
         };
         let bytes = visible.as_bytes();
 
-        let (indicator, start_idx) = if bytes.len() >= 7 && bytes[..6].iter().all(u8::is_ascii_digit)
-        {
-            (bytes[6], 7)
-        } else {
-            (b' ', 0)
-        };
+        let (indicator, start_idx) =
+            if bytes.len() >= 7 && bytes[..6].iter().all(u8::is_ascii_digit) {
+                (bytes[6], 7)
+            } else {
+                (b' ', 0)
+            };
 
         let mut suppress_leading_space = false;
         if indicator == b'-' {

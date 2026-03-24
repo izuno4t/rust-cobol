@@ -122,16 +122,14 @@ fn reflow_fixed_format_source(source: &str) -> String {
 
     for line in source.split('\n') {
         let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
-        let (indicator, content) =
-            if line_no_cr.len() >= 7 && line_no_cr.as_bytes()[..6].iter().all(u8::is_ascii_digit) {
-                (line_no_cr.as_bytes()[6] as char, &line_no_cr[7..])
-            } else if line_no_cr.len() >= 7
-                && line_no_cr.as_bytes()[..6].iter().all(|b| *b == b' ')
-            {
-                (line_no_cr.as_bytes()[6] as char, &line_no_cr[7..])
-            } else {
-                (' ', line_no_cr)
-            };
+        let has_fixed_prefix = line_no_cr.len() >= 7
+            && (line_no_cr.as_bytes()[..6].iter().all(u8::is_ascii_digit)
+                || line_no_cr.as_bytes()[..6].iter().all(|b| *b == b' '));
+        let (indicator, content) = if has_fixed_prefix {
+            (line_no_cr.as_bytes()[6] as char, &line_no_cr[7..])
+        } else {
+            (' ', line_no_cr)
+        };
 
         if indicator == '*' || indicator == '/' {
             out.push_str("      ");

@@ -15,7 +15,10 @@ pub(crate) fn emit_fd_alias_macros(
     for (alias, primary) in fd_record_aliases {
         let c_alias = sanitize_name(alias);
         let c_primary = sanitize_name(primary);
-        let Some(alias_item) = items.iter().find(|item| item.name.eq_ignore_ascii_case(alias)) else {
+        let Some(alias_item) = items
+            .iter()
+            .find(|item| item.name.eq_ignore_ascii_case(alias))
+        else {
             out.push_str(&format!(
                 "#define {c_alias} {c_primary} /* FD shared record area */\n"
             ));
@@ -36,7 +39,6 @@ pub(crate) fn emit_fd_alias_macros(
                 members,
                 std::slice::from_ref(&c_alias),
                 &format!("{c_alias}.members"),
-                &duplicate_member_names,
             );
             emit_group_redefines(
                 out,
@@ -97,7 +99,10 @@ pub(crate) fn collect_group_member_names(items: &[HirDataItem]) -> BTreeSet<Stri
     names
 }
 
-pub(crate) fn collect_member_names_recursive(members: &[HirDataItem], names: &mut BTreeSet<String>) {
+pub(crate) fn collect_member_names_recursive(
+    members: &[HirDataItem],
+    names: &mut BTreeSet<String>,
+) {
     for member in members {
         names.insert(sanitize_name(&member.name));
         if member.renames.is_some() {
@@ -204,7 +209,6 @@ pub(crate) fn emit_single_data_item(
                     members,
                     std::slice::from_ref(&c_name),
                     &format!("(*({td}*)&{c_redef})"),
-                    duplicate_member_names,
                 );
                 // Emit nested REDEFINES within this top-level REDEFINES group
                 emit_group_redefines(
@@ -280,7 +284,6 @@ pub(crate) fn emit_single_data_item(
                 members,
                 std::slice::from_ref(&c_name),
                 &format!("{c_name}.members"),
-                duplicate_member_names,
             );
             // Emit REDEFINES members as separate static pointers
             emit_group_redefines(
@@ -466,7 +469,6 @@ pub(crate) fn emit_group_macros(
     members: &[HirDataItem],
     qualifier_names: &[String],
     path_prefix: &str,
-    duplicate_names: &BTreeSet<String>,
 ) {
     let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
@@ -484,7 +486,9 @@ pub(crate) fn emit_group_macros(
                 None => c_from.clone(),
             };
             if member.name != "FILLER" && member.name != "PIC" {
-                out.push_str(&format!("#define {c_name} {alias_expr} /* RENAMES {c_from} */\n"));
+                out.push_str(&format!(
+                    "#define {c_name} {alias_expr} /* RENAMES {c_from} */\n"
+                ));
             }
             for qualifier in qualifier_names {
                 out.push_str(&format!(
@@ -537,13 +541,7 @@ pub(crate) fn emit_group_macros(
             if !child_qualifiers.contains(&c_name) {
                 child_qualifiers.push(c_name);
             }
-            emit_group_macros(
-                out,
-                sub_members,
-                &child_qualifiers,
-                &sub_prefix,
-                duplicate_names,
-            );
+            emit_group_macros(out, sub_members, &child_qualifiers, &sub_prefix);
         }
     }
 }
@@ -584,7 +582,8 @@ pub(crate) fn emit_group_redefines(
                 } => {
                     emit_group_typedefs(out, &c_name, grp_members, emitted_typedefs);
                     let td = group_typedef_name(&c_name, grp_members);
-                    let alias_expr = format!("(*({td}*)&{qualified_target}) /* REDEFINES {c_redef} */");
+                    let alias_expr =
+                        format!("(*({td}*)&{qualified_target}) /* REDEFINES {c_redef} */");
                     if emit_aliases && !duplicate_names.contains(&c_name) {
                         out.push_str(&format!("#define {c_name} {alias_expr}\n"));
                     }
@@ -596,13 +595,7 @@ pub(crate) fn emit_group_redefines(
                         child_qualifiers.push(c_name.clone());
                     }
                     let access_expr = format!("(*({td}*)&{qualified_target})");
-                    emit_group_macros(
-                        out,
-                        grp_members,
-                        &child_qualifiers,
-                        &access_expr,
-                        duplicate_names,
-                    );
+                    emit_group_macros(out, grp_members, &child_qualifiers, &access_expr);
                     // Recurse into REDEFINES group children to emit nested
                     // REDEFINES macros (e.g. RDF3-5-1 REDEFINES RDF3-5).
                     emit_group_redefines(
@@ -865,9 +858,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
             }
             (HirType::Alphanumeric { size }, HirLiteral::Space) => {
                 if in_group {
-                    out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n"
-                    ));
+                    out.push_str(&format!("    memset({c_name}, ' ', {size});\n"));
                 } else {
                     out.push_str(&format!(
                         "    memset({c_name}, ' ', {size});\n    {c_name}[{size}] = '\\0';\n"
@@ -876,9 +867,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
             }
             (HirType::Alphanumeric { size }, HirLiteral::Zero) => {
                 if in_group {
-                    out.push_str(&format!(
-                        "    memset({c_name}, '0', {size});\n"
-                    ));
+                    out.push_str(&format!("    memset({c_name}, '0', {size});\n"));
                 } else {
                     out.push_str(&format!(
                         "    memset({c_name}, '0', {size});\n    {c_name}[{size}] = '\\0';\n"
@@ -970,13 +959,16 @@ pub(crate) fn emit_single_data_init_with_prefix(
     }
 }
 
-pub(crate) fn emit_default_init(out: &mut String, data_type: &HirType, c_name: &str, in_group: bool) {
+pub(crate) fn emit_default_init(
+    out: &mut String,
+    data_type: &HirType,
+    c_name: &str,
+    in_group: bool,
+) {
     match data_type {
         HirType::Alphanumeric { size } => {
             if in_group {
-                out.push_str(&format!(
-                    "    memset({c_name}, ' ', {size});\n"
-                ));
+                out.push_str(&format!("    memset({c_name}, ' ', {size});\n"));
             } else {
                 out.push_str(&format!(
                     "    memset({c_name}, ' ', {size});\n    {c_name}[{size}] = '\\0';\n"

@@ -165,7 +165,9 @@ pub unsafe extern "C" fn cobol_file_open(
 
     with_file_table(|table| {
         if table.contains_key(&file_id) {
-            file_debug_log(&format!("open id={file_id} path={path} rc={FS_ALREADY_OPEN}"));
+            file_debug_log(&format!(
+                "open id={file_id} path={path} rc={FS_ALREADY_OPEN}"
+            ));
             return FS_ALREADY_OPEN;
         }
 
@@ -208,7 +210,9 @@ pub unsafe extern "C" fn cobol_file_open(
                         index: Vec::new(),
                     },
                 );
-                file_debug_log(&format!("open id={file_id} path={path} mode={mode:?} org={org:?} rc={FS_OK}"));
+                file_debug_log(&format!(
+                    "open id={file_id} path={path} mode={mode:?} org={org:?} rc={FS_OK}"
+                ));
                 FS_OK
             }
             Err(e) => {
@@ -217,7 +221,9 @@ pub unsafe extern "C" fn cobol_file_open(
                     std::io::ErrorKind::PermissionDenied => 37, // permission
                     _ => FS_IO_ERROR,
                 };
-                file_debug_log(&format!("open id={file_id} path={path} mode={mode:?} org={org:?} rc={rc} err={e}"));
+                file_debug_log(&format!(
+                    "open id={file_id} path={path} mode={mode:?} org={org:?} rc={rc} err={e}"
+                ));
                 rc
             }
         }
@@ -357,7 +363,9 @@ pub unsafe extern "C" fn cobol_file_read_next(
         let file = match table.get_mut(&file_id) {
             Some(f) => f,
             None => {
-                file_debug_log(&format!("write id={file_id} len={record_len} rc={FS_NOT_OPEN}"));
+                file_debug_log(&format!(
+                    "write id={file_id} len={record_len} rc={FS_NOT_OPEN}"
+                ));
                 return FS_NOT_OPEN;
             }
         };
@@ -602,7 +610,9 @@ pub unsafe extern "C" fn cobol_file_write(
         match file.mode {
             FileOpenMode::Output | FileOpenMode::Extend | FileOpenMode::IoMode => {}
             _ => {
-                file_debug_log(&format!("write id={file_id} len={record_len} rc={FS_WRITE_NOT_PERMITTED}"));
+                file_debug_log(&format!(
+                    "write id={file_id} len={record_len} rc={FS_WRITE_NOT_PERMITTED}"
+                ));
                 return FS_WRITE_NOT_PERMITTED;
             }
         }
@@ -638,7 +648,9 @@ pub unsafe extern "C" fn cobol_file_write(
                 FS_OK
             }
             Err(err) => {
-                file_debug_log(&format!("write id={file_id} len={record_len} rc={FS_IO_ERROR} err={err}"));
+                file_debug_log(&format!(
+                    "write id={file_id} len={record_len} rc={FS_IO_ERROR} err={err}"
+                ));
                 FS_IO_ERROR
             }
         }

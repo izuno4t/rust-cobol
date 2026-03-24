@@ -15,9 +15,8 @@ use cobol_ast::{
         AcceptStatement, AddStatement, CallStatement, CommunicationMode, ComputeStatement,
         DisableStatement, DisplayStatement, DivideStatement, EnableStatement, EvaluateStatement,
         GoToStatement, IfStatement, InitializeStatement, MoveStatement, MultiplyStatement,
-        PerformKind, PerformStatement, PerformTest, PurgeStatement, ReceiveStatement,
-        SendOption, SendStatement, SetStatement,
-        SubtractStatement,
+        PerformKind, PerformStatement, PerformTest, PurgeStatement, ReceiveStatement, SendOption,
+        SendStatement, SetStatement, SubtractStatement,
     },
     CobolProgram, DataDivision, DataItem, Expr, Literal, Statement, Usage,
 };
@@ -26,12 +25,12 @@ use smol_str::SmolStr;
 
 use crate::hir::{
     HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCommunicationMode,
-    HirCompareOp, HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo,
-    HirInspectKind, HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget,
-    HirOpenEntry, HirOpenMode, HirParagraph, HirParam, HirParamMode, HirPerformKind,
-    HirPerformTest, HirProgram, HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption,
-    HirSortKey, HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind,
-    HirType, HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
+    HirCompareOp, HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
+    HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
+    HirParagraph, HirParam, HirParamMode, HirPerformKind, HirPerformTest, HirProgram,
+    HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder,
+    HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirType, HirUnaryOp,
+    HirUnstringDelimiter, HirVaryingAfter,
 };
 
 /// A single or range value for an 88-level condition.
@@ -277,27 +276,24 @@ fn lower_communication_descriptions(
                 symbolic_sub_queue_1: cd.symbolic_sub_queue_1.clone(),
                 symbolic_sub_queue_2: cd.symbolic_sub_queue_2.clone(),
                 symbolic_sub_queue_3: cd.symbolic_sub_queue_3.clone(),
-                status_key: cd
-                    .status_key
-                    .clone()
-                    .or_else(|| infer_comm_item_name(&names, &["IN_STATUS", "OUT_STATUS", "STATUS_KEY"])),
+                status_key: cd.status_key.clone().or_else(|| {
+                    infer_comm_item_name(&names, &["IN_STATUS", "OUT_STATUS", "STATUS_KEY"])
+                }),
                 message_count: cd
                     .message_count
                     .clone()
                     .or_else(|| infer_comm_item_name(&names, &["MSG_COUNT", "MESSAGE_COUNT"])),
-                text_length: cd
-                    .text_length
-                    .clone()
-                    .or_else(|| infer_comm_item_name(&names, &["IN_LENGTH", "OUT_LENGTH", "TEXT_LENGTH"])),
+                text_length: cd.text_length.clone().or_else(|| {
+                    infer_comm_item_name(&names, &["IN_LENGTH", "OUT_LENGTH", "TEXT_LENGTH"])
+                }),
                 end_key: cd
                     .end_key
                     .clone()
                     .or_else(|| infer_comm_item_name(&names, &["END_KEY"])),
                 error_key: cd.error_key.clone(),
-                symbolic_source: cd
-                    .symbolic_source
-                    .clone()
-                    .or_else(|| infer_comm_item_name(&names, &["SYM_SOURCE", "SYMBOLIC_SOURCE", "WHERE_FROM"])),
+                symbolic_source: cd.symbolic_source.clone().or_else(|| {
+                    infer_comm_item_name(&names, &["SYM_SOURCE", "SYMBOLIC_SOURCE", "WHERE_FROM"])
+                }),
                 destination_count: cd.destination_count.clone(),
                 destination: cd.destination.clone(),
                 destination_table_count: cd.destination_table_count,
