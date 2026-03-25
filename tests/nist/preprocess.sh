@@ -9,7 +9,15 @@ PROG_NAME="$(basename "$INPUT" .cob)"
 TMPDIR="${NIST_TMPDIR:-/tmp/nist/default}"
 mkdir -p "$TMPDIR"
 
+# First pass: replace XXXXX placeholders that appear inside string literals
+# (between quotes) without adding extra quotes.
 awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
+    -e "s|\"\\([^\"]*\\)XXXXX052\\([^\"]*\\)\"|\"\\1${TMPDIR}/O52\\2\"|g" \
+    -e "s|\"\\([^\"]*\\)XXXXX051\\([^\"]*\\)\"|\"\\1${TMPDIR}/O51\\2\"|g" \
+    -e "s|\"\\([^\"]*\\)XXXXX053\\([^\"]*\\)\"|\"\\1${TMPDIR}/O53\\2\"|g" \
+    -e "s|\"\\([^\"]*\\)XXXXX054\\([^\"]*\\)\"|\"\\1${TMPDIR}/O54\\2\"|g" \
+    -e "s|\"\\([^\"]*\\)XXXXX055\\([^\"]*\\)\"|\"\\1${TMPDIR}/P\\2\"|g" \
+    | sed \
     -e "s|XXXXX082|COMPUTER|g" \
     -e "s|XXXXX083|COMPUTER|g" \
     -e "s|XXXXX084|00032768|g" \
@@ -85,4 +93,12 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
         else
             cat
         fi
-    } > "$OUTPUT"
+    } | awk '{
+        line = substr($0, 1, 72)
+        # Comment out NIST trailer lines (flags expected counts, etc.)
+        # These start with lots of spaces then program-id.section-number
+        if (match(line, /^[[:space:]]{18,}[A-Z][A-Z0-9]*\.[0-9]/) > 0) {
+            line = substr(line, 1, 6) "*" substr(line, 8)
+        }
+        print line
+    }' > "$OUTPUT"

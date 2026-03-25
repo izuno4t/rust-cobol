@@ -298,15 +298,47 @@ impl Parser {
                 continue;
             }
 
-            // CURRENCY SIGN / DECIMAL-POINT — skip to next period.
+            // DECIMAL-POINT IS COMMA — set flag and skip to period.
+            if self.check_identifier("DECIMAL-POINT") {
+                self.advance(); // DECIMAL-POINT
+                // Look for IS COMMA
+                if self.check_identifier("IS") {
+                    self.advance();
+                }
+                if self.check(TokenKind::Comma)
+                    || self.current().text.eq_ignore_ascii_case("COMMA")
+                {
+                    self.decimal_point_is_comma = true;
+                    self.advance();
+                }
+                while !self.check(TokenKind::Period) && !self.at_eof() {
+                    self.advance();
+                }
+                self.eat(TokenKind::Period);
+                continue;
+            }
+
+            // CURRENCY SIGN / other clauses — skip to next period or next
+            // SPECIAL-NAMES clause keyword (multiple clauses may share a
+            // single terminating period).
             if self.check_identifier("CURRENCY")
-                || self.check_identifier("DECIMAL-POINT")
                 || self.check_identifier("CURSOR")
                 || self.check_identifier("CRT")
                 || self.check_identifier("SYMBOLIC")
                 || self.check_identifier("ALPHABET")
             {
-                while !self.check(TokenKind::Period) && !self.at_eof() {
+                self.advance();
+                while !self.check(TokenKind::Period)
+                    && !self.at_eof()
+                    && !self.check_identifier("DECIMAL-POINT")
+                    && !self.check_identifier("CURRENCY")
+                    && !self.check_identifier("CURSOR")
+                    && !self.check_identifier("CRT")
+                    && !self.check_identifier("SYMBOLIC")
+                    && !self.check_identifier("ALPHABET")
+                    && !self.check(TokenKind::Class)
+                    && !self.check_identifier("CLASS")
+                {
                     self.advance();
                 }
                 self.eat(TokenKind::Period);

@@ -1588,9 +1588,17 @@ impl Parser {
                 || self.peek(1).kind == TokenKind::Other
                 || self.peek(1).kind == TokenKind::Of
                 || self.peek(1).kind == TokenKind::In
+                || self.peek(1).kind == TokenKind::Comma
+                || self.peek(1).kind == TokenKind::Semicolon
+                || self.peek(1).kind == TokenKind::Not
+                || self.peek(1).kind == TokenKind::InvalidKey
+                || self.peek(1).kind == TokenKind::At
                 || self.peek(1).kind == TokenKind::Eof)
         {
             let procedure = self.expect_procedure_name()?;
+            // Consume optional comma/semicolon noise separator after procedure name
+            self.eat(TokenKind::Comma);
+            self.eat(TokenKind::Semicolon);
             // Consume optional IN/OF section-name qualifier
             if self.check(TokenKind::Of) || self.check(TokenKind::In) {
                 self.advance(); // OF or IN
@@ -2844,9 +2852,12 @@ impl Parser {
             self.expect(TokenKind::ForKw)?;
 
             // Parse one or more tallying-kind items sharing the same counter/FOR.
-            // In COBOL, multiple ALL/LEADING/etc. can follow a single FOR:
-            //   FOR ALL "A" BEFORE X
-            //       ALL "B"
+            // In COBOL, multiple ALL/LEADING/etc. can follow a single FOR,
+            // and multiple value+before/after pairs can follow a single
+            // ALL/LEADING/TRAILING keyword:
+            //   FOR LEADING "S" AFTER WS-Y
+            //               "S" AFTER "U"
+            //               "T" AFTER WS-Y
             loop {
                 if self.check(TokenKind::Characters) {
                     self.advance();
@@ -2856,33 +2867,46 @@ impl Parser {
                         kind: TallyingKind::Characters,
                         before_after,
                     });
-                } else if self.check(TokenKind::All) {
-                    self.advance();
-                    let value = self.parse_expr()?;
-                    let before_after = self.parse_before_after_clauses()?;
-                    items.push(InspectTallying {
-                        counter: counter.clone(),
-                        kind: TallyingKind::All(value),
-                        before_after,
-                    });
-                } else if self.check(TokenKind::Leading) {
-                    self.advance();
-                    let value = self.parse_expr()?;
-                    let before_after = self.parse_before_after_clauses()?;
-                    items.push(InspectTallying {
-                        counter: counter.clone(),
-                        kind: TallyingKind::Leading(value),
-                        before_after,
-                    });
-                } else if self.check(TokenKind::Trailing) {
-                    self.advance();
-                    let value = self.parse_expr()?;
-                    let before_after = self.parse_before_after_clauses()?;
-                    items.push(InspectTallying {
-                        counter: counter.clone(),
-                        kind: TallyingKind::Trailing(value),
-                        before_after,
-                    });
+                } else if self.check(TokenKind::All)
+                    || self.check(TokenKind::Leading)
+                    || self.check(TokenKind::Trailing)
+                {
+                    let tally_kind_token = self.advance().kind;
+                    // Parse value + before/after pairs for this tallying kind.
+                    // Multiple pairs may follow without repeating the keyword.
+                    loop {
+                        let value = self.parse_expr()?;
+                        let before_after = self.parse_before_after_clauses()?;
+                        let kind = match tally_kind_token {
+                            TokenKind::All => TallyingKind::All(value),
+                            TokenKind::Leading => TallyingKind::Leading(value),
+                            _ => TallyingKind::Trailing(value),
+                        };
+                        items.push(InspectTallying {
+                            counter: counter.clone(),
+                            kind,
+                            before_after,
+                        });
+                        // Continue if another value follows (string literal or
+                        // identifier) that is not a tallying keyword or
+                        // statement terminator.
+                        if self.check(TokenKind::StringLiteral)
+                            && !self.at_statement_terminator()
+                            && !self.at_statement_start()
+                        {
+                            continue;
+                        }
+                        // Also continue for identifier values that are followed
+                        // by BEFORE/AFTER (to avoid greedily consuming the next
+                        // counter identifier).
+                        if self.check(TokenKind::Identifier)
+                            && (self.peek(1).kind == TokenKind::Before
+                                || self.peek(1).kind == TokenKind::After)
+                        {
+                            continue;
+                        }
+                        break;
+                    }
                 } else {
                     break;
                 }

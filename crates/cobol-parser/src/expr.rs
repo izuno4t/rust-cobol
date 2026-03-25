@@ -158,15 +158,23 @@ impl Parser {
     /// Look ahead from a `(` to detect the NIST-style form
     /// `(<arith-expr> IS LESS THAN ...)`, where the leading `(` wraps the left
     /// side of the comparison but is not closed before the comparison phrase.
+    ///
+    /// Returns `true` only when `IS` appears at depth 0 AND there is no
+    /// matching `)` at depth 0 (i.e. the parens are genuinely unclosed).
+    /// When the `(` has a matching `)`, the expression is a normal
+    /// parenthesized condition and should be handled by the standard path.
     fn is_unclosed_wrapped_expr_condition(&self) -> bool {
         let mut offset = 1;
         let mut depth = 0i32;
+        let mut found_is = false;
         loop {
             let tok = self.peek(offset);
             match tok.kind {
                 TokenKind::LeftParen => depth += 1,
                 TokenKind::RightParen => {
                     if depth == 0 {
+                        // Found matching ')' — the parens are properly closed,
+                        // so this is a parenthesized condition, not an unclosed wrap.
                         return false;
                     }
                     depth -= 1;
@@ -185,10 +193,12 @@ impl Parser {
                     return false;
                 }
                 TokenKind::Period | TokenKind::Then | TokenKind::Else | TokenKind::Eof => {
-                    return false;
+                    // End of statement reached without finding ')' at depth 0.
+                    // If we saw IS, the parens are truly unclosed.
+                    return found_is;
                 }
                 _ if depth == 0 && tok.text.eq_ignore_ascii_case("IS") => {
-                    return true;
+                    found_is = true;
                 }
                 _ => {}
             }
@@ -392,6 +402,16 @@ impl Parser {
         match self.current().kind {
             TokenKind::IntegerLiteral => {
                 let tok = self.advance();
+                // DECIMAL-POINT IS COMMA: 123,45 → 123.45
+                if self.decimal_point_is_comma
+                    && self.check(TokenKind::Comma)
+                    && self.peek(1).kind == TokenKind::IntegerLiteral
+                {
+                    self.advance(); // consume comma
+                    let frac_tok = self.advance();
+                    let decimal_str = format!("{}.{}", tok.text, frac_tok.text);
+                    return Some(Literal::Decimal(decimal_str));
+                }
                 // Note: integers exceeding i64 range silently become 0
                 let val: i64 = tok.text.parse().unwrap_or(0);
                 Some(Literal::Integer(val))
@@ -589,7 +609,7 @@ impl Parser {
             // An identifier inherits both the subject and operator from the
             // previous comparison.  Exclude cases where the identifier starts
             // a new full condition (followed by comparison op, subscript,
-            // qualifier, or NOT).
+            // qualifier, NOT, or sign/class condition keyword).
             if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
                 && self.current().kind != TokenKind::Not
                 && !is_comparison_op_kind(self.peek(1).kind)
@@ -597,8 +617,31 @@ impl Parser {
                 && self.peek(1).kind != TokenKind::Of
                 && self.peek(1).kind != TokenKind::In
                 && self.peek(1).kind != TokenKind::LeftParen
+                && !is_sign_or_class_condition_kind(self.peek(1).kind)
                 && !self.starts_full_condition_after_identifier()
             {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let mut abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    abbreviated = self.wrap_abbreviated_and(abbreviated)?;
+                    left = Condition::Or(Box::new(left), Box::new(abbreviated));
+                    continue;
+                }
+            }
+
+            // Handle expression-starting abbreviated: IF A = B OR -11 + C
+            // A unary +/- sign starts an arithmetic expression that inherits
+            // both the subject and operator from the previous comparison.
+            if matches!(
+                self.current().kind,
+                TokenKind::Minus | TokenKind::Plus
+            ) {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();
@@ -697,6 +740,7 @@ impl Parser {
                 && self.peek(1).kind != TokenKind::Of
                 && self.peek(1).kind != TokenKind::In
                 && self.peek(1).kind != TokenKind::LeftParen
+                && !is_sign_or_class_condition_kind(self.peek(1).kind)
                 && !self.starts_full_condition_after_identifier()
             {
                 if let Some((ref left_expr, op)) =
@@ -794,8 +838,28 @@ impl Parser {
                 && self.peek(1).kind != TokenKind::Of
                 && self.peek(1).kind != TokenKind::In
                 && self.peek(1).kind != TokenKind::LeftParen
+                && !is_sign_or_class_condition_kind(self.peek(1).kind)
                 && !self.starts_full_condition_after_identifier()
             {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    left = Condition::And(Box::new(left), Box::new(abbreviated));
+                    continue;
+                }
+            }
+
+            // Handle expression-starting abbreviated: IF A = B AND -11 + C
+            if matches!(
+                self.current().kind,
+                TokenKind::Minus | TokenKind::Plus
+            ) {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();
@@ -1072,6 +1136,23 @@ fn is_abbreviated_subject_only(kind: TokenKind) -> bool {
             | TokenKind::Quote
             | TokenKind::LowValue
             | TokenKind::HighValue
+    )
+}
+
+/// Check if a token kind is a sign or class condition keyword.
+/// These keywords indicate that the preceding identifier starts a new full
+/// condition (e.g. `SIGN-1 ZERO`, `CLASS-1 ALPHABETIC`), not an abbreviated
+/// combined relation.
+fn is_sign_or_class_condition_kind(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Positive
+            | TokenKind::Negative
+            | TokenKind::Zero
+            | TokenKind::Numeric
+            | TokenKind::Alphabetic
+            | TokenKind::AlphabeticLower
+            | TokenKind::AlphabeticUpper
     )
 }
 

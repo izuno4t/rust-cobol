@@ -18,6 +18,9 @@ pub struct Parser {
     reporter: DiagnosticReporter,
     #[allow(dead_code)]
     file_id: FileId,
+    /// When DECIMAL-POINT IS COMMA is set in SPECIAL-NAMES, commas act as
+    /// decimal points in numeric literals (e.g. `123,45` means `123.45`).
+    pub(crate) decimal_point_is_comma: bool,
 }
 
 impl Parser {
@@ -43,6 +46,7 @@ impl Parser {
             pos: 0,
             reporter: DiagnosticReporter::new(),
             file_id,
+            decimal_point_is_comma: false,
         }
     }
 
