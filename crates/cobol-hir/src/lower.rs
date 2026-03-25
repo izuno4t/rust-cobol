@@ -2316,6 +2316,19 @@ fn lower_condition(
         Condition::Comparison {
             left, op, right, ..
         } => {
+            // Check if right side is a condition name used in abbreviated context.
+            // e.g. "IF CONT-E EQUAL TO ZEROS AND GREATERZERO" where GREATERZERO
+            // is an 88-level condition name. The parser treats "AND GREATERZERO"
+            // as an abbreviated comparison (inheriting EQUAL operator), but the
+            // right operand is actually a condition name, not a data item.
+            if let Expr::Identifier(ref qn) = right {
+                if condition_names.contains_key(&qn.name) {
+                    return lower_condition(
+                        &Condition::ConditionName(qn.clone()),
+                        condition_names,
+                    );
+                }
+            }
             let hir_op = match op {
                 CompareOp::Equal => HirCompareOp::Eq,
                 CompareOp::NotEqual => HirCompareOp::Ne,
