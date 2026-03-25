@@ -61,6 +61,7 @@ pub(crate) fn emit_data_items(
     out: &mut String,
     items: &[HirDataItem],
     fd_aliases: &HashSet<String>,
+    fd_record_aliases: &std::collections::HashMap<smol_str::SmolStr, smol_str::SmolStr>,
 ) {
     if items.is_empty() {
         return;
@@ -73,6 +74,11 @@ pub(crate) fn emit_data_items(
     // NOT get unqualified #define macros to avoid redefinition warnings.
     let duplicate_member_names = collect_duplicate_member_names(items, &group_member_names);
 
+    // Compute the maximum record size for each primary FD record.
+    // When multiple 01-level records share the same FD, the primary record's
+    // static union must be large enough to hold any of them.
+    let fd_primary_max_sizes = compute_fd_primary_max_sizes(items, fd_record_aliases);
+
     let mut emitted_typedefs = HashSet::new();
     out.push_str("/* Data items */\n");
     for item in items {
@@ -83,9 +89,58 @@ pub(crate) fn emit_data_items(
         if fd_aliases.contains(&c_name) {
             continue; // FD record alias — will be #defined to the primary record
         }
-        emit_single_data_item(out, item, &duplicate_member_names, &mut emitted_typedefs);
+        let fd_max = fd_primary_max_sizes.get(&c_name).copied();
+        emit_single_data_item(
+            out,
+            item,
+            &duplicate_member_names,
+            &mut emitted_typedefs,
+            fd_max,
+        );
     }
     out.push('\n');
+}
+
+/// Compute max record size for each primary FD record name.
+/// Returns a map from sanitized primary record name → max byte size across
+/// all 01-level records in the same FD.
+fn compute_fd_primary_max_sizes(
+    items: &[HirDataItem],
+    fd_record_aliases: &std::collections::HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+) -> HashMap<String, u32> {
+    use super::find_data_item_size;
+
+    if fd_record_aliases.is_empty() {
+        return HashMap::new();
+    }
+
+    // Build reverse map: primary_name → vec of alias names (unsanitized)
+    let mut primary_to_aliases: HashMap<String, Vec<String>> = HashMap::new();
+    for (alias, primary) in fd_record_aliases {
+        let c_primary = sanitize_name(primary);
+        let c_alias = sanitize_name(alias);
+        primary_to_aliases
+            .entry(c_primary)
+            .or_default()
+            .push(c_alias);
+    }
+
+    let mut result = HashMap::new();
+    for (c_primary, aliases) in &primary_to_aliases {
+        let primary_size = find_data_item_size(c_primary, items);
+        let mut max_size = primary_size;
+        for c_alias in aliases {
+            let alias_size = find_data_item_size(c_alias, items);
+            if alias_size > max_size {
+                max_size = alias_size;
+            }
+        }
+        // Only store if max_size exceeds the primary record's own size
+        if max_size > primary_size {
+            result.insert(c_primary.clone(), max_size);
+        }
+    }
+    result
 }
 
 /// Collect sanitized names of all items that are members of a group.
@@ -172,6 +227,7 @@ pub(crate) fn emit_single_data_item(
     item: &HirDataItem,
     duplicate_member_names: &BTreeSet<String>,
     emitted_typedefs: &mut HashSet<String>,
+    fd_max_size: Option<u32>,
 ) {
     let c_name = sanitize_name(&item.name);
 
@@ -275,6 +331,12 @@ pub(crate) fn emit_single_data_item(
             out.push_str("static union {\n");
             out.push_str(&format!("    {td} members;\n"));
             out.push_str(&format!("    uint8_t _bytes[sizeof({td})];\n"));
+            // When this record is the primary record of an FD with multiple
+            // 01-level records, ensure the union is large enough for the
+            // largest record to prevent buffer overflow.
+            if let Some(max_size) = fd_max_size {
+                out.push_str(&format!("    uint8_t _fd_pad[{max_size}];\n"));
+            }
             out.push_str(&format!("}} {c_name};\n"));
             // Generate macros for group members.
             // Qualified: #define GROUP__FIELD_A GROUP.members._m_FIELD_A (always unique)

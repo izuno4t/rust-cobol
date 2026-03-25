@@ -657,6 +657,7 @@ pub enum TallyingKind {
     Characters,
     All(Expr),
     Leading(Expr),
+    Trailing(Expr),
 }
 
 /// A replacing phrase in INSPECT.

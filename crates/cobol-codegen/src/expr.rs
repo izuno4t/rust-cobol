@@ -1845,6 +1845,11 @@ pub(crate) fn emit_inspect_tallying(
                 let (ptr, len) = emit_inspect_operand(out, expr, &label, data_items, pad);
                 (2, ptr, len)
             }
+            cobol_hir::HirTallyingKind::Trailing(expr) => {
+                let label = format!("tally_s{i}");
+                let (ptr, len) = emit_inspect_operand(out, expr, &label, data_items, pad);
+                (3, ptr, len)
+            }
         };
         if let Some(disp_size) = counter_disp {
             let counter_const_ptr = display_numeric_const_ptr(&counter);
@@ -2715,7 +2720,16 @@ pub(crate) fn collect_xml_parse_stmt(stmt: &HirStatement, procs: &mut BTreeSet<S
 /// the data item with a matching (sanitized) name. Returns the
 /// size in bytes (default 80 if not found).
 pub(crate) fn find_record_len(c_name: &str, data_items: &[HirDataItem]) -> u32 {
-    find_data_item_size(c_name, data_items)
+    let base_size = find_data_item_size(c_name, data_items);
+    // If this record is the primary record of an FD with multiple 01-level
+    // records, return the max size so the runtime allocates enough buffer.
+    let fd_max = with_active_context(|ctx| ctx.fd_max_record_size(c_name));
+    if let Some(max_size) = fd_max {
+        if max_size > base_size {
+            return max_size;
+        }
+    }
+    base_size
 }
 
 /// Find the OCCURS count for a table by its sanitized C name.

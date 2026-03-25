@@ -127,8 +127,15 @@ fn reflow_fixed_format_source(source: &str) -> String {
                 || line_no_cr.as_bytes()[..6].iter().all(|b| *b == b' '));
         let (indicator, content) = if has_fixed_prefix {
             (line_no_cr.as_bytes()[6] as char, &line_no_cr[7..])
+        } else if line_no_cr.trim().is_empty() {
+            // Blank lines without a fixed prefix are treated as blank code lines
+            (' ', "")
         } else {
-            (' ', line_no_cr)
+            // Non-blank lines without a valid fixed-format prefix (columns 1-6
+            // must be all digits or all spaces) are not COBOL code. Treat them
+            // as comments to avoid parse errors. This handles trailing non-COBOL
+            // data appended after the program (e.g., NIST CCVS test character sets).
+            ('*', line_no_cr)
         };
 
         if indicator == '*' || indicator == '/' {
@@ -215,12 +222,17 @@ fn normalize_fixed_format_copybook(source: &str, first_line_inline: bool) -> Str
             ""
         };
         if idx == 0 {
-            if first_line_inline {
+            if first_line_inline && indicator != '*' && indicator != '/' {
                 if !content.is_empty() {
                     result.push(' ');
                 }
                 result.push_str(content);
             } else {
+                // When the first line cannot be inlined (e.g., a comment
+                // line), emit a newline to start a fresh fixed-format line.
+                if first_line_inline {
+                    result.push('\n');
+                }
                 result.push_str("      ");
                 result.push(indicator);
                 result.push_str(content);

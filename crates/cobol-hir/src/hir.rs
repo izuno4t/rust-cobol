@@ -926,6 +926,7 @@ pub enum HirTallyingKind {
     Characters,
     All(HirExpr),
     Leading(HirExpr),
+    Trailing(HirExpr),
 }
 
 /// A replacing phrase in INSPECT REPLACING.

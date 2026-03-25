@@ -476,6 +476,12 @@ impl Parser {
                 break;
             }
 
+            // COBOL-85: commas and semicolons are optional noise between statements
+            if self.check(TokenKind::Comma) || self.check(TokenKind::Semicolon) {
+                self.advance();
+                continue;
+            }
+
             match self.parse_statement() {
                 Ok(stmt) => statements.push(stmt),
                 Err(()) => {
@@ -507,6 +513,11 @@ impl Parser {
     // =========================================================================
 
     pub(crate) fn parse_statement(&mut self) -> Result<Statement, ()> {
+        // COBOL-85: commas and semicolons are optional noise between statements
+        while self.check(TokenKind::Comma) || self.check(TokenKind::Semicolon) {
+            self.advance();
+        }
+
         match self.current().kind {
             TokenKind::Move => self.parse_move_statement(),
             TokenKind::Compute => self.parse_compute_statement(),
@@ -1569,6 +1580,7 @@ impl Parser {
                 || self.peek(1).kind == TokenKind::With
                 || (self.peek(1).kind == TokenKind::Identifier
                     && (self.peek(2).kind == TokenKind::Times
+                        || self.peek(2).kind == TokenKind::LeftParen
                         || self.peek(1).text.eq_ignore_ascii_case("TEST")))
                 || self.is_end_keyword(self.peek(1).kind)
                 || Self::is_statement_start_keyword(self.peek(1).kind)
@@ -1603,8 +1615,12 @@ impl Parser {
             let test2 = self.parse_perform_test();
 
             // PERFORM proc-name n TIMES
+            // The times expression can be a literal, a plain identifier, or a
+            // subscripted identifier like TABLE5-NUM (INDEX5).
             if self.check(TokenKind::IntegerLiteral)
-                || (self.check(TokenKind::Identifier) && self.peek(1).kind == TokenKind::Times)
+                || (self.check(TokenKind::Identifier)
+                    && (self.peek(1).kind == TokenKind::Times
+                        || self.peek(1).kind == TokenKind::LeftParen))
             {
                 let times = self.parse_expr()?;
                 self.expect(TokenKind::Times)?;
@@ -1997,35 +2013,37 @@ impl Parser {
     fn parse_alter_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Alter)?;
-        let from = self.expect_identifier()?;
+        let from = self.parse_alter_proc_name()?;
         self.expect(TokenKind::To)?;
         // Optional PROCEED TO
         if self.check_identifier("PROCEED") {
             self.advance();
             self.expect(TokenKind::To)?;
         }
-        let to = self.expect_identifier()?;
+        let to = self.parse_alter_proc_name()?;
         let mut end_span = self.span();
         // COBOL allows multiple ALTER pairs separated by optional commas:
         // ALTER proc-1 TO proc-2, proc-3 TO proc-4 ...
         // Since ALTER is obsolete and lowered to a no-op, we just consume them.
         loop {
             let _ = self.eat(TokenKind::Comma);
-            if !self.check(TokenKind::Identifier) {
+            if !self.check(TokenKind::Identifier)
+                && !self.check(TokenKind::IntegerLiteral)
+            {
                 break;
             }
-            // Peek ahead: next identifier should be followed by TO
-            // to distinguish from the next statement.
-            if self.peek(1).kind != TokenKind::To {
+            // Peek ahead: next token (or after IN/OF qualification) should eventually
+            // reach TO to distinguish from the next statement.
+            if !self.alter_lookahead_has_to() {
                 break;
             }
-            let _extra_from = self.expect_identifier()?;
+            let _extra_from = self.parse_alter_proc_name()?;
             self.expect(TokenKind::To)?;
             if self.check_identifier("PROCEED") {
                 self.advance();
                 self.expect(TokenKind::To)?;
             }
-            let _extra_to = self.expect_identifier()?;
+            let _extra_to = self.parse_alter_proc_name()?;
             end_span = self.span();
         }
         Ok(Statement::Alter(AlterStatement {
@@ -2033,6 +2051,40 @@ impl Parser {
             to,
             span: start_span.merge(&end_span),
         }))
+    }
+
+    /// Parse a paragraph name for ALTER: accepts identifiers, keywords, or
+    /// integer literals (e.g. `ALTER 02 TO PROCEED TO 77`).
+    /// Also consumes optional IN/OF qualification (e.g. `PARA-5A IN SECTION-1`).
+    fn parse_alter_proc_name(&mut self) -> Result<SmolStr, ()> {
+        let name = if self.check(TokenKind::IntegerLiteral) {
+            self.advance().text
+        } else {
+            self.expect_identifier()?
+        };
+        // Consume optional IN/OF qualification (ignored since ALTER is a no-op)
+        if self.check(TokenKind::In) || self.check(TokenKind::Of) {
+            self.advance(); // IN or OF
+            if self.check(TokenKind::IntegerLiteral)
+                || self.check(TokenKind::Identifier)
+                || self.current().kind.is_keyword()
+            {
+                self.advance();
+            }
+        }
+        Ok(name)
+    }
+
+    /// Look ahead to see if the current position starts an ALTER pair
+    /// (proc-name [IN/OF qual] TO ...).
+    fn alter_lookahead_has_to(&self) -> bool {
+        let mut offset = 1;
+        // Skip optional IN/OF qualification
+        if matches!(self.peek(offset).kind, TokenKind::In | TokenKind::Of) {
+            offset += 1; // skip qualifier name
+            offset += 1;
+        }
+        self.peek(offset).kind == TokenKind::To
     }
 
     // --- EXIT ---
@@ -2198,6 +2250,7 @@ impl Parser {
                 && !self.check(TokenKind::Not)
                 && !self.check(TokenKind::EndRead)
                 && !self.check(TokenKind::Period)
+                && !self.is_end_keyword(self.current().kind)
             {
                 invalid_key.push(self.parse_statement()?);
             }
@@ -2211,6 +2264,7 @@ impl Parser {
             while !self.at_eof()
                 && !self.check(TokenKind::EndRead)
                 && !self.check(TokenKind::Period)
+                && !self.is_end_keyword(self.current().kind)
             {
                 not_invalid_key.push(self.parse_statement()?);
             }
@@ -2289,6 +2343,7 @@ impl Parser {
                 && !self.check(TokenKind::InvalidKey)
                 && !self.check(TokenKind::EndWrite)
                 && !self.check(TokenKind::Period)
+                && !self.is_end_keyword(self.current().kind)
             {
                 at_eop.push(self.parse_statement()?);
             }
@@ -2305,6 +2360,7 @@ impl Parser {
                 && !self.check(TokenKind::InvalidKey)
                 && !self.check(TokenKind::EndWrite)
                 && !self.check(TokenKind::Period)
+                && !self.is_end_keyword(self.current().kind)
             {
                 not_at_eop.push(self.parse_statement()?);
             }
@@ -2318,6 +2374,7 @@ impl Parser {
                 && !self.check(TokenKind::Not)
                 && !self.check(TokenKind::EndWrite)
                 && !self.check(TokenKind::Period)
+                && !self.is_end_keyword(self.current().kind)
             {
                 invalid_key.push(self.parse_statement()?);
             }
@@ -2331,6 +2388,7 @@ impl Parser {
             while !self.at_eof()
                 && !self.check(TokenKind::EndWrite)
                 && !self.check(TokenKind::Period)
+                && !self.is_end_keyword(self.current().kind)
             {
                 not_invalid_key.push(self.parse_statement()?);
             }
@@ -2365,10 +2423,64 @@ impl Parser {
             targets.push(self.parse_qualified_name()?);
         }
 
+        // Parse optional REPLACING clause
+        let mut replacing = Vec::new();
+        if self.eat(TokenKind::Replacing).is_some() {
+            loop {
+                // Parse optional ALL keyword (ignored for now, same semantics)
+                self.eat(TokenKind::All);
+
+                // Parse category keyword
+                let category = if self.check(TokenKind::Alphabetic) {
+                    self.advance();
+                    InitializeCategory::Alphabetic
+                } else if self.check_identifier("ALPHANUMERIC-EDITED") {
+                    self.advance();
+                    InitializeCategory::AlphanumericEdited
+                } else if self.check_identifier("ALPHANUMERIC") {
+                    self.advance();
+                    InitializeCategory::Alphanumeric
+                } else if self.check_identifier("NUMERIC-EDITED") {
+                    self.advance();
+                    InitializeCategory::NumericEdited
+                } else if self.check(TokenKind::Numeric) {
+                    self.advance();
+                    InitializeCategory::Numeric
+                } else if self.check(TokenKind::National) {
+                    self.advance();
+                    InitializeCategory::National
+                } else if self.check_identifier("NATIONAL-EDITED") {
+                    self.advance();
+                    InitializeCategory::NationalEdited
+                } else {
+                    break;
+                };
+
+                // Optional DATA keyword
+                self.eat(TokenKind::Data);
+
+                // BY keyword
+                self.expect(TokenKind::By)?;
+
+                // Value (identifier or literal)
+                let value = self.parse_expr()?;
+
+                replacing.push(InitializeReplacing { category, value });
+
+                // Continue if another category follows (no explicit separator)
+                if self.at_statement_terminator()
+                    || self.at_eof()
+                    || self.at_statement_start()
+                {
+                    break;
+                }
+            }
+        }
+
         let end_span = self.span();
         Ok(Statement::Initialize(Box::new(InitializeStatement {
             targets,
-            replacing: Vec::new(),
+            replacing,
             with_filler: false,
             span: start_span.merge(&end_span),
         })))
@@ -2718,7 +2830,8 @@ impl Parser {
         })))
     }
 
-    /// Parse tallying items: counter FOR (CHARACTERS | ALL/LEADING literal)
+    /// Parse tallying items: counter FOR (CHARACTERS | ALL/LEADING/TRAILING literal) ...
+    /// Multiple ALL/LEADING/TRAILING/CHARACTERS items can share a single FOR keyword.
     fn parse_inspect_tallying_items(&mut self) -> Result<Vec<InspectTallying>, ()> {
         let mut items = Vec::new();
         while !self.at_statement_terminator()
@@ -2730,35 +2843,58 @@ impl Parser {
             let counter = self.parse_qualified_name()?;
             self.expect(TokenKind::ForKw)?;
 
-            if self.check(TokenKind::Characters) {
-                self.advance();
-                let before_after = self.parse_before_after_clauses()?;
-                items.push(InspectTallying {
-                    counter,
-                    kind: TallyingKind::Characters,
-                    before_after,
-                });
-            } else if self.check(TokenKind::All) {
-                self.advance();
-                let value = self.parse_expr()?;
-                let before_after = self.parse_before_after_clauses()?;
-                items.push(InspectTallying {
-                    counter,
-                    kind: TallyingKind::All(value),
-                    before_after,
-                });
-            } else if self.check(TokenKind::Leading) {
-                self.advance();
-                let value = self.parse_expr()?;
-                let before_after = self.parse_before_after_clauses()?;
-                items.push(InspectTallying {
-                    counter,
-                    kind: TallyingKind::Leading(value),
-                    before_after,
-                });
-            } else {
-                // Unexpected token, break out
-                break;
+            // Parse one or more tallying-kind items sharing the same counter/FOR.
+            // In COBOL, multiple ALL/LEADING/etc. can follow a single FOR:
+            //   FOR ALL "A" BEFORE X
+            //       ALL "B"
+            loop {
+                if self.check(TokenKind::Characters) {
+                    self.advance();
+                    let before_after = self.parse_before_after_clauses()?;
+                    items.push(InspectTallying {
+                        counter: counter.clone(),
+                        kind: TallyingKind::Characters,
+                        before_after,
+                    });
+                } else if self.check(TokenKind::All) {
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    let before_after = self.parse_before_after_clauses()?;
+                    items.push(InspectTallying {
+                        counter: counter.clone(),
+                        kind: TallyingKind::All(value),
+                        before_after,
+                    });
+                } else if self.check(TokenKind::Leading) {
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    let before_after = self.parse_before_after_clauses()?;
+                    items.push(InspectTallying {
+                        counter: counter.clone(),
+                        kind: TallyingKind::Leading(value),
+                        before_after,
+                    });
+                } else if self.check(TokenKind::Trailing) {
+                    self.advance();
+                    let value = self.parse_expr()?;
+                    let before_after = self.parse_before_after_clauses()?;
+                    items.push(InspectTallying {
+                        counter: counter.clone(),
+                        kind: TallyingKind::Trailing(value),
+                        before_after,
+                    });
+                } else {
+                    break;
+                }
+
+                // Continue if another ALL/LEADING/TRAILING/CHARACTERS follows
+                if !self.check(TokenKind::All)
+                    && !self.check(TokenKind::Leading)
+                    && !self.check(TokenKind::Trailing)
+                    && !self.check(TokenKind::Characters)
+                {
+                    break;
+                }
             }
         }
         Ok(items)
@@ -4249,7 +4385,7 @@ impl Parser {
             let next = self.peek(1).kind;
             if matches!(
                 next,
-                TokenKind::OnKw | TokenKind::At | TokenKind::InvalidKey
+                TokenKind::OnKw | TokenKind::At | TokenKind::InvalidKey | TokenKind::End
             ) {
                 return true;
             }

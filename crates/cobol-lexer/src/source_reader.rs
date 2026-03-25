@@ -85,6 +85,19 @@ impl SourceReader {
         &self.lines
     }
 
+    /// Returns `true` if the character is a valid COBOL fixed-format indicator.
+    ///
+    /// Valid indicators per the COBOL standard:
+    /// - ` ` (space): normal line
+    /// - `*`: comment line
+    /// - `/`: comment line with page eject
+    /// - `-`: continuation line
+    /// - `D` or `d`: debug line
+    /// - `$`: compiler directive (extension supported by many compilers)
+    fn is_valid_fixed_indicator(ch: char) -> bool {
+        matches!(ch, ' ' | '*' | '/' | '-' | 'D' | 'd' | '$')
+    }
+
     /// Parse source in fixed format (COBOL-85 standard layout).
     ///
     /// - Columns 1-6: Sequence number area (ignored for compilation)
@@ -110,10 +123,19 @@ impl SourceReader {
             let line_len = raw_line.len();
 
             // Extract indicator from column 7 (0-indexed position 6)
-            let indicator = if line_len >= 7 {
+            let raw_indicator = if line_len >= 7 {
                 raw_line.as_bytes()[6] as char
             } else {
                 ' '
+            };
+
+            // If the indicator is not a valid COBOL fixed-format indicator,
+            // treat the line as a comment. This handles trailing non-COBOL data
+            // appended after the program (e.g., NIST CCVS test character sets).
+            let indicator = if Self::is_valid_fixed_indicator(raw_indicator) {
+                raw_indicator
+            } else {
+                '*'
             };
 
             // Content area: columns 8-72 (0-indexed: bytes 7..72)
@@ -163,10 +185,18 @@ impl SourceReader {
 
             let line_len = raw_line.len();
 
-            let indicator = if line_len >= 7 {
+            let raw_indicator = if line_len >= 7 {
                 raw_line.as_bytes()[6] as char
             } else {
                 ' '
+            };
+
+            // If the indicator is not a valid COBOL fixed-format indicator,
+            // treat the line as a comment (same logic as parse_fixed).
+            let indicator = if Self::is_valid_fixed_indicator(raw_indicator) {
+                raw_indicator
+            } else {
+                '*'
             };
 
             // Variable format: content extends to end of line (no right margin)

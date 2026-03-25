@@ -96,7 +96,12 @@ pub fn generate_c(program: &HirProgram) -> String {
             .keys()
             .map(|k| sanitize_name(k))
             .collect();
-        emit_data_items(&mut out, &program.data_items, &top_level_fd_aliases);
+        emit_data_items(
+            &mut out,
+            &program.data_items,
+            &top_level_fd_aliases,
+            &program.fd_record_aliases,
+        );
         emit_fd_alias_macros(&mut out, &program.data_items, &program.fd_record_aliases);
         cg_timing!("emit_data_items", t_data);
 
@@ -433,7 +438,12 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
             .keys()
             .map(|k| sanitize_name(k))
             .collect();
-        emit_data_items(out, &program.data_items, &nested_fd_aliases);
+        emit_data_items(
+            out,
+            &program.data_items,
+            &nested_fd_aliases,
+            &program.fd_record_aliases,
+        );
         emit_fd_alias_macros(out, &program.data_items, &program.fd_record_aliases);
 
         for nested in &program.nested_programs {
@@ -882,7 +892,7 @@ fn emit_runtime_declarations(out: &mut String) {
 
 fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
-    let ctx = CodegenContext::new(&[], &empty_records, &[]);
+    let ctx = CodegenContext::new(&[], &empty_records, &[], &HashMap::new());
     for class in classes {
         let c_name = sanitize_name(&class.name);
         out.push_str(&format!("/* CLASS {} */\n", c_name));
@@ -1003,7 +1013,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
 
 fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
-    let ctx = CodegenContext::new(&[], &empty_records, &[]);
+    let ctx = CodegenContext::new(&[], &empty_records, &[], &HashMap::new());
     for func in functions {
         let c_name = sanitize_name(&func.name).to_lowercase();
         let ret_type = hir_type_to_c(&func.returning);

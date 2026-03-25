@@ -1091,7 +1091,9 @@ impl<'a> NameResolver<'a> {
                 for t in tallying {
                     self.resolve_qualified_name(&t.counter);
                     match &t.kind {
-                        TallyingKind::All(e) | TallyingKind::Leading(e) => self.resolve_expr(e),
+                        TallyingKind::All(e)
+                        | TallyingKind::Leading(e)
+                        | TallyingKind::Trailing(e) => self.resolve_expr(e),
                         TallyingKind::Characters => {}
                     }
                     self.resolve_before_after(&t.before_after);

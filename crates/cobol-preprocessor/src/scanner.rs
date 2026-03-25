@@ -357,6 +357,10 @@ fn parse_replace_pair(
     let (old_text, is_pseudo, next_pos) = if source[pos..].starts_with("==") {
         let (text, np) = parse_pseudo_text(source, pos)?;
         (text, true, np)
+    } else if pos < len && (source.as_bytes()[pos] == b'"' || source.as_bytes()[pos] == b'\'') {
+        // Handle string literal as old operand (e.g., REPLACING "PIG" BY "HORSE")
+        let (text, np) = parse_string_literal(source, pos)?;
+        (text, false, np)
     } else {
         let (word, np) = parse_cobol_word(source, pos)?;
         (word, false, np)
@@ -392,7 +396,9 @@ fn parse_replace_pair(
         // Handle numeric literal (e.g., 12345)
         parse_numeric_literal(source, pos)?
     } else {
-        parse_cobol_word(source, pos)?
+        // Parse a COBOL word, possibly qualified with OF/IN and/or subscripted.
+        // Examples: FIELD, FIELD OF GROUP, FIELD IN GRP (1), Z (2, 1, 1)
+        parse_qualified_word(source, pos, fixed_format)?
     };
 
     Some((
@@ -403,6 +409,84 @@ fn parse_replace_pair(
         },
         next_pos2,
     ))
+}
+
+/// Parses a COBOL word with optional qualification (OF/IN) and subscripts.
+///
+/// Handles patterns like:
+/// - `FIELD`
+/// - `FIELD OF GROUP`
+/// - `FIELD IN GRP-1 IN GRP-2 (1)`
+/// - `Z (2, 1, 1)`
+///
+/// Stops before the next replacement pair keyword (BY, period, ==) or end of input.
+/// Returns the raw text (preserving spacing) and position after the last consumed token.
+fn parse_qualified_word(source: &str, start: usize, fixed_format: bool) -> Option<(String, usize)> {
+    let len = source.len();
+
+    // Parse the initial COBOL word.
+    let (_, word_end) = parse_cobol_word(source, start)?;
+    let mut end = word_end;
+
+    loop {
+        let saved = end;
+        let ws_end = skip_whitespace(source, end, fixed_format);
+
+        // Check for subscript: (...)
+        if ws_end < len && source.as_bytes()[ws_end] == b'(' {
+            if let Some(close) = find_closing_paren(source, ws_end) {
+                end = close + 1;
+                continue;
+            }
+        }
+
+        // Check for OF/IN qualification.
+        if ws_end < len {
+            let upper_rest = source[ws_end..].to_ascii_uppercase();
+            let is_of_in = (upper_rest.starts_with("OF")
+                && (ws_end + 2 >= len || !is_cobol_word_char(source.as_bytes()[ws_end + 2])))
+                || (upper_rest.starts_with("IN")
+                    && (ws_end + 2 >= len || !is_cobol_word_char(source.as_bytes()[ws_end + 2])));
+            if is_of_in {
+                let after_kw = skip_whitespace(source, ws_end + 2, fixed_format);
+                if let Some((_, np)) = parse_cobol_word(source, after_kw) {
+                    end = np;
+                    continue;
+                }
+            }
+        }
+
+        end = saved;
+        break;
+    }
+
+    Some((source[start..end].to_string(), end))
+}
+
+/// Finds the closing `)` matching the opening `(` at `start`.
+/// Handles nested parentheses.
+fn find_closing_paren(source: &str, start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    if start >= len || bytes[start] != b'(' {
+        return None;
+    }
+    let mut depth = 0;
+    let mut pos = start;
+    while pos < len {
+        match bytes[pos] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(pos);
+                }
+            }
+            _ => {}
+        }
+        pos += 1;
+    }
+    None
 }
 
 /// Parses pseudo-text delimited by `==` ... `==`.
@@ -454,6 +538,10 @@ fn parse_string_literal(source: &str, start: usize) -> Option<(String, usize)> {
 
 /// Parses a numeric literal (optionally signed, with decimal point) starting at `pos`.
 /// Returns the literal text and position after it.
+///
+/// A decimal point is only included if it is followed by at least one digit.
+/// This prevents the COPY statement's terminating period from being consumed
+/// as part of the numeric literal (e.g., `BY 4.` means literal `4` + period).
 fn parse_numeric_literal(source: &str, start: usize) -> Option<(String, usize)> {
     let bytes = source.as_bytes();
     let len = bytes.len();
@@ -466,13 +554,20 @@ fn parse_numeric_literal(source: &str, start: usize) -> Option<(String, usize)> 
     if end < len && (bytes[end] == b'+' || bytes[end] == b'-') {
         end += 1;
     }
-    // Digits and decimal point
+    // Digits before decimal point
     let digit_start = end;
-    while end < len && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+    while end < len && bytes[end].is_ascii_digit() {
         end += 1;
     }
     if end == digit_start {
         return None; // no digits
+    }
+    // Decimal point followed by digits (e.g., 4.99)
+    if end < len && bytes[end] == b'.' && end + 1 < len && bytes[end + 1].is_ascii_digit() {
+        end += 1; // consume '.'
+        while end < len && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
     }
     Some((source[start..end].to_string(), end))
 }

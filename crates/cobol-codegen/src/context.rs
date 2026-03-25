@@ -42,6 +42,10 @@ pub(crate) struct CodegenContext {
     display_numeric_sizes: HashMap<String, u32>,
     group_alpha_names: HashSet<String>,
     data_item_size_cache: HashMap<String, u32>,
+    /// For each primary FD record, the max byte size across all 01-level records
+    /// sharing the same FD.  Used by `find_record_len` to return the correct
+    /// buffer size for file I/O operations.
+    fd_max_record_sizes: HashMap<String, u32>,
     in_body_context: Cell<bool>,
     goto_label_map: RefCell<HashMap<String, usize>>,
     perform_thru_counter: Cell<usize>,
@@ -58,6 +62,7 @@ impl CodegenContext {
             &program.data_items,
             &program.file_records,
             &program.communication_descriptions,
+            &program.fd_record_aliases,
         )
     }
 
@@ -91,6 +96,12 @@ impl CodegenContext {
         let mut data_item_size_cache = parent.data_item_size_cache.clone();
         data_item_size_cache.extend(build_data_item_size_cache(&program.data_items));
 
+        let mut fd_max_record_sizes = parent.fd_max_record_sizes.clone();
+        fd_max_record_sizes.extend(build_fd_max_record_sizes(
+            &program.data_items,
+            &program.fd_record_aliases,
+        ));
+
         Self {
             subscript_paths,
             file_record_map,
@@ -100,6 +111,7 @@ impl CodegenContext {
             display_numeric_sizes,
             group_alpha_names,
             data_item_size_cache,
+            fd_max_record_sizes,
             in_body_context: Cell::new(false),
             goto_label_map: RefCell::new(HashMap::new()),
             perform_thru_counter: Cell::new(0),
@@ -111,6 +123,7 @@ impl CodegenContext {
         data_items: &[HirDataItem],
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         communication_descriptions: &[cobol_hir::HirCommunicationDescription],
+        fd_record_aliases: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
     ) -> Self {
         Self {
             subscript_paths: build_subscript_paths(data_items),
@@ -124,6 +137,7 @@ impl CodegenContext {
             display_numeric_sizes: build_display_numeric_sizes(data_items),
             group_alpha_names: build_group_alpha_names(data_items),
             data_item_size_cache: build_data_item_size_cache(data_items),
+            fd_max_record_sizes: build_fd_max_record_sizes(data_items, fd_record_aliases),
             in_body_context: Cell::new(false),
             goto_label_map: RefCell::new(HashMap::new()),
             perform_thru_counter: Cell::new(0),
@@ -203,6 +217,12 @@ impl CodegenContext {
 
     pub(crate) fn data_item_size(&self, c_name: &str) -> Option<u32> {
         self.data_item_size_cache.get(c_name).copied()
+    }
+
+    /// Return the max FD record size for a primary record name, if it
+    /// exceeds the primary record's own size.
+    pub(crate) fn fd_max_record_size(&self, c_name: &str) -> Option<u32> {
+        self.fd_max_record_sizes.get(c_name).copied()
     }
 }
 
@@ -461,4 +481,47 @@ pub(crate) fn populate_size_cache(items: &[HirDataItem], map: &mut HashMap<Strin
             populate_size_cache(members, map);
         }
     }
+}
+
+/// Build a mapping from primary FD record name → max byte size across all
+/// 01-level records in the same FD.  Only entries where an alias record is
+/// larger than the primary are included.
+fn build_fd_max_record_sizes(
+    data_items: &[HirDataItem],
+    fd_record_aliases: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+) -> HashMap<String, u32> {
+    if fd_record_aliases.is_empty() {
+        return HashMap::new();
+    }
+
+    // Build size cache for quick lookup
+    let mut size_cache = HashMap::new();
+    populate_size_cache(data_items, &mut size_cache);
+
+    // Group aliases by primary record name
+    let mut primary_to_aliases: HashMap<String, Vec<String>> = HashMap::new();
+    for (alias, primary) in fd_record_aliases {
+        let c_primary = sanitize_name(primary);
+        let c_alias = sanitize_name(alias);
+        primary_to_aliases
+            .entry(c_primary)
+            .or_default()
+            .push(c_alias);
+    }
+
+    let mut result = HashMap::new();
+    for (c_primary, aliases) in &primary_to_aliases {
+        let primary_size = size_cache.get(c_primary.as_str()).copied().unwrap_or(80);
+        let mut max_size = primary_size;
+        for c_alias in aliases {
+            let alias_size = size_cache.get(c_alias.as_str()).copied().unwrap_or(0);
+            if alias_size > max_size {
+                max_size = alias_size;
+            }
+        }
+        if max_size > primary_size {
+            result.insert(c_primary.clone(), max_size);
+        }
+    }
+    result
 }

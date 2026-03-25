@@ -556,6 +556,7 @@ impl Parser {
                     if is_not {
                         abbreviated = Condition::Not(Box::new(abbreviated));
                     }
+                    abbreviated = self.wrap_abbreviated_and(abbreviated)?;
                     left = Condition::Or(Box::new(left), Box::new(abbreviated));
                     continue;
                 }
@@ -572,12 +573,13 @@ impl Parser {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();
-                    let abbreviated = Condition::Comparison {
+                    let mut abbreviated = Condition::Comparison {
                         left: left_expr.clone(),
                         op,
                         right: right_expr,
                         span,
                     };
+                    abbreviated = self.wrap_abbreviated_and(abbreviated)?;
                     left = Condition::Or(Box::new(left), Box::new(abbreviated));
                     continue;
                 }
@@ -589,6 +591,7 @@ impl Parser {
             // a new full condition (followed by comparison op, subscript,
             // qualifier, or NOT).
             if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
+                && self.current().kind != TokenKind::Not
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
                 && self.peek(1).kind != TokenKind::Of
@@ -599,12 +602,13 @@ impl Parser {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();
-                    let abbreviated = Condition::Comparison {
+                    let mut abbreviated = Condition::Comparison {
                         left: left_expr.clone(),
                         op,
                         right: right_expr,
                         span,
                     };
+                    abbreviated = self.wrap_abbreviated_and(abbreviated)?;
                     left = Condition::Or(Box::new(left), Box::new(abbreviated));
                     continue;
                 }
@@ -615,6 +619,108 @@ impl Parser {
         }
 
         Ok(left)
+    }
+
+    /// After parsing an abbreviated condition inside `parse_or_condition`,
+    /// consume any trailing `AND` abbreviations so that
+    /// `IF A = B OR C AND D` correctly nests the AND under the OR branch.
+    fn wrap_abbreviated_and(&mut self, mut and_right: Condition) -> Result<Condition, ()> {
+        while self.check(TokenKind::And) {
+            self.advance();
+
+            // Skip noise word IS
+            if self.check_identifier("IS") {
+                let next = self.peek(1).kind;
+                if next == TokenKind::Not || is_comparison_op_kind(next) {
+                    self.advance();
+                }
+            }
+
+            // Operator-abbreviated: AND [NOT] <cmp-op> <expr>
+            let and_is_not = self.check(TokenKind::Not);
+            let and_has_abbrev = if and_is_not {
+                is_comparison_op_kind(self.peek(1).kind)
+            } else {
+                self.is_comparison_op()
+            };
+            if and_has_abbrev {
+                if let Some(ref left_expr) = extract_comparison_left(&and_right) {
+                    if and_is_not {
+                        self.advance();
+                    }
+                    let op = self.parse_comparison_op()?;
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let mut and_abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    if and_is_not {
+                        and_abbreviated = Condition::Not(Box::new(and_abbreviated));
+                    }
+                    and_right =
+                        Condition::And(Box::new(and_right), Box::new(and_abbreviated));
+                    continue;
+                }
+            }
+
+            // Subject-only abbreviated: AND <literal>
+            if is_abbreviated_subject_only(self.current().kind)
+                && !is_comparison_op_kind(self.peek(1).kind)
+                && self.peek(1).kind != TokenKind::Not
+            {
+                if let Some((ref left_expr, op)) =
+                    extract_comparison_left_and_op(&and_right)
+                {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let and_abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    and_right =
+                        Condition::And(Box::new(and_right), Box::new(and_abbreviated));
+                    continue;
+                }
+            }
+
+            // Identifier-based abbreviated: AND <ident>
+            if (self.current().kind == TokenKind::Identifier
+                || self.current().kind.is_keyword())
+                && self.current().kind != TokenKind::Not
+                && !is_comparison_op_kind(self.peek(1).kind)
+                && self.peek(1).kind != TokenKind::Not
+                && self.peek(1).kind != TokenKind::Of
+                && self.peek(1).kind != TokenKind::In
+                && self.peek(1).kind != TokenKind::LeftParen
+                && !self.starts_full_condition_after_identifier()
+            {
+                if let Some((ref left_expr, op)) =
+                    extract_comparison_left_and_op(&and_right)
+                {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let and_abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    and_right =
+                        Condition::And(Box::new(and_right), Box::new(and_abbreviated));
+                    continue;
+                }
+            }
+
+            // Not an abbreviated AND — parse as full condition
+            let right = self.parse_not_condition()?;
+            and_right = Condition::And(Box::new(and_right), Box::new(right));
+        }
+        Ok(and_right)
     }
 
     fn parse_and_condition(&mut self) -> Result<Condition, ()> {
@@ -682,6 +788,7 @@ impl Parser {
 
             // Handle identifier-based abbreviated: IF A = B AND C AND D - 1
             if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
+                && self.current().kind != TokenKind::Not
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
                 && self.peek(1).kind != TokenKind::Of
