@@ -300,13 +300,22 @@ pub(crate) fn emit_single_data_item(
     };
     match &item.data_type {
         HirType::Alphanumeric { size } => {
+            // When this record is the primary record of an FD with multiple
+            // 01-level records, ensure the buffer is large enough for the
+            // largest record to prevent buffer overflow.
+            let effective_size = if let Some(max) = fd_max_size {
+                std::cmp::max(*size, max) + 1
+            } else {
+                size + 1
+            };
             if item.occurs.is_some() {
                 out.push_str(&format!(
-                    "static char {c_name}{array_suffix}[{}];\n",
-                    size + 1
+                    "static char {c_name}{array_suffix}[{effective_size}];\n",
                 ));
             } else {
-                out.push_str(&format!("static char {}[{}];\n", c_name, size + 1));
+                out.push_str(&format!(
+                    "static char {c_name}[{effective_size}];\n",
+                ));
             }
         }
         HirType::National { size } => {

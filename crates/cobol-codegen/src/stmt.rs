@@ -562,19 +562,19 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str("CobolDecimal _mr; cobol_decimal_mul(&_ma, &_mb, &_mr); ");
                         if target_is_decimal {
                             out.push_str(&format!("{c_target} = _mr; }}\n"));
+                        } else if let Some(disp_size) =
+                            grp_display_size(&c_target, data_items)
+                        {
+                            let c_target_ptr = display_numeric_ptr(&c_target);
+                            out.push_str(&format!(
+                                "cobol_store_numeric_display(\
+                                 cobol_decimal_to_int64(&_mr), \
+                                 {c_target_ptr}, {disp_size}); }}\n"
+                            ));
                         } else {
-                            if let Some(disp_size) = grp_display_size(&c_target, data_items) {
-                                let c_target_ptr = display_numeric_ptr(&c_target);
-                                out.push_str(&format!(
-                                    "cobol_store_numeric_display(\
-                                     cobol_decimal_to_int64(&_mr), \
-                                     {c_target_ptr}, {disp_size}); }}\n"
-                                ));
-                            } else {
-                                out.push_str(&format!(
-                                    "{c_target} = cobol_decimal_to_int64(&_mr); }}\n"
-                                ));
-                            }
+                            out.push_str(&format!(
+                                "{c_target} = cobol_decimal_to_int64(&_mr); }}\n"
+                            ));
                         }
                     } else {
                         let mul_expr = format!("{first_by_int} * {c_operand_int}");

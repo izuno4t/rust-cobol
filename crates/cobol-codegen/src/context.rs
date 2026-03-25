@@ -354,6 +354,19 @@ pub(crate) fn collect_display_numeric_sizes(
             _ => {}
         }
     }
+    // Register RENAMES items (level 66) that alias a single display numeric field.
+    // RENAMES with THRU spans multiple fields and is treated as alphanumeric.
+    for member in members {
+        if let Some((ref from, ref thru)) = member.renames {
+            if thru.is_none() {
+                let from_c = sanitize_name(from);
+                if let Some(&size) = map.get(&from_c) {
+                    let c_name = sanitize_name(&member.name);
+                    map.insert(c_name, size);
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn build_group_alpha_names(data_items: &[HirDataItem]) -> HashSet<String> {
