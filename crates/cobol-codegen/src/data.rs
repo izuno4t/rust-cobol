@@ -313,9 +313,7 @@ pub(crate) fn emit_single_data_item(
                     "static char {c_name}{array_suffix}[{effective_size}];\n",
                 ));
             } else {
-                out.push_str(&format!(
-                    "static char {c_name}[{effective_size}];\n",
-                ));
+                out.push_str(&format!("static char {c_name}[{effective_size}];\n",));
             }
         }
         HirType::National { size } => {

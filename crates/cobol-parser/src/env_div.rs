@@ -301,12 +301,11 @@ impl Parser {
             // DECIMAL-POINT IS COMMA — set flag and skip to period.
             if self.check_identifier("DECIMAL-POINT") {
                 self.advance(); // DECIMAL-POINT
-                // Look for IS COMMA
+                                // Look for IS COMMA
                 if self.check_identifier("IS") {
                     self.advance();
                 }
-                if self.check(TokenKind::Comma)
-                    || self.current().text.eq_ignore_ascii_case("COMMA")
+                if self.check(TokenKind::Comma) || self.current().text.eq_ignore_ascii_case("COMMA")
                 {
                     self.decimal_point_is_comma = true;
                     self.advance();

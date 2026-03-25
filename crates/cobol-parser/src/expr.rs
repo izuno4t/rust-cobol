@@ -638,10 +638,7 @@ impl Parser {
             // Handle expression-starting abbreviated: IF A = B OR -11 + C
             // A unary +/- sign starts an arithmetic expression that inherits
             // both the subject and operator from the previous comparison.
-            if matches!(
-                self.current().kind,
-                TokenKind::Minus | TokenKind::Plus
-            ) {
+            if matches!(self.current().kind, TokenKind::Minus | TokenKind::Plus) {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();
@@ -703,8 +700,7 @@ impl Parser {
                     if and_is_not {
                         and_abbreviated = Condition::Not(Box::new(and_abbreviated));
                     }
-                    and_right =
-                        Condition::And(Box::new(and_right), Box::new(and_abbreviated));
+                    and_right = Condition::And(Box::new(and_right), Box::new(and_abbreviated));
                     continue;
                 }
             }
@@ -714,9 +710,7 @@ impl Parser {
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
             {
-                if let Some((ref left_expr, op)) =
-                    extract_comparison_left_and_op(&and_right)
-                {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&and_right) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();
                     let and_abbreviated = Condition::Comparison {
@@ -725,15 +719,13 @@ impl Parser {
                         right: right_expr,
                         span,
                     };
-                    and_right =
-                        Condition::And(Box::new(and_right), Box::new(and_abbreviated));
+                    and_right = Condition::And(Box::new(and_right), Box::new(and_abbreviated));
                     continue;
                 }
             }
 
             // Identifier-based abbreviated: AND <ident>
-            if (self.current().kind == TokenKind::Identifier
-                || self.current().kind.is_keyword())
+            if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
                 && self.current().kind != TokenKind::Not
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
@@ -743,9 +735,7 @@ impl Parser {
                 && !is_sign_or_class_condition_kind(self.peek(1).kind)
                 && !self.starts_full_condition_after_identifier()
             {
-                if let Some((ref left_expr, op)) =
-                    extract_comparison_left_and_op(&and_right)
-                {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&and_right) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();
                     let and_abbreviated = Condition::Comparison {
@@ -754,8 +744,7 @@ impl Parser {
                         right: right_expr,
                         span,
                     };
-                    and_right =
-                        Condition::And(Box::new(and_right), Box::new(and_abbreviated));
+                    and_right = Condition::And(Box::new(and_right), Box::new(and_abbreviated));
                     continue;
                 }
             }
@@ -856,10 +845,7 @@ impl Parser {
             }
 
             // Handle expression-starting abbreviated: IF A = B AND -11 + C
-            if matches!(
-                self.current().kind,
-                TokenKind::Minus | TokenKind::Plus
-            ) {
+            if matches!(self.current().kind, TokenKind::Minus | TokenKind::Plus) {
                 if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&left) {
                     let right_expr = self.parse_expr()?;
                     let span = self.span();

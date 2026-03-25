@@ -1966,9 +1966,7 @@ fn lower_inspect_tallying(t: &cobol_ast::statement::InspectTallying) -> HirInspe
         cobol_ast::statement::TallyingKind::Characters => HirTallyingKind::Characters,
         cobol_ast::statement::TallyingKind::All(e) => HirTallyingKind::All(lower_expr(e)),
         cobol_ast::statement::TallyingKind::Leading(e) => HirTallyingKind::Leading(lower_expr(e)),
-        cobol_ast::statement::TallyingKind::Trailing(e) => {
-            HirTallyingKind::Trailing(lower_expr(e))
-        }
+        cobol_ast::statement::TallyingKind::Trailing(e) => HirTallyingKind::Trailing(lower_expr(e)),
     };
     HirInspectTallying {
         counter: lower_qualified_name_to_expr(&t.counter),

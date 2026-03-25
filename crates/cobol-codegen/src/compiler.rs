@@ -55,9 +55,13 @@ fn resolve_runtime_archive_path(
             )
         })?;
 
-    candidate
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve runtime library '{}': {}", candidate.display(), e))
+    candidate.canonicalize().map_err(|e| {
+        format!(
+            "Failed to resolve runtime library '{}': {}",
+            candidate.display(),
+            e
+        )
+    })
 }
 
 pub fn compile_c_to_executable(

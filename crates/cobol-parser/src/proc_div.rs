@@ -2035,9 +2035,7 @@ impl Parser {
         // Since ALTER is obsolete and lowered to a no-op, we just consume them.
         loop {
             let _ = self.eat(TokenKind::Comma);
-            if !self.check(TokenKind::Identifier)
-                && !self.check(TokenKind::IntegerLiteral)
-            {
+            if !self.check(TokenKind::Identifier) && !self.check(TokenKind::IntegerLiteral) {
                 break;
             }
             // Peek ahead: next token (or after IN/OF qualification) should eventually
@@ -2476,10 +2474,7 @@ impl Parser {
                 replacing.push(InitializeReplacing { category, value });
 
                 // Continue if another category follows (no explicit separator)
-                if self.at_statement_terminator()
-                    || self.at_eof()
-                    || self.at_statement_start()
-                {
+                if self.at_statement_terminator() || self.at_eof() || self.at_statement_start() {
                     break;
                 }
             }
