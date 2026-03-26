@@ -2083,8 +2083,7 @@ pub(crate) fn emit_statement_with_ctx(
                     "{pad}    _sort_keys[0].offset = 0; _sort_keys[0].length = {rec_len}; _sort_keys[0].ascending = 1; _sort_keys[0].key_type = 0;\n"
                 ));
             } else {
-                let needs_conv =
-                    sort_record_needs_conversion(&record_var, data_items);
+                let needs_conv = sort_record_needs_conversion(&record_var, data_items);
                 for (i, (field_name, ascending)) in flat_keys.iter().enumerate() {
                     let asc_val: u8 = if *ascending { 1 } else { 0 };
                     let mut kt = sort_key_type_for_field(field_name, data_items);
@@ -2524,9 +2523,7 @@ pub(crate) fn emit_statement_with_ctx(
             out.push_str(&format!("{pad}{{\n"));
             if needs_conv {
                 // Sort buffer contains display-format bytes; deserialize into SD record
-                out.push_str(&format!(
-                    "{pad}    uint8_t _sort_flat[{rec_len}];\n"
-                ));
+                out.push_str(&format!("{pad}    uint8_t _sort_flat[{rec_len}];\n"));
                 out.push_str(&format!(
                     "{pad}    uint32_t _fs = cobol_sort_buffer_return(_sort_buf_id, _sort_flat, {rec_len});\n"
                 ));
@@ -2681,9 +2678,7 @@ pub(crate) fn emit_statement_with_ctx(
             if needs_conv {
                 // Serialize struct to display format before releasing
                 out.push_str(&format!("{pad}{{\n"));
-                out.push_str(&format!(
-                    "{pad}    uint8_t _sort_flat[{rec_len}];\n"
-                ));
+                out.push_str(&format!("{pad}    uint8_t _sort_flat[{rec_len}];\n"));
                 // If FROM is specified, first move to the record
                 if from.is_some() {
                     out.push_str(&format!(
@@ -5104,8 +5099,7 @@ fn emit_sort_buf_display_to_binary(
     ));
     out.push_str(&format!("{pad}    CobolDecimal _tmp_dec;\n"));
     let mut offset: u32 = 0;
-    let mut name_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for member in members {
         let _c_name = dedup_member_name(&member.name, &mut name_counts);
         let size = cobol_file_byte_size(&member.data_type);
@@ -5114,9 +5108,7 @@ fn emit_sort_buf_display_to_binary(
                 out.push_str(&format!(
                     "{pad}    cobol_decimal_from_string(_rec + {offset}, {size}, &_tmp_dec);\n"
                 ));
-                out.push_str(&format!(
-                    "{pad}    memset(_rec + {offset}, 0, {size});\n"
-                ));
+                out.push_str(&format!("{pad}    memset(_rec + {offset}, 0, {size});\n"));
                 out.push_str(&format!(
                     "{pad}    memcpy(_rec + {offset}, &_tmp_dec.value, sizeof(int64_t));\n"
                 ));
@@ -5125,9 +5117,7 @@ fn emit_sort_buf_display_to_binary(
                 out.push_str(&format!(
                     "{pad}    cobol_decimal_from_string(_rec + {offset}, {size}, &_tmp_dec);\n"
                 ));
-                out.push_str(&format!(
-                    "{pad}    memset(_rec + {offset}, 0, {size});\n"
-                ));
+                out.push_str(&format!("{pad}    memset(_rec + {offset}, 0, {size});\n"));
                 out.push_str(&format!(
                     "{pad}    memcpy(_rec + {offset}, &_tmp_dec.value, sizeof(int64_t));\n"
                 ));
@@ -5181,13 +5171,16 @@ fn emit_field_deserialize(
     base_offset: u32,
 ) {
     let mut offset = base_offset;
-    let mut name_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for member in members {
         let c_name = dedup_member_name(&member.name, &mut name_counts);
         let size = cobol_file_byte_size(&member.data_type);
         match &member.data_type {
-            HirType::Numeric { decimal_places, is_signed, .. } if *decimal_places > 0 => {
+            HirType::Numeric {
+                decimal_places,
+                is_signed,
+                ..
+            } if *decimal_places > 0 => {
                 // Restore CobolDecimal value from int64_t binary
                 out.push_str(&format!(
                     "{pad}{record_var}.members._m_{c_name}.value = 0;\n"
@@ -5230,9 +5223,7 @@ fn emit_field_deserialize(
                 // Binary fields are stored as int64_t in C but occupy fewer bytes in
                 // the file. Read from flat buffer, sign-extend to int64_t.
                 let bsize = size; // use cobol_file_byte_size result
-                out.push_str(&format!(
-                    "{pad}{record_var}.members._m_{c_name} = 0;\n"
-                ));
+                out.push_str(&format!("{pad}{record_var}.members._m_{c_name} = 0;\n"));
                 out.push_str(&format!(
                     "{pad}memcpy(&{record_var}.members._m_{c_name}, \
                      {flat_var} + {offset}, {bsize});\n"
@@ -5248,7 +5239,11 @@ fn emit_field_deserialize(
                     ));
                 }
             }
-            HirType::Group { members: sub, size: gsize, .. } => {
+            HirType::Group {
+                members: sub,
+                size: gsize,
+                ..
+            } => {
                 let has_complex = sub.iter().any(|m| {
                     matches!(&m.data_type,
                         HirType::Numeric { decimal_places, .. } if *decimal_places > 0)
@@ -5305,8 +5300,7 @@ fn emit_field_serialize(
     base_offset: u32,
 ) {
     let mut offset = base_offset;
-    let mut name_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for member in members {
         let c_name = dedup_member_name(&member.name, &mut name_counts);
         let size = cobol_file_byte_size(&member.data_type);
@@ -5314,9 +5308,7 @@ fn emit_field_serialize(
             HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
                 // Store CobolDecimal value as int64_t binary for correct
                 // signed comparison during sorting.
-                out.push_str(&format!(
-                    "{pad}memset({flat_var} + {offset}, 0, {size});\n"
-                ));
+                out.push_str(&format!("{pad}memset({flat_var} + {offset}, 0, {size});\n"));
                 out.push_str(&format!(
                     "{pad}memcpy({flat_var} + {offset}, \
                      &{record_var}.members._m_{c_name}.value, sizeof(int64_t));\n"
@@ -5325,9 +5317,7 @@ fn emit_field_serialize(
             HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
                 // Store CobolDecimal value as int64_t binary for correct
                 // signed comparison during sorting.
-                out.push_str(&format!(
-                    "{pad}memset({flat_var} + {offset}, 0, {size});\n"
-                ));
+                out.push_str(&format!("{pad}memset({flat_var} + {offset}, 0, {size});\n"));
                 out.push_str(&format!(
                     "{pad}memcpy({flat_var} + {offset}, \
                      &{record_var}.members._m_{c_name}.value, sizeof(int64_t));\n"
@@ -5339,7 +5329,11 @@ fn emit_field_serialize(
                      &{record_var}.members._m_{c_name}, {size});\n"
                 ));
             }
-            HirType::Group { members: sub, size: gsize, .. } => {
+            HirType::Group {
+                members: sub,
+                size: gsize,
+                ..
+            } => {
                 let has_complex = sub.iter().any(|m| {
                     matches!(&m.data_type,
                         HirType::Numeric { decimal_places, .. } if *decimal_places > 0)

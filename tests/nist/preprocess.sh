@@ -47,6 +47,19 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
     -e "s|XXXXX027|\"${TMPDIR}/S1\"|g" \
     -e "s|XXXXX047|COPYLIB|g" \
     -e "s|XXXXX048|COPYLIB|g" \
+    -e "s|XXXXD001|\"${TMPDIR}/../_shared/D1\"|g" \
+    -e "s|XXXXD002|\"${TMPDIR}/../_shared/D2\"|g" \
+    -e "s|XXXXD003|\"${TMPDIR}/../_shared/D3\"|g" \
+    -e "s|XXXXD004|\"${TMPDIR}/../_shared/D4\"|g" \
+    -e "s|XXXXD005|\"${TMPDIR}/../_shared/D5\"|g" \
+    -e "s|XXXXD006|\"${TMPDIR}/../_shared/D6\"|g" \
+    -e "s|XXXXD007|\"${TMPDIR}/../_shared/D7\"|g" \
+    -e "s|XXXXD008|\"${TMPDIR}/../_shared/D8\"|g" \
+    -e "s|XXXXD009|\"${TMPDIR}/../_shared/D9\"|g" \
+    -e "s|XXXXD010|\"${TMPDIR}/../_shared/D10\"|g" \
+    -e "s|XXXXD011|\"${TMPDIR}/../_shared/D11\"|g" \
+    -e "s|XXXXD012|\"${TMPDIR}/../_shared/D12\"|g" \
+    -e "s|XXXXD013|\"${TMPDIR}/../_shared/D13\"|g" \
     -e "s|XXXXX008|\"${TMPDIR}/D8\"|g" \
     -e "s|XXXXX009|\"${TMPDIR}/D9\"|g" \
     -e "s|XXXXX015|\"${TMPDIR}/D15\"|g" \

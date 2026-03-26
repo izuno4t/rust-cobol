@@ -154,7 +154,11 @@ fn display_numeric_to_i64(bytes: &[u8]) -> i64 {
         }
         // Skip non-digits (shouldn't happen in valid display numeric)
     }
-    if negative { -value } else { value }
+    if negative {
+        -value
+    } else {
+        value
+    }
 }
 
 /// Sort an array of fixed-length records in-place.
@@ -302,7 +306,7 @@ static SORT_BUFFERS: Mutex<Vec<Option<SortBuffer>>> = Mutex::new(Vec::new());
 /// Caller must ensure valid buffer ID usage.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_sort_buffer_init(record_len: u32) -> u32 {
-    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    let mut buffers = SORT_BUFFERS.lock().unwrap_or_else(|e| e.into_inner());
     let buf = SortBuffer {
         data: Vec::with_capacity(64 * record_len as usize),
         record_len: record_len as usize,
@@ -329,7 +333,7 @@ pub unsafe extern "C" fn cobol_sort_buffer_release(
     record_ptr: *const u8,
     record_len: u32,
 ) {
-    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    let mut buffers = SORT_BUFFERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(Some(ref mut buf)) = buffers.get_mut(buf_id as usize) {
         let rec = std::slice::from_raw_parts(record_ptr, record_len as usize);
         buf.data.extend_from_slice(rec);
@@ -342,7 +346,7 @@ pub unsafe extern "C" fn cobol_sort_buffer_release(
 /// `keys` must point to valid `key_count` SortKey elements.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_sort_buffer_sort(buf_id: u32, keys: *const SortKey, key_count: u32) {
-    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    let mut buffers = SORT_BUFFERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(Some(ref mut buf)) = buffers.get_mut(buf_id as usize) {
         if buf.record_count <= 1 {
             buf.read_index = 0;
@@ -369,15 +373,16 @@ pub unsafe extern "C" fn cobol_sort_buffer_return(
     record_ptr: *mut u8,
     record_len: u32,
 ) -> u32 {
-    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    let mut buffers = SORT_BUFFERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(Some(ref mut buf)) = buffers.get_mut(buf_id as usize) {
         if buf.read_index >= buf.record_count {
             return 10; // AT END
         }
         let offset = buf.read_index * buf.record_len;
-        let end = offset + record_len as usize;
+        let copy_len = (record_len as usize).min(buf.record_len);
+        let end = offset + copy_len;
         if end <= buf.data.len() {
-            let dest = std::slice::from_raw_parts_mut(record_ptr, record_len as usize);
+            let dest = std::slice::from_raw_parts_mut(record_ptr, copy_len);
             dest.copy_from_slice(&buf.data[offset..end]);
         }
         buf.read_index += 1;
@@ -392,7 +397,7 @@ pub unsafe extern "C" fn cobol_sort_buffer_return(
 /// Buffer ID must have been returned by `cobol_sort_buffer_init`.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_sort_buffer_free(buf_id: u32) {
-    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    let mut buffers = SORT_BUFFERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(slot) = buffers.get_mut(buf_id as usize) {
         *slot = None;
     }

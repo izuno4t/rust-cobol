@@ -3010,7 +3010,6 @@ pub(crate) fn sort_key_type_for_field(field_name: &str, data_items: &[HirDataIte
     }
 }
 
-
 /// Escape special characters for use in a C string literal.
 pub(crate) fn escape_c_string(s: &str) -> String {
     let mut escaped = String::with_capacity(s.len());
