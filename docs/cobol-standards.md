@@ -2,149 +2,101 @@
 
 ## Overview
 
-rust-cobol targets COBOL-85 as the primary standard, with extensions from
-COBOL 2002, COBOL 2014, and COBOL 2023.
+`rust-cobol` is best understood as a COBOL-85-first compiler with selected
+later-standard features layered on top. Support is not currently enforced by a
+strict command-line standards mode, so this document describes practical
+implementation status rather than a parser gate.
 
-## COBOL-85 (ANSI X3.23-1985)
+Status meanings used below:
 
-### Nucleus Module
+- `Implemented` - available and used in normal compilation flows
+- `Partial` - implemented only for part of the feature, or with limited runtime
+- `Experimental` - available in code generation/runtime but not yet
+  production-complete
 
-| Feature | Support |
-|---|---|
-| Data descriptions (levels 01-49, 66, 77, 88) | Full |
-| PICTURE clause (9, X, A, V, S, P) | Full |
-| USAGE clause (DISPLAY, COMP, COMP-3, INDEX, POINTER) | Full |
-| REDEFINES | Full |
-| RENAMES (level 66) | Full |
-| VALUE clause | Full |
-| OCCURS clause (fixed, DEPENDING ON) | Full |
-| MOVE statement | Full |
-| COMPUTE statement | Full |
-| ADD/SUBTRACT/MULTIPLY/DIVIDE | Full |
-| IF/ELSE/END-IF | Full |
-| EVALUATE/WHEN/WHEN OTHER | Full |
-| PERFORM (inline, out-of-line, THRU, VARYING, UNTIL) | Full |
-| GO TO / GO TO DEPENDING ON | Full |
-| STOP RUN | Full |
-| EXIT (PROGRAM, PARAGRAPH, SECTION) | Full |
-| CONTINUE | Full |
-| STRING/UNSTRING | Full |
-| INSPECT (TALLYING, REPLACING, CONVERTING) | Full |
-| ACCEPT/DISPLAY | Full |
-| SET | Full |
-| INITIALIZE | Full |
-| CORRESPONDING (ADD, SUBTRACT, MOVE) | Full |
-| ON SIZE ERROR / NOT ON SIZE ERROR | Full |
-| Reference modification | Full |
-| Figurative constants (SPACES, ZEROS, HIGH-VALUES, LOW-VALUES, ALL) | Full |
+## COBOL-85
 
-### Sequential I/O Module
+### Core language
 
-| Feature | Support |
-|---|---|
-| OPEN (INPUT, OUTPUT, EXTEND, I-O) | Full |
-| CLOSE | Full |
-| READ (AT END, NOT AT END) | Full |
-| WRITE (BEFORE/AFTER ADVANCING) | Full |
-| REWRITE | Full |
-| FILE STATUS | Full |
+| Area | Status | Notes |
+| --- | --- | --- |
+| Divisions and basic program structure | Implemented | `IDENTIFICATION`, `ENVIRONMENT`, `DATA`, `PROCEDURE` |
+| Data descriptions (levels 01-49, 66, 77, 88) | Implemented | Includes `RENAMES` support in lowering/codegen |
+| PICTURE and numeric/alphanumeric storage | Implemented | Includes display numeric, edited forms, and binary forms |
+| Core statements | Implemented | `MOVE`, `COMPUTE`, `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`, `IF`, `EVALUATE`, `PERFORM`, `GO TO`, `DISPLAY`, `ACCEPT`, `SET`, `INITIALIZE` |
+| String and inspection statements | Implemented | `STRING`, `UNSTRING`, `INSPECT` |
+| Inter-program control flow | Implemented | `CALL`, `CANCEL`, `GOBACK`, `EXIT PROGRAM` |
+| Reference modification | Implemented | Covered in parser/lowering/codegen |
+| `CORRESPONDING` operations | Implemented | Supported in codegen |
 
-### Relative I/O Module
+### File handling
 
-| Feature | Support |
-|---|---|
-| ORGANIZATION RELATIVE | Full |
-| ACCESS MODE (SEQUENTIAL, RANDOM, DYNAMIC) | Full |
-| READ (NEXT, key-based) | Full |
-| WRITE/REWRITE/DELETE | Full |
-| START | Full |
+| Area | Status | Notes |
+| --- | --- | --- |
+| Sequential file I/O | Implemented | Includes `FILE STATUS` |
+| Indexed file I/O | Implemented | Basic operations are present |
+| Relative file I/O | Implemented | Basic operations are present |
+| Declarative file exception lowering | Partial | `DECLARATIVES` / `USE AFTER EXCEPTION` lowering exists; more end-to-end coverage is still desirable |
 
-### Indexed I/O Module
+### Sort/merge and report-related features
 
-| Feature | Support |
-|---|---|
-| ORGANIZATION INDEXED | Full |
-| RECORD KEY / ALTERNATE RECORD KEY | Full |
-| ACCESS MODE (SEQUENTIAL, RANDOM, DYNAMIC) | Full |
-| READ (NEXT, key-based) | Full |
-| WRITE/REWRITE/DELETE | Full |
-| START (EQUAL, GREATER, NOT LESS) | Full |
-| INVALID KEY / NOT INVALID KEY | Full |
+| Area | Status | Notes |
+| --- | --- | --- |
+| `SORT` / `MERGE` basic flow | Partial | Core support exists |
+| `SORT ... INPUT PROCEDURE` / `OUTPUT PROCEDURE` | Partial | Not yet documented as production-complete |
+| Report writer statements | Experimental | `INITIATE`, `GENERATE`, `TERMINATE` currently emit placeholders rather than full report runtime behavior |
+| `REPORT SECTION` | Experimental | Parsed/lowered structure is not yet a full report writer implementation |
 
-### Inter-Program Communication Module
+### Legacy and niche modules
 
-| Feature | Support |
-|---|---|
-| CALL (BY REFERENCE, BY CONTENT, BY VALUE) | Full |
-| CANCEL | Full |
-| GOBACK | Full |
-| EXIT PROGRAM | Full |
+| Area | Status | Notes |
+| --- | --- | --- |
+| `SCREEN SECTION` | Partial | ANSI-style display support exists; full screen/forms behavior is limited |
+| `COMMUNICATION SECTION` | Partial | Parser/runtime pieces exist, but production readiness is still limited |
+| Segmentation module | Experimental | Not a current focus |
+| Debug module | Experimental | Not a current focus |
 
-### Sort-Merge Module
+## COBOL 2002
 
-| Feature | Support |
-|---|---|
-| SORT (USING/GIVING) | Full |
-| SORT (INPUT/OUTPUT PROCEDURE) | Partial |
-| MERGE | Full |
-| RELEASE | Partial |
-| RETURN | Partial |
-| ASCENDING/DESCENDING KEY | Full |
+| Feature area | Status | Notes |
+| --- | --- | --- |
+| Free-format source | Implemented | Also exposed directly by the CLI |
+| Intrinsic functions | Partial | Many are implemented, but coverage is not yet exhaustive |
+| National data (`PIC N`) | Implemented | Includes codegen/runtime support |
+| Object-oriented syntax (`CLASS-ID`, `METHOD-ID`, `INVOKE`) | Partial | Front-end/codegen support exists, but end-to-end coverage is still limited |
+| `INTERFACE-ID` | Partial | Present in the IR model, not yet documented as complete |
+| `FUNCTION-ID` | Partial | Lowering/codegen support exists; more native execution coverage is needed |
+| XML (`XML GENERATE` / `XML PARSE`) | Implemented | Parser, lowering, codegen, and runtime support exist |
 
-### Source Manipulation Module
+## COBOL 2014
 
-| Feature | Support |
-|---|---|
-| COPY | Full |
-| REPLACE | Partial |
-| COPY REPLACING | Partial |
+| Feature area | Status | Notes |
+| --- | --- | --- |
+| JSON (`JSON GENERATE` / `JSON PARSE`) | Implemented | Parser, lowering, codegen, and runtime support exist |
+| `TYPEDEF` | Partial | Code generation is present, but usage coverage is still limited |
+| `VALIDATE` | Experimental | Lowers and generates runtime calls, but the runtime implementation is still a no-op |
+| `ALLOCATE` / `FREE` | Partial | Codegen support exists; not yet treated as fully production-ready |
 
-### Report Writer Module
+## COBOL 2023
 
-| Feature | Support |
-|---|---|
-| REPORT SECTION | Parsed |
-| INITIATE/GENERATE/TERMINATE | Parsed (stub runtime) |
+| Feature area | Status | Notes |
+| --- | --- | --- |
+| Internal standard enum and parser surface | Partial | The code base contains a `Cobol2023` internal mode |
+| Dedicated 2023 conformance mode | Experimental | The CLI does not currently expose a strict `--standard` switch |
+| 2023-only feature coverage | Experimental | Current support mainly builds on earlier implemented features |
 
-### Segmentation Module
+## GnuCOBOL-style and practical extensions
 
-Not implemented (obsolete in modern COBOL).
+| Feature area | Status | Notes |
+| --- | --- | --- |
+| Variable source format | Implemented | Exposed as `--source-format variable` |
+| `COPY` preprocessing | Implemented | Includes extra search paths via `--copy-path` |
+| `REPLACE` / `COPY ... REPLACING` | Partial | Supported in preprocessing, but still worth treating cautiously in edge cases |
+| Native binary storage forms (`COMP`, `COMP-4`, `COMP-5`, `BINARY`) | Implemented | Lowered to binary integer storage in the current backend |
 
-### Debug Module
+## Notes
 
-Not implemented (replaced by modern debugging tools).
-
-## COBOL 2002 (ISO/IEC 1989:2002)
-
-| Feature | Support |
-|---|---|
-| Intrinsic functions (40+) | Full |
-| Object-oriented syntax (CLASS-ID, METHOD-ID) | Partial |
-| INTERFACE-ID | Partial |
-| FUNCTION-ID (user-defined functions) | Full |
-| Free-format source | Full |
-| TYPEDEF | Full |
-| NATIONAL data type (PIC N) | Full |
-| RAISE statement | Full |
-| XML GENERATE / XML PARSE | Parsed |
-
-## COBOL 2014 (ISO/IEC 1989:2014)
-
-| Feature | Support |
-|---|---|
-| VALIDATE statement | Parsed |
-| JSON GENERATE / JSON PARSE | Parsed |
-| ALLOCATE / FREE | Full |
-
-## COBOL 2023 (ISO/IEC 1989:2023)
-
-Limited support. The compiler accepts `--standard cobol2023` but does not
-implement 2023-specific features beyond those already in COBOL 2014.
-
-## GnuCOBOL Extensions
-
-| Feature | Support |
-|---|---|
-| SCREEN SECTION | Partial (ANSI escape) |
-| COMP-5 (native binary) | Not implemented |
-| Extended ACCEPT/DISPLAY | Partial |
+- This document reflects the current repository state as of 2026-03-27
+- For practical limitations that still block production use, see
+  [docs/production-gaps.md](./production-gaps.md)
+- For everyday usage and CLI examples, see [docs/user-guide.md](./user-guide.md)

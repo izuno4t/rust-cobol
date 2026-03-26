@@ -2,248 +2,222 @@
 
 ## Overview
 
-rust-cobol (`cobolc`) is a COBOL compiler written in Rust that compiles COBOL source
-programs to native binaries via C code generation.
+`rust-cobol` provides the `cobolc` command, a Rust-based COBOL compiler that
+parses COBOL source, lowers it through semantic and HIR stages, generates C,
+and then invokes a native C toolchain to produce an executable.
 
-Pipeline:
+```text
+COBOL source
+  -> preprocess
+  -> lexer
+  -> parser
+  -> semantic analysis
+  -> HIR
+  -> C
+  -> native binary
+```
 
-```
-COBOL Source → Lexer → Parser → Sema → HIR → C codegen → clang → Native Binary
-```
+The current compiler is strongest on COBOL-85 style programs, while also
+supporting selected features from COBOL 2002, COBOL 2014, and COBOL 2023.
 
 ## Installation
 
+### Prerequisites
+
+- Rust 1.75+ (stable)
+- `clang` or `gcc`
+
+### Build and install from source
+
 ```bash
-# Build from source
 git clone https://github.com/izuno4t/rust-cobol.git
 cd rust-cobol
 make install
 ```
 
-This installs `cobolc` to `~/.cargo/bin/cobolc`.
+This installs `cobolc` into `~/.cargo/bin/cobolc`.
 
-### Prerequisites
-
-- Rust 1.75+ (stable toolchain)
-- clang (C compiler for code generation)
-
-## Usage
-
-### Basic compilation
+## Quick start
 
 ```bash
-cobolc program.cob -o program
-./program
+make build
+cobolc examples/hello.cob -o hello --source-format free
+./hello
 ```
 
-### Options
+You can also use the project shortcut:
+
+```bash
+make example
+```
+
+## Command-line interface
+
+Current `cobolc --help` output is summarized below.
 
 | Option | Description |
-|---|---|
-| `-o <path>` | Output binary path |
-| `--source-format <fmt>` | Source format: `fixed` (default) or `free` |
-| `--standard <std>` | COBOL standard: `cobol85`, `cobol2002`, `cobol2014`, `cobol2023` |
-| `--emit-c` | Emit generated C code only (do not compile) |
-| `-W <level>` | Warning level: `all`, `none`, `error` |
-| `-I <dir>` | COPYBOOK search path |
+| --- | --- |
+| `<FILES>...` | One or more COBOL source files |
+| `-o, --output <OUTPUT>` | Output executable path |
+| `--source-format <fmt>` | Source format: `fixed`, `free`, or `variable` |
+| `--dump-tokens` | Print lexer output |
+| `--dump-ast` | Print parsed AST |
+| `--dump-hir` | Print lowered HIR |
+| `--emit-c` | Print generated C |
+| `--c-only` | Stop after generating C and write the C file |
+| `-I, --copy-path <DIR>` | Add a `COPY` search path |
+| `-W, --warning <level>` | Warning control: `default`, `all`, `none`, `error` |
+| `-v, --verbose` | Verbose build output |
 
-### Examples
+### Common examples
 
 ```bash
-# Fixed-format source (default)
-cobolc payroll.cob -o payroll
+# Compile free-format COBOL (current default)
+cobolc app.cob -o app
 
-# Free-format source
-cobolc modern.cob -o modern --source-format free
+# Compile fixed-format COBOL
+cobolc legacy.cob -o legacy --source-format fixed
 
-# Emit C code for inspection
-cobolc program.cob --emit-c -o program.c
+# Compile variable-format COBOL
+cobolc variable.cob -o variable --source-format variable
 
-# Treat warnings as errors
-cobolc program.cob -o program -W error
+# Add COPY search paths
+cobolc main.cob -I copybooks -I vendor/copybooks -o main
+
+# Keep generated C instead of compiling it
+cobolc main.cob --emit-c --c-only -o main
+
+# Show all diagnostics
+cobolc main.cob -W all -o main
 ```
 
-## Supported COBOL Standards
+## Compilation behavior
 
-### COBOL-85 (Primary target)
+- `cobolc` preprocesses `COPY` and `REPLACE` before lexing and parsing
+- Native binaries are produced by compiling generated C with the workspace
+  runtime library
+- If native compilation fails, the generated C file is left on disk for
+  inspection
+- `COBOL_RUNTIME_LIB` can be used to point the driver at a custom runtime
+  library directory
 
-Core language features with high coverage:
-
-| Feature | Status |
-|---|---|
-| IDENTIFICATION DIVISION | Supported |
-| ENVIRONMENT DIVISION | Supported |
-| DATA DIVISION | Supported |
-| PROCEDURE DIVISION | Supported |
-| Numeric data (PIC 9) | Supported |
-| Alphanumeric data (PIC X) | Supported |
-| Numeric edited (PIC Z, *, etc.) | Supported |
-| Alphanumeric edited | Supported |
-| MOVE, COMPUTE, ADD, SUBTRACT, MULTIPLY, DIVIDE | Supported |
-| IF/ELSE/END-IF | Supported |
-| EVALUATE/WHEN | Supported |
-| PERFORM (inline, out-of-line, THRU, VARYING) | Supported |
-| GO TO | Supported |
-| CALL/CANCEL | Supported |
-| STRING/UNSTRING/INSPECT | Supported |
-| Sequential file I/O | Supported |
-| Indexed file I/O | Supported |
-| Relative file I/O | Supported |
-| SORT/MERGE | Supported |
-| COPY | Supported |
-| DECLARATIVES | Supported |
-| CORRESPONDING | Supported |
-
-### COBOL 2002 Extensions
-
-| Feature | Status |
-|---|---|
-| Intrinsic functions (40+) | Supported |
-| EVALUATE ALSO | Supported |
-| Reference modification | Supported |
-| Inline PERFORM | Supported |
-| CLASS-ID / METHOD-ID | Partial |
-| INTERFACE-ID | Partial |
-| FUNCTION-ID | Supported |
-| TYPEDEF | Supported |
-| NATIONAL data type (PIC N) | Supported |
-
-### COBOL 2014/2023 Extensions
-
-| Feature | Status |
-|---|---|
-| JSON GENERATE / JSON PARSE | Parsed (runtime stub) |
-| XML GENERATE / XML PARSE | Parsed (runtime stub) |
-| VALIDATE | Parsed (runtime stub) |
-| RAISE / RESUME | Supported |
-| ALLOCATE / FREE | Supported |
-
-## Intrinsic Functions
-
-### Mathematical
-
-ABS, SQRT, SIN, COS, TAN, ASIN, ACOS, ATAN, EXP, EXP10, LOG, LOG10,
-CEILING, FLOOR, FACTORIAL, REM, RANDOM, SIGN, MEAN, SUM, ANNUITY,
-PRESENT-VALUE, MOD, INTEGER, INTEGER-PART, FRACTION-PART
-
-### String
-
-LENGTH, UPPER-CASE, LOWER-CASE, REVERSE, TRIM, CONCATENATE, SUBSTITUTE,
-ORD, CHAR, ORD-MAX, ORD-MIN, STORED-CHAR-LENGTH, NATIONAL-OF, DISPLAY-OF
-
-### Date/Time
-
-CURRENT-DATE, INTEGER-OF-DATE, DATE-OF-INTEGER, INTEGER-OF-DAY,
-DAY-OF-INTEGER, DATE-TO-YYYYMMDD, YEAR-TO-YYYY, DAY-TO-YYYYDDD,
-TEST-DATE-YYYYMMDD, TEST-DAY-YYYYDDD, WHEN-COMPILED
-
-### Numeric
-
-NUMVAL, NUMVAL-C, MAX, MIN
-
-## Source Formats
-
-### Fixed format (default)
-
-Standard COBOL-85 column layout:
-
-- Columns 1-6: Sequence number area (ignored)
-- Column 7: Indicator area (`*` = comment, `-` = continuation, `D` = debug)
-- Columns 8-11: Area A (division/section/paragraph headers, level numbers)
-- Columns 12-72: Area B (statements)
-- Columns 73-80: Identification area (ignored)
+## Source formats
 
 ### Free format
 
-Modern format with no column restrictions:
+This is the current CLI default.
 
-- `*>` starts a comment
-- No sequence number or identification areas
-- Statements can start at any column
+- No fixed column rules
+- `*>` starts an inline comment
+- Best fit for new source files and most tests in this repository
 
-## File I/O
+### Fixed format
 
-### Supported organizations
+Classic COBOL column handling is supported.
 
-| Organization | Access Modes |
-|---|---|
-| SEQUENTIAL | Sequential |
-| INDEXED | Sequential, Random, Dynamic |
-| RELATIVE | Sequential, Random, Dynamic |
+- Columns 1-6: sequence area
+- Column 7: indicator area
+- Columns 8-11: Area A
+- Columns 12-72: Area B
+- Columns 73-80: identification area
 
-### File status codes
+### Variable format
 
-| Code | Meaning |
-|---|---|
-| 00 | Successful completion |
-| 10 | End of file (AT END) |
-| 21 | Sequence error |
-| 22 | Duplicate key |
-| 23 | Record not found |
-| 30 | Permanent I/O error |
-| 35 | File not found (OPEN) |
-| 41 | File already open |
-| 42 | File not open |
-| 46 | No valid next record |
-| 47 | READ on file not opened for input |
-| 48 | WRITE on file not opened for output |
+Variable-format input is also accepted by the driver and preprocessor. Use it
+explicitly with `--source-format variable`.
 
-## Runtime Library
+## COPY and preprocessing
 
-The compiler links with a Rust-based runtime library (`libcobolrt`) that provides:
+The preprocessor handles:
 
-- BCD (packed decimal) arithmetic
-- File I/O operations
-- String manipulation
-- Intrinsic function implementations
-- Exception handling (setjmp/longjmp based)
-- SORT/MERGE operations
-- Screen handling (ANSI escape sequences)
+- `COPY`
+- `REPLACE`
+- `COPY ... REPLACING`
 
-## Known Limitations
+Use `-I/--copy-path` to add additional copybook search directories.
 
-1. **COMMUNICATION SECTION** — Obsolete in COBOL 2002, not implemented
-2. **REPORT SECTION** — INITIATE/GENERATE/TERMINATE parsed but runtime is stub only
-3. **JSON/XML runtime** — Parsed but runtime operations are stubs
-4. **Nested reference modification** — `WS-FIELD(1:3)(1:2)` not supported
-5. **SCREEN SECTION** — Basic ANSI positioning only, no ncurses support
-6. **OOP features** — CLASS-ID/INTERFACE-ID codegen exists but limited E2E coverage
-7. **ADD/SUBTRACT with literal first** — Use `ADD WS-A TO WS-B` not `ADD 1 TO WS-B`
-   (workaround: use COMPUTE)
-8. **Multi-program compilation** — Each COBOL program compiled separately
-9. **ACCEPT FROM CONSOLE** — Terminal raw mode not fully implemented
+## Feature snapshot
 
-## Diagnostics
+The project is moving quickly, so this is intentionally high-level.
 
-Error messages include source location with line highlighting:
+### Well-covered today
 
+- Core COBOL-85 data descriptions and procedure logic
+- Arithmetic, conditionals, `EVALUATE`, `PERFORM`, `GO TO`, and `CALL`
+- Sequential, indexed, and relative file handling
+- `GOBACK`, `FILE STATUS`, and many intrinsic functions
+- `JSON GENERATE` / `JSON PARSE`
+- `XML GENERATE` / `XML PARSE`
+- `PIC N` / national data handling
+- `RENAMES` lowering/code generation
+
+### Available but still partial
+
+- `SCREEN SECTION`
+- `SORT ... INPUT PROCEDURE` / `OUTPUT PROCEDURE`
+- Object-oriented syntax such as `CLASS-ID`, `METHOD-ID`, and `INTERFACE-ID`
+- `FUNCTION-ID` and `TYPEDEF`
+- `COMMUNICATION SECTION`
+
+### Present but not production-complete
+
+- `VALIDATE` currently lowers and generates runtime calls, but the runtime
+  implementation is still a no-op
+- Report writer statements such as `INITIATE`, `GENERATE`, and `TERMINATE`
+  are parsed/code-generated as placeholders rather than full runtime behavior
+
+See [docs/cobol-standards.md](./cobol-standards.md) for a standards-oriented
+view and [docs/production-gaps.md](./production-gaps.md) for the remaining
+known gaps.
+
+## Diagnostics and debugging
+
+The compiler reports source-annotated diagnostics with line/column context.
+
+```text
+[COBC-E001] Error: unexpected token
 ```
-[COBC-E001] Error: unexpected token: Equals
-    ╭─[program.cob:10:20]
-    │
- 10 │ COMPUTE WS-RESULT = WS-A + WS-B
-    ·                    ^
-────╯
-```
 
-Use `-W all` to see all diagnostics including informational messages.
-Use `-W error` to treat warnings as errors.
+Useful debugging switches:
 
-## Performance
+- `--dump-tokens`
+- `--dump-ast`
+- `--dump-hir`
+- `--emit-c`
+- `-v`
 
-The generated native binaries run at near-C speed since the compiler generates
-optimized C code compiled by clang. Typical performance characteristics:
-
-- Arithmetic operations: comparable to C
-- String operations: overhead from runtime library calls
-- File I/O: overhead from runtime abstraction layer
-
-## Building from Source
+You can also enable timing output with:
 
 ```bash
-make build       # Debug build
-make release     # Release build (optimized)
-make test        # Run all tests
-make lint        # Run clippy + format check + spellcheck
-make example     # Compile and run examples/hello.cob
+COBOL_DEBUG_TIMING=1 cobolc app.cob -o app
 ```
+
+## Build and test commands
+
+Use the repository `Makefile` for common workflows.
+
+```bash
+make build
+make release
+make test
+make test-e2e
+make lint
+make check
+make example
+```
+
+For standards-compliance work, see the NIST helpers:
+
+```bash
+make nist-prepare
+make nist-run MODULE=NC
+make nist-summary
+```
+
+## Current limitations
+
+- The CLI does not currently expose a `--standard` switch even though the code
+  base contains internal COBOL standard enums
+- Advanced later-standard features are not enforced by a strict standards mode
+- Some advanced features are covered at parse/codegen level but still need more
+  native end-to-end execution coverage

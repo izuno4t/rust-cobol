@@ -20,8 +20,8 @@ executable.
 
 ## Runtime Characteristics and Benchmarks
 
-On a local Apple Silicon macOS environment, `rust-cobol` showed a
-clear throughput advantage on the included `N-Queens` benchmark:
+`rust-cobol` showed a clear throughput advantage on the included
+`N-Queens` benchmark:
 `704.5 ms` mean runtime versus `20.806 s` for `GnuCOBOL`
 (`hyperfine`, 3 runs), or about `29.5x` faster.
 
@@ -31,6 +31,9 @@ operations about `1.12x` slower, and file I/O about `1.09x`
 faster. In practice, the current runtime looks strongest on
 CPU-bound loop-heavy workloads while remaining broadly competitive
 on simpler tasks.
+
+Measurement environment: macOS 26.3.1 on Apple Silicon, Apple clang
+17.0.0, cargo 1.93.1.
 
 ## Requirements
 
