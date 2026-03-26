@@ -41,6 +41,7 @@ pub(crate) struct CodegenContext {
     group_names: HashSet<String>,
     display_numeric_sizes: HashMap<String, u32>,
     group_alpha_names: HashSet<String>,
+    justified_names: HashSet<String>,
     data_item_size_cache: HashMap<String, u32>,
     /// For each primary FD record, the max byte size across all 01-level records
     /// sharing the same FD.  Used by `find_record_len` to return the correct
@@ -93,6 +94,9 @@ impl CodegenContext {
         let mut group_alpha_names = parent.group_alpha_names.clone();
         group_alpha_names.extend(build_group_alpha_names(&program.data_items));
 
+        let mut justified_names = parent.justified_names.clone();
+        justified_names.extend(build_justified_names(&program.data_items));
+
         let mut data_item_size_cache = parent.data_item_size_cache.clone();
         data_item_size_cache.extend(build_data_item_size_cache(&program.data_items));
 
@@ -110,6 +114,7 @@ impl CodegenContext {
             group_names,
             display_numeric_sizes,
             group_alpha_names,
+            justified_names,
             data_item_size_cache,
             fd_max_record_sizes,
             in_body_context: Cell::new(false),
@@ -136,6 +141,7 @@ impl CodegenContext {
             group_names: build_group_names(data_items),
             display_numeric_sizes: build_display_numeric_sizes(data_items),
             group_alpha_names: build_group_alpha_names(data_items),
+            justified_names: build_justified_names(data_items),
             data_item_size_cache: build_data_item_size_cache(data_items),
             fd_max_record_sizes: build_fd_max_record_sizes(data_items, fd_record_aliases),
             in_body_context: Cell::new(false),
@@ -201,6 +207,10 @@ impl CodegenContext {
 
     pub(crate) fn is_group_name(&self, c_name: &str) -> bool {
         self.group_names.contains(c_name)
+    }
+
+    pub(crate) fn is_justified_name(&self, c_name: &str) -> bool {
+        self.justified_names.contains(c_name)
     }
 
     pub(crate) fn display_numeric_size(&self, c_name: &str) -> Option<u32> {
@@ -319,6 +329,23 @@ pub(crate) fn collect_decimal_names(set: &mut HashSet<String>, data_items: &[Hir
         }
         if let HirType::Group { members, .. } = &item.data_type {
             collect_decimal_names(set, members);
+        }
+    }
+}
+
+pub(crate) fn build_justified_names(data_items: &[HirDataItem]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    collect_justified_names(&mut set, data_items);
+    set
+}
+
+fn collect_justified_names(set: &mut HashSet<String>, data_items: &[HirDataItem]) {
+    for item in data_items {
+        if item.justified {
+            set.insert(sanitize_name(&item.name));
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            collect_justified_names(set, members);
         }
     }
 }

@@ -196,6 +196,8 @@ pub struct HirDataItem {
     pub renames: Option<(SmolStr, Option<SmolStr>)>,
     /// SCREEN SECTION attributes (None for non-screen items).
     pub screen_info: Option<HirScreenInfo>,
+    /// JUSTIFIED RIGHT clause.
+    pub justified: bool,
     pub span: Span,
 }
 

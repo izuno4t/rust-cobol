@@ -83,6 +83,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                 occurs: None,
                 indexed_by: Vec::new(),
                 screen_info: None,
+                justified: false,
                 span: program.span,
             });
         }
@@ -107,6 +108,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                         occurs: None,
                         indexed_by: Vec::new(),
                         screen_info: None,
+                        justified: false,
                         span: entry.span,
                     });
                 }
@@ -124,6 +126,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                         occurs: None,
                         indexed_by: Vec::new(),
                         screen_info: None,
+                        justified: false,
                         span: entry.span,
                     });
                 }
@@ -447,6 +450,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
             redefines: None,
             renames: None,
             screen_info: None,
+            justified: false,
             span: Span::dummy(),
         });
         items.push(HirDataItem {
@@ -462,6 +466,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
             redefines: None,
             renames: None,
             screen_info: None,
+            justified: false,
             span: Span::dummy(),
         });
     }
@@ -499,6 +504,7 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             redefines: item.redefines.clone(),
             renames,
             screen_info: None,
+            justified: item.justified,
             span: item.span,
         });
     }
@@ -515,6 +521,7 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
                 redefines: None,
                 renames: None,
                 screen_info: None,
+                justified: false,
                 span: occurs.span,
             });
         }
@@ -584,6 +591,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             redefines: item.redefines.clone(),
             renames,
             screen_info,
+            justified: item.justified,
             span: item.span,
         });
     }
@@ -628,6 +636,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 redefines: child.redefines.clone(),
                 renames,
                 screen_info: None,
+                justified: child.justified,
                 span: child.span,
             });
         }

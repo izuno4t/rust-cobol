@@ -3176,6 +3176,12 @@ pub(crate) fn emit_move_to(
         matches!(target_type, Some(HirType::Alphanumeric { .. })) || inherited_target_alpha;
     let is_target_group =
         matches!(target_type, Some(HirType::Group { .. })) || inherited_target_group;
+    // JUSTIFIED RIGHT: use right-justified move for alphanumeric targets
+    let move_fn = if with_active_context(|ctx| ctx.is_justified_name(&target_c_name)) {
+        "cobol_move_string_right"
+    } else {
+        "cobol_move_string"
+    };
     let is_target_national = matches!(target_type, Some(HirType::National { .. }));
     let is_target_decimal = target_type.is_some_and(needs_decimal)
         || with_active_context(|ctx| ctx.is_decimal_name(&target_c_name));
@@ -3448,14 +3454,14 @@ pub(crate) fn emit_move_to(
                 let src_len = s.len();
                 let tgt_size = find_data_item_size(c_target, data_items);
                 out.push_str(&format!(
-                    "{pad}cobol_move_string((const uint8_t*)\"{escaped}\", {src_len}, (uint8_t*){c_target}, {tgt_size});\n"
+                    "{pad}{move_fn}((const uint8_t*)\"{escaped}\", {src_len}, (uint8_t*){c_target}, {tgt_size});\n"
                 ));
             } else if is_target_group {
                 let escaped = escape_c_string(s);
                 let src_len = s.len();
                 let tgt_size = find_data_item_size(c_target, data_items);
                 out.push_str(&format!(
-                    "{pad}cobol_move_string((const uint8_t*)\"{escaped}\", {src_len}, (uint8_t*)&{c_target}, {tgt_size});\n"
+                    "{pad}{move_fn}((const uint8_t*)\"{escaped}\", {src_len}, (uint8_t*)&{c_target}, {tgt_size});\n"
                 ));
             } else {
                 // Numeric target: parse string as number
@@ -3694,7 +3700,7 @@ pub(crate) fn emit_move_to(
                     let src_size = find_data_item_size(&c_src, data_items);
                     let tgt_size = find_data_item_size(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}cobol_move_string((const uint8_t*)&{c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
+                        "{pad}{move_fn}((const uint8_t*)&{c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
                 }
             } else if is_target_alpha {
@@ -3704,7 +3710,7 @@ pub(crate) fn emit_move_to(
                     let src_size = find_data_item_size(&c_src, data_items);
                     let tgt_size = find_data_item_size(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}cobol_move_string((const uint8_t*){c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
+                        "{pad}{move_fn}((const uint8_t*){c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
                 } else if let HirExpr::ReferenceModification {
                     variable,
@@ -3722,23 +3728,20 @@ pub(crate) fn emit_move_to(
                     };
                     let tgt_size = find_data_item_size(c_target, data_items);
                     out.push_str(&format!(
-                        "{pad}cobol_move_string((const uint8_t*){c_src} + ({c_start} - 1), {c_len}, (uint8_t*){c_target}, {tgt_size});\n"
+                        "{pad}{move_fn}((const uint8_t*){c_src} + ({c_start} - 1), {c_len}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
                 } else if is_source_alpha_var || is_source_group_var {
                     // Subscripted or other alphanumeric/group source
                     let e = emit_expr(from);
                     let src_size = find_data_item_size(&sanitize_name(src_var_name), data_items);
                     let tgt_size = find_data_item_size(c_target, data_items);
-                    // When source is a subscript expression the result of
-                    // emit_expr is an element value (e.g. char), not a
-                    // pointer.  We need to take its address with '&'.
                     let addr_prefix = if matches!(from, HirExpr::Subscript { .. }) {
                         "&"
                     } else {
                         ""
                     };
                     out.push_str(&format!(
-                        "{pad}cobol_move_string((const uint8_t*){addr_prefix}{e}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
+                        "{pad}{move_fn}((const uint8_t*){addr_prefix}{e}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
                 } else {
                     // Fallback for alpha target with unrecognized source:
@@ -5254,7 +5257,8 @@ fn emit_field_deserialize(
                         || matches!(&m.data_type, HirType::Binary { .. })
                 });
                 if has_complex {
-                    emit_field_deserialize(out, record_var, sub, flat_var, pad, offset);
+                    let nested_path = format!("{record_var}.members._m_{c_name}");
+                    emit_field_deserialize(out, &nested_path, sub, flat_var, pad, offset);
                 } else {
                     out.push_str(&format!(
                         "{pad}memcpy(&{record_var}.members._m_{c_name}, \
@@ -5344,7 +5348,8 @@ fn emit_field_serialize(
                         || matches!(&m.data_type, HirType::Binary { .. })
                 });
                 if has_complex {
-                    emit_field_serialize(out, record_var, sub, flat_var, pad, offset);
+                    let nested_path = format!("{record_var}.members._m_{c_name}");
+                    emit_field_serialize(out, &nested_path, sub, flat_var, pad, offset);
                 } else {
                     out.push_str(&format!(
                         "{pad}memcpy({flat_var} + {offset}, \

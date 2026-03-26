@@ -205,6 +205,36 @@ pub unsafe extern "C" fn cobol_move_string(
     }
 }
 
+/// Move an alphanumeric value with JUSTIFIED RIGHT: right-justify and
+/// pad with spaces on the left.
+///
+/// # Safety
+/// Both pointers must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_move_string_right(
+    src_ptr: *const u8,
+    src_len: u32,
+    dst_ptr: *mut u8,
+    dst_len: u32,
+) {
+    if src_ptr.is_null() || dst_ptr.is_null() {
+        return;
+    }
+    let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
+
+    let copy_len = src.len().min(dst.len());
+    // Right-justify: pad left with spaces, copy data to the right end.
+    let pad_len = dst.len() - copy_len;
+    for b in dst[..pad_len].iter_mut() {
+        *b = b' ';
+    }
+    // Copy source to the right portion of destination.
+    // If src is longer than dst, take the RIGHTMOST characters of src.
+    let src_start = src.len().saturating_sub(dst.len());
+    dst[pad_len..].copy_from_slice(&src[src_start..src_start + copy_len]);
+}
+
 /// MOVE numeric to alphanumeric display.
 ///
 /// The numeric value is right-justified in the destination buffer with
