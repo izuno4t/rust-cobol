@@ -310,36 +310,134 @@ pub fn generate_c(program: &HirProgram) -> String {
 
         out.push_str("}\n");
 
-        // Emit paragraph function definitions
+        // Emit paragraph function definitions.
+        // Group paragraphs by section: a section header (name ends with "__")
+        // and all subsequent paragraphs until the next section header form a
+        // single C function. Section-internal GO TO uses C goto labels.
         let t_para = std::time::Instant::now();
-        for para in &program.paragraphs {
-            let c_name = sanitize_name(&para.name);
-            let para_label_map = build_paragraph_label_map(&para.name, &para.body);
-            with_active_context(|ctx| ctx.set_label_map(para_label_map.clone()));
-            out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
-            out.push_str(&format!("lbl_{c_name}:;\n"));
-            for stmt in &para.body {
-                let env = StmtEmitEnv {
-                    data_items: &program.data_items,
-                    paragraphs: &program.paragraphs,
-                    fs_map: &fs_map,
-                    has_declaratives: has_decl,
-                    ctx: &ctx,
-                };
-                emit_statement_with_ctx(&mut out, stmt, &env, 1);
-            }
-            if !para_label_map.is_empty() {
-                out.push_str("_goto_dispatch:\n");
-                out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
-                out.push_str("      switch(_t) {\n");
-                for (name, id) in &para_label_map {
-                    out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
+        {
+            let paragraphs = &program.paragraphs;
+            let mut i = 0;
+            while i < paragraphs.len() {
+                let c_name = sanitize_name(&paragraphs[i].name);
+                let is_section_header = c_name.ends_with("__");
+
+                // Collect section members: the header + subsequent non-header paragraphs
+                let section_start = i;
+                let mut section_end = i + 1;
+                if is_section_header {
+                    while section_end < paragraphs.len() {
+                        let next_c = sanitize_name(&paragraphs[section_end].name);
+                        if next_c.ends_with("__") {
+                            break; // next section
+                        }
+                        section_end += 1;
+                    }
                 }
-                out.push_str("        default: return;\n");
-                out.push_str("      }\n");
-                out.push_str("    }\n");
+
+                let section_paras = &paragraphs[section_start..section_end];
+                let section_len = section_end - section_start;
+
+                if section_len > 1 {
+                    // Multi-paragraph section: emit as single function with goto labels.
+                    // Build a unified label map with unique IDs.
+                    let mut merged_label_map: HashMap<String, usize> = HashMap::new();
+                    let mut next_id = 1usize;
+                    for sp in section_paras {
+                        let sp_c = sanitize_name(&sp.name);
+                        if !merged_label_map.contains_key(&sp_c) {
+                            merged_label_map.insert(sp_c.clone(), next_id);
+                            next_id += 1;
+                        }
+                        // Also include any labels referenced by GO TO within the body
+                        let sp_labels = build_paragraph_label_map(&sp.name, &sp.body);
+                        for (lbl_name, _) in sp_labels {
+                            if !merged_label_map.contains_key(&lbl_name) {
+                                merged_label_map.insert(lbl_name, next_id);
+                                next_id += 1;
+                            }
+                        }
+                    }
+                    with_active_context(|ctx| ctx.set_label_map(merged_label_map.clone()));
+
+                    // Emit section function (named after the header)
+                    out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+                    // If _goto_target is set (from wrapper), dispatch immediately
+                    out.push_str("    if (_goto_target) goto _goto_dispatch;\n");
+                    for sp in section_paras {
+                        let sp_c = sanitize_name(&sp.name);
+                        out.push_str(&format!("lbl_{sp_c}:;\n"));
+                        with_active_context(|ctx| ctx.set_in_body_context(true));
+                        for stmt in &sp.body {
+                            let env = StmtEmitEnv {
+                                data_items: &program.data_items,
+                                paragraphs,
+                                fs_map: &fs_map,
+                                has_declaratives: has_decl,
+                                ctx: &ctx,
+                            };
+                            emit_statement_with_ctx(&mut out, stmt, &env, 1);
+                        }
+                        with_active_context(|ctx| ctx.set_in_body_context(false));
+                    }
+                    if !merged_label_map.is_empty() {
+                        out.push_str("_goto_dispatch:\n");
+                        out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
+                        out.push_str("      switch(_t) {\n");
+                        for (name, id) in &merged_label_map {
+                            out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
+                        }
+                        out.push_str("        default: return;\n");
+                        out.push_str("      }\n");
+                        out.push_str("    }\n");
+                    }
+                    out.push_str("}\n");
+
+                    // Emit individual wrapper functions for each member paragraph
+                    // so PERFORM of a specific paragraph still works.
+                    // These set _goto_target to jump to the right label within the
+                    // section function.
+                    for sp in &section_paras[1..] {
+                        let sp_c = sanitize_name(&sp.name);
+                        if let Some(id) = merged_label_map.get(&sp_c) {
+                            out.push_str(&format!(
+                                "\nstatic void para_{sp_c}(void) {{ _goto_target = {id}; para_{c_name}(); }}\n"
+                            ));
+                        }
+                    }
+                } else {
+                    // Single paragraph (not part of a multi-paragraph section)
+                    let para_label_map =
+                        build_paragraph_label_map(&paragraphs[i].name, &paragraphs[i].body);
+                    with_active_context(|ctx| ctx.set_label_map(para_label_map.clone()));
+                    out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+                    out.push_str(&format!("lbl_{c_name}:;\n"));
+                    for stmt in &paragraphs[i].body {
+                        let env = StmtEmitEnv {
+                            data_items: &program.data_items,
+                            paragraphs,
+                            fs_map: &fs_map,
+                            has_declaratives: has_decl,
+                            ctx: &ctx,
+                        };
+                        emit_statement_with_ctx(&mut out, stmt, &env, 1);
+                    }
+                    if !para_label_map.is_empty() {
+                        out.push_str("_goto_dispatch:\n");
+                        out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
+                        out.push_str("      switch(_t) {\n");
+                        for (name, id) in &para_label_map {
+                            out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
+                        }
+                        out.push_str("        default: return;\n");
+                        out.push_str("      }\n");
+                        out.push_str("    }\n");
+                    }
+                    out.push_str("}\n");
+                }
+
+                i = section_end;
             }
-            out.push_str("}\n");
         }
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
 
