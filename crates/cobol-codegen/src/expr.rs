@@ -2946,7 +2946,7 @@ fn find_field_in_group(
                 return Some(found);
             }
         }
-        // Only advance offset for non-FILLER non-REDEFINES items
+        // Only advance offset for non-REDEFINES items
         if item.redefines.is_none() {
             offset += item_size;
         }
@@ -2988,10 +2988,7 @@ pub(crate) fn resolve_file_record(sanitized_file_name: &str) -> String {
 }
 
 /// Determine the sort key type for a field (0=alpha, 1=signed binary, 2=unsigned binary, 3=display numeric).
-pub(crate) fn sort_key_type_for_field(
-    field_name: &str,
-    data_items: &[HirDataItem],
-) -> u8 {
+pub(crate) fn sort_key_type_for_field(field_name: &str, data_items: &[HirDataItem]) -> u8 {
     let field_c = sanitize_name(field_name);
     if let Some(item) = find_original_data_item_by_sanitized_name(&field_c, data_items) {
         match &item.data_type {
@@ -3004,13 +3001,17 @@ pub(crate) fn sort_key_type_for_field(
                     0
                 }
             }
-            HirType::Numeric { .. } | HirType::Comp3 { .. } => 3, // display numeric
-            _ => 0, // alphanumeric
+            HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => 1, // CobolDecimal: compare value field as signed binary
+            HirType::Numeric { .. } => 3, // display numeric (char[])
+            HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => 1, // CobolDecimal
+            HirType::Comp3 { .. } => 1,   // int64_t
+            _ => 0,                       // alphanumeric
         }
     } else {
         0
     }
 }
+
 
 /// Escape special characters for use in a C string literal.
 pub(crate) fn escape_c_string(s: &str) -> String {

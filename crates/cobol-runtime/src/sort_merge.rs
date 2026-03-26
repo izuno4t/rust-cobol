@@ -295,11 +295,7 @@ pub unsafe extern "C" fn cobol_sort_buffer_release(
 /// # Safety
 /// `keys` must point to valid `key_count` SortKey elements.
 #[no_mangle]
-pub unsafe extern "C" fn cobol_sort_buffer_sort(
-    buf_id: u32,
-    keys: *const SortKey,
-    key_count: u32,
-) {
+pub unsafe extern "C" fn cobol_sort_buffer_sort(buf_id: u32, keys: *const SortKey, key_count: u32) {
     let mut buffers = SORT_BUFFERS.lock().unwrap();
     if let Some(Some(ref mut buf)) = buffers.get_mut(buf_id as usize) {
         if buf.record_count <= 1 {
@@ -399,12 +395,14 @@ mod tests {
             SortKey {
                 offset: 0,
                 length: 1,
-                ascending: true, key_type: 0,
+                ascending: true,
+                key_type: 0,
             },
             SortKey {
                 offset: 1,
                 length: 1,
-                ascending: true, key_type: 0,
+                ascending: true,
+                key_type: 0,
             },
         ];
         unsafe { cobol_sort(data.as_mut_ptr(), 4, 2, keys.as_ptr(), 2) };
@@ -550,7 +548,8 @@ mod tests {
             let keys = [SortKey {
                 offset: 0,
                 length: 5,
-                ascending: true, key_type: 0,
+                ascending: true,
+                key_type: 0,
             }];
             let status = cobol_merge(inputs.as_ptr(), 2, 920, keys.as_ptr(), 1, 5);
             assert_eq!(status, 0);

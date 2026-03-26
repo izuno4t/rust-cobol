@@ -1404,6 +1404,10 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
                     }
                 }
+            } else {
+                // GO TO. (no target) - alterable GO TO without ALTER applied.
+                // Fall through to the next statement (no-op).
+                out.push_str(&format!("{pad}/* GO TO (no target - alterable) */\n"));
             }
         }
         HirStatement::Initialize { targets, .. } => {
@@ -2086,6 +2090,7 @@ pub(crate) fn emit_statement_with_ctx(
                     if let Some((offset, size)) =
                         find_field_offset_and_size(field_name, &record_var, data_items)
                     {
+                        // No size adjustment - use HIR-based sizes matching file I/O
                         out.push_str(&format!(
                             "{pad}    _sort_keys[{i}].offset = {offset}; _sort_keys[{i}].length = {size}; _sort_keys[{i}].ascending = {asc_val}; _sort_keys[{i}].key_type = {kt}; /* {field_name} */\n"
                         ));
@@ -2130,9 +2135,7 @@ pub(crate) fn emit_statement_with_ctx(
                     ));
                     out.push_str(&format!("{pad}        }}\n"));
                     out.push_str(&format!("{pad}    }}\n"));
-                    out.push_str(&format!(
-                        "{pad}    cobol_file_close(FILE_ID_{c_using});\n"
-                    ));
+                    out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_using});\n"));
                 }
                 // If there's an input procedure too (USING + INPUT PROCEDURE)
                 if let Some((proc_name, thru)) = input_procedure {
@@ -2167,9 +2170,7 @@ pub(crate) fn emit_statement_with_ctx(
                             "{pad}        cobol_file_write(FILE_ID_{c_giving}, (const uint8_t*)&_sort_buf[_si * {rec_len}], {rec_len});\n"
                         ));
                         out.push_str(&format!("{pad}    }}\n"));
-                        out.push_str(&format!(
-                            "{pad}    cobol_file_close(FILE_ID_{c_giving});\n"
-                        ));
+                        out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_giving});\n"));
                     }
                 }
                 if let Some((proc_name, thru)) = output_procedure {
@@ -2191,9 +2192,7 @@ pub(crate) fn emit_statement_with_ctx(
                         let c_thru = sanitize_name(thru_name);
                         out.push_str(&format!("{pad}    para_{c_thru}();\n"));
                     }
-                    out.push_str(&format!(
-                        "{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"
-                    ));
+                    out.push_str(&format!("{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"));
                 }
                 out.push_str(&format!("{pad}    free(_sort_buf);\n"));
             } else if input_procedure.is_some() || output_procedure.is_some() {
@@ -2222,9 +2221,7 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!("{pad}    para_{c_thru}();\n"));
                     }
                 }
-                out.push_str(&format!(
-                    "{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"
-                ));
+                out.push_str(&format!("{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"));
             } else {
                 // No USING: sort in-place
                 out.push_str(&format!(

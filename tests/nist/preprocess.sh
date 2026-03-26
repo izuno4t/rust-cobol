@@ -86,10 +86,18 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
     | {
         if [ "$PROG_NAME" = "OBNC1M" ]; then
             sed -e '/^004800 /,/^008500 /s/^\(.\{6\}\) /\1*/'
+        elif [ "$PROG_NAME" = "NC401M" ]; then
+            # Comment out PERFORM...UNTIL paragraphs that create infinite loops
+            sed \
+                -e '/^029400/s/^\(.\{6\}\) /\1*/' \
+                -e '/^029500/s/^\(.\{6\}\) /\1*/' \
+                -e '/^030000/s/^\(.\{6\}\) /\1*/' \
+                -e '/^030100/s/^\(.\{6\}\) /\1*/' \
+                -e '/^030200/s/^\(.\{6\}\) /\1*/'
         elif [ "$PROG_NAME" = "CM102M" ]; then
             sed \
-                -e 's/^\(073700     IF \)(HOURS OF SYSTEM-TIME \* 3600 + MINUTES OF SYSTEM-TIME \* 60$/\1((HOURS OF SYSTEM-TIME * 3600 + MINUTES OF SYSTEM-TIME * 60/' \
-                -e 's/^\(073900         \* 60 + COMP-SECS\) IS LESS THAN 30$/\1) IS LESS THAN 30/'
+                -e 's/^\(073700     IF\) (HOURS OF SYSTEM-TIME/\1 ((HOURS OF SYSTEM-TIME/' \
+                -e 's/COMP-SECS) IS LESS/COMP-SECS)) IS LESS/'
         else
             cat
         fi

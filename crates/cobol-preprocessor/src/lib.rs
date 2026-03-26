@@ -197,6 +197,53 @@ fn strip_fixed_format_columns(source: &str) -> String {
     result
 }
 
+/// Re-wraps fixed-format lines that exceed column 72 after REPLACING.
+///
+/// When a REPLACING substitution makes a word longer, the resulting line
+/// can overflow column 72. This function splits such lines into
+/// continuation lines, preserving the fixed-format layout.
+fn rewrap_fixed_format_lines(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    for line in source.split('\n') {
+        let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
+        if line_no_cr.len() <= 72 {
+            result.push_str(line_no_cr);
+            result.push('\n');
+            continue;
+        }
+        // Line exceeds 72 columns. Split at a word boundary before column 72.
+        // Find the last space within columns 1-72 for a clean split.
+        let content = &line_no_cr[..72];
+        let split_at = content.rfind(' ').unwrap_or(72);
+        if split_at <= 7 {
+            // No good split point; use column 72 directly
+            result.push_str(content);
+            result.push('\n');
+            let overflow = line_no_cr[72..].trim();
+            if !overflow.is_empty() {
+                result.push_str("      -");
+                result.push_str(overflow);
+                result.push('\n');
+            }
+        } else {
+            result.push_str(&line_no_cr[..split_at]);
+            result.push('\n');
+            // Continuation: cols 1-6 = spaces, col 7 = space (not hyphen),
+            // then the rest of the content
+            let rest = line_no_cr[split_at..].trim_start();
+            if !rest.is_empty() {
+                result.push_str("       ");
+                result.push_str(rest);
+                result.push('\n');
+            }
+        }
+    }
+    if !source.ends_with('\n') && !source.ends_with("\r\n") {
+        result.pop();
+    }
+    result
+}
+
 /// Normalizes fixed-format copybook content before COPY expansion.
 ///
 /// Copybooks are spliced into the including line at the COPY keyword position,
@@ -329,7 +376,14 @@ fn expand_copy(
                             let content = if stmt.replacings.is_empty() {
                                 content
                             } else {
-                                replacer::apply_replacing(&content, &stmt.replacings)
+                                let replaced =
+                                    replacer::apply_replacing(&content, &stmt.replacings);
+                                // Re-wrap lines that became too long after replacement.
+                                if config.source_format == SourceFormat::Fixed {
+                                    rewrap_fixed_format_lines(&replaced)
+                                } else {
+                                    replaced
+                                }
                             };
 
                             // Normalize fixed-format copybooks before inlining.
