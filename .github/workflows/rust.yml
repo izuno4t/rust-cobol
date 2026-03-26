@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Cache cargo registry and build
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: |
           ~/.cargo/registry
@@ -38,10 +38,10 @@ jobs:
     needs: build
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Cache cargo registry and build
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: |
           ~/.cargo/registry
@@ -61,7 +61,7 @@ jobs:
       run: make nist-prepare
 
     - name: Run NIST CCVS 85
-      run: make nist-run NIST_JOBS=2
+      run: make nist-run
 
     - name: Verify 100% pass rate
       run: |

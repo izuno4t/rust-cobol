@@ -12,6 +12,8 @@ tests/nist/SQ_*
 
 # Benchmark artifacts
 tests/benchmark/*.out
+benchmarks/out/
+benchmarks/nqueens
 
 # Stray files from COBOL compilation and NIST test execution
 /ADD

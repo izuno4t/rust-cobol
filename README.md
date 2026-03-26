@@ -18,6 +18,20 @@ resolution, type checking, PICTURE analysis), lowers to HIR,
 generates C code, and invokes clang/gcc to produce a native
 executable.
 
+## Runtime Characteristics and Benchmarks
+
+On a local Apple Silicon macOS environment, `rust-cobol` showed a
+clear throughput advantage on the included `N-Queens` benchmark:
+`704.5 ms` mean runtime versus `20.806 s` for `GnuCOBOL`
+(`hyperfine`, 3 runs), or about `29.5x` faster.
+
+The smaller microbenchmarks in `tests/benchmark` were much closer:
+arithmetic was about `1.32x` slower than `GnuCOBOL`, string
+operations about `1.12x` slower, and file I/O about `1.09x`
+faster. In practice, the current runtime looks strongest on
+CPU-bound loop-heavy workloads while remaining broadly competitive
+on simpler tasks.
+
 ## Requirements
 
 - Rust 1.75+ (stable toolchain)
