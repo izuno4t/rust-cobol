@@ -74,6 +74,7 @@ pub fn compile_c_to_executable(
     let runtime_archive = resolve_runtime_archive_path(runtime_lib_path)?;
 
     let status = std::process::Command::new(&compiler)
+        .arg("-O2")
         .arg(c_source_path)
         .arg("-o")
         .arg(output_path)

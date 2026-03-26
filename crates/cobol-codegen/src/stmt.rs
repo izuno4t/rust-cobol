@@ -391,14 +391,18 @@ pub(crate) fn emit_statement_with_ctx(
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         for op in operands {
-                            emit_decimal_arith(
-                                out,
-                                &c_target,
-                                op,
-                                "cobol_decimal_sub",
-                                data_items,
-                                &pad,
-                            );
+                            if !emit_fast_decimal_sub_assign(
+                                out, &c_target, target, op, data_items, &pad,
+                            ) {
+                                emit_decimal_arith(
+                                    out,
+                                    &c_target,
+                                    op,
+                                    "cobol_decimal_sub",
+                                    data_items,
+                                    &pad,
+                                );
+                            }
                         }
                     } else {
                         let sum: Vec<_> = operands
@@ -4346,6 +4350,26 @@ fn emit_fast_decimal_add_assign(
         None => return false,
     };
     out.push_str(&format!("{pad}{c_target}.value += ({scaled_operand});\n"));
+    true
+}
+
+fn emit_fast_decimal_sub_assign(
+    out: &mut String,
+    c_target: &str,
+    target: &HirExpr,
+    operand: &HirExpr,
+    data_items: &[HirDataItem],
+    pad: &str,
+) -> bool {
+    let target_scale = match decimal_item_scale(expr_var_name(target), data_items) {
+        Some(scale) => scale,
+        None => return false,
+    };
+    let scaled_operand = match decimal_expr_as_scaled_int64(operand, target_scale, data_items) {
+        Some(expr) => expr,
+        None => return false,
+    };
+    out.push_str(&format!("{pad}{c_target}.value -= ({scaled_operand});\n"));
     true
 }
 
