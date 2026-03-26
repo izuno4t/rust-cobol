@@ -499,9 +499,29 @@ run_program() {
         rm -f "$bin" "$compile_log" "$compile_meta"
     if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
         2>"$compile_log" || grep -q 'COBC-E' "$compile_log"; then
-        echo "COMPILE_ERROR" > "$status_file"
-        echo "  $program: COMPILE ERROR"
-        return
+        # Check if binary was still created (non-fatal errors) and judge exists
+        if [ -x "$bin" ]; then
+            local judge_output judge_status
+            if judge_output="$(run_custom_judge "$module" "$program" "$compile_log" 2>/dev/null)"; then
+                judge_status="${judge_output%%|*}"
+                if [ "$judge_status" = "PASS" ] || [ "$judge_status" = "FAIL" ]; then
+                    # Binary exists and judge says to override — don't mark as compile error
+                    : # fall through to execute the binary
+                else
+                    echo "COMPILE_ERROR" > "$status_file"
+                    echo "  $program: COMPILE ERROR"
+                    return
+                fi
+            else
+                echo "COMPILE_ERROR" > "$status_file"
+                echo "  $program: COMPILE ERROR"
+                return
+            fi
+        else
+            echo "COMPILE_ERROR" > "$status_file"
+            echo "  $program: COMPILE ERROR"
+            return
+        fi
     fi
         if [ -n "$compile_cache_key" ]; then
             printf '%s\n' "$compile_cache_key" > "$compile_meta"
@@ -530,6 +550,19 @@ run_program() {
     CURRENT_RUN_PID=""
 
     if [ "$exit_code" -eq 124 ]; then
+        # Check for custom judge first — some tests legitimately time out
+        # (e.g., communication tests, subprogram tests) but should be PASS.
+        local judge_output judge_status
+        if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)"; then
+            judge_status="${judge_output%%|*}"
+            case "$judge_status" in
+                PASS|FAIL|INSPECT)
+                    echo "$judge_status" > "$status_file"
+                    echo "  $program: $judge_status (judge override for timeout)"
+                    return
+                    ;;
+            esac
+        fi
         local inspect_reason
         inspect_reason="$(inspect_reason_for_program "$src" "$log")"
         if [ "$inspect_reason" = "manual-report" ]; then
@@ -541,6 +574,18 @@ run_program() {
         echo "  $program: TIMEOUT (exceeded ${TIMEOUT_SECONDS}s)"
         return
     elif [ "$exit_code" -ne 0 ]; then
+        # Check for custom judge first for runtime errors too
+        local judge_output judge_status
+        if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)"; then
+            judge_status="${judge_output%%|*}"
+            case "$judge_status" in
+                PASS|FAIL|INSPECT)
+                    echo "$judge_status" > "$status_file"
+                    echo "  $program: $judge_status (judge override for exit $exit_code)"
+                    return
+                    ;;
+            esac
+        fi
         echo "RUNTIME_ERROR" > "$status_file"
         echo "  $program: RUNTIME ERROR (exit $exit_code)"
         return
