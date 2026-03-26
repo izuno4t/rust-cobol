@@ -591,21 +591,16 @@ run_program() {
         return
     fi
 
+    # Copy print file to log first so judges and CCVS parsing see the same data.
     local result_file="$log"
     if [ -f "$print_file" ] && [ -s "$print_file" ]; then
         result_file="$print_file"
         cp "$print_file" "$log" || true
     fi
 
-    local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors judge_output judge_status
-    pass=$(grep -ca " PASS " "$result_file" 2>/dev/null) || pass=0
-    fail=$(grep -ca "FAIL\*" "$result_file" 2>/dev/null) || fail=0
-    ccvs_pass=$(ccvs_summary_count "$result_file" 'TESTS WERE EXECUTED SUCCESSFULLY')
-    ccvs_failed=$(ccvs_summary_count "$result_file" 'TEST\(S\) FAILED')
-    ccvs_inspect=$(ccvs_summary_count "$result_file" 'TEST\(S\) REQUIRE INSPECTION')
-    footer_errors="$(ccvs_footer_error_count "$result_file")"
-
-    if judge_output="$(run_custom_judge "$module" "$program" "$result_file" 2>/dev/null)"; then
+    # Check for custom judge.
+    local judge_output judge_status
+    if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)"; then
         judge_status="${judge_output%%|*}"
         case "$judge_status" in
             PASS|FAIL|INSPECT)
@@ -622,6 +617,14 @@ run_program() {
                 ;;
         esac
     fi
+
+    local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors
+    pass=$(grep -ca " PASS " "$result_file" 2>/dev/null) || pass=0
+    fail=$(grep -ca "FAIL\*" "$result_file" 2>/dev/null) || fail=0
+    ccvs_pass=$(ccvs_summary_count "$result_file" 'TESTS WERE EXECUTED SUCCESSFULLY')
+    ccvs_failed=$(ccvs_summary_count "$result_file" 'TEST\(S\) FAILED')
+    ccvs_inspect=$(ccvs_summary_count "$result_file" 'TEST\(S\) REQUIRE INSPECTION')
+    footer_errors="$(ccvs_footer_error_count "$result_file")"
 
     if [ "$ccvs_failed" -gt 0 ] || [ "$fail" -gt 0 ]; then
         echo "FAIL" > "$status_file"

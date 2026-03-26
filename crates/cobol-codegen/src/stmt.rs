@@ -1,5 +1,5 @@
 use super::*;
-use cobol_hir::HirPerformTest;
+use cobol_hir::{HirPerformTest, HirType};
 
 pub(crate) struct StmtEmitEnv<'a> {
     pub(crate) data_items: &'a [HirDataItem],
@@ -2083,21 +2083,42 @@ pub(crate) fn emit_statement_with_ctx(
                     "{pad}    _sort_keys[0].offset = 0; _sort_keys[0].length = {rec_len}; _sort_keys[0].ascending = 1; _sort_keys[0].key_type = 0;\n"
                 ));
             } else {
+                let needs_conv =
+                    sort_record_needs_conversion(&record_var, data_items);
                 for (i, (field_name, ascending)) in flat_keys.iter().enumerate() {
                     let asc_val: u8 = if *ascending { 1 } else { 0 };
-                    // Try to find the actual offset and size of the sort key field
-                    let kt = sort_key_type_for_field(field_name, data_items);
+                    let mut kt = sort_key_type_for_field(field_name, data_items);
+                    // Override key type for CobolDecimal fields when the sort
+                    // buffer stores their value as int64_t binary.
+                    let field_is_decimal = {
+                        let fc = sanitize_name(field_name);
+                        find_original_data_item_by_sanitized_name(&fc, data_items)
+                            .is_some_and(|item| needs_decimal(&item.data_type))
+                    };
+                    let mut key_len_override: Option<u32> = None;
+                    if needs_conv && field_is_decimal {
+                        kt = 1; // SORT_KEY_SIGNED_BINARY
+                        key_len_override = Some(8); // sizeof(int64_t)
+                    }
+                    // Use file-format offsets/sizes for sort keys (matches flat buffer layout)
                     if let Some((offset, size)) =
+                        find_sort_field_offset_and_size(field_name, &record_var, data_items)
+                    {
+                        let sz = key_len_override.unwrap_or(size);
+                        out.push_str(&format!(
+                            "{pad}    _sort_keys[{i}].offset = {offset}; _sort_keys[{i}].length = {sz}; _sort_keys[{i}].ascending = {asc_val}; _sort_keys[{i}].key_type = {kt}; /* {field_name} */\n"
+                        ));
+                    } else if let Some((offset, size)) =
                         find_field_offset_and_size(field_name, &record_var, data_items)
                     {
-                        // No size adjustment - use HIR-based sizes matching file I/O
+                        let sz = key_len_override.unwrap_or(size);
                         out.push_str(&format!(
-                            "{pad}    _sort_keys[{i}].offset = {offset}; _sort_keys[{i}].length = {size}; _sort_keys[{i}].ascending = {asc_val}; _sort_keys[{i}].key_type = {kt}; /* {field_name} */\n"
+                            "{pad}    _sort_keys[{i}].offset = {offset}; _sort_keys[{i}].length = {sz}; _sort_keys[{i}].ascending = {asc_val}; _sort_keys[{i}].key_type = {kt}; /* {field_name} */\n"
                         ));
                     } else {
-                        // Fallback: use field size but offset 0
                         let field_c = sanitize_name(field_name);
-                        let field_size = find_data_item_size(&field_c, data_items);
+                        let field_size = key_len_override
+                            .unwrap_or_else(|| find_data_item_size(&field_c, data_items));
                         out.push_str(&format!(
                             "{pad}    _sort_keys[{i}].offset = 0; _sort_keys[{i}].length = {field_size}; _sort_keys[{i}].ascending = {asc_val}; _sort_keys[{i}].key_type = {kt}; /* {field_name} (no offset) */\n"
                         ));
@@ -2150,6 +2171,19 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!("{pad}    para_{c_thru}();\n"));
                     }
                 }
+                // Convert CobolDecimal fields from display to binary in sort buffer
+                if sort_record_needs_conversion(&record_var, data_items) {
+                    out.push_str(&format!(
+                        "{pad}    /* Convert CobolDecimal fields to binary for sorting */\n"
+                    ));
+                    emit_sort_buf_display_to_binary(
+                        out,
+                        &record_var,
+                        data_items,
+                        rec_len,
+                        &format!("{pad}    "),
+                    );
+                }
                 out.push_str(&format!(
                     "{pad}    cobol_sort(_sort_buf, _sort_count, {rec_len}, _sort_keys, {key_count});\n"
                 ));
@@ -2176,7 +2210,7 @@ pub(crate) fn emit_statement_with_ctx(
                 if let Some((proc_name, thru)) = output_procedure {
                     let c_proc = sanitize_name(proc_name);
                     out.push_str(&format!("{pad}    /* OUTPUT PROCEDURE {c_proc} */\n"));
-                    // Copy sorted data into sort buffer for RETURN
+                    // Copy sorted display-format records into sort buffer for RETURN
                     out.push_str(&format!(
                         "{pad}    _sort_buf_id = cobol_sort_buffer_init({rec_len});\n"
                     ));
@@ -2478,19 +2512,34 @@ pub(crate) fn emit_statement_with_ctx(
             let c_name = sanitize_name(file_name);
             let record_var = resolve_file_record(&c_name);
             let rec_len = find_record_len(&record_var, data_items);
-            let target = if let Some((into_var, into_subs)) = into {
+            let needs_conv = sort_record_needs_conversion(&record_var, data_items);
+            let into_target = into.as_ref().map(|(into_var, into_subs)| {
                 if into_subs.is_empty() {
                     sanitize_name(into_var)
                 } else {
                     emit_subscript_access(into_var, into_subs)
                 }
-            } else {
-                record_var
-            };
+            });
             out.push_str(&format!("{pad}/* RETURN {c_name} */\n"));
-            out.push_str(&format!(
-                "{pad}{{\n{pad}    uint32_t _fs = cobol_sort_buffer_return(_sort_buf_id, (uint8_t*)&{target}, {rec_len});\n"
-            ));
+            out.push_str(&format!("{pad}{{\n"));
+            if needs_conv {
+                // Sort buffer contains display-format bytes; deserialize into SD record
+                out.push_str(&format!(
+                    "{pad}    uint8_t _sort_flat[{rec_len}];\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    uint32_t _fs = cobol_sort_buffer_return(_sort_buf_id, _sort_flat, {rec_len});\n"
+                ));
+            } else if into_target.is_some() {
+                // No conversion needed but INTO specified: read into SD record, then copy
+                out.push_str(&format!(
+                    "{pad}    uint32_t _fs = cobol_sort_buffer_return(_sort_buf_id, (uint8_t*)&{record_var}, {rec_len});\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{pad}    uint32_t _fs = cobol_sort_buffer_return(_sort_buf_id, (uint8_t*)&{record_var}, {rec_len});\n"
+                ));
+            }
             if !at_end.is_empty() || !not_at_end.is_empty() {
                 out.push_str(&format!("{pad}    if (_fs == 10) {{\n"));
                 out.push_str(&format!("{pad}        /* AT END */\n"));
@@ -2521,6 +2570,30 @@ pub(crate) fn emit_statement_with_ctx(
                     }
                 }
                 out.push_str(&format!("{pad}    }}\n"));
+            }
+            // After AT END handling: deserialize and copy if needed
+            if needs_conv {
+                out.push_str(&format!("{pad}    if (_fs != 10) {{\n"));
+                // Deserialize display bytes into SD record struct
+                emit_sort_record_deserialize(
+                    out,
+                    &record_var,
+                    data_items,
+                    "_sort_flat",
+                    &format!("{pad}        "),
+                );
+                // If INTO, also copy display bytes to the INTO target
+                if let Some(ref into_t) = into_target {
+                    out.push_str(&format!(
+                        "{pad}        memcpy(&{into_t}, _sort_flat, {rec_len});\n"
+                    ));
+                }
+                out.push_str(&format!("{pad}    }}\n"));
+            } else if let Some(ref into_t) = into_target {
+                // No conversion but INTO: copy SD record to INTO target
+                out.push_str(&format!(
+                    "{pad}    if (_fs != 10) memcpy(&{into_t}, &{record_var}, {rec_len});\n"
+                ));
             }
             out.push_str(&format!("{pad}}}\n"));
         }
@@ -2598,15 +2671,41 @@ pub(crate) fn emit_statement_with_ctx(
         } => {
             let c_name = sanitize_name(record_name);
             let rec_len = find_record_len(&c_name, data_items);
+            let needs_conv = sort_record_needs_conversion(&c_name, data_items);
             let source = if let Some(from_expr) = from {
                 emit_expr(from_expr)
             } else {
                 c_name.clone()
             };
             out.push_str(&format!("{pad}/* RELEASE {c_name} */\n"));
-            out.push_str(&format!(
-                "{pad}cobol_sort_buffer_release(_sort_buf_id, (const uint8_t*)&{source}, {rec_len});\n"
-            ));
+            if needs_conv {
+                // Serialize struct to display format before releasing
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!(
+                    "{pad}    uint8_t _sort_flat[{rec_len}];\n"
+                ));
+                // If FROM is specified, first move to the record
+                if from.is_some() {
+                    out.push_str(&format!(
+                        "{pad}    memcpy(&{c_name}, &{source}, {rec_len});\n"
+                    ));
+                }
+                emit_sort_record_serialize(
+                    out,
+                    &c_name,
+                    data_items,
+                    "_sort_flat",
+                    &format!("{pad}    "),
+                );
+                out.push_str(&format!(
+                    "{pad}    cobol_sort_buffer_release(_sort_buf_id, _sort_flat, {rec_len});\n"
+                ));
+                out.push_str(&format!("{pad}}}\n"));
+            } else {
+                out.push_str(&format!(
+                    "{pad}cobol_sort_buffer_release(_sort_buf_id, (const uint8_t*)&{source}, {rec_len});\n"
+                ));
+            }
         }
         // --- Table handling: SEARCH ---
         HirStatement::Search {
@@ -4876,5 +4975,390 @@ pub(crate) fn emit_string_func_arg(expr: &HirExpr) -> (String, String) {
             let e = emit_expr(expr);
             (e.clone(), format!("sizeof({e})"))
         }
+    }
+}
+
+/// Find a field's offset and size within a record, using file-format byte sizes.
+/// This is like find_field_offset_and_size but uses cobol_file_byte_size for Binary.
+fn find_sort_field_offset_and_size(
+    field_name: &str,
+    record_name: &str,
+    data_items: &[HirDataItem],
+) -> Option<(u32, u32)> {
+    let field_c = sanitize_name(field_name);
+    let record_c = sanitize_name(record_name);
+    for item in data_items {
+        if sanitize_name(&item.name) == record_c {
+            if let HirType::Group { members, .. } = &item.data_type {
+                return find_sort_field_in_group(&field_c, members, 0);
+            }
+        }
+    }
+    None
+}
+
+fn find_sort_field_in_group(
+    field_c: &str,
+    members: &[HirDataItem],
+    base_offset: u32,
+) -> Option<(u32, u32)> {
+    let mut offset = base_offset;
+    for item in members {
+        let item_c = sanitize_name(&item.name);
+        let item_size = cobol_file_byte_size(&item.data_type);
+        if item_c == field_c {
+            return Some((offset, item_size));
+        }
+        if let HirType::Group { members: sub, .. } = &item.data_type {
+            if let Some(found) = find_sort_field_in_group(field_c, sub, offset) {
+                return Some(found);
+            }
+        }
+        offset += item_size;
+    }
+    None
+}
+
+/// Check if an SD record needs serialize/deserialize for SORT buffer operations.
+/// Returns true if the record has fields whose C struct representation differs
+/// from the COBOL display format (CobolDecimal or Binary with potential padding).
+fn sort_record_needs_conversion(record_name: &str, data_items: &[HirDataItem]) -> bool {
+    fn check_members(members: &[HirDataItem]) -> bool {
+        for item in members {
+            match &item.data_type {
+                HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => return true,
+                HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => return true,
+                HirType::Binary { .. } => return true,
+                HirType::Group { members: sub, .. } => {
+                    if check_members(sub) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let c_name = sanitize_name(record_name);
+    for item in data_items {
+        if sanitize_name(&item.name) == c_name {
+            if let HirType::Group { members, .. } = &item.data_type {
+                return check_members(members);
+            }
+        }
+    }
+    false
+}
+
+/// Emit code to deserialize display-format bytes from a flat buffer into the SD
+/// record struct. Handles CobolDecimal and Binary fields correctly.
+fn emit_sort_record_deserialize(
+    out: &mut String,
+    record_var: &str,
+    data_items: &[HirDataItem],
+    flat_var: &str,
+    pad: &str,
+) {
+    let c_rec = sanitize_name(record_var);
+    for item in data_items {
+        if sanitize_name(&item.name) == c_rec {
+            if let HirType::Group { members, .. } = &item.data_type {
+                emit_field_deserialize(out, &c_rec, members, flat_var, pad, 0);
+            }
+            return;
+        }
+    }
+}
+
+/// Emit code to convert CobolDecimal fields from display format to int64_t
+/// binary in-place within the sort buffer. Used when USING reads display-format
+/// records but the sort comparator expects binary values for CobolDecimal fields.
+fn emit_sort_buf_display_to_binary(
+    out: &mut String,
+    record_name: &str,
+    data_items: &[HirDataItem],
+    rec_len: u32,
+    pad: &str,
+) {
+    let c_rec = sanitize_name(record_name);
+    let members = data_items.iter().find_map(|item| {
+        if sanitize_name(&item.name) == c_rec {
+            if let HirType::Group { members, .. } = &item.data_type {
+                return Some(members.as_slice());
+            }
+        }
+        None
+    });
+    let members = match members {
+        Some(m) => m,
+        None => return,
+    };
+    out.push_str(&format!(
+        "{pad}for (uint32_t _si = 0; _si < _sort_count; _si++) {{\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    uint8_t* _rec = &_sort_buf[_si * {rec_len}];\n"
+    ));
+    out.push_str(&format!("{pad}    CobolDecimal _tmp_dec;\n"));
+    let mut offset: u32 = 0;
+    let mut name_counts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    for member in members {
+        let _c_name = dedup_member_name(&member.name, &mut name_counts);
+        let size = cobol_file_byte_size(&member.data_type);
+        match &member.data_type {
+            HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+                out.push_str(&format!(
+                    "{pad}    cobol_decimal_from_string(_rec + {offset}, {size}, &_tmp_dec);\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    memset(_rec + {offset}, 0, {size});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    memcpy(_rec + {offset}, &_tmp_dec.value, sizeof(int64_t));\n"
+                ));
+            }
+            HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
+                out.push_str(&format!(
+                    "{pad}    cobol_decimal_from_string(_rec + {offset}, {size}, &_tmp_dec);\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    memset(_rec + {offset}, 0, {size});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    memcpy(_rec + {offset}, &_tmp_dec.value, sizeof(int64_t));\n"
+                ));
+            }
+            _ => {}
+        }
+        offset += size;
+    }
+    out.push_str(&format!("{pad}}}\n"));
+}
+
+/// Compute a deduplicated C member name, matching the data codegen convention.
+fn dedup_member_name(
+    base_name: &str,
+    counts: &mut std::collections::HashMap<String, u32>,
+) -> String {
+    let c = sanitize_name(base_name);
+    let count = counts.entry(c.clone()).or_insert(0);
+    *count += 1;
+    if *count > 1 {
+        format!("{}_{}", c, count)
+    } else {
+        c
+    }
+}
+
+/// Get the COBOL file/record byte size for a data type.
+/// For Binary (COMP), computes the actual storage byte count from digit count.
+fn cobol_file_byte_size(data_type: &HirType) -> u32 {
+    match data_type {
+        HirType::Binary { size } => {
+            // COMP: digits → bytes per COBOL standard
+            if *size <= 4 {
+                2
+            } else if *size <= 9 {
+                4
+            } else {
+                8
+            }
+        }
+        _ => data_item_byte_size(data_type),
+    }
+}
+
+fn emit_field_deserialize(
+    out: &mut String,
+    record_var: &str,
+    members: &[HirDataItem],
+    flat_var: &str,
+    pad: &str,
+    base_offset: u32,
+) {
+    let mut offset = base_offset;
+    let mut name_counts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    for member in members {
+        let c_name = dedup_member_name(&member.name, &mut name_counts);
+        let size = cobol_file_byte_size(&member.data_type);
+        match &member.data_type {
+            HirType::Numeric { decimal_places, is_signed, .. } if *decimal_places > 0 => {
+                // Restore CobolDecimal value from int64_t binary
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name}.value = 0;\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}memcpy(&{record_var}.members._m_{c_name}.value, \
+                     {flat_var} + {offset}, sizeof(int64_t));\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name}.scale = {decimal_places};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name}.size = {size};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name}.is_signed = {};\n",
+                    i32::from(*is_signed)
+                ));
+            }
+            HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
+                // Restore CobolDecimal value from int64_t binary
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name}.value = 0;\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}memcpy(&{record_var}.members._m_{c_name}.value, \
+                     {flat_var} + {offset}, sizeof(int64_t));\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name}.scale = {decimal_places};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name}.size = {size};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name}.is_signed = 1;\n"
+                ));
+            }
+            HirType::Binary { .. } => {
+                // Binary fields are stored as int64_t in C but occupy fewer bytes in
+                // the file. Read from flat buffer, sign-extend to int64_t.
+                let bsize = size; // use cobol_file_byte_size result
+                out.push_str(&format!(
+                    "{pad}{record_var}.members._m_{c_name} = 0;\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}memcpy(&{record_var}.members._m_{c_name}, \
+                     {flat_var} + {offset}, {bsize});\n"
+                ));
+                // Sign-extend for signed binary
+                if bsize < 8 {
+                    let bits = bsize * 8;
+                    out.push_str(&format!(
+                        "{pad}if ({record_var}.members._m_{c_name} & ((int64_t)1 << {msb})) \
+                         {record_var}.members._m_{c_name} |= ~(((int64_t)1 << {bits}) - 1);\n",
+                        msb = bits - 1,
+                        bits = bits,
+                    ));
+                }
+            }
+            HirType::Group { members: sub, size: gsize, .. } => {
+                let has_complex = sub.iter().any(|m| {
+                    matches!(&m.data_type,
+                        HirType::Numeric { decimal_places, .. } if *decimal_places > 0)
+                        || matches!(&m.data_type,
+                            HirType::Comp3 { decimal_places, .. } if *decimal_places > 0)
+                        || matches!(&m.data_type, HirType::Binary { .. })
+                });
+                if has_complex {
+                    emit_field_deserialize(out, record_var, sub, flat_var, pad, offset);
+                } else {
+                    out.push_str(&format!(
+                        "{pad}memcpy(&{record_var}.members._m_{c_name}, \
+                         {flat_var} + {offset}, {gsize});\n"
+                    ));
+                }
+            }
+            _ => {
+                out.push_str(&format!(
+                    "{pad}memcpy({record_var}.members._m_{c_name}, \
+                     {flat_var} + {offset}, {size});\n"
+                ));
+            }
+        }
+        offset += size;
+    }
+}
+
+/// Emit code to serialize the SD record struct to display-format bytes in a flat buffer.
+fn emit_sort_record_serialize(
+    out: &mut String,
+    record_var: &str,
+    data_items: &[HirDataItem],
+    flat_var: &str,
+    pad: &str,
+) {
+    let c_rec = sanitize_name(record_var);
+    for item in data_items {
+        if sanitize_name(&item.name) == c_rec {
+            if let HirType::Group { members, .. } = &item.data_type {
+                emit_field_serialize(out, &c_rec, members, flat_var, pad, 0);
+            }
+            return;
+        }
+    }
+}
+
+fn emit_field_serialize(
+    out: &mut String,
+    record_var: &str,
+    members: &[HirDataItem],
+    flat_var: &str,
+    pad: &str,
+    base_offset: u32,
+) {
+    let mut offset = base_offset;
+    let mut name_counts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    for member in members {
+        let c_name = dedup_member_name(&member.name, &mut name_counts);
+        let size = cobol_file_byte_size(&member.data_type);
+        match &member.data_type {
+            HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+                // Store CobolDecimal value as int64_t binary for correct
+                // signed comparison during sorting.
+                out.push_str(&format!(
+                    "{pad}memset({flat_var} + {offset}, 0, {size});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}memcpy({flat_var} + {offset}, \
+                     &{record_var}.members._m_{c_name}.value, sizeof(int64_t));\n"
+                ));
+            }
+            HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => {
+                // Store CobolDecimal value as int64_t binary for correct
+                // signed comparison during sorting.
+                out.push_str(&format!(
+                    "{pad}memset({flat_var} + {offset}, 0, {size});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}memcpy({flat_var} + {offset}, \
+                     &{record_var}.members._m_{c_name}.value, sizeof(int64_t));\n"
+                ));
+            }
+            HirType::Binary { .. } => {
+                out.push_str(&format!(
+                    "{pad}memcpy({flat_var} + {offset}, \
+                     &{record_var}.members._m_{c_name}, {size});\n"
+                ));
+            }
+            HirType::Group { members: sub, size: gsize, .. } => {
+                let has_complex = sub.iter().any(|m| {
+                    matches!(&m.data_type,
+                        HirType::Numeric { decimal_places, .. } if *decimal_places > 0)
+                        || matches!(&m.data_type,
+                            HirType::Comp3 { decimal_places, .. } if *decimal_places > 0)
+                        || matches!(&m.data_type, HirType::Binary { .. })
+                });
+                if has_complex {
+                    emit_field_serialize(out, record_var, sub, flat_var, pad, offset);
+                } else {
+                    out.push_str(&format!(
+                        "{pad}memcpy({flat_var} + {offset}, \
+                         &{record_var}.members._m_{c_name}, {gsize});\n"
+                    ));
+                }
+            }
+            _ => {
+                out.push_str(&format!(
+                    "{pad}memcpy({flat_var} + {offset}, \
+                     {record_var}.members._m_{c_name}, {size});\n"
+                ));
+            }
+        }
+        offset += size;
     }
 }

@@ -57,8 +57,15 @@ fn compare_records(a: &[u8], b: &[u8], keys: &[SortKey]) -> std::cmp::Ordering {
                 let vb = read_unsigned_le(kb);
                 va.cmp(&vb)
             }
+            SORT_KEY_DISPLAY_NUMERIC => {
+                // Parse display numeric bytes as signed integers and compare.
+                // This handles COBOL zoned-decimal format correctly.
+                let va = display_numeric_to_i64(ka);
+                let vb = display_numeric_to_i64(kb);
+                va.cmp(&vb)
+            }
             _ => {
-                // Alphanumeric / display numeric: byte comparison
+                // Alphanumeric: byte comparison
                 ka.cmp(kb)
             }
         };
@@ -109,6 +116,45 @@ fn read_unsigned_le(bytes: &[u8]) -> u64 {
             val
         }
     }
+}
+
+/// Parse a COBOL display numeric (zoned decimal) byte slice as an i64.
+/// Handles leading/trailing sign characters ('+'/'-') and plain digit sequences.
+fn display_numeric_to_i64(bytes: &[u8]) -> i64 {
+    if bytes.is_empty() {
+        return 0;
+    }
+    let mut start = 0usize;
+    let mut end = bytes.len();
+    // Skip leading/trailing spaces
+    while start < end && bytes[start] == b' ' {
+        start += 1;
+    }
+    while start < end && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+    if start == end {
+        return 0;
+    }
+    let mut negative = false;
+    // Leading sign
+    if bytes[start] == b'+' || bytes[start] == b'-' {
+        negative = bytes[start] == b'-';
+        start += 1;
+    }
+    // Trailing sign
+    if start < end && (bytes[end - 1] == b'+' || bytes[end - 1] == b'-') {
+        negative = bytes[end - 1] == b'-';
+        end -= 1;
+    }
+    let mut value = 0i64;
+    for &b in &bytes[start..end] {
+        if b.is_ascii_digit() {
+            value = value.wrapping_mul(10).wrapping_add((b - b'0') as i64);
+        }
+        // Skip non-digits (shouldn't happen in valid display numeric)
+    }
+    if negative { -value } else { value }
 }
 
 /// Sort an array of fixed-length records in-place.

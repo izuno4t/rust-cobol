@@ -3001,10 +3001,8 @@ pub(crate) fn sort_key_type_for_field(field_name: &str, data_items: &[HirDataIte
                     0
                 }
             }
-            HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => 1, // CobolDecimal: compare value field as signed binary
-            HirType::Numeric { .. } => 3, // display numeric (char[])
-            HirType::Comp3 { decimal_places, .. } if *decimal_places > 0 => 1, // CobolDecimal
-            HirType::Comp3 { .. } => 1,   // int64_t
+            HirType::Numeric { .. } => 3, // display numeric (char[]) - always display format in sort buffer
+            HirType::Comp3 { .. } => 1,   // int64_t - binary in sort buffer
             _ => 0,                       // alphanumeric
         }
     } else {
