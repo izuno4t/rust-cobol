@@ -727,6 +727,26 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str(
         "extern uint32_t cobol_merge(const uint32_t* inputs, uint32_t input_count, uint32_t output, const void* keys, uint32_t key_count, uint32_t rec_len);\n",
     );
+    out.push_str(
+        "extern uint32_t cobol_sort_buffer_init(uint32_t record_len);\n",
+    );
+    out.push_str(
+        "extern void cobol_sort_buffer_release(uint32_t buf_id, const uint8_t* record, uint32_t record_len);\n",
+    );
+    out.push_str(
+        "extern void cobol_sort_buffer_sort(uint32_t buf_id, const void* keys, uint32_t key_count);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_sort_buffer_return(uint32_t buf_id, uint8_t* record, uint32_t record_len);\n",
+    );
+    out.push_str(
+        "extern void cobol_sort_buffer_free(uint32_t buf_id);\n",
+    );
+    out.push_str("static uint32_t _sort_buf_id = 0;\n");
+    out.push_str("#define SORT_KEY_ALPHA 0\n");
+    out.push_str("#define SORT_KEY_SIGNED_BINARY 1\n");
+    out.push_str("#define SORT_KEY_UNSIGNED_BINARY 2\n");
+    out.push_str("#define SORT_KEY_DISPLAY_NUMERIC 3\n");
     // Intrinsic function runtime declarations
     out.push_str("/* Intrinsic function runtime declarations */\n");
     out.push_str("extern uint32_t cobol_func_current_date(uint8_t* buf, uint32_t buf_len);\n");

@@ -2910,6 +2910,50 @@ pub(crate) fn data_item_byte_size(data_type: &HirType) -> u32 {
     }
 }
 
+/// Find the byte offset and size of a field within a record structure.
+/// Returns (offset, size) if found, None otherwise.
+pub(crate) fn find_field_offset_and_size(
+    field_name: &str,
+    record_name: &str,
+    data_items: &[HirDataItem],
+) -> Option<(u32, u32)> {
+    let field_c = sanitize_name(field_name);
+    let record_c = sanitize_name(record_name);
+    for item in data_items {
+        if sanitize_name(&item.name) == record_c {
+            if let HirType::Group { members, .. } = &item.data_type {
+                return find_field_in_group(&field_c, members, 0);
+            }
+        }
+    }
+    None
+}
+
+fn find_field_in_group(
+    field_c: &str,
+    members: &[HirDataItem],
+    base_offset: u32,
+) -> Option<(u32, u32)> {
+    let mut offset = base_offset;
+    for item in members {
+        let item_c = sanitize_name(&item.name);
+        let item_size = data_item_byte_size(&item.data_type);
+        if item_c == field_c {
+            return Some((offset, item_size));
+        }
+        if let HirType::Group { members: sub, .. } = &item.data_type {
+            if let Some(found) = find_field_in_group(field_c, sub, offset) {
+                return Some(found);
+            }
+        }
+        // Only advance offset for non-FILLER non-REDEFINES items
+        if item.redefines.is_none() {
+            offset += item_size;
+        }
+    }
+    None
+}
+
 /// Convert a COBOL data name to a valid C identifier.
 ///
 /// COBOL names use hyphens which are not valid in C, so we replace
@@ -2941,6 +2985,31 @@ pub(crate) fn sanitize_name(name: &str) -> String {
 /// otherwise falls back to the file name itself.
 pub(crate) fn resolve_file_record(sanitized_file_name: &str) -> String {
     with_active_context(|ctx| ctx.resolve_file_record(sanitized_file_name))
+}
+
+/// Determine the sort key type for a field (0=alpha, 1=signed binary, 2=unsigned binary, 3=display numeric).
+pub(crate) fn sort_key_type_for_field(
+    field_name: &str,
+    data_items: &[HirDataItem],
+) -> u8 {
+    let field_c = sanitize_name(field_name);
+    if let Some(item) = find_original_data_item_by_sanitized_name(&field_c, data_items) {
+        match &item.data_type {
+            HirType::Binary { size } => {
+                // Check if signed from the field name context or size
+                // COBOL COMP fields with S picture are signed
+                if *size <= 8 {
+                    1 // signed binary (default for COMP)
+                } else {
+                    0
+                }
+            }
+            HirType::Numeric { .. } | HirType::Comp3 { .. } => 3, // display numeric
+            _ => 0, // alphanumeric
+        }
+    } else {
+        0
+    }
 }
 
 /// Escape special characters for use in a C string literal.

@@ -2057,24 +2057,46 @@ pub(crate) fn emit_statement_with_ctx(
             let record_var = resolve_file_record(&c_name);
             let rec_len = find_record_len(&record_var, data_items);
             out.push_str(&format!("{pad}/* SORT {c_name} */\n"));
-            let key_count = if keys.is_empty() { 1 } else { keys.len() };
+            // Flatten all key fields across HirSortKey entries
+            let mut flat_keys: Vec<(&str, bool)> = Vec::new();
+            for key in keys {
+                let ascending = matches!(key.order, cobol_hir::HirSortOrder::Ascending);
+                for field in &key.fields {
+                    flat_keys.push((field.as_str(), ascending));
+                }
+            }
+            let key_count = if flat_keys.is_empty() {
+                1
+            } else {
+                flat_keys.len()
+            };
             out.push_str(&format!("{pad}{{\n"));
             out.push_str(&format!(
-                "{pad}    struct {{ uint32_t offset; uint32_t length; uint8_t ascending; }} _sort_keys[{key_count}];\n"
+                "{pad}    struct {{ uint32_t offset; uint32_t length; uint8_t ascending; uint8_t key_type; }} _sort_keys[{key_count}];\n"
             ));
-            if keys.is_empty() {
+            if flat_keys.is_empty() {
                 out.push_str(&format!(
-                    "{pad}    _sort_keys[0].offset = 0; _sort_keys[0].length = {rec_len}; _sort_keys[0].ascending = 1;\n"
+                    "{pad}    _sort_keys[0].offset = 0; _sort_keys[0].length = {rec_len}; _sort_keys[0].ascending = 1; _sort_keys[0].key_type = 0;\n"
                 ));
             } else {
-                for (i, key) in keys.iter().enumerate() {
-                    let ascending = matches!(key.order, cobol_hir::HirSortOrder::Ascending);
-                    let asc_val: u8 = if ascending { 1 } else { 0 };
-                    let field_names: Vec<_> = key.fields.iter().map(|f| f.as_str()).collect();
-                    out.push_str(&format!(
-                        "{pad}    _sort_keys[{i}].offset = 0; _sort_keys[{i}].length = {rec_len}; _sort_keys[{i}].ascending = {asc_val}; /* key: {} */\n",
-                        field_names.join(", ")
-                    ));
+                for (i, (field_name, ascending)) in flat_keys.iter().enumerate() {
+                    let asc_val: u8 = if *ascending { 1 } else { 0 };
+                    // Try to find the actual offset and size of the sort key field
+                    let kt = sort_key_type_for_field(field_name, data_items);
+                    if let Some((offset, size)) =
+                        find_field_offset_and_size(field_name, &record_var, data_items)
+                    {
+                        out.push_str(&format!(
+                            "{pad}    _sort_keys[{i}].offset = {offset}; _sort_keys[{i}].length = {size}; _sort_keys[{i}].ascending = {asc_val}; _sort_keys[{i}].key_type = {kt}; /* {field_name} */\n"
+                        ));
+                    } else {
+                        // Fallback: use field size but offset 0
+                        let field_c = sanitize_name(field_name);
+                        let field_size = find_data_item_size(&field_c, data_items);
+                        out.push_str(&format!(
+                            "{pad}    _sort_keys[{i}].offset = 0; _sort_keys[{i}].length = {field_size}; _sort_keys[{i}].ascending = {asc_val}; _sort_keys[{i}].key_type = {kt}; /* {field_name} (no offset) */\n"
+                        ));
+                    }
                 }
             }
             if !using.is_empty() {
@@ -2108,7 +2130,22 @@ pub(crate) fn emit_statement_with_ctx(
                     ));
                     out.push_str(&format!("{pad}        }}\n"));
                     out.push_str(&format!("{pad}    }}\n"));
-                    out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_using});\n"));
+                    out.push_str(&format!(
+                        "{pad}    cobol_file_close(FILE_ID_{c_using});\n"
+                    ));
+                }
+                // If there's an input procedure too (USING + INPUT PROCEDURE)
+                if let Some((proc_name, thru)) = input_procedure {
+                    let c_proc = sanitize_name(proc_name);
+                    out.push_str(&format!("{pad}    /* INPUT PROCEDURE {c_proc} */\n"));
+                    out.push_str(&format!(
+                        "{pad}    _sort_buf_id = cobol_sort_buffer_init({rec_len});\n"
+                    ));
+                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
+                    if let Some(thru_name) = thru {
+                        let c_thru = sanitize_name(thru_name);
+                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
+                    }
                 }
                 out.push_str(&format!(
                     "{pad}    cobol_sort(_sort_buf, _sort_count, {rec_len}, _sort_keys, {key_count});\n"
@@ -2130,12 +2167,40 @@ pub(crate) fn emit_statement_with_ctx(
                             "{pad}        cobol_file_write(FILE_ID_{c_giving}, (const uint8_t*)&_sort_buf[_si * {rec_len}], {rec_len});\n"
                         ));
                         out.push_str(&format!("{pad}    }}\n"));
-                        out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_giving});\n"));
+                        out.push_str(&format!(
+                            "{pad}    cobol_file_close(FILE_ID_{c_giving});\n"
+                        ));
                     }
+                }
+                if let Some((proc_name, thru)) = output_procedure {
+                    let c_proc = sanitize_name(proc_name);
+                    out.push_str(&format!("{pad}    /* OUTPUT PROCEDURE {c_proc} */\n"));
+                    // Copy sorted data into sort buffer for RETURN
+                    out.push_str(&format!(
+                        "{pad}    _sort_buf_id = cobol_sort_buffer_init({rec_len});\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    for (uint32_t _si = 0; _si < _sort_count; _si++) {{\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}        cobol_sort_buffer_release(_sort_buf_id, &_sort_buf[_si * {rec_len}], {rec_len});\n"
+                    ));
+                    out.push_str(&format!("{pad}    }}\n"));
+                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
+                    if let Some(thru_name) = thru {
+                        let c_thru = sanitize_name(thru_name);
+                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
+                    }
+                    out.push_str(&format!(
+                        "{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"
+                    ));
                 }
                 out.push_str(&format!("{pad}    free(_sort_buf);\n"));
             } else if input_procedure.is_some() || output_procedure.is_some() {
-                // INPUT/OUTPUT PROCEDURE: call the procedure paragraphs
+                // INPUT/OUTPUT PROCEDURE with runtime sort buffer
+                out.push_str(&format!(
+                    "{pad}    _sort_buf_id = cobol_sort_buffer_init({rec_len});\n"
+                ));
                 if let Some((proc_name, thru)) = input_procedure {
                     let c_proc = sanitize_name(proc_name);
                     out.push_str(&format!("{pad}    /* INPUT PROCEDURE {c_proc} */\n"));
@@ -2145,9 +2210,8 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!("{pad}    para_{c_thru}();\n"));
                     }
                 }
-                // Sort the accumulated records
                 out.push_str(&format!(
-                    "{pad}    cobol_sort((uint8_t*)&{record_var}, 0, {rec_len}, _sort_keys, {key_count});\n"
+                    "{pad}    cobol_sort_buffer_sort(_sort_buf_id, _sort_keys, {key_count});\n"
                 ));
                 if let Some((proc_name, thru)) = output_procedure {
                     let c_proc = sanitize_name(proc_name);
@@ -2158,8 +2222,11 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!("{pad}    para_{c_thru}();\n"));
                     }
                 }
+                out.push_str(&format!(
+                    "{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"
+                ));
             } else {
-                // No USING: sort in-place (record_count must be managed externally)
+                // No USING: sort in-place
                 out.push_str(&format!(
                     "{pad}    cobol_sort((uint8_t*)&{record_var}, 0, {rec_len}, _sort_keys, {key_count});\n"
                 ));
@@ -2425,7 +2492,7 @@ pub(crate) fn emit_statement_with_ctx(
             };
             out.push_str(&format!("{pad}/* RETURN {c_name} */\n"));
             out.push_str(&format!(
-                "{pad}{{\n{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{target}, {rec_len});\n"
+                "{pad}{{\n{pad}    uint32_t _fs = cobol_sort_buffer_return(_sort_buf_id, (uint8_t*)&{target}, {rec_len});\n"
             ));
             if !at_end.is_empty() || !not_at_end.is_empty() {
                 out.push_str(&format!("{pad}    if (_fs == 10) {{\n"));
@@ -2541,7 +2608,7 @@ pub(crate) fn emit_statement_with_ctx(
             };
             out.push_str(&format!("{pad}/* RELEASE {c_name} */\n"));
             out.push_str(&format!(
-                "{pad}cobol_file_write(FILE_ID_{c_name}, (const uint8_t*)&{source}, {rec_len});\n"
+                "{pad}cobol_sort_buffer_release(_sort_buf_id, (const uint8_t*)&{source}, {rec_len});\n"
             ));
         }
         // --- Table handling: SEARCH ---

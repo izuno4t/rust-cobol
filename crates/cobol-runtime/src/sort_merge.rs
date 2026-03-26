@@ -8,6 +8,16 @@
 
 use crate::file_io;
 
+/// Key type for sort comparison.
+/// 0 = alphanumeric (byte comparison)
+/// 1 = signed binary (COMP) - little-endian int
+/// 2 = unsigned binary (COMP) - little-endian uint
+/// 3 = display numeric (may have sign)
+pub const SORT_KEY_ALPHA: u8 = 0;
+pub const SORT_KEY_SIGNED_BINARY: u8 = 1;
+pub const SORT_KEY_UNSIGNED_BINARY: u8 = 2;
+pub const SORT_KEY_DISPLAY_NUMERIC: u8 = 3;
+
 /// Descriptor for a sort/merge key within a record.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -18,6 +28,8 @@ pub struct SortKey {
     pub length: u32,
     /// Sort direction: true = ascending, false = descending.
     pub ascending: bool,
+    /// Key data type (0=alpha, 1=signed binary, 2=unsigned binary, 3=display numeric)
+    pub key_type: u8,
 }
 
 /// Compare two records using the given sort keys.
@@ -25,20 +37,78 @@ pub struct SortKey {
 /// Returns `Ordering` suitable for use in sort comparators.
 fn compare_records(a: &[u8], b: &[u8], keys: &[SortKey]) -> std::cmp::Ordering {
     for key in keys {
-        let start_a = (key.offset as usize).min(a.len());
-        let end_a = (start_a + key.length as usize).min(a.len());
+        let start = (key.offset as usize).min(a.len());
+        let end = (start + key.length as usize).min(a.len());
         let start_b = (key.offset as usize).min(b.len());
         let end_b = (start_b + key.length as usize).min(b.len());
 
-        let ka = &a[start_a..end_a];
+        let ka = &a[start..end];
         let kb = &b[start_b..end_b];
 
-        let ord = ka.cmp(kb);
+        let ord = match key.key_type {
+            SORT_KEY_SIGNED_BINARY => {
+                // Compare as signed integer (little-endian)
+                let va = read_signed_le(ka);
+                let vb = read_signed_le(kb);
+                va.cmp(&vb)
+            }
+            SORT_KEY_UNSIGNED_BINARY => {
+                let va = read_unsigned_le(ka);
+                let vb = read_unsigned_le(kb);
+                va.cmp(&vb)
+            }
+            _ => {
+                // Alphanumeric / display numeric: byte comparison
+                ka.cmp(kb)
+            }
+        };
         if ord != std::cmp::Ordering::Equal {
             return if key.ascending { ord } else { ord.reverse() };
         }
     }
     std::cmp::Ordering::Equal
+}
+
+fn read_signed_le(bytes: &[u8]) -> i64 {
+    match bytes.len() {
+        1 => bytes[0] as i8 as i64,
+        2 => i16::from_le_bytes([bytes[0], bytes[1]]) as i64,
+        4 => i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i64,
+        8 => i64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]),
+        _ => {
+            // Generic: sign-extend from last byte
+            let mut val: i64 = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                val |= (b as i64) << (i * 8);
+            }
+            // Sign extend
+            let bits = bytes.len() * 8;
+            if bits < 64 && (val & (1i64 << (bits - 1))) != 0 {
+                val |= !0i64 << bits;
+            }
+            val
+        }
+    }
+}
+
+fn read_unsigned_le(bytes: &[u8]) -> u64 {
+    match bytes.len() {
+        1 => bytes[0] as u64,
+        2 => u16::from_le_bytes([bytes[0], bytes[1]]) as u64,
+        4 => u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64,
+        8 => u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]),
+        _ => {
+            let mut val: u64 = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                val |= (b as u64) << (i * 8);
+            }
+            val
+        }
+    }
 }
 
 /// Sort an array of fixed-length records in-place.
@@ -167,6 +237,126 @@ pub unsafe extern "C" fn cobol_merge(
 }
 
 // ---------------------------------------------------------------------------
+// Sort buffer management for INPUT/OUTPUT PROCEDURE
+// ---------------------------------------------------------------------------
+
+use std::sync::Mutex;
+
+struct SortBuffer {
+    data: Vec<u8>,
+    record_len: usize,
+    record_count: usize,
+    read_index: usize,
+}
+
+static SORT_BUFFERS: Mutex<Vec<Option<SortBuffer>>> = Mutex::new(Vec::new());
+
+/// Initialize a sort buffer for INPUT PROCEDURE. Returns a buffer ID.
+/// # Safety
+/// Caller must ensure valid buffer ID usage.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_sort_buffer_init(record_len: u32) -> u32 {
+    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    let buf = SortBuffer {
+        data: Vec::with_capacity(64 * record_len as usize),
+        record_len: record_len as usize,
+        record_count: 0,
+        read_index: 0,
+    };
+    // Find an empty slot or push new
+    for (i, slot) in buffers.iter_mut().enumerate() {
+        if slot.is_none() {
+            *slot = Some(buf);
+            return i as u32;
+        }
+    }
+    buffers.push(Some(buf));
+    (buffers.len() - 1) as u32
+}
+
+/// Add a record to the sort buffer (RELEASE).
+/// # Safety
+/// `record_ptr` must point to valid memory of `record_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_sort_buffer_release(
+    buf_id: u32,
+    record_ptr: *const u8,
+    record_len: u32,
+) {
+    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    if let Some(Some(ref mut buf)) = buffers.get_mut(buf_id as usize) {
+        let rec = std::slice::from_raw_parts(record_ptr, record_len as usize);
+        buf.data.extend_from_slice(rec);
+        buf.record_count += 1;
+    }
+}
+
+/// Sort the buffered records using the given keys.
+/// # Safety
+/// `keys` must point to valid `key_count` SortKey elements.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_sort_buffer_sort(
+    buf_id: u32,
+    keys: *const SortKey,
+    key_count: u32,
+) {
+    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    if let Some(Some(ref mut buf)) = buffers.get_mut(buf_id as usize) {
+        if buf.record_count <= 1 {
+            buf.read_index = 0;
+            return;
+        }
+        let key_slice = std::slice::from_raw_parts(keys, key_count as usize);
+        let rlen = buf.record_len;
+        let mut records: Vec<Vec<u8>> = buf.data.chunks_exact(rlen).map(|c| c.to_vec()).collect();
+        records.sort_by(|a, b| compare_records(a, b, key_slice));
+        buf.data.clear();
+        for rec in &records {
+            buf.data.extend_from_slice(rec);
+        }
+        buf.read_index = 0;
+    }
+}
+
+/// Read the next sorted record (RETURN). Returns 0 on success, 10 on AT END.
+/// # Safety
+/// `record_ptr` must be writable for `record_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_sort_buffer_return(
+    buf_id: u32,
+    record_ptr: *mut u8,
+    record_len: u32,
+) -> u32 {
+    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    if let Some(Some(ref mut buf)) = buffers.get_mut(buf_id as usize) {
+        if buf.read_index >= buf.record_count {
+            return 10; // AT END
+        }
+        let offset = buf.read_index * buf.record_len;
+        let end = offset + record_len as usize;
+        if end <= buf.data.len() {
+            let dest = std::slice::from_raw_parts_mut(record_ptr, record_len as usize);
+            dest.copy_from_slice(&buf.data[offset..end]);
+        }
+        buf.read_index += 1;
+        0
+    } else {
+        10
+    }
+}
+
+/// Free a sort buffer.
+/// # Safety
+/// Buffer ID must have been returned by `cobol_sort_buffer_init`.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_sort_buffer_free(buf_id: u32) {
+    let mut buffers = SORT_BUFFERS.lock().unwrap();
+    if let Some(slot) = buffers.get_mut(buf_id as usize) {
+        *slot = None;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -182,6 +372,7 @@ mod tests {
             offset: 0,
             length: 5,
             ascending: true,
+            key_type: 0,
         }];
         unsafe { cobol_sort(data.as_mut_ptr(), 3, 5, keys.as_ptr(), 1) };
         assert_eq!(&data, b"AAAAABBBBBCCCCC");
@@ -194,6 +385,7 @@ mod tests {
             offset: 0,
             length: 5,
             ascending: false,
+            key_type: 0,
         }];
         unsafe { cobol_sort(data.as_mut_ptr(), 3, 5, keys.as_ptr(), 1) };
         assert_eq!(&data, b"CCCCCBBBBBAAAAA");
@@ -207,12 +399,12 @@ mod tests {
             SortKey {
                 offset: 0,
                 length: 1,
-                ascending: true,
+                ascending: true, key_type: 0,
             },
             SortKey {
                 offset: 1,
                 length: 1,
-                ascending: true,
+                ascending: true, key_type: 0,
             },
         ];
         unsafe { cobol_sort(data.as_mut_ptr(), 4, 2, keys.as_ptr(), 2) };
@@ -226,6 +418,7 @@ mod tests {
             offset: 0,
             length: 5,
             ascending: true,
+            key_type: 0,
         }];
         unsafe { cobol_sort(data.as_mut_ptr(), 1, 5, keys.as_ptr(), 1) };
         assert_eq!(&data, b"HELLO"); // unchanged
@@ -237,6 +430,7 @@ mod tests {
             offset: 0,
             length: 5,
             ascending: true,
+            key_type: 0,
         }];
         // Should not panic.
         unsafe { cobol_sort(std::ptr::null_mut(), 0, 5, keys.as_ptr(), 1) };
@@ -248,6 +442,7 @@ mod tests {
             offset: 0,
             length: 3,
             ascending: true,
+            key_type: 0,
         }];
         assert_eq!(
             compare_records(b"ABC", b"DEF", &keys),
@@ -355,7 +550,7 @@ mod tests {
             let keys = [SortKey {
                 offset: 0,
                 length: 5,
-                ascending: true,
+                ascending: true, key_type: 0,
             }];
             let status = cobol_merge(inputs.as_ptr(), 2, 920, keys.as_ptr(), 1, 5);
             assert_eq!(status, 0);
