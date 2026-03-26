@@ -71,7 +71,11 @@ prepare_print_file() {
 }
 
 sha256_of_file() {
-    shasum -a 256 "$1" | awk '{print $1}'
+    shasum -a 256 "$1" | perl -ne 'if (/^([0-9a-fA-F]+)/) { print "$1\n"; exit }'
+}
+
+sha256_of_stdin() {
+    shasum -a 256 | perl -ne 'if (/^([0-9a-fA-F]+)/) { print "$1\n"; exit }'
 }
 
 compute_compiler_signature() {
@@ -82,7 +86,7 @@ compute_compiler_signature() {
     if [ -x "$COBOLC" ] && [ "${COBOLC#* }" = "$COBOLC" ]; then
         COMPILER_SIGNATURE="bin:$(sha256_of_file "$COBOLC")"
     else
-        COMPILER_SIGNATURE="cmd:$(printf '%s' "$COBOLC" | shasum -a 256 | awk '{print $1}')"
+        COMPILER_SIGNATURE="cmd:$(printf '%s' "$COBOLC" | sha256_of_stdin)"
     fi
     printf '%s\n' "$COMPILER_SIGNATURE"
 }
@@ -100,7 +104,7 @@ compute_copylib_signature() {
     COPYLIB_SIGNATURE="$(
         find "$COPYLIB_DIR" -type f | LC_ALL=C sort | while IFS= read -r file; do
             printf '%s  %s\n' "$(sha256_of_file "$file")" "${file#$COPYLIB_DIR/}"
-        done | shasum -a 256 | awk '{print "copylib:" $1}'
+        done | sha256_of_stdin | perl -ne 'chomp; print "copylib:$_\n"; exit'
     )"
     printf '%s\n' "$COPYLIB_SIGNATURE"
 }
@@ -117,15 +121,16 @@ ccvs_summary_count() {
     local pattern="$2"
     local value
     value=$(
-        awk -v pat="$pattern" '
-            $0 ~ pat {
-                if ($1 == "NO") {
-                    print 0
-                } else {
-                    print $1
+        perl -ne '
+            our $pat;
+            BEGIN { $pat = shift @ARGV; }
+            if (/$pat/) {
+                my @fields = split " ", $_;
+                if (@fields) {
+                    print(($fields[0] eq "NO" ? 0 : $fields[0]) . "\n");
                 }
             }
-        ' "$file" | tail -n 1
+        ' "$pattern" "$file" | tail -n 1
     )
     if [ -n "$value" ]; then
         printf '%s\n' "$value"
@@ -138,21 +143,21 @@ ccvs_footer_error_count() {
     local file="$1"
     local value
     value=$(
-        awk '
-            /ERRORS ENCOUNTERED/ {
-                for (i = 1; i <= NF; i++) {
-                    if ($i == "NO") {
-                        print 0
-                        exit
-                    }
-                    if ($i ~ /^[0-9]+$/) {
-                        print $i + 0
-                        exit
-                    }
+        perl -ne '
+            next unless /ERRORS ENCOUNTERED/;
+            my @fields = split " ", $_;
+            for my $field (@fields) {
+                if ($field eq "NO") {
+                    print "0\n";
+                    exit;
                 }
-                print 1
-                exit
+                if ($field =~ /^[0-9]+$/) {
+                    print "$field\n";
+                    exit;
+                }
             }
+            print "1\n";
+            exit;
         ' "$file" 2>/dev/null | tail -n 1
     )
     if [ -n "$value" ]; then
@@ -166,14 +171,14 @@ expected_flag_count() {
     local src="$1"
     local value
     value=$(
-        awk '
-            /TOTAL NUMBER OF FLAGS EXPECTED[[:space:]]*=/ {
-                for (i = 1; i <= NF; i++) {
-                    if ($i ~ /^[0-9]+\.?$/) {
-                        gsub(/\./, "", $i)
-                        print $i + 0
-                        exit
-                    }
+        perl -ne '
+            next unless /TOTAL NUMBER OF FLAGS EXPECTED\s*=/;
+            my @fields = split " ", $_;
+            for my $field (@fields) {
+                if ($field =~ /^[0-9]+\.?$/) {
+                    $field =~ s/\.//g;
+                    print "$field\n";
+                    exit;
                 }
             }
         ' "$src" 2>/dev/null | tail -n 1
@@ -302,84 +307,91 @@ stage_nist_aliases() {
 
 find_missing_input_fixture() {
     local preprocessed="$1"
-    awk '
-        function clean_token(token) {
-            sub(/\.$/, "", token)
-            return token
+    perl -ne '
+        sub clean_token {
+            my ($token) = @_;
+            $token =~ s/\.$//;
+            return $token;
         }
 
-        {
-            trimmed = $0
-            sub(/^[0-9[:space:]]*/, "", trimmed)
-            if (trimmed == "" || trimmed ~ /^\*/) {
-                next
-            }
+        my $trimmed = $_;
+        $trimmed =~ s/^[0-9[:space:]]*//;
+        next if $trimmed eq "" || $trimmed =~ /^\*/;
 
-            if (trimmed ~ /^SELECT /) {
-                current_file = trimmed
-                sub(/^SELECT /, "", current_file)
-                sub(/ .*/, "", current_file)
-                awaiting_assign_value = 0
-                next
-            }
-
-            if (trimmed == "ASSIGN TO") {
-                awaiting_assign_value = 1
-                next
-            }
-
-            if (trimmed ~ /^ASSIGN TO ".*"\.$/) {
-                if (current_file != "") {
-                    path = trimmed
-                    sub(/^ASSIGN TO "/, "", path)
-                    sub(/".*$/, "", path)
-                    assign_map[current_file] = path
-                    current_file = ""
-                }
-                awaiting_assign_value = 0
-                next
-            }
-
-            if (trimmed ~ /^".*"\.$/) {
-                if (awaiting_assign_value && current_file != "") {
-                    path = trimmed
-                    sub(/^"/, "", path)
-                    sub(/".*$/, "", path)
-                    assign_map[current_file] = path
-                    current_file = ""
-                }
-                awaiting_assign_value = 0
-                next
-            }
-
-            if (trimmed ~ /^OPEN /) {
-                awaiting_assign_value = 0
-                n = split(trimmed, parts, /[[:space:]]+/)
-                mode = ""
-                for (i = 1; i <= n; i++) {
-                    token = parts[i]
-                    if (token == "OPEN") {
-                        continue
-                    }
-                    if (token == "INPUT" || token == "I-O" || token == "EXTEND" || token == "OUTPUT") {
-                        mode = token
-                        continue
-                    }
-                    token = clean_token(token)
-                    if (mode == "INPUT" || mode == "I-O" || mode == "EXTEND") {
-                        path = assign_map[token]
-                        if (path != "" && system("[ -e \"" path "\" ]") != 0) {
-                            print token "|" path
-                            exit 0
-                        }
-                    }
-                }
-                next
-            }
-
-            awaiting_assign_value = 0
+        if ($trimmed =~ /^SELECT /) {
+            $current_file = $trimmed;
+            $current_file =~ s/^SELECT //;
+            $current_file =~ s/ .*//;
+            $awaiting_assign_value = 0;
+            next;
         }
+
+        if ($trimmed eq "ASSIGN TO") {
+            $awaiting_assign_value = 1;
+            next;
+        }
+
+        if ($trimmed =~ /^ASSIGN TO ".*"\.$/) {
+            if ($current_file ne "") {
+                my $path = $trimmed;
+                $path =~ s/^ASSIGN TO "//;
+                $path =~ s/".*$//;
+                $assign_map{$current_file} = $path;
+                $current_file = "";
+            }
+            $awaiting_assign_value = 0;
+            next;
+        }
+
+        if ($trimmed =~ /^".*"\.$/) {
+            if ($awaiting_assign_value && $current_file ne "") {
+                my $path = $trimmed;
+                $path =~ s/^"//;
+                $path =~ s/".*$//;
+                $assign_map{$current_file} = $path;
+                $current_file = "";
+            }
+            $awaiting_assign_value = 0;
+            next;
+        }
+
+        if ($trimmed =~ /^OPEN /) {
+            $awaiting_assign_value = 0;
+            my @parts = split /\s+/, $trimmed;
+            my $mode = "";
+            for my $token (@parts) {
+                next if $token eq "OPEN";
+                if ($token eq "INPUT" || $token eq "I-O" || $token eq "EXTEND" || $token eq "OUTPUT") {
+                    $mode = $token;
+                    next;
+                }
+                $token = clean_token($token);
+                if (($mode eq "INPUT" || $mode eq "I-O" || $mode eq "EXTEND")
+                    && exists $assign_map{$token}
+                    && $assign_map{$token} ne ""
+                    && !-e $assign_map{$token}) {
+                    print "$token|$assign_map{$token}\n";
+                    exit 0;
+                }
+            }
+            next;
+        }
+
+        $awaiting_assign_value = 0;
     ' "$preprocessed"
+}
+
+summary_value() {
+    local summary="$1"
+    local label="$2"
+    perl -ne '
+        our $label;
+        BEGIN { $label = shift @ARGV; }
+        if (/^\Q$label\E\s*(\S+)/) {
+            print "$1\n";
+            exit;
+        }
+    ' "$label" "$summary"
 }
 
 print_module_diagnostics() {
@@ -783,12 +795,12 @@ show_summary() {
         local summary="$RESULTS_DIR/$module/summary.txt"
         [ -f "$summary" ] || continue
         local total pass fail cerr rerr rate
-        total="$(awk '/^Total:/ {print $2}' "$summary")"
-        pass="$(awk '/^Pass:/ {print $2}' "$summary")"
-        fail="$(awk '/^Fail:/ {print $2}' "$summary")"
-        cerr="$(awk '/^Compile Error:/ {print $3}' "$summary")"
-        rerr="$(awk '/^Runtime Error:/ {print $3}' "$summary")"
-        rate="$(awk '/^Pass Rate:/ {print $3}' "$summary")"
+        total="$(summary_value "$summary" 'Total:')"
+        pass="$(summary_value "$summary" 'Pass:')"
+        fail="$(summary_value "$summary" 'Fail:')"
+        cerr="$(summary_value "$summary" 'Compile Error:')"
+        rerr="$(summary_value "$summary" 'Runtime Error:')"
+        rate="$(summary_value "$summary" 'Pass Rate:')"
         printf "%-6s %6s %6s %6s %6s %6s %8s\n" \
             "$module" "$total" "$pass" "$fail" "$cerr" "$rerr" "$rate"
         grand_total=$((grand_total + total))

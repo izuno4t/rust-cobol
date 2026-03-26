@@ -312,10 +312,18 @@ fn output_c_path(source_path: &str, explicit: &Option<String>) -> PathBuf {
 
 fn output_exe_path(source_path: &str, explicit: &Option<String>) -> PathBuf {
     if let Some(ref out) = explicit {
-        PathBuf::from(out)
+        ensure_executable_extension(PathBuf::from(out))
     } else {
         let p = Path::new(source_path);
-        p.with_extension("")
+        ensure_executable_extension(p.with_extension(""))
+    }
+}
+
+fn ensure_executable_extension(path: PathBuf) -> PathBuf {
+    if cfg!(windows) && path.extension().is_none() {
+        path.with_extension("exe")
+    } else {
+        path
     }
 }
 
@@ -381,12 +389,24 @@ mod tests {
     #[test]
     fn test_output_exe_path() {
         let p = output_exe_path("hello.cob", &None);
+        #[cfg(windows)]
+        assert_eq!(p, PathBuf::from("hello.exe"));
+        #[cfg(not(windows))]
         assert_eq!(p, PathBuf::from("hello"));
     }
 
     #[test]
     fn test_output_exe_path_explicit() {
         let p = output_exe_path("hello.cob", &Some("my_program".to_string()));
+        #[cfg(windows)]
+        assert_eq!(p, PathBuf::from("my_program.exe"));
+        #[cfg(not(windows))]
         assert_eq!(p, PathBuf::from("my_program"));
+    }
+
+    #[test]
+    fn test_output_exe_path_preserves_extension() {
+        let p = output_exe_path("hello.cob", &Some("my_program.bin".to_string()));
+        assert_eq!(p, PathBuf::from("my_program.bin"));
     }
 }

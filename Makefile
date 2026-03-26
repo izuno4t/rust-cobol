@@ -6,11 +6,13 @@ BINARY := cobolc
 INSTALL_DIR := $(HOME)/.cargo/bin
 NIST_COBOLC := $(CURDIR)/target/release/cobol-driver
 
-.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary help
+.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
 
 NIST_ENV_ROOT ?= $(CURDIR)/target/nist
 NIST_JOBS ?= 1
 NIST_SOURCE_VAL ?=
+RUNTIME_X86_IMAGE := rust-cobol-runtime-x86
+RUNTIME_X86_TARGET := /workspace/target/runtime-x86-linux-amd64
 
 ## デフォルト: リリースビルド
 all: release
@@ -98,6 +100,34 @@ nist-run:
 nist-summary:
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/run_nist.sh --summary
 
+## x86 ランタイム検証環境のビルド
+runtime-x86-build:
+	docker build -f docker/runtime-x86.Dockerfile -t $(RUNTIME_X86_IMAGE) .
+
+## x86 ランタイム検証環境のシェル
+runtime-x86-shell:
+	docker run --rm -it \
+		-v "$(CURDIR):/workspace" \
+		-e CARGO_TARGET_DIR=$(RUNTIME_X86_TARGET) \
+		$(RUNTIME_X86_IMAGE) \
+		bash
+
+## x86 ランタイム検証環境で NIST 実行
+runtime-x86-nist:
+	docker run --rm \
+		-v "$(CURDIR):/workspace" \
+		-e CARGO_TARGET_DIR=$(RUNTIME_X86_TARGET) \
+		$(RUNTIME_X86_IMAGE) \
+		bash -lc "make nist-prepare && make nist-run $(if $(PROGRAM),MODULE=$(MODULE) PROGRAM=$(PROGRAM),$(if $(MODULE),MODULE=$(MODULE),))"
+
+## x86 ランタイム検証環境でベンチマーク実行
+runtime-x86-bench:
+	docker run --rm \
+		-v "$(CURDIR):/workspace" \
+		-e CARGO_TARGET_DIR=$(RUNTIME_X86_TARGET) \
+		$(RUNTIME_X86_IMAGE) \
+		bash -lc "bash benchmarks/run_benchmark.sh && bash tests/benchmark/run_bench.sh --compare gnucobol"
+
 ## ヘルプ
 help:
 	@echo "使用可能なターゲット:"
@@ -122,4 +152,8 @@ help:
 	@echo "  make nist-run MODULE=NC - NIST 特定モジュール実行"
 	@echo "  make nist-run MODULE=NC PROGRAM=NC101A - NIST 単一プログラム実行"
 	@echo "  make nist-summary - NIST 結果サマリー表示"
+	@echo "  make runtime-x86-build - x86 ランタイム検証環境をビルド"
+	@echo "  make runtime-x86-shell - x86 ランタイム検証環境に入る"
+	@echo "  make runtime-x86-nist MODULE=NC - x86 環境で NIST を実行"
+	@echo "  make runtime-x86-bench - x86 環境でベンチマークを実行"
 	@echo "  make help        - このヘルプ表示"

@@ -73,14 +73,20 @@ pub fn compile_c_to_executable(
     let compiler = find_c_compiler()?;
     let runtime_archive = resolve_runtime_archive_path(runtime_lib_path)?;
 
-    let status = std::process::Command::new(&compiler)
-        .arg("-O2")
+    let mut cmd = std::process::Command::new(&compiler);
+    cmd.arg("-O2")
         .arg(c_source_path)
         .arg("-o")
         .arg(output_path)
-        .arg(runtime_archive)
-        .arg("-lpthread")
-        .arg("-ldl")
+        .arg(runtime_archive);
+
+    if cfg!(windows) {
+        cmd.arg("-lws2_32");
+    } else {
+        cmd.arg("-lpthread").arg("-ldl");
+    }
+
+    let status = cmd
         .arg("-lm")
         .status()
         .map_err(|e| format!("Failed to run C compiler '{}': {}", compiler, e))?;

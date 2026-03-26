@@ -214,6 +214,13 @@ make nist-run MODULE=NC
 make nist-summary
 ```
 
+Platform-specific runtime validation notes:
+
+- x86 Linux runtime validation:
+  [docs/runtime-x86.md](./runtime-x86.md)
+- Windows runtime validation:
+  [docs/runtime-windows.md](./runtime-windows.md)
+
 ## Current limitations
 
 - The CLI does not currently expose a `--standard` switch even though the code

@@ -1950,7 +1950,7 @@ pub(crate) fn emit_statement_with_ctx(
                             .as_ref()
                             .map(|name| emit_numeric_expr_for_var(name, data_items))
                             .unwrap_or_else(|| "0".to_string()),
-                        emit_optional_comm_item(binding.error_key.as_deref(), data_items),
+                        emit_optional_mut_comm_item(binding.error_key.as_deref(), data_items),
                     )
                 })
                 .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
@@ -4894,6 +4894,16 @@ fn emit_optional_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -> (S
     name.map(|name| {
         (
             format!("(const uint8_t*){}", c_ptr_expr(name, data_items)),
+            find_data_item_size(name, data_items).to_string(),
+        )
+    })
+    .unwrap_or_else(null_comm_arg)
+}
+
+fn emit_optional_mut_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -> (String, String) {
+    name.map(|name| {
+        (
+            format!("(uint8_t*){}", c_ptr_expr(name, data_items)),
             find_data_item_size(name, data_items).to_string(),
         )
     })

@@ -1018,7 +1018,7 @@ use std::process::Command;
 fn compile_and_run(source: &str) -> (String, String, i32) {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
     let c_path = tmp.path().join("test.c");
-    let exe_path = tmp.path().join("test_exe");
+    let exe_path = temp_exe_path(tmp.path(), "test_exe");
 
     // Run the full pipeline: lex -> parse -> sema -> hir -> codegen
     let hir = compile_to_hir(source);
@@ -1048,7 +1048,7 @@ fn compile_and_run(source: &str) -> (String, String, i32) {
 fn compile_and_run_no_sema(source: &str) -> (String, String, i32) {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
     let c_path = tmp.path().join("test.c");
-    let exe_path = tmp.path().join("test_exe");
+    let exe_path = temp_exe_path(tmp.path(), "test_exe");
 
     let hir = parse_and_lower(source);
     let c_code = generate_c(&hir);
@@ -1095,6 +1095,14 @@ fn find_test_runtime_lib() -> PathBuf {
         }
     }
     PathBuf::from("target/debug")
+}
+
+fn temp_exe_path(dir: &std::path::Path, stem: &str) -> PathBuf {
+    if cfg!(windows) {
+        dir.join(format!("{stem}.exe"))
+    } else {
+        dir.join(stem)
+    }
 }
 
 #[test]
