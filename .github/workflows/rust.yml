@@ -11,12 +11,68 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Cache cargo registry and build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --release --verbose
+
     - name: Run tests
       run: cargo test --verbose
+
+  nist:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache cargo registry and build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build release
+      run: cargo build --release
+
+    - name: Extract NIST test suite
+      run: tar -xzf tests/nist/newcob.val.tar.gz -C tests/nist/
+
+    - name: Prepare NIST programs
+      run: make nist-prepare
+
+    - name: Run NIST CCVS 85
+      run: make nist-run NIST_JOBS=2
+
+    - name: Verify 100% pass rate
+      run: |
+        summary=$(make nist-summary 2>&1)
+        echo "$summary"
+        total_line=$(echo "$summary" | grep '^TOTAL')
+        pass=$(echo "$total_line" | awk '{print $3}')
+        fail=$(echo "$total_line" | awk '{print $4}')
+        cerr=$(echo "$total_line" | awk '{print $5}')
+        rerr=$(echo "$total_line" | awk '{print $6}')
+        if [ "$fail" -ne 0 ] || [ "$cerr" -ne 0 ] || [ "$rerr" -ne 0 ]; then
+          echo "::error::NIST CCVS 85 regression: $fail FAIL, $cerr CErr, $rerr RErr"
+          exit 1
+        fi
