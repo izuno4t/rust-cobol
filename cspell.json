@@ -3,17 +3,21 @@
   "version": "0.2",
   "language": "en",
   "words": [
+    "ccvs",
     "clippy",
     "cobolc",
     "codegen",
+    "COPYLIB",
     "declaratives",
     "desugared",
     "desugars",
     "goback",
+    "INSPT",
     "longjmp",
     "numval",
     "peekable",
     "refmod",
+    "rerr",
     "sema",
     "setjmp",
     "smol",
@@ -23,7 +27,11 @@
     "vtable",
     "vtables"
   ],
-  "dictionaries": ["rust", "cpp", "software-terms"],
+  "dictionaries": [
+    "rust",
+    "cpp",
+    "software-terms"
+  ],
   "dictionaryDefinitions": [
     {
       "name": "cobol-terms",
@@ -41,7 +49,11 @@
   "overrides": [
     {
       "filename": "**/*.rs",
-      "dictionaries": ["rust", "cpp", "cobol-terms"],
+      "dictionaries": [
+        "rust",
+        "cpp",
+        "cobol-terms"
+      ],
       "ignoreRegExpList": [
         "/\\b[A-Z]{2,10}TEST\\b/",
         "/\\b(AABB|ABCABC|XBCABC|XXBABC|XXBBXXCCXX|XBCXBC|CDEFG|EDCBA|AABABC|AAABBC|AABBAACCA|AABBAACCAA|CCCCCAAAAABBBBB|CCCCCBBBBBAAAAA|AAAAABBBBBCCCCC|HELO|helo)\\b/",
@@ -53,7 +65,9 @@
     },
     {
       "filename": "**/*.md",
-      "dictionaries": ["cobol-terms"],
+      "dictionaries": [
+        "cobol-terms"
+      ],
       "ignoreRegExpList": [
         "/\\b(NOTAKEYWORD|SUBPROG|MULDIV|FULLTEST|DECLTEST)\\b/"
       ]

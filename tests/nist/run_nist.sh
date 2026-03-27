@@ -14,7 +14,7 @@ COMM_FIXTURES_DIR="$SCRIPT_DIR/fixtures/comm"
 JUDGES_DIR="$SCRIPT_DIR/judges"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 NIST_WORK_ROOT="$ENV_ROOT/work/run"
-NIST_TMPROOT="/tmp/nc85"
+NIST_TMP_ROOT="/tmp/nc85"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-60}"
 NIST_JOBS="${NIST_JOBS:-1}"
 NIST_COMPILE_CACHE="${NIST_COMPILE_CACHE:-1}"
@@ -22,7 +22,7 @@ CURRENT_RUN_PID=""
 COMPILER_SIGNATURE=""
 COPYLIB_SIGNATURE=""
 
-mkdir -p "$RESULTS_DIR" "$NIST_WORK_ROOT" "$NIST_TMPROOT"
+mkdir -p "$RESULTS_DIR" "$NIST_WORK_ROOT" "$NIST_TMP_ROOT"
 
 cleanup_running_job() {
     if [ -n "${CURRENT_RUN_PID:-}" ] && kill -0 "$CURRENT_RUN_PID" 2>/dev/null; then
@@ -197,7 +197,7 @@ compile_warning_count() {
         return
     fi
     local count
-    count="$(grep -c 'COBC-W' "$file" 2>/dev/null || true)"
+    count="$(grep -c 'COB[C]-W' "$file" 2>/dev/null || true)"
     if [ -n "$count" ]; then
         printf '%s\n' "$count"
     else
@@ -506,7 +506,7 @@ run_program() {
     local preprocess_meta="$RESULTS_DIR/${module}/${program}.preprocess.meta"
     local fixture_meta="$RESULTS_DIR/${module}/${program}.fixture.meta"
     local fixture_result="$RESULTS_DIR/${module}/${program}.fixture.result"
-    local program_tmpdir="$NIST_TMPROOT/${program}"
+    local program_tmpdir="$NIST_TMP_ROOT/${program}"
     local print_file="$program_tmpdir/P"
     local preprocessed="$module_workdir/nist_preproc_${program}.cob"
     local comm_script="$COMM_FIXTURES_DIR/${program}.comm"
@@ -582,7 +582,7 @@ run_program() {
         if [ "$compile_cache_hit" -eq 0 ]; then
             rm -f "$bin" "$compile_log" "$compile_meta"
             if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
-                2>"$compile_log" || grep -q 'COBC-E' "$compile_log"; then
+                2>"$compile_log" || grep -q 'COB[C]-E' "$compile_log"; then
                 # Check if binary was still created (non-fatal errors) and judge exists
                 if [ -x "$bin" ]; then
                     local judge_output judge_status
