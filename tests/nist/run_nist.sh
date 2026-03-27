@@ -405,6 +405,68 @@ print_module_diagnostics() {
     print_inspect_groups "$module"
 }
 
+module_has_status() {
+    local module="$1"
+    local expected="$2"
+    local status_file
+    for status_file in "$RESULTS_DIR/$module"/*.status; do
+        [ -f "$status_file" ] || continue
+        if [ "$(cat "$status_file")" = "$expected" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+summarize_module() {
+    local module="$1"
+    local mod_dir="$PROGRAMS_DIR/$module"
+    local total=0 pass=0 fail=0 compile_ready=0 compile_err=0 runtime_err=0 timeout_count=0 skip=0
+    [ -d "$mod_dir" ] || {
+        echo "Module $module: no programs found in $mod_dir"
+        return
+    }
+    for src in "$mod_dir"/*.cob; do
+        [ -f "$src" ] || continue
+        local program
+        program="$(basename "$src" .cob)"
+        total=$((total + 1))
+        case "$(cat "$RESULTS_DIR/$module/${program}.status" 2>/dev/null || printf 'SKIP')" in
+            PASS) pass=$((pass + 1)) ;;
+            FAIL|INSPECT) fail=$((fail + 1)) ;;
+            COMPILED) compile_ready=$((compile_ready + 1)) ;;
+            COMPILE_ERROR) compile_err=$((compile_err + 1)) ;;
+            RUNTIME_ERROR) runtime_err=$((runtime_err + 1)) ;;
+            TIMEOUT) timeout_count=$((timeout_count + 1)) ;;
+            SKIP) skip=$((skip + 1)) ;;
+        esac
+    done
+    local tested=$((total - skip - compile_ready))
+    local pass_rate=0
+    if [ "$tested" -gt 0 ]; then
+        pass_rate=$((pass * 100 / tested))
+    fi
+    echo ""
+    echo "--- $module Summary ---"
+    echo "  Total: $total | Tested: $tested | Pass: $pass | Fail: $fail"
+    echo "  Compile Ready: $compile_ready | Compile Error: $compile_err | Runtime Error: $runtime_err | Timeout: $timeout_count"
+    echo "  Pass Rate: ${pass_rate}%"
+    print_module_diagnostics "$module"
+    echo ""
+    cat > "$RESULTS_DIR/${module}/summary.txt" <<EOF
+Module: $module
+Total: $total
+Tested: $tested
+Pass: $pass
+Fail: $fail
+Compile Ready: $compile_ready
+Compile Error: $compile_err
+Runtime Error: $runtime_err
+Timeout: $timeout_count
+Pass Rate: ${pass_rate}%
+EOF
+}
+
 print_single_result_summary() {
     local module="$1"
     local program="$2"
@@ -432,6 +494,7 @@ print_single_result_summary() {
 run_program() {
     local module="$1"
     local program="$2"
+    local mode="${3:-full}"
     local src="$PROGRAMS_DIR/$module/$program.cob"
     local module_workdir="$NIST_WORK_ROOT/$module"
     local bin="$module_workdir/nist_${program}"
@@ -450,94 +513,110 @@ run_program() {
 
     mkdir -p "$RESULTS_DIR/$module"
     mkdir -p "$module_workdir"
-    rm -f "$status_file" "$reason_file" "$log"
+    if [ "$mode" != "run_only" ]; then
+        rm -f "$status_file" "$reason_file" "$log"
+    else
+        rm -f "$reason_file" "$log"
+    fi
 
     if [ ! -f "$src" ]; then
         echo "SKIP" > "$status_file"
-        echo "  $program: SKIP (source not found)"
+        if [ "$mode" != "compile_only" ]; then
+            echo "  $program: SKIP (source not found)"
+        fi
         return
     fi
 
-    rm -rf "$program_tmpdir"
-    mkdir -p "$program_tmpdir"
-    local preprocess_key
-    preprocess_key="$(compute_preprocess_signature "$src")"
-    if [ ! -f "$preprocessed" ] || [ ! -f "$preprocess_meta" ] || \
-        [ "$(cat "$preprocess_meta")" != "$preprocess_key" ]; then
-        rm -f "$preprocessed" "$preprocess_meta" "$fixture_meta" "$fixture_result"
-        NIST_TMPDIR="$program_tmpdir" "$PREPROCESS" "$src" "$preprocessed"
-        printf '%s\n' "$preprocess_key" > "$preprocess_meta"
-    fi
-    stage_nist_aliases "$program_tmpdir"
-    prepare_print_file "$print_file"
+    if [ "$mode" != "run_only" ]; then
+        rm -rf "$program_tmpdir"
+        mkdir -p "$program_tmpdir"
+        local preprocess_key
+        preprocess_key="$(compute_preprocess_signature "$src")"
+        if [ ! -f "$preprocessed" ] || [ ! -f "$preprocess_meta" ] || \
+            [ "$(cat "$preprocess_meta")" != "$preprocess_key" ]; then
+            rm -f "$preprocessed" "$preprocess_meta" "$fixture_meta" "$fixture_result"
+            NIST_TMPDIR="$program_tmpdir" "$PREPROCESS" "$src" "$preprocessed"
+            printf '%s\n' "$preprocess_key" > "$preprocess_meta"
+        fi
+        stage_nist_aliases "$program_tmpdir"
+        prepare_print_file "$print_file"
 
-    local missing_fixture=""
-    local fixture_key
-    fixture_key="preprocessed:$(sha256_of_file "$preprocessed")"
-    if [ -f "$fixture_meta" ] && [ -f "$fixture_result" ] && \
-        [ "$(cat "$fixture_meta")" = "$fixture_key" ]; then
-        missing_fixture="$(cat "$fixture_result")"
-    else
-        missing_fixture="$(find_missing_input_fixture "$preprocessed" || true)"
-        printf '%s\n' "$fixture_key" > "$fixture_meta"
-        printf '%s\n' "$missing_fixture" > "$fixture_result"
-    fi
-    if [ -n "$missing_fixture" ]; then
-        echo "INSPECT" > "$status_file"
-        printf '%s\n' "missing-fixture" > "$reason_file"
-        echo "  $program: INSPECT (missing input fixture: ${missing_fixture#*|})"
-        return
-    fi
+        local missing_fixture=""
+        local fixture_key
+        fixture_key="preprocessed:$(sha256_of_file "$preprocessed")"
+        if [ -f "$fixture_meta" ] && [ -f "$fixture_result" ] && \
+            [ "$(cat "$fixture_meta")" = "$fixture_key" ]; then
+            missing_fixture="$(cat "$fixture_result")"
+        else
+            missing_fixture="$(find_missing_input_fixture "$preprocessed" || true)"
+            printf '%s\n' "$fixture_key" > "$fixture_meta"
+            printf '%s\n' "$missing_fixture" > "$fixture_result"
+        fi
+        if [ -n "$missing_fixture" ]; then
+            echo "INSPECT" > "$status_file"
+            printf '%s\n' "missing-fixture" > "$reason_file"
+            if [ "$mode" != "compile_only" ]; then
+                echo "  $program: INSPECT (missing input fixture: ${missing_fixture#*|})"
+            fi
+            return
+        fi
 
-    local compile_cache_key=""
-    local compile_cache_hit=0
-    if [ "$NIST_COMPILE_CACHE" != "0" ]; then
-        compile_cache_key="$(
-            printf 'source:%s\ncompiler:%s\n%s\nformat:fixed\n' \
-                "$(sha256_of_file "$preprocessed")" \
-                "$(compute_compiler_signature)" \
-                "$(compute_copylib_signature)"
-        )"
-        if [ -x "$bin" ] && [ -f "$compile_meta" ] && \
-            [ "$(cat "$compile_meta")" = "$compile_cache_key" ]; then
-            compile_cache_hit=1
-            if [ ! -f "$compile_log" ]; then
-                printf 'compile cache hit\n' > "$compile_log"
+        local compile_cache_key=""
+        local compile_cache_hit=0
+        if [ "$NIST_COMPILE_CACHE" != "0" ]; then
+            compile_cache_key="$(
+                printf 'source:%s\ncompiler:%s\n%s\nformat:fixed\n' \
+                    "$(sha256_of_file "$preprocessed")" \
+                    "$(compute_compiler_signature)" \
+                    "$(compute_copylib_signature)"
+            )"
+            if [ -x "$bin" ] && [ -f "$compile_meta" ] && \
+                [ "$(cat "$compile_meta")" = "$compile_cache_key" ]; then
+                compile_cache_hit=1
+                if [ ! -f "$compile_log" ]; then
+                    printf 'compile cache hit\n' > "$compile_log"
+                fi
             fi
         fi
-    fi
 
-    if [ "$compile_cache_hit" -eq 0 ]; then
-        rm -f "$bin" "$compile_log" "$compile_meta"
-    if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
-        2>"$compile_log" || grep -q 'COBC-E' "$compile_log"; then
-        # Check if binary was still created (non-fatal errors) and judge exists
-        if [ -x "$bin" ]; then
-            local judge_output judge_status
-            if judge_output="$(run_custom_judge "$module" "$program" "$compile_log" 2>/dev/null)"; then
-                judge_status="${judge_output%%|*}"
-                if [ "$judge_status" = "PASS" ] || [ "$judge_status" = "FAIL" ]; then
-                    # Binary exists and judge says to override — don't mark as compile error
-                    : # fall through to execute the binary
+        if [ "$compile_cache_hit" -eq 0 ]; then
+            rm -f "$bin" "$compile_log" "$compile_meta"
+            if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
+                2>"$compile_log" || grep -q 'COBC-E' "$compile_log"; then
+                # Check if binary was still created (non-fatal errors) and judge exists
+                if [ -x "$bin" ]; then
+                    local judge_output judge_status
+                    if judge_output="$(run_custom_judge "$module" "$program" "$compile_log" 2>/dev/null)"; then
+                        judge_status="${judge_output%%|*}"
+                        if [ "$judge_status" != "PASS" ] && [ "$judge_status" != "FAIL" ]; then
+                            echo "COMPILE_ERROR" > "$status_file"
+                            echo "  $program: COMPILE ERROR"
+                            return
+                        fi
+                    else
+                        echo "COMPILE_ERROR" > "$status_file"
+                        echo "  $program: COMPILE ERROR"
+                        return
+                    fi
                 else
                     echo "COMPILE_ERROR" > "$status_file"
                     echo "  $program: COMPILE ERROR"
                     return
                 fi
-            else
-                echo "COMPILE_ERROR" > "$status_file"
-                echo "  $program: COMPILE ERROR"
-                return
             fi
-        else
-            echo "COMPILE_ERROR" > "$status_file"
-            echo "  $program: COMPILE ERROR"
+            if [ -n "$compile_cache_key" ]; then
+                printf '%s\n' "$compile_cache_key" > "$compile_meta"
+            fi
+        fi
+
+        if [ "$mode" = "compile_only" ]; then
+            echo "COMPILED" > "$status_file"
             return
         fi
-    fi
-        if [ -n "$compile_cache_key" ]; then
-            printf '%s\n' "$compile_cache_key" > "$compile_meta"
-        fi
+    elif [ ! -x "$bin" ]; then
+        echo "COMPILE_ERROR" > "$status_file"
+        echo "  $program: COMPILE ERROR (missing compiled binary)"
+        return
     fi
 
     local exit_code=0
@@ -693,93 +772,122 @@ run_program() {
 run_all_modules() {
     local jobs="$1"
     local module
-    local batch_modules=()
+    local modules=()
+    local had_compile_error=0
     local batch_pids=()
     local batch_logs=()
-    local module_log
+    local batch_modules=()
+    while IFS= read -r module; do
+        modules+=("$module")
+    done < <(list_modules)
 
-    flush_batch() {
+    flush_compile_batch() {
         local i
         for i in "${!batch_pids[@]}"; do
             wait "${batch_pids[$i]}"
         done
         for i in "${!batch_logs[@]}"; do
-            cat "${batch_logs[$i]}"
+            if [ -s "${batch_logs[$i]}" ]; then
+                cat "${batch_logs[$i]}"
+            fi
             rm -f "${batch_logs[$i]}"
         done
-        batch_modules=()
         batch_pids=()
         batch_logs=()
+        batch_modules=()
     }
 
-    while IFS= read -r module; do
+    for module in "${modules[@]}"; do
         if [ "$jobs" -le 1 ]; then
-            run_module "$module"
+            echo "=== Module: $module (compile) ==="
+            compile_module "$module"
             continue
         fi
-        module_log="$RESULTS_DIR/.module_${module}.out"
+        local module_log="$RESULTS_DIR/.compile_${module}.out"
+        echo "=== Module: $module (compile) ==="
         rm -f "$module_log"
-        run_module "$module" >"$module_log" 2>&1 &
+        (
+            compile_module "$module"
+        ) >"$module_log" 2>&1 &
         batch_modules+=("$module")
         batch_pids+=("$!")
         batch_logs+=("$module_log")
         if [ "${#batch_pids[@]}" -ge "$jobs" ]; then
-            flush_batch
+            flush_compile_batch
         fi
-    done < <(list_modules)
+    done
 
     if [ "${#batch_pids[@]}" -gt 0 ]; then
-        flush_batch
+        flush_compile_batch
     fi
+
+    for module in "${modules[@]}"; do
+        if module_has_status "$module" "COMPILE_ERROR"; then
+            had_compile_error=1
+        fi
+    done
+
+    if [ "$had_compile_error" -ne 0 ]; then
+        echo ""
+        echo "Compile phase failed. Execution phase skipped."
+        for module in "${modules[@]}"; do
+            summarize_module "$module"
+        done
+        return
+    fi
+
+    for module in "${modules[@]}"; do
+        echo "=== Module: $module (execute) ==="
+        execute_module "$module"
+        summarize_module "$module"
+    done
 }
 
 run_module() {
     local module="$1"
     local mod_dir="$PROGRAMS_DIR/$module"
-    local total=0 pass=0 fail=0 compile_err=0 runtime_err=0 timeout_count=0 skip=0
     [ -d "$mod_dir" ] || {
         echo "Module $module: no programs found in $mod_dir"
         return
     }
-    echo "=== Module: $module ==="
+    echo "=== Module: $module (compile) ==="
+    compile_module "$module"
+    if module_has_status "$module" "COMPILE_ERROR"; then
+        echo ""
+        echo "Compile phase failed. Execution phase skipped for module $module."
+        summarize_module "$module"
+        return
+    fi
+    echo "=== Module: $module (execute) ==="
+    execute_module "$module"
+    summarize_module "$module"
+}
+
+compile_module() {
+    local module="$1"
+    local mod_dir="$PROGRAMS_DIR/$module"
+    [ -d "$mod_dir" ] || return
     for src in "$mod_dir"/*.cob; do
         [ -f "$src" ] || continue
         local program
         program="$(basename "$src" .cob)"
-        total=$((total + 1))
-        run_program "$module" "$program"
-        case "$(cat "$RESULTS_DIR/$module/${program}.status")" in
-            PASS) pass=$((pass + 1)) ;;
-            FAIL) fail=$((fail + 1)) ;;
-            COMPILE_ERROR) compile_err=$((compile_err + 1)) ;;
-            RUNTIME_ERROR) runtime_err=$((runtime_err + 1)) ;;
-            TIMEOUT) timeout_count=$((timeout_count + 1)) ;;
-            SKIP) skip=$((skip + 1)) ;;
-        esac
+        run_program "$module" "$program" "compile_only"
     done
-    local tested=$((total - skip))
-    local pass_rate=0
-    if [ "$tested" -gt 0 ]; then
-        pass_rate=$((pass * 100 / tested))
-    fi
-    echo ""
-    echo "--- $module Summary ---"
-    echo "  Total: $total | Tested: $tested | Pass: $pass | Fail: $fail"
-    echo "  Compile Error: $compile_err | Runtime Error: $runtime_err | Timeout: $timeout_count"
-    echo "  Pass Rate: ${pass_rate}%"
-    print_module_diagnostics "$module"
-    echo ""
-    cat > "$RESULTS_DIR/${module}/summary.txt" <<EOF
-Module: $module
-Total: $total
-Tested: $tested
-Pass: $pass
-Fail: $fail
-Compile Error: $compile_err
-Runtime Error: $runtime_err
-Timeout: $timeout_count
-Pass Rate: ${pass_rate}%
-EOF
+}
+
+execute_module() {
+    local module="$1"
+    local mod_dir="$PROGRAMS_DIR/$module"
+    [ -d "$mod_dir" ] || return
+    for src in "$mod_dir"/*.cob; do
+        [ -f "$src" ] || continue
+        local program
+        program="$(basename "$src" .cob)"
+        if [ "$(cat "$RESULTS_DIR/$module/${program}.status" 2>/dev/null || printf 'SKIP')" != "COMPILED" ]; then
+            continue
+        fi
+        run_program "$module" "$program" "run_only"
+    done
 }
 
 show_summary() {

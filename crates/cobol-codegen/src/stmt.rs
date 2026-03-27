@@ -4840,13 +4840,18 @@ fn emit_comm_status_updates(
         emit_store_int(out, &message_count, "(int64_t)_comm_count", data_items, pad);
     }
     if let (Some(text_length), Some(text_len_expr)) = (binding.text_length, text_len_expr) {
-        emit_store_int(
-            out,
-            &text_length,
-            &format!("(int64_t){text_len_expr}"),
-            data_items,
-            pad,
-        );
+        if let Some(disp_size) = grp_display_size(&text_length, data_items) {
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display((int64_t){text_len_expr}, {}, {disp_size});\n",
+                display_numeric_ptr(&text_length)
+            ));
+        } else {
+            let ptr = c_ptr_expr(&text_length, data_items);
+            let len = find_data_item_size(&text_length, data_items);
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display((int64_t){text_len_expr}, (uint8_t*){ptr}, {len});\n"
+            ));
+        }
     }
     if let Some(end_key) = binding.end_key {
         out.push_str(&format!(

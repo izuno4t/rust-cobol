@@ -53,12 +53,7 @@ jobs:
           make
           mingw-w64-ucrt-x86_64-clang
           mingw-w64-ucrt-x86_64-gcc
-
-    - name: Setup Rust toolchain
-      shell: pwsh
-      run: |
-        rustup default stable-x86_64-pc-windows-gnu
-        rustup component add rustfmt clippy
+          mingw-w64-ucrt-x86_64-rust
 
     - name: Cache cargo registry and build
       uses: actions/cache@v5

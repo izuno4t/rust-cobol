@@ -319,7 +319,12 @@ fn infer_comm_item_name(names: &[SmolStr], candidates: &[&str]) -> Option<SmolSt
         let normalized = name.replace('-', "_").to_ascii_uppercase();
         candidates
             .iter()
-            .any(|candidate| normalized == *candidate)
+            .any(|candidate| {
+                normalized == *candidate
+                    || normalized
+                        .strip_prefix(candidate)
+                        .is_some_and(|suffix| suffix.starts_with('_'))
+            })
             .then(|| name.clone())
     })
 }

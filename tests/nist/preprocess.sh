@@ -9,19 +9,26 @@ PROG_NAME="$(basename "$INPUT" .cob)"
 TMPDIR="${NIST_TMPDIR:-/tmp/nist/default}"
 mkdir -p "$TMPDIR"
 
-# First pass: replace XXXXX placeholders that appear inside string literals
-# (between quotes) without adding extra quotes.
+# First pass: replace string literals that are exactly XXXXX placeholders
+# without adding another layer of quotes. Do not rewrite embedded data
+# literals such as "GGGGHXXXXX052ALTKEY1".
 awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
-    -e "s|\"\\([^\"]*\\)XXXXX052\\([^\"]*\\)\"|\"\\1${TMPDIR}/O52\\2\"|g" \
-    -e "s|\"\\([^\"]*\\)XXXXX051\\([^\"]*\\)\"|\"\\1${TMPDIR}/O51\\2\"|g" \
-    -e "s|\"\\([^\"]*\\)XXXXX053\\([^\"]*\\)\"|\"\\1${TMPDIR}/O53\\2\"|g" \
-    -e "s|\"\\([^\"]*\\)XXXXX054\\([^\"]*\\)\"|\"\\1${TMPDIR}/O54\\2\"|g" \
-    -e "s|\"\\([^\"]*\\)XXXXX055\\([^\"]*\\)\"|\"\\1${TMPDIR}/P\\2\"|g" \
+    -e "s|\"XXXXX052\"|\"${TMPDIR}/O52\"|g" \
+    -e "s|\"XXXXX051\"|\"${TMPDIR}/O51\"|g" \
+    -e "s|\"XXXXX053\"|\"${TMPDIR}/O53\"|g" \
+    -e "s|\"XXXXX054\"|\"${TMPDIR}/O54\"|g" \
+    -e "s|\"XXXXX055\"|\"${TMPDIR}/P\"|g" \
+    | perl -pe '
+        s{(?<![A-Z0-9"])\QXXXXX051\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O51"}g;
+        s{(?<![A-Z0-9"])\QXXXXX052\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O52"}g;
+        s{(?<![A-Z0-9"])\QXXXXX053\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O53"}g;
+        s{(?<![A-Z0-9"])\QXXXXX054\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O54"}g;
+        s{(?<![A-Z0-9"])\QXXXXX055\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/P"}g;
+    ' \
     | sed \
     -e "s|XXXXX082|COMPUTER|g" \
     -e "s|XXXXX083|COMPUTER|g" \
     -e "s|XXXXX084|00032768|g" \
-    -e "s|XXXXX055|\"${TMPDIR}/P\"|g" \
     -e "s|XXXXX001|\"${TMPDIR}/D1\"|g" \
     -e "s|XXXXX002|\"${TMPDIR}/D2\"|g" \
     -e "s|XXXXX003|\"${TMPDIR}/D3\"|g" \
@@ -30,10 +37,6 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
     -e "s|XXXXX006|\"${TMPDIR}/D6\"|g" \
     -e "s|XXXXX007|\"${TMPDIR}/D7\"|g" \
     -e "s|XXXXX014|\"${TMPDIR}/D14\"|g" \
-    -e "s|XXXXX051|\"${TMPDIR}/O51\"|g" \
-    -e "s|XXXXX052|\"${TMPDIR}/O52\"|g" \
-    -e "s|XXXXX053|\"${TMPDIR}/O53\"|g" \
-    -e "s|XXXXX054|\"${TMPDIR}/O54\"|g" \
     -e "s|XXXXX056|\"${TMPDIR}/O56\"|g" \
     -e "s|XXXXX057|\"${TMPDIR}/O57\"|g" \
     -e "s|XXXXX058|\"${TMPDIR}/O58\"|g" \

@@ -331,13 +331,23 @@ fn ensure_executable_extension(path: PathBuf) -> PathBuf {
 ///
 /// Search order:
 /// 1. COBOL_RUNTIME_LIB environment variable
-/// 2. Relative to the compiler executable (same dir, then ../lib/)
-/// 3. ./target/debug (development builds)
-/// 4. ./target/release (release builds)
-/// 5. Current directory
+/// 2. CARGO_TARGET_DIR environment variable
+/// 3. Relative to the compiler executable (same dir, then ../lib/)
+/// 4. ./target/debug (development builds)
+/// 5. ./target/release (release builds)
+/// 6. Current directory
 fn find_runtime_lib() -> PathBuf {
     if let Ok(path) = std::env::var("COBOL_RUNTIME_LIB") {
         return PathBuf::from(path);
+    }
+
+    if let Ok(path) = std::env::var("CARGO_TARGET_DIR") {
+        let path = PathBuf::from(path);
+        for candidate in [path.join("release"), path.join("debug"), path.clone()] {
+            if candidate.exists() {
+                return candidate;
+            }
+        }
     }
 
     // Search relative to the compiler executable location

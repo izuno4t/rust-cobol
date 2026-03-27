@@ -13,6 +13,7 @@ NIST_JOBS ?= 1
 NIST_SOURCE_VAL ?=
 RUNTIME_X86_IMAGE := rust-cobol-runtime-x86
 RUNTIME_X86_TARGET := /workspace/target/runtime-x86-linux-amd64
+RUNTIME_X86_NIST_ENV := /workspace/target/nist-x86
 EMPTY_PROXY_ENV := http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= no_proxy= NO_PROXY=
 EMPTY_PROXY_RUN_ARGS := -e http_proxy= -e https_proxy= -e HTTP_PROXY= -e HTTPS_PROXY= -e no_proxy= -e NO_PROXY=
 
@@ -121,8 +122,9 @@ runtime-x86-nist:
 		-v "$(CURDIR):/workspace" \
 		$(EMPTY_PROXY_RUN_ARGS) \
 		-e CARGO_TARGET_DIR=$(RUNTIME_X86_TARGET) \
+		-e NIST_ENV_ROOT=$(RUNTIME_X86_NIST_ENV) \
 		$(RUNTIME_X86_IMAGE) \
-		bash -lc "make nist-prepare && make nist-run $(if $(PROGRAM),MODULE=$(MODULE) PROGRAM=$(PROGRAM),$(if $(MODULE),MODULE=$(MODULE),))"
+		bash -lc "make nist-prepare && make nist-run NIST_JOBS=$(NIST_JOBS) $(if $(PROGRAM),MODULE=$(MODULE) PROGRAM=$(PROGRAM),$(if $(MODULE),MODULE=$(MODULE),))"
 
 ## x86 ランタイム検証環境でベンチマーク実行
 runtime-x86-bench:

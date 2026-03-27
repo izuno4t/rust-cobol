@@ -449,13 +449,17 @@ pub unsafe extern "C" fn cobol_comm_send(
         write_error_key_flags(error_key_ptr, error_key_len, None);
         if dest_table_count != 0 && dest_count > dest_table_count {
             if comm_debug_enabled() {
-                eprintln!("[COMM] send {name} rc=30");
+                eprintln!(
+                    "[COMM] send {name} rc=30 dest_count={dest_count} dest_table_count={dest_table_count}"
+                );
             }
             return 30;
         }
         if payload.is_empty() {
             if comm_debug_enabled() {
-                eprintln!("[COMM] send {name} rc=60");
+                eprintln!(
+                    "[COMM] send {name} rc=60 from_len={from_len} effective_len={effective_len} payload_len={payload_len}"
+                );
             }
             return 60;
         }
@@ -496,7 +500,9 @@ pub unsafe extern "C" fn cobol_comm_send(
             state.messages.push_back(payload);
         }
         if comm_debug_enabled() {
-            eprintln!("[COMM] send {name} rc=0 len={payload_len}");
+            eprintln!(
+                "[COMM] send {name} rc=0 from_len={from_len} effective_len={effective_len} payload_len={payload_len}"
+            );
         }
         0
     })
