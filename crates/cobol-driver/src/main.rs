@@ -140,13 +140,14 @@ fn run() -> Result<(), i32> {
         }
 
         let source = preprocessed.source;
+        let effective_source_format = preprocessed.effective_source_format;
 
         // ---------------------------------------------------------------
         // Phase 1: Lexing
         // ---------------------------------------------------------------
         let debug_timing = std::env::var("COBOL_DEBUG_TIMING").as_deref() == Ok("1");
         let t_lex = std::time::Instant::now();
-        let mut lexer = Lexer::new(&source, file_id, source_format);
+        let mut lexer = Lexer::new(&source, file_id, effective_source_format);
         let tokens = lexer.lex_all();
         if debug_timing {
             eprintln!("[TIMING] Lexing: {:?}", t_lex.elapsed());

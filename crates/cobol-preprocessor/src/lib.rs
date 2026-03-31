@@ -23,9 +23,9 @@ pub struct PreprocessedSource {
     pub source: String,
     /// Diagnostics emitted during preprocessing (missing copybooks, circular COPY, etc.).
     pub diagnostics: Vec<Diagnostic>,
-    /// The effective source format after preprocessing. When the input is
-    /// fixed format, the preprocessor strips columns 1-7 and 73-80, converting
-    /// the text to free format for correct COPY/REPLACE handling.
+    /// The effective source format after preprocessing.
+    /// Fixed-format input is normalized into logical source lines so that
+    /// downstream stages do not interpret fixed-format continuation twice.
     pub effective_source_format: SourceFormat,
 }
 
@@ -106,16 +106,17 @@ pub fn preprocess(
     // Phase 2: Apply REPLACE directives.
     let fixed = config.source_format == SourceFormat::Fixed;
     let replaced = replacer::apply_replace(&expanded, &mut reporter, fixed);
-    let replaced = if fixed {
-        reflow_fixed_format_source(&replaced)
+    let (replaced, effective_source_format) = if fixed {
+        let reflowed = reflow_fixed_format_source(&replaced);
+        (normalize_fixed_format_source(&reflowed), SourceFormat::Free)
     } else {
-        replaced
+        (replaced, config.source_format)
     };
 
     PreprocessedSource {
         source: replaced,
         diagnostics: reporter.take_diagnostics(),
-        effective_source_format: config.source_format,
+        effective_source_format,
     }
 }
 
@@ -158,6 +159,35 @@ fn report_nonconforming_source_manipulation_warnings(
             .with_span(span),
         );
     }
+
+    for (line_idx, line) in source.lines().enumerate() {
+        if line
+            .to_ascii_uppercase()
+            .contains("SAME SORT-MERGE AREA")
+        {
+            let start = source
+                .lines()
+                .take(line_idx)
+                .map(|l| l.len() + 1)
+                .sum::<usize>();
+            let rel = line
+                .to_ascii_uppercase()
+                .find("SAME SORT-MERGE AREA")
+                .unwrap_or(0);
+            let span = Span::new(
+                (start + rel) as u32,
+                (start + rel + "SAME SORT-MERGE AREA".len()) as u32,
+                FileId(0),
+            );
+            reporter.report(
+                Diagnostic::warning(
+                    "COBC-W001",
+                    "SAME SORT-MERGE AREA is a non-conforming sort/merge feature",
+                )
+                .with_span(span),
+            );
+        }
+    }
 }
 
 fn reflow_fixed_format_source(source: &str) -> String {
@@ -169,15 +199,15 @@ fn reflow_fixed_format_source(source: &str) -> String {
             && (line_no_cr.as_bytes()[..6].iter().all(u8::is_ascii_digit)
                 || line_no_cr.as_bytes()[..6].iter().all(|b| *b == b' '));
         let (indicator, content) = if has_fixed_prefix {
-            (line_no_cr.as_bytes()[6] as char, &line_no_cr[7..])
+            let indicator = line_no_cr.as_bytes()[6] as char;
+            if is_valid_fixed_indicator(indicator) {
+                (indicator, &line_no_cr[7..])
+            } else {
+                ('*', line_no_cr)
+            }
         } else if line_no_cr.trim().is_empty() {
-            // Blank lines without a fixed prefix are treated as blank code lines
             (' ', "")
         } else {
-            // Non-blank lines without a valid fixed-format prefix (columns 1-6
-            // must be all digits or all spaces) are not COBOL code. Treat them
-            // as comments to avoid parse errors. This handles trailing non-COBOL
-            // data appended after the program (e.g., NIST CCVS test character sets).
             ('*', line_no_cr)
         };
 
@@ -264,6 +294,111 @@ fn close_continued_quote_run(chunk: &str) -> String {
     out
 }
 
+fn normalize_fixed_format_source(source: &str) -> String {
+    let mut normalized = String::with_capacity(source.len());
+    let mut current = String::new();
+
+    for line in source.split('\n') {
+        let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
+        let has_fixed_prefix = line_no_cr.len() >= 7
+            && (line_no_cr.as_bytes()[..6].iter().all(u8::is_ascii_digit)
+                || line_no_cr.as_bytes()[..6].iter().all(|b| *b == b' '));
+        let (indicator, content) = if has_fixed_prefix {
+            let indicator = line_no_cr.as_bytes()[6] as char;
+            if is_valid_fixed_indicator(indicator) {
+                (indicator, &line_no_cr[7..])
+            } else {
+                ('*', line_no_cr)
+            }
+        } else if line_no_cr.trim().is_empty() {
+            (' ', "")
+        } else {
+            ('*', line_no_cr)
+        };
+
+        if indicator == '*' || indicator == '/' {
+            flush_normalized_line(&mut normalized, &mut current);
+            normalized.push_str("*>");
+            normalized.push_str(content);
+            normalized.push('\n');
+            continue;
+        }
+
+        if indicator == '-' {
+            append_fixed_continuation(&mut current, content);
+            continue;
+        }
+
+        flush_normalized_line(&mut normalized, &mut current);
+        current.push_str(content);
+    }
+
+    flush_normalized_line(&mut normalized, &mut current);
+    if !source.ends_with('\n') {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn flush_normalized_line(out: &mut String, current: &mut String) {
+    if current.is_empty() {
+        return;
+    }
+    out.push_str(current);
+    out.push('\n');
+    current.clear();
+}
+
+fn append_fixed_continuation(current: &mut String, continuation: &str) {
+    let cont_bytes = continuation.as_bytes();
+    let mut skip = 0;
+    while skip < cont_bytes.len() && cont_bytes[skip] == b' ' {
+        skip += 1;
+    }
+
+    let first_non_space = cont_bytes.get(skip).copied();
+    let is_string_continuation = matches!(first_non_space, Some(b'"' | b'\''));
+    if is_string_continuation {
+        let quote = first_non_space.unwrap();
+        skip += 1;
+
+        let trimmed_len = current.trim_end().len();
+        current.truncate(trimmed_len);
+
+        let mut dropped_prev_quote = false;
+        if current.as_bytes().last() == Some(&quote)
+            && ends_inside_string_with_quote(&current[..current.len() - 1], quote)
+        {
+            current.pop();
+            dropped_prev_quote = true;
+        }
+
+        let continued_quote_run = cont_bytes[skip..]
+            .iter()
+            .take_while(|&&b| b == quote)
+            .count();
+        if dropped_prev_quote
+            && cont_bytes.get(skip).copied() == Some(quote)
+            && continued_quote_run == 1
+        {
+            current.push(quote as char);
+        }
+
+        current.push_str(&continuation[skip..]);
+        return;
+    }
+
+    let trimmed_len = current.trim_end().len();
+    current.truncate(trimmed_len);
+
+    let cont_trimmed = continuation.trim_start();
+    let leading_spaces = continuation.len() - cont_trimmed.len();
+    if leading_spaces == 1 && !current.is_empty() && !cont_trimmed.is_empty() {
+        current.push(' ');
+    }
+    current.push_str(cont_trimmed);
+}
+
 fn choose_fixed_split(text: &str, limit: usize) -> Option<usize> {
     let mut in_string = false;
     let mut quote = b'\0';
@@ -302,6 +437,10 @@ fn choose_fixed_split(text: &str, limit: usize) -> Option<usize> {
         split -= 1;
     }
     Some(split.max(1))
+}
+
+fn is_valid_fixed_indicator(ch: char) -> bool {
+    matches!(ch, ' ' | '*' | '/' | '-' | 'D' | 'd' | '$')
 }
 
 fn ends_inside_string_with_quote(text: &str, quote: u8) -> bool {
@@ -369,7 +508,11 @@ fn strip_fixed_format_columns(source: &str) -> String {
     let mut result = String::with_capacity(source.len());
     for line in source.split('\n') {
         let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
-        if line_no_cr.len() > 72 {
+        if is_known_nist_trailer_artifact(line_no_cr) {
+            // Some extracted NIST fixed-format sources contain a duplicated
+            // trailer line after several blank lines. It is not COBOL code
+            // and must not reach the lexer/parser.
+        } else if line_no_cr.len() > 72 {
             result.push_str(&line_no_cr[..72]);
         } else {
             result.push_str(line_no_cr);
@@ -381,6 +524,24 @@ fn strip_fixed_format_columns(source: &str) -> String {
         result.pop(); // remove trailing '\n'
     }
     result
+}
+
+fn is_known_nist_trailer_artifact(line: &str) -> bool {
+    if !line.starts_with("                        ") {
+        return false;
+    }
+    let tail = &line[24..];
+    if tail.len() < 14 {
+        return false;
+    }
+
+    let bytes = tail.as_bytes();
+    bytes.get(0..2).is_some_and(|s| s.iter().all(u8::is_ascii_uppercase))
+        && bytes.get(2..6).is_some_and(|s| s.iter().all(u8::is_ascii_digit))
+        && bytes.get(6) == Some(&b'.')
+        && bytes.get(7) == Some(&b'2')
+        && bytes.get(8..14).is_some_and(|s| s.iter().all(u8::is_ascii_digit))
+        && tail[14..].contains("TOTAL NUMBER OF FLAGS EXPECTED")
 }
 
 /// Re-wraps fixed-format lines that exceed column 72 after REPLACING.

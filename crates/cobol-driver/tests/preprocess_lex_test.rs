@@ -31,8 +31,13 @@ fn test_preprocess_then_lex_quote_heavy_replace_keeps_to_token() {
         "{:?}",
         preprocessed.diagnostics
     );
+    assert_eq!(preprocessed.effective_source_format, SourceFormat::Free);
 
-    let mut lexer = Lexer::new(&preprocessed.source, FileId(0), SourceFormat::Fixed);
+    let mut lexer = Lexer::new(
+        &preprocessed.source,
+        FileId(0),
+        preprocessed.effective_source_format,
+    );
     let tokens = lexer.lex_all();
 
     let move_idx = tokens
@@ -50,6 +55,53 @@ fn test_preprocess_then_lex_quote_heavy_replace_keeps_to_token() {
         tokens.get(move_idx + 2).map(|t| t.kind),
         Some(TokenKind::To),
         "quote-heavy replacement should still close before TO.\nsource:\n{}\ntokens:\n{:?}",
+        preprocessed.source,
+        tokens,
+    );
+}
+
+#[test]
+fn test_preprocess_then_lex_fixed_continued_string_closes_before_following_statement() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("sm208a_if.cob");
+    fs::write(&source_path, "").unwrap();
+
+    let source = concat!(
+        "037600     IF      WRK-XN-00322 =                      \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+        "037700-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+        "037800-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+        "037900-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+        "038000-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+        "038100-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+        "038200-    \"\"\"\"                                                        \n",
+        "038300             PERFORM PASS                                         \n",
+        "038400             PERFORM PRINT-DETAIL                                 \n",
+        "038500     ELSE                                                         \n",
+        "038600             MOVE   \"REPLACING SINGLE CHARACTER BY 160 QUOTES\"    \n",
+        "038700                  TO RE-MARK                                      \n",
+    );
+    let config = PreprocessorConfig {
+        source_format: SourceFormat::Fixed,
+        ..Default::default()
+    };
+
+    let preprocessed = preprocess(source, &source_path, &config);
+    assert!(
+        preprocessed.diagnostics.iter().all(|diag| !diag.is_error()),
+        "{:?}",
+        preprocessed.diagnostics
+    );
+
+    let mut lexer = Lexer::new(
+        &preprocessed.source,
+        FileId(0),
+        preprocessed.effective_source_format,
+    );
+    let tokens = lexer.lex_all();
+
+    assert!(
+        !tokens.iter().any(|t| t.kind == TokenKind::Error),
+        "continued IF literal should close before the following MOVE.\nsource:\n{}\ntokens:\n{:?}",
         preprocessed.source,
         tokens,
     );
