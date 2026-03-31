@@ -267,17 +267,19 @@ impl Lexer {
                         // the string content while still removing the single
                         // quote used to continue the literal onto the next
                         // physical line.
+                        let mut dropped_prev_quote = false;
                         if prev.text.as_bytes().last() == Some(&quote)
                             && Self::ends_inside_string(&prev.text[..prev.text.len() - 1], quote)
                         {
                             prev.text.pop();
+                            dropped_prev_quote = true;
                         }
 
-                        // If the continued text itself starts with a quote
-                        // character, preserve it as an escaped quote in the
-                        // merged logical literal.
-                        if cont_bytes.get(skip).copied() == Some(quote)
-                            && cont_bytes.get(skip + 1).copied() != Some(quote)
+                        // When the previous physical line ended with a
+                        // continuation marker quote, a second quote at the
+                        // start of the continued text is part of the logical
+                        // literal and must be preserved.
+                        if dropped_prev_quote && cont_bytes.get(skip).copied() == Some(quote)
                         {
                             prev.text.push(quote as char);
                         }
@@ -1386,6 +1388,44 @@ mod tests {
         assert!(
             tokens.iter().any(|t| t.kind == TokenKind::Period),
             "period after the literal should still be tokenized"
+        );
+    }
+
+    #[test]
+    fn test_continuation_line_can_close_string_without_prev_trailing_quote() {
+        let line1 = fixed_line("009500", ' ', r#"77 DATA-R VALUE "LITERAL ENDS AT 72"#);
+        let line2 = fixed_line("009600", '-', r#"    ""#);
+        let line3 = fixed_line("009700", ' ', r#"MOVE DATA-R TO X."#);
+        let src = format!("{}{}{}", line1, line2, line3);
+        let tokens = lex(&src);
+
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::Move),
+            "following statement should not be swallowed into the literal"
+        );
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("should have a closed string literal");
+        assert_eq!(str_tok.text, r#""LITERAL ENDS AT 72""#);
+    }
+
+    #[test]
+    fn test_continuation_without_prev_trailing_quote_does_not_insert_extra_quote() {
+        let line1 = fixed_line("009800", ' ', r#"77 DATA-S VALUE "OFFSET "#);
+        let line2 = fixed_line("009900", '-', r#"             "CONTINUATION "."#);
+        let line3 = fixed_line("010000", ' ', r#"MOVE DATA-S TO X."#);
+        let src = format!("{}{}{}", line1, line2, line3);
+        let tokens = lex(&src);
+
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("should have a merged string literal token");
+        assert_eq!(str_tok.text, r#""OFFSET CONTINUATION ""#);
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::Move),
+            "following statement should remain tokenized"
         );
     }
 }
