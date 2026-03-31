@@ -146,20 +146,37 @@ fn reflow_fixed_format_source(source: &str) -> String {
             continue;
         }
 
-        let mut remaining = content;
+        let mut remaining = content.to_string();
         let mut first = true;
         while !remaining.is_empty() {
-            let take = remaining
-                .char_indices()
-                .nth(65)
-                .map(|(idx, _)| idx)
-                .unwrap_or(remaining.len());
+            let limit = 65;
+            let mut take = if remaining.len() <= limit {
+                remaining.len()
+            } else {
+                choose_fixed_split(&remaining, limit).unwrap_or(limit)
+            };
+            let split_quote = if take < remaining.len() {
+                quote_char_at_split(&remaining, take)
+            } else {
+                None
+            };
+            if split_quote.is_some() && take == limit {
+                take -= 1;
+            }
+
             let chunk = &remaining[..take];
             out.push_str("      ");
             out.push(if first { indicator } else { '-' });
             out.push_str(chunk);
+            if let Some(quote) = split_quote {
+                out.push(quote);
+            }
             out.push('\n');
-            remaining = &remaining[take..];
+            let mut rest = remaining[take..].to_string();
+            if let Some(quote) = split_quote {
+                rest.insert(0, quote);
+            }
+            remaining = rest;
             first = false;
         }
         if content.is_empty() {
@@ -173,6 +190,78 @@ fn reflow_fixed_format_source(source: &str) -> String {
         out.pop();
     }
     out
+}
+
+fn choose_fixed_split(text: &str, limit: usize) -> Option<usize> {
+    let mut in_string = false;
+    let mut quote = b'\0';
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut last_space_outside = None;
+
+    while i < bytes.len() && i < limit {
+        let b = bytes[i];
+        if in_string {
+            if b == quote {
+                if i + 1 < bytes.len() && bytes[i + 1] == quote {
+                    i += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+        } else if b == b'"' || b == b'\'' {
+            in_string = true;
+            quote = b;
+        } else if b == b' ' {
+            last_space_outside = Some(i);
+        }
+        i += 1;
+    }
+
+    if !in_string {
+        return last_space_outside.filter(|idx| *idx > 0).or(Some(limit));
+    }
+
+    let mut split = limit.min(text.len());
+    while split > 0 && bytes[split - 1] == quote {
+        let trailing = text[..split]
+            .as_bytes()
+            .iter()
+            .rev()
+            .take_while(|&&b| b == quote)
+            .count();
+        if trailing % 2 == 0 {
+            break;
+        }
+        split -= 1;
+    }
+    Some(split.max(1))
+}
+
+fn quote_char_at_split(text: &str, split: usize) -> Option<char> {
+    let bytes = text.as_bytes();
+    let mut in_string = false;
+    let mut quote = b'\0';
+    let mut i = 0;
+
+    while i < bytes.len() && i < split {
+        let b = bytes[i];
+        if in_string {
+            if b == quote {
+                if i + 1 < bytes.len() && bytes[i + 1] == quote {
+                    i += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+        } else if b == b'"' || b == b'\'' {
+            in_string = true;
+            quote = b;
+        }
+        i += 1;
+    }
+
+    if in_string { Some(quote as char) } else { None }
 }
 
 /// Strips columns 73-80 (the identification area) from each line of fixed-format
@@ -603,10 +692,11 @@ mod tests {
             ..Default::default()
         };
         let result = preprocess(source, &source_path, &config);
+        let normalized = result.source.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            result
-                .source
-                .contains("WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-001 (1)."),
+            normalized.contains(
+                "WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-001 (1)."
+            ),
             "expanded source: {:?}",
             result.source
         );

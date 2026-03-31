@@ -1107,6 +1107,27 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_parse_if_with_qualified_name_and_qualified_subscript() {
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-SM206.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01  GRP-001.
+           05  GRP-002 OCCURS 2 TIMES.
+               10 WRK-DS-05V00-O005-001 PIC S9(5).
+       PROCEDURE DIVISION.
+           IF WRK-DS-05V00-O005-001 OF GRP-002 (1) EQUAL TO +6
+               PERFORM PASS
+           ELSE
+               PERFORM FAIL
+           END-IF.
+           STOP RUN.                                                     ";
+        let program = parse(src).unwrap();
+        assert!(program.procedure.is_some());
+    }
+
+    #[test]
     fn test_parse_declaratives() {
         let source = r#"
             IDENTIFICATION DIVISION.
