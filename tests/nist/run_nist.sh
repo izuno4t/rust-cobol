@@ -737,7 +737,20 @@ run_program() {
         echo "PASS" > "$status_file"
         echo "  $program: PASS ($pass passed)"
     else
-        local inspect_reason
+        local inspect_reason expected_flags warning_count
+        expected_flags="$(expected_flag_count "$src")"
+        warning_count="$(compile_warning_count "$compile_log")"
+        if [ "$expected_flags" -gt 0 ]; then
+            if [ "$warning_count" -eq "$expected_flags" ]; then
+                echo "PASS" > "$status_file"
+                echo "  $program: PASS ($warning_count warning flag(s) matched expected count)"
+            else
+                echo "FAIL" > "$status_file"
+                echo "  $program: FAIL (expected $expected_flags warning flag(s), got $warning_count)"
+            fi
+            return
+        fi
+
         inspect_reason="$(inspect_reason_for_program "$src" "$result_file")"
         case "$inspect_reason" in
             manual-report)
@@ -749,7 +762,6 @@ run_program() {
                 echo "  $program: PASS (completed without report output)"
                 ;;
             dummy-display)
-                local expected_flags warning_count
                 expected_flags="$(expected_flag_count "$src")"
                 warning_count="$(compile_warning_count "$compile_log")"
                 if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then

@@ -26,7 +26,11 @@ fn test_preprocess_then_lex_quote_heavy_replace_keeps_to_token() {
     };
 
     let preprocessed = preprocess(source, &source_path, &config);
-    assert!(preprocessed.diagnostics.is_empty(), "{:?}", preprocessed.diagnostics);
+    assert!(
+        preprocessed.diagnostics.iter().all(|diag| !diag.is_error()),
+        "{:?}",
+        preprocessed.diagnostics
+    );
 
     let mut lexer = Lexer::new(&preprocessed.source, FileId(0), SourceFormat::Fixed);
     let tokens = lexer.lex_all();

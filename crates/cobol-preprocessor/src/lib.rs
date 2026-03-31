@@ -11,7 +11,7 @@ mod scanner;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use cobol_common::SourceFormat;
+use cobol_common::{FileId, SourceFormat, Span};
 use cobol_diagnostics::{Diagnostic, DiagnosticReporter};
 
 pub use copy_resolver::CopyResolver;
@@ -89,6 +89,8 @@ pub fn preprocess(
         source.to_string()
     };
 
+    report_nonconforming_source_manipulation_warnings(&source, &mut reporter, config.source_format);
+
     let resolver = CopyResolver::new(config, file_path);
 
     // Phase 1: Expand all COPY statements (recursively).
@@ -114,6 +116,47 @@ pub fn preprocess(
         source: replaced,
         diagnostics: reporter.take_diagnostics(),
         effective_source_format: config.source_format,
+    }
+}
+
+fn report_nonconforming_source_manipulation_warnings(
+    source: &str,
+    reporter: &mut DiagnosticReporter,
+    source_format: SourceFormat,
+) {
+    let fixed = source_format == SourceFormat::Fixed;
+
+    for stmt in scanner::scan_copy_statements(source, fixed) {
+        if stmt.replacings.is_empty() {
+            continue;
+        }
+        let span = Span::new(stmt.start as u32, (stmt.start + 4) as u32, FileId(0));
+        reporter.report(
+            Diagnostic::warning(
+                "COBC-W001",
+                "COPY ... REPLACING is a non-conforming source text manipulation feature",
+            )
+            .with_span(span),
+        );
+    }
+
+    for directive in scanner::scan_replace_directives(source, fixed) {
+        let is_source_manipulation = directive.is_off || !directive.replacings.is_empty();
+        if !is_source_manipulation {
+            continue;
+        }
+        let span = Span::new(
+            directive.start as u32,
+            (directive.start + "REPLACE".len()) as u32,
+            FileId(0),
+        );
+        reporter.report(
+            Diagnostic::warning(
+                "COBC-W001",
+                "REPLACE is a non-conforming source text manipulation feature",
+            )
+            .with_span(span),
+        );
     }
 }
 
@@ -626,6 +669,14 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    fn assert_no_errors(result: &PreprocessedSource) {
+        assert!(
+            result.diagnostics.iter().all(|diag| !diag.is_error()),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+
     #[test]
     fn test_no_copy_passthrough() {
         let dir = setup_test_dir();
@@ -639,7 +690,7 @@ mod tests {
         };
         let result = preprocess(source, &source_path, &config);
         assert_eq!(result.source, source);
-        assert!(result.diagnostics.is_empty());
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -663,7 +714,7 @@ mod tests {
             "expanded source: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -686,7 +737,7 @@ mod tests {
             "expanded source: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -709,7 +760,7 @@ mod tests {
             "expanded source: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -758,7 +809,7 @@ mod tests {
             "expanded source: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -797,7 +848,7 @@ mod tests {
             "missing inner content: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -929,7 +980,7 @@ mod tests {
             "library COPY failed: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -952,7 +1003,7 @@ mod tests {
             "case-insensitive COPY failed: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -980,7 +1031,7 @@ mod tests {
             "second replacing failed: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -1016,7 +1067,7 @@ mod tests {
             "source after replacement should keep the following statement: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 
     #[test]
@@ -1073,6 +1124,70 @@ mod tests {
             "replacement text should be inserted into copybook content: {:?}",
             result.source
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_preprocess_warns_for_copy_replacing_and_replace_off() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("test.cob");
+        fs::write(&source_path, "").unwrap();
+        fs::write(dir.path().join("book.cpy"), "       DISPLAY \"X\".\n").unwrap();
+
+        let source = concat!(
+            "       IDENTIFICATION DIVISION.\n",
+            "       PROGRAM-ID. TEST.\n",
+            "       PROCEDURE DIVISION.\n",
+            "           COPY book REPLACING ==X== BY ==Y==.\n",
+            "           REPLACE OFF.\n",
+            "           STOP RUN.\n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            max_copy_depth: 8,
+            source_format: SourceFormat::Free,
+        };
+
+        let result = preprocess(source, &source_path, &config);
+        let warning_count = result
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.code == "COBC-W001")
+            .count();
+
+        assert_eq!(warning_count, 2, "{:?}", result.diagnostics);
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_preprocess_warns_for_fixed_copy_replacing_and_replace_off() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("test.cob");
+        fs::write(&source_path, "").unwrap();
+        fs::write(dir.path().join("ksm41.cpy"), "000100     DISPLAY \"COW\".\n").unwrap();
+
+        let source = concat!(
+            "000100 IDENTIFICATION DIVISION.\n",
+            "000200 PROGRAM-ID. TEST.\n",
+            "000300 PROCEDURE DIVISION.\n",
+            "000400     COPY KSM41 REPLACING \"PIG\" BY \"HORSE\".\n",
+            "000500     REPLACE OFF.\n",
+            "000600     STOP RUN.\n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            max_copy_depth: 8,
+            source_format: SourceFormat::Fixed,
+        };
+
+        let result = preprocess(source, &source_path, &config);
+        let warning_count = result
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.code == "COBC-W001")
+            .count();
+
+        assert_eq!(warning_count, 2, "{:?}", result.diagnostics);
+        assert_no_errors(&result);
     }
 }

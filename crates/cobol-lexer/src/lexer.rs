@@ -273,6 +273,15 @@ impl Lexer {
                             prev.text.pop();
                         }
 
+                        // If the continued text itself starts with a quote
+                        // character, preserve it as an escaped quote in the
+                        // merged logical literal.
+                        if cont_bytes.get(skip).copied() == Some(quote)
+                            && cont_bytes.get(skip + 1).copied() != Some(quote)
+                        {
+                            prev.text.push(quote as char);
+                        }
+
                         // Append the continuation content (after the quote)
                         let appended = &cont_text[skip..];
                         let append_start = prev.text.len();
@@ -1351,6 +1360,32 @@ mod tests {
         assert!(
             tokens.iter().any(|t| t.kind == TokenKind::To),
             "TO should be tokenized after the reflowed quote-heavy string"
+        );
+    }
+
+    #[test]
+    fn test_continuation_preserves_quote_at_start_of_next_line_content() {
+        let line1 = fixed_line(
+            "004900",
+            ' ',
+            r#"THE-BIG-OL-LITERAL-ALPHABET IS "A+0B-1C*2D/3E=4Fl5G,6H;7I.8J""#,
+        );
+        let line2 = fixed_line("005000", '-', r#"    ""9K(L)M>N<O PQRSTUVWXYZ"."#);
+        let src = format!("{}{}", line1, line2);
+        let tokens = lex(&src);
+
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("should have a merged string literal token");
+        assert!(
+            str_tok.text.contains(r#"8J""9K"#),
+            "continued literal should preserve the embedded quote at the start of the next line: {:?}",
+            str_tok.text
+        );
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::Period),
+            "period after the literal should still be tokenized"
         );
     }
 }
