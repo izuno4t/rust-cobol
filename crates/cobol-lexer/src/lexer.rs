@@ -37,6 +37,33 @@ struct ContentSegment {
 }
 
 impl Lexer {
+    fn ends_inside_string(text: &str, quote: u8) -> bool {
+        let bytes = text.as_bytes();
+        let mut pos = 0;
+        let mut in_string = false;
+
+        while pos < bytes.len() {
+            if bytes[pos] != quote {
+                pos += 1;
+                continue;
+            }
+
+            if in_string {
+                if pos + 1 < bytes.len() && bytes[pos + 1] == quote {
+                    pos += 2;
+                } else {
+                    in_string = false;
+                    pos += 1;
+                }
+            } else {
+                in_string = true;
+                pos += 1;
+            }
+        }
+
+        in_string
+    }
+
     /// Creates a new lexer for the given source text, file ID, and format.
     pub fn new(source: &str, file_id: FileId, format: SourceFormat) -> Self {
         let reader = SourceReader::new(source, format);
@@ -235,11 +262,14 @@ impl Lexer {
                         // as continuation markers rather than string content.
                         let prev_trimmed_len = prev.text.trim_end().len();
                         prev.text.truncate(prev_trimmed_len);
-                        // In fixed-format string continuation, the previous
-                        // line contributes exactly one trailing continuation
-                        // quote. Counting the whole trailing run breaks when
-                        // the string content itself is quote-heavy.
-                        if prev.text.as_bytes().last().copied() == Some(quote) {
+                        // Drop exactly the trailing continuation quote marker.
+                        // This preserves any escaped quotes that are part of
+                        // the string content while still removing the single
+                        // quote used to continue the literal onto the next
+                        // physical line.
+                        if prev.text.as_bytes().last() == Some(&quote)
+                            && Self::ends_inside_string(&prev.text[..prev.text.len() - 1], quote)
+                        {
                             prev.text.pop();
                         }
 
@@ -258,6 +288,10 @@ impl Lexer {
 
                         let cont_trimmed = cont_text.trim_start();
                         let leading_spaces = cont_text.len() - cont_trimmed.len();
+                        if leading_spaces == 1 && !prev.text.is_empty() && !cont_trimmed.is_empty()
+                        {
+                            prev.text.push(' ');
+                        }
                         let append_start = prev.text.len();
                         prev.text.push_str(cont_trimmed);
                         prev.cont_offsets
@@ -1255,6 +1289,68 @@ mod tests {
         assert!(
             tokens.iter().any(|t| t.kind == TokenKind::Perform),
             "PERFORM should not be swallowed into the string literal"
+        );
+    }
+
+    #[test]
+    fn test_continuation_string_keeps_trailing_escaped_quote() {
+        let line1 = fixed_line(
+            "029900",
+            ' ',
+            r#"MOVE " IF NO OTHER REPORT LINES APPEAR BELOW, ""COPY K7SEA"""#,
+        );
+        let line2 = fixed_line("030000", '-', r#"         "FAILED." TO PRINT-REC."#);
+        let src = format!("{}{}", line1, line2);
+        let tokens = lex(&src);
+
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::To),
+            "TO should be tokenized after the continued string"
+        );
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("should have a string literal token");
+        assert!(
+            str_tok.text.contains(r#""COPY K7SEA""FAILED."#),
+            "continued string should preserve the escaped quote before FAILED"
+        );
+    }
+
+    #[test]
+    fn test_continuation_quote_heavy_string_from_reflowed_replace_closes_before_to() {
+        let line1 = fixed_line(
+            "036800",
+            ' ',
+            r#"MOVE """"""""""""""""""""""""""""""""""""""""""""""""""""""#,
+        );
+        let line2 = fixed_line(
+            "036900",
+            '-',
+            r#""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""#,
+        );
+        let line3 = fixed_line(
+            "037000",
+            '-',
+            r#""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""#,
+        );
+        let line4 = fixed_line(
+            "037100",
+            '-',
+            r#""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""#,
+        );
+        let line5 = fixed_line(
+            "037200",
+            '-',
+            r#""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""#,
+        );
+        let line6 = fixed_line("037300", '-', r#""""""""""""""" TO WRK-XN-00322."#);
+        let src = format!("{}{}{}{}{}{}", line1, line2, line3, line4, line5, line6);
+        let tokens = lex(&src);
+
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::To),
+            "TO should be tokenized after the reflowed quote-heavy string"
         );
     }
 }

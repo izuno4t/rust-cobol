@@ -126,20 +126,41 @@ fn replace_pseudo_text(text: &str, old: &str, new: &str) -> String {
     }
 
     let new_norm = normalize_pseudo_text(new);
+    let old_joined = normalize_pseudo_text_joining_plain_fragments(old);
+    let new_joined = normalize_pseudo_text_joining_plain_fragments(new);
     let token_only = is_single_cobol_token(&old_norm);
+    let preferred_replacement = if new_joined != new_norm {
+        new_joined.as_str()
+    } else {
+        new_norm.as_str()
+    };
 
     let mut raw = text.to_string();
     loop {
         let normalized = normalize_for_matching(&raw);
-        let Some((start_norm, end_norm)) =
-            find_pseudo_match(&normalized.text, &old_norm, token_only)
-        else {
+        let matched = find_pseudo_match(&normalized.text, &old_norm, token_only)
+            .map(|span| (span, preferred_replacement))
+            .or_else(|| {
+                if old_joined != old_norm {
+                    find_pseudo_match(&normalized.text, &old_joined, token_only).map(|span| {
+                        let replacement = if new_joined != new_norm {
+                            new_joined.as_str()
+                        } else {
+                            new_norm.as_str()
+                        };
+                        (span, replacement)
+                    })
+                } else {
+                    None
+                }
+            });
+        let Some(((start_norm, end_norm), replacement)) = matched else {
             break;
         };
 
         let start_raw = normalized.map[start_norm];
         let end_raw = normalized.map[end_norm - 1] + 1;
-        raw.replace_range(start_raw..end_raw, &new_norm);
+        raw.replace_range(start_raw..end_raw, replacement);
     }
 
     raw
@@ -179,7 +200,11 @@ struct NormalizedText {
     map: Vec<usize>,
 }
 
-fn normalize_for_matching(raw: &str) -> NormalizedText {
+fn normalize_for_matching_with_mode(
+    raw: &str,
+    force_space_between_plain_lines: bool,
+    suppress_plain_leading_space: bool,
+) -> NormalizedText {
     let mut text = String::with_capacity(raw.len());
     let mut map = Vec::with_capacity(raw.len());
     let mut pending_space = false;
@@ -208,8 +233,10 @@ fn normalize_for_matching(raw: &str) -> NormalizedText {
         if indicator == b'-' {
             pending_space = previous_line_ended_with_space;
             suppress_leading_space = !previous_line_ended_with_space;
-        } else if !text.is_empty() {
+        } else if !text.is_empty() && force_space_between_plain_lines {
             pending_space = true;
+        } else if !text.is_empty() && suppress_plain_leading_space {
+            suppress_leading_space = true;
         }
 
         let mut line_ended_with_space = false;
@@ -244,8 +271,16 @@ fn normalize_for_matching(raw: &str) -> NormalizedText {
     NormalizedText { text, map }
 }
 
+fn normalize_for_matching(raw: &str) -> NormalizedText {
+    normalize_for_matching_with_mode(raw, true, false)
+}
+
 fn normalize_pseudo_text(raw: &str) -> String {
-    normalize_for_matching(raw).text
+    normalize_for_matching_with_mode(raw, false, false).text
+}
+
+fn normalize_pseudo_text_joining_plain_fragments(raw: &str) -> String {
+    normalize_for_matching_with_mode(raw, false, true).text
 }
 
 fn is_cobol_word_char(b: u8) -> bool {

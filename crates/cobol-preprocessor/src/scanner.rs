@@ -395,6 +395,12 @@ fn parse_replace_pair(
     } else if pos < len && source.as_bytes()[pos].is_ascii_digit() {
         // Handle numeric literal (e.g., 12345)
         parse_numeric_literal(source, pos)?
+    } else if is_pseudo {
+        // Pseudo-text operands may be replaced by an arbitrary sequence of
+        // text words without == delimiters. Consume until the terminating
+        // period of the COPY/REPLACE statement or the start of the next
+        // replacement pair.
+        parse_text_words_until_period(source, pos, fixed_format)?
     } else {
         // Parse a COBOL word, possibly qualified with OF/IN and/or subscripted.
         // Examples: FIELD, FIELD OF GROUP, FIELD IN GRP (1), Z (2, 1, 1)
@@ -487,6 +493,115 @@ fn find_closing_paren(source: &str, start: usize) -> Option<usize> {
         pos += 1;
     }
     None
+}
+
+fn starts_replace_pair(source: &str, start: usize, fixed_format: bool) -> bool {
+    let len = source.len();
+    if start >= len {
+        return false;
+    }
+
+    let (candidate, next_pos) = if source[start..].starts_with("==") {
+        match parse_pseudo_text(source, start, fixed_format) {
+            Some(parsed) => parsed,
+            None => return false,
+        }
+    } else if matches!(source.as_bytes()[start], b'"' | b'\'') {
+        match parse_string_literal(source, start) {
+            Some(parsed) => parsed,
+            None => return false,
+        }
+    } else if source.as_bytes()[start].is_ascii_digit()
+        || ((source.as_bytes()[start] == b'+' || source.as_bytes()[start] == b'-')
+            && start + 1 < len
+            && source.as_bytes()[start + 1].is_ascii_digit())
+    {
+        match parse_numeric_literal(source, start) {
+            Some(parsed) => parsed,
+            None => return false,
+        }
+    } else if source.as_bytes()[start].is_ascii_alphanumeric() {
+        match parse_qualified_word(source, start, fixed_format) {
+            Some(parsed) => parsed,
+            None => return false,
+        }
+    } else {
+        return false;
+    };
+
+    if candidate.is_empty() {
+        return false;
+    }
+
+    let pos = skip_whitespace(source, next_pos, fixed_format);
+    let upper_rest = source[pos..].to_ascii_uppercase();
+    upper_rest.starts_with("BY")
+        && (pos + 2 >= len || !is_cobol_word_char(source.as_bytes()[pos + 2]))
+}
+
+fn parse_text_words_until_period(
+    source: &str,
+    start: usize,
+    fixed_format: bool,
+) -> Option<(String, usize)> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    if start >= len {
+        return None;
+    }
+
+    let mut pos = start;
+    let mut in_string = false;
+    let mut quote = b'\0';
+
+    while pos < len {
+        let b = bytes[pos];
+        if in_string {
+            if b == quote {
+                if pos + 1 < len && bytes[pos + 1] == quote {
+                    pos += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+            pos += 1;
+            continue;
+        }
+
+        if b == b'"' || b == b'\'' {
+            in_string = true;
+            quote = b;
+            pos += 1;
+            continue;
+        }
+
+        if pos > start && starts_replace_pair(source, pos, fixed_format) {
+            let text = source[start..pos].trim_end().to_string();
+            return (!text.is_empty()).then_some((text, pos));
+        }
+
+        if bytes[pos].is_ascii_whitespace() {
+            let next = skip_whitespace(source, pos, fixed_format);
+            if next > pos && starts_replace_pair(source, next, fixed_format) {
+                let text = source[start..pos].trim_end().to_string();
+                return (!text.is_empty()).then_some((text, next));
+            }
+        }
+
+        if b == b'.' {
+            let text = source[start..pos].trim_end().to_string();
+            return Some((text, pos));
+        }
+
+        pos += 1;
+    }
+
+    let text = source[start..pos].trim_end().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some((text, pos))
+    }
 }
 
 /// Parses pseudo-text delimited by `==` ... `==`.
@@ -805,6 +920,101 @@ mod tests {
         assert!(!text.contains("036200-"), "text: {:?}", text);
         assert!(!text.contains("036300-"), "text: {:?}", text);
         assert_eq!(&source[end..end + 1], ".");
+    }
+
+    #[test]
+    fn test_scan_replace_directive_for_sm208a_quote_heavy_pseudo_text() {
+        let source = concat!(
+            "036100 REPLACE   ==\"Z\"== BY                          ==\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036200-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036300-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036400-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036500-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036600-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036700-    \"\"\"\"==.\n",
+        );
+
+        let directives = scan_replace_directives(source, true);
+        assert_eq!(directives.len(), 1, "directives: {:?}", directives);
+        assert_eq!(directives[0].replacings.len(), 1);
+        assert_eq!(directives[0].replacings[0].old_text, "\"Z\"");
+        assert!(
+            directives[0].replacings[0].new_text.starts_with("\"\"\""),
+            "replacement text: {:?}",
+            directives[0].replacings[0].new_text
+        );
+    }
+
+    #[test]
+    fn test_scan_replace_directives_for_sm208a_keeps_following_replace_off() {
+        let source = concat!(
+            "036100 REPLACE   ==\"Z\"== BY                          ==\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036200-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036300-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036400-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036500-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036600-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036700-    \"\"\"\"==.\n",
+            "036800     MOVE \"Z\" TO WRK-XN-00322.\n",
+            "036900 REPLACE OFF.\n",
+            "037000     GO TO   REP-TEST-2-1.\n",
+        );
+
+        let directives = scan_replace_directives(source, true);
+        assert_eq!(directives.len(), 2, "directives: {:?}", directives);
+        assert!(!directives[0].is_off);
+        assert!(directives[1].is_off);
+    }
+
+    #[test]
+    fn test_scan_copy_statement_for_sm206a_multiline_pseudo_text() {
+        let source = concat!(
+            "047100             COPY                                        KP004    \n",
+            "047200                 REPLACING ==THIS IS NOT REAL COBOL-74 SYNTAX HOWE\n",
+            "047300-                VER SHOVE==                                      \n",
+            "047400                 BY MOVE                                           \n",
+            "047500                    SPACE TO RE-MARK                              \n",
+            "047600                    GO TO PAR-17                                  \n",
+            "047700                    DE-LETE.                                      \n",
+        );
+
+        let stmts = scan_copy_statements(source, true);
+        assert_eq!(stmts.len(), 1, "statements: {:?}", stmts.len());
+        assert_eq!(stmts[0].copybook_name, "KP004");
+        assert_eq!(stmts[0].replacings.len(), 1);
+        assert!(
+            stmts[0].replacings[0]
+                .old_text
+                .contains("THIS IS NOT REAL COBOL-74 SYNTAX HOWE"),
+            "old text: {:?}",
+            stmts[0].replacings[0].old_text
+        );
+        assert!(
+            stmts[0].replacings[0]
+                .new_text
+                .contains("MOVE"),
+            "new text: {:?}",
+            stmts[0].replacings[0].new_text
+        );
+    }
+
+    #[test]
+    fn test_scan_copy_statement_for_sm206a_multiple_replacements() {
+        let source = concat!(
+            "047100             COPY                                        KP004    \n",
+            "047200                 REPLACING ==THIS IS NOT REAL COBOL-74 SYNTAX HOWE\n",
+            "047300-                VER SHOVE==                                      \n",
+            "047400                 BY MOVE                                          \n",
+            "047500                     == DELETE==                                  \n",
+            "047600                 BY  DE-LETE.                                     \n",
+        );
+
+        let stmts = scan_copy_statements(source, true);
+        assert_eq!(stmts.len(), 1, "statements: {:?}", stmts);
+        assert_eq!(stmts[0].replacings.len(), 2, "replacings: {:?}", stmts[0].replacings);
+        assert_eq!(stmts[0].replacings[0].new_text, "MOVE");
+        assert_eq!(stmts[0].replacings[1].old_text, " DELETE");
+        assert_eq!(stmts[0].replacings[1].new_text, "DE-LETE");
     }
 
     #[test]

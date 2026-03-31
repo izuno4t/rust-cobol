@@ -149,8 +149,9 @@ fn reflow_fixed_format_source(source: &str) -> String {
         let mut remaining = content.to_string();
         let mut first = true;
         while !remaining.is_empty() {
-            let limit = 65;
-            let mut take = if remaining.len() <= limit {
+            let limit = if first { 65 } else { 64 };
+            let final_chunk = remaining.len() <= limit;
+            let mut take = if final_chunk {
                 remaining.len()
             } else {
                 choose_fixed_split(&remaining, limit).unwrap_or(limit)
@@ -167,7 +168,11 @@ fn reflow_fixed_format_source(source: &str) -> String {
             let chunk = &remaining[..take];
             out.push_str("      ");
             out.push(if first { indicator } else { '-' });
-            out.push_str(chunk);
+            if final_chunk && !first {
+                out.push_str(&close_continued_quote_run(chunk));
+            } else {
+                out.push_str(chunk);
+            }
             if let Some(quote) = split_quote {
                 out.push(quote);
             }
@@ -189,6 +194,30 @@ fn reflow_fixed_format_source(source: &str) -> String {
     if !source.ends_with('\n') {
         out.pop();
     }
+    out
+}
+
+fn close_continued_quote_run(chunk: &str) -> String {
+    let bytes = chunk.as_bytes();
+    let Some(&quote) = bytes.first() else {
+        return chunk.to_string();
+    };
+    if quote != b'"' && quote != b'\'' {
+        return chunk.to_string();
+    }
+
+    let run_len = bytes.iter().take_while(|&&b| b == quote).count();
+    if run_len == 0 || run_len >= bytes.len() {
+        return chunk.to_string();
+    }
+    if !bytes[run_len].is_ascii_whitespace() || (run_len - 1) % 2 == 1 {
+        return chunk.to_string();
+    }
+
+    let mut out = String::with_capacity(chunk.len() + 1);
+    out.push_str(&chunk[..run_len]);
+    out.push(quote as char);
+    out.push_str(&chunk[run_len..]);
     out
 }
 
@@ -223,19 +252,40 @@ fn choose_fixed_split(text: &str, limit: usize) -> Option<usize> {
     }
 
     let mut split = limit.min(text.len());
-    while split > 0 && bytes[split - 1] == quote {
-        let trailing = text[..split]
-            .as_bytes()
-            .iter()
-            .rev()
-            .take_while(|&&b| b == quote)
-            .count();
-        if trailing % 2 == 0 {
+    while split > 0 {
+        if ends_inside_string_with_quote(&text[..split], quote) {
             break;
         }
         split -= 1;
     }
     Some(split.max(1))
+}
+
+fn ends_inside_string_with_quote(text: &str, quote: u8) -> bool {
+    let bytes = text.as_bytes();
+    let mut pos = 0;
+    let mut in_string = false;
+
+    while pos < bytes.len() {
+        if bytes[pos] != quote {
+            pos += 1;
+            continue;
+        }
+
+        if in_string {
+            if pos + 1 < bytes.len() && bytes[pos + 1] == quote {
+                pos += 2;
+            } else {
+                in_string = false;
+                pos += 1;
+            }
+        } else {
+            in_string = true;
+            pos += 1;
+        }
+    }
+
+    in_string
 }
 
 fn quote_char_at_split(text: &str, split: usize) -> Option<char> {
@@ -928,6 +978,99 @@ mod tests {
         assert!(
             result.source.contains("X(10)"),
             "second replacing failed: {:?}",
+            result.source
+        );
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn test_fixed_replace_handles_quote_heavy_pseudo_text_from_sm208a() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("test.cob");
+        fs::write(&source_path, "").unwrap();
+
+        let source = concat!(
+            "036100 REPLACE   ==\"Z\"== BY                          ==\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036200-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036300-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036400-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036500-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036600-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036700-    \"\"\"\"\"\"==.\n",
+            "036800     MOVE \"Z\" TO WRK-XN-00322.\n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            source_format: SourceFormat::Fixed,
+            ..Default::default()
+        };
+
+        let result = preprocess(source, &source_path, &config);
+        assert!(
+            !result.source.contains("REPLACE"),
+            "REPLACE directive should be consumed: {:?}",
+            result.source
+        );
+        assert!(
+            result.source.contains("MOVE"),
+            "source after replacement should keep the following statement: {:?}",
+            result.source
+        );
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn test_fixed_copy_replacing_handles_multiline_pseudo_text_from_sm206a() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("test.cob");
+        fs::write(&source_path, "").unwrap();
+
+        fs::write(
+            dir.path().join("kp004.cpy"),
+            concat!(
+                "000100*    THIS COMMENT IS THE FIRST IMAGE IN KP004                     KP0044.2\n",
+                "000200*    ADD  1 TO THE LIST.                                          KP0044.2\n",
+                "000300 PST-INIT-004.                                                    KP0044.2\n",
+                "000400     MOVE \"PSEUDO-TEXT/WORD\" TO FEATURE.                          KP0044.2\n",
+                "000500     MOVE    ZERO TO WRK-DS-09V00-901.                            KP0044.2\n",
+                "000600     MOVE    \"PST-TEST-004\" TO PAR-NAME.                          KP0044.2\n",
+                "000700 PST-TEST-004.                                                    KP0044.2\n",
+                "000800     ADD     5 TO WRK-DS-09V00-901.                               KP0044.2\n",
+                "000900     THIS IS NOT REAL COBOL-74 SYNTAX HOWEVER                     KP0044.2\n",
+                "001000             SHOVE +2 TO WRK-DS-09V00-902.                        KP0044.2\n",
+                "001100     GO TO   PST-EXIT-004.                                        KP0044.2\n",
+                "001200 PST-DELETE-004.                                                  KP0044.2\n",
+                "001300     PERFORM DELETE.                                              KP0044.2\n",
+                "001400 PST-EXIT-004.                                                    KP0044.2\n",
+                "001500     EXIT.                                                        KP0044.2\n",
+            ),
+        )
+        .unwrap();
+
+        let source = concat!(
+            "047100             COPY                                        KP004    \n",
+            "047200                 REPLACING ==THIS IS NOT REAL COBOL-74 SYNTAX HOWE\n",
+            "047300-                VER SHOVE==                                      \n",
+            "047400                 BY MOVE                                           \n",
+            "047500                    SPACE TO RE-MARK                              \n",
+            "047600                    GO TO PAR-17                                  \n",
+            "047700                    DE-LETE.                                      \n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            source_format: SourceFormat::Fixed,
+            ..Default::default()
+        };
+
+        let result = preprocess(source, &source_path, &config);
+        assert!(
+            !result.source.contains("COPY"),
+            "COPY statement should be expanded: {:?}",
+            result.source
+        );
+        assert!(
+            result.source.contains("MOVE"),
+            "replacement text should be inserted into copybook content: {:?}",
             result.source
         );
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
