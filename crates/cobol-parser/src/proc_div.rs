@@ -1171,6 +1171,7 @@ impl Parser {
     fn parse_enable_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Enable)?;
+        self.warning_at(start_span, "ENABLE is an obsolete communication feature");
         let mode = self.parse_communication_mode()?;
         let terminal = self.eat(TokenKind::Terminal).is_some();
         let target = self.parse_qualified_name()?;
@@ -1190,6 +1191,7 @@ impl Parser {
     fn parse_disable_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Disable)?;
+        self.warning_at(start_span, "DISABLE is an obsolete communication feature");
         let mode = self.parse_communication_mode()?;
         let terminal = self.eat(TokenKind::Terminal).is_some();
         let target = self.parse_qualified_name()?;
@@ -1209,6 +1211,7 @@ impl Parser {
     fn parse_send_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Send)?;
+        self.warning_at(start_span, "SEND is a non-conforming communication feature");
         let target = self.parse_qualified_name()?;
         let from = if self.check(TokenKind::From) {
             self.advance();
@@ -1256,6 +1259,7 @@ impl Parser {
     fn parse_receive_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Receive)?;
+        self.warning_at(start_span, "RECEIVE is a non-conforming communication feature");
         let target = self.parse_qualified_name()?;
         if self.check(TokenKind::Message) || self.check_identifier("SEGMENT") {
             self.advance();
@@ -1293,6 +1297,7 @@ impl Parser {
     fn parse_purge_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Purge)?;
+        self.warning_at(start_span, "PURGE is a non-conforming communication feature");
         let target = self.parse_qualified_name()?;
         let end_span = self.span();
         Ok(Statement::Purge(PurgeStatement {

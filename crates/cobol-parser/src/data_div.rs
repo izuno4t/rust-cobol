@@ -136,6 +136,7 @@ impl Parser {
 
     fn parse_communication_description(&mut self) -> Result<CommunicationDescription, ()> {
         let start_span = self.span();
+        let mut has_symbolic_sub_queue_clause = false;
         self.eat_identifier("CD");
         let name = self.expect_identifier()?;
         self.eat(TokenKind::ForKw);
@@ -187,14 +188,17 @@ impl Parser {
                     self.advance();
                     self.eat_is();
                     symbolic_sub_queue_1 = Some(self.expect_identifier()?);
+                    has_symbolic_sub_queue_clause = true;
                 } else if self.check(TokenKind::SubQueue2) {
                     self.advance();
                     self.eat_is();
                     symbolic_sub_queue_2 = Some(self.expect_identifier()?);
+                    has_symbolic_sub_queue_clause = true;
                 } else if self.check(TokenKind::SubQueue3) {
                     self.advance();
                     self.eat_is();
                     symbolic_sub_queue_3 = Some(self.expect_identifier()?);
+                    has_symbolic_sub_queue_clause = true;
                 } else if self.check(TokenKind::SourceField) {
                     self.advance();
                     self.eat_is();
@@ -273,6 +277,10 @@ impl Parser {
                     self.advance();
                     self.expect(TokenKind::Occurs)?;
                     destination_table_count = Some(self.parse_integer()?);
+                    self.warning_at(
+                        start_span,
+                        "DESTINATION TABLE is a non-conforming communication feature",
+                    );
                     self.eat(TokenKind::Times);
                     if self.check(TokenKind::Index) {
                         self.eat(TokenKind::Index);
@@ -301,6 +309,17 @@ impl Parser {
             } else {
                 self.advance();
             }
+        }
+
+        if has_symbolic_sub_queue_clause {
+            self.warning_at(
+                start_span,
+                "communication description with symbolic sub-queue is a non-conforming communication feature",
+            );
+            self.warning_at(
+                start_span,
+                "SYMBOLIC SUB-QUEUE is a non-conforming communication feature",
+            );
         }
 
         apply_positional_communication_fields(
