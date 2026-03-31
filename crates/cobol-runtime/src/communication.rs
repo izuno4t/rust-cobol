@@ -275,6 +275,44 @@ unsafe fn write_error_key_flags(
     }
 }
 
+unsafe fn validate_output_destinations(
+    config: Option<&CommunicationConfig>,
+    dest_ptr: *const u8,
+    dest_item_len: u32,
+    dest_count: u32,
+    dest_table_count: u32,
+    error_key_ptr: *mut u8,
+    error_key_len: u32,
+) -> u32 {
+    write_error_key_flags(error_key_ptr, error_key_len, None);
+    let Some(config) = config else {
+        return 0;
+    };
+    if config.destinations.is_empty() {
+        return 0;
+    }
+    if dest_count == 0 {
+        return 30;
+    }
+    if dest_table_count != 0 && dest_count > dest_table_count {
+        return 30;
+    }
+    if dest_ptr.is_null() || dest_item_len == 0 {
+        write_error_key_flags(error_key_ptr, error_key_len, Some(0));
+        return 20;
+    }
+    for idx in 0..dest_count as usize {
+        let offset = idx * dest_item_len as usize;
+        let raw = std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
+        let actual = normalize_comm_value(&String::from_utf8_lossy(raw));
+        if !config.destinations.iter().any(|dest| dest == &actual) {
+            write_error_key_flags(error_key_ptr, error_key_len, Some(idx));
+            return 20;
+        }
+    }
+    0
+}
+
 #[no_mangle]
 /// # Safety
 ///
@@ -284,7 +322,7 @@ unsafe fn write_error_key_flags(
 pub unsafe extern "C" fn cobol_comm_enable(
     name_ptr: *const u8,
     name_len: u32,
-    _mode: i32,
+    mode: i32,
     terminal: i32,
     key_ptr: *const u8,
     key_len: u32,
@@ -298,6 +336,12 @@ pub unsafe extern "C" fn cobol_comm_enable(
     sub3_len: u32,
     source_ptr: *const u8,
     source_len: u32,
+    dest_ptr: *const u8,
+    dest_item_len: u32,
+    dest_count: u32,
+    dest_table_count: u32,
+    error_key_ptr: *mut u8,
+    error_key_len: u32,
 ) -> u32 {
     let Some(name) = key_from_raw(name_ptr, name_len) else {
         return 99;
@@ -335,6 +379,20 @@ pub unsafe extern "C" fn cobol_comm_enable(
                 return source_rc;
             }
         }
+        if mode != 0 {
+            let dest_rc = validate_output_destinations(
+                config,
+                dest_ptr,
+                dest_item_len,
+                dest_count,
+                dest_table_count,
+                error_key_ptr,
+                error_key_len,
+            );
+            if dest_rc != 0 {
+                return dest_rc;
+            }
+        }
         runtime.queues.entry(name.clone()).or_default().enabled = true;
         if comm_debug_enabled() {
             eprintln!("[COMM] enable {name} rc=0");
@@ -352,7 +410,7 @@ pub unsafe extern "C" fn cobol_comm_enable(
 pub unsafe extern "C" fn cobol_comm_disable(
     name_ptr: *const u8,
     name_len: u32,
-    _mode: i32,
+    mode: i32,
     terminal: i32,
     key_ptr: *const u8,
     key_len: u32,
@@ -366,6 +424,12 @@ pub unsafe extern "C" fn cobol_comm_disable(
     sub3_len: u32,
     source_ptr: *const u8,
     source_len: u32,
+    dest_ptr: *const u8,
+    dest_item_len: u32,
+    dest_count: u32,
+    dest_table_count: u32,
+    error_key_ptr: *mut u8,
+    error_key_len: u32,
 ) -> u32 {
     let Some(name) = key_from_raw(name_ptr, name_len) else {
         return 99;
@@ -401,6 +465,20 @@ pub unsafe extern "C" fn cobol_comm_disable(
                     eprintln!("[COMM] disable {name} rc={source_rc}");
                 }
                 return source_rc;
+            }
+        }
+        if mode != 0 {
+            let dest_rc = validate_output_destinations(
+                config,
+                dest_ptr,
+                dest_item_len,
+                dest_count,
+                dest_table_count,
+                error_key_ptr,
+                error_key_len,
+            );
+            if dest_rc != 0 {
+                return dest_rc;
             }
         }
         runtime.queues.entry(name.clone()).or_default().enabled = false;
@@ -463,6 +541,14 @@ pub unsafe extern "C" fn cobol_comm_send(
             }
             return 60;
         }
+        if effective_len > from_len {
+            if comm_debug_enabled() {
+                eprintln!(
+                    "[COMM] send {name} rc=50 from_len={from_len} effective_len={effective_len}"
+                );
+            }
+            return 50;
+        }
         if let Some(config) = config {
             if !config.destinations.is_empty() && !dest_ptr.is_null() && dest_item_len != 0 {
                 for idx in 0..dest_count as usize {
@@ -483,9 +569,9 @@ pub unsafe extern "C" fn cobol_comm_send(
         let state = runtime.queues.entry(name.clone()).or_default();
         if !state.enabled {
             if comm_debug_enabled() {
-                eprintln!("[COMM] send {name} rc=99");
+                eprintln!("[COMM] send {name} rc=10");
             }
-            return 99;
+            return 10;
         }
         if let Some(routes) = runtime.routes.get(&name).cloned() {
             for target in routes {
@@ -841,6 +927,12 @@ mod tests {
                     blank.as_ptr(),
                     12,
                     std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    0,
+                    0,
+                    std::ptr::null_mut(),
                     0,
                 )
             };

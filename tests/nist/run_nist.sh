@@ -640,6 +640,10 @@ run_program() {
     wait "$CURRENT_RUN_PID" || exit_code=$?
     CURRENT_RUN_PID=""
 
+    if [ -f "$print_file" ] && [ -s "$print_file" ]; then
+        cp "$print_file" "$log" || true
+    fi
+
     if [ "$exit_code" -eq 124 ]; then
         # Check for custom judge first — some tests legitimately time out
         # (e.g., communication tests, subprogram tests) but should be PASS.

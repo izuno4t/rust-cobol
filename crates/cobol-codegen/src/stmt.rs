@@ -1848,8 +1848,23 @@ pub(crate) fn emit_statement_with_ctx(
                     emit_optional_comm_item(binding.symbolic_source.as_deref(), data_items)
                 })
                 .unwrap_or_else(null_comm_arg);
+            let (dest_arg, dest_table_count, dest_count_expr, error_key_arg) = binding
+                .as_ref()
+                .map(|binding| {
+                    (
+                        emit_optional_comm_item(binding.destination.as_deref(), data_items),
+                        binding.destination_table_count.unwrap_or(0),
+                        binding
+                            .destination_count
+                            .as_ref()
+                            .map(|name| emit_numeric_expr_for_var(name, data_items))
+                            .unwrap_or_else(|| "0".to_string()),
+                        emit_optional_mut_comm_item(binding.error_key.as_deref(), data_items),
+                    )
+                })
+                .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
             out.push_str(&format!(
-                "{pad}{{ uint32_t _rc = cobol_comm_enable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                "{pad}{{ uint32_t _rc = cobol_comm_enable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
                 emit_comm_mode(mode),
                 if *terminal { 1 } else { 0 },
@@ -1862,7 +1877,13 @@ pub(crate) fn emit_statement_with_ctx(
                 selectors.sub3_ptr,
                 selectors.sub3_len,
                 source.0,
-                source.1
+                source.1,
+                dest_arg.0,
+                dest_arg.1,
+                dest_count_expr,
+                dest_table_count,
+                error_key_arg.0,
+                error_key_arg.1
             ));
             emit_comm_status_updates(
                 out,
@@ -1894,8 +1915,23 @@ pub(crate) fn emit_statement_with_ctx(
                     emit_optional_comm_item(binding.symbolic_source.as_deref(), data_items)
                 })
                 .unwrap_or_else(null_comm_arg);
+            let (dest_arg, dest_table_count, dest_count_expr, error_key_arg) = binding
+                .as_ref()
+                .map(|binding| {
+                    (
+                        emit_optional_comm_item(binding.destination.as_deref(), data_items),
+                        binding.destination_table_count.unwrap_or(0),
+                        binding
+                            .destination_count
+                            .as_ref()
+                            .map(|name| emit_numeric_expr_for_var(name, data_items))
+                            .unwrap_or_else(|| "0".to_string()),
+                        emit_optional_mut_comm_item(binding.error_key.as_deref(), data_items),
+                    )
+                })
+                .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
             out.push_str(&format!(
-                "{pad}{{ uint32_t _rc = cobol_comm_disable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                "{pad}{{ uint32_t _rc = cobol_comm_disable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
                 emit_comm_mode(mode),
                 if *terminal { 1 } else { 0 },
@@ -1908,7 +1944,13 @@ pub(crate) fn emit_statement_with_ctx(
                 selectors.sub3_ptr,
                 selectors.sub3_len,
                 source.0,
-                source.1
+                source.1,
+                dest_arg.0,
+                dest_arg.1,
+                dest_count_expr,
+                dest_table_count,
+                error_key_arg.0,
+                error_key_arg.1
             ));
             emit_comm_status_updates(
                 out,

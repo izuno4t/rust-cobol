@@ -741,10 +741,10 @@ fn emit_runtime_declarations(out: &mut String) {
     out.push_str("extern void cobol_call_leave(void);\n");
     out.push_str("/* Communication runtime declarations */\n");
     out.push_str(
-        "extern uint32_t cobol_comm_enable(const uint8_t* name_ptr, uint32_t name_len, int32_t mode, int32_t terminal, const uint8_t* key_ptr, uint32_t key_len, const uint8_t* queue_ptr, uint32_t queue_len, const uint8_t* sub1_ptr, uint32_t sub1_len, const uint8_t* sub2_ptr, uint32_t sub2_len, const uint8_t* sub3_ptr, uint32_t sub3_len, const uint8_t* source_ptr, uint32_t source_len);\n",
+        "extern uint32_t cobol_comm_enable(const uint8_t* name_ptr, uint32_t name_len, int32_t mode, int32_t terminal, const uint8_t* key_ptr, uint32_t key_len, const uint8_t* queue_ptr, uint32_t queue_len, const uint8_t* sub1_ptr, uint32_t sub1_len, const uint8_t* sub2_ptr, uint32_t sub2_len, const uint8_t* sub3_ptr, uint32_t sub3_len, const uint8_t* source_ptr, uint32_t source_len, const uint8_t* dest_ptr, uint32_t dest_item_len, uint32_t dest_count, uint32_t dest_table_count, uint8_t* error_key_ptr, uint32_t error_key_len);\n",
     );
     out.push_str(
-        "extern uint32_t cobol_comm_disable(const uint8_t* name_ptr, uint32_t name_len, int32_t mode, int32_t terminal, const uint8_t* key_ptr, uint32_t key_len, const uint8_t* queue_ptr, uint32_t queue_len, const uint8_t* sub1_ptr, uint32_t sub1_len, const uint8_t* sub2_ptr, uint32_t sub2_len, const uint8_t* sub3_ptr, uint32_t sub3_len, const uint8_t* source_ptr, uint32_t source_len);\n",
+        "extern uint32_t cobol_comm_disable(const uint8_t* name_ptr, uint32_t name_len, int32_t mode, int32_t terminal, const uint8_t* key_ptr, uint32_t key_len, const uint8_t* queue_ptr, uint32_t queue_len, const uint8_t* sub1_ptr, uint32_t sub1_len, const uint8_t* sub2_ptr, uint32_t sub2_len, const uint8_t* sub3_ptr, uint32_t sub3_len, const uint8_t* source_ptr, uint32_t source_len, const uint8_t* dest_ptr, uint32_t dest_item_len, uint32_t dest_count, uint32_t dest_table_count, uint8_t* error_key_ptr, uint32_t error_key_len);\n",
     );
     out.push_str(
         "extern uint32_t cobol_comm_send(const uint8_t* name_ptr, uint32_t name_len, const uint8_t* from_ptr, uint32_t from_len, uint32_t effective_len, int32_t option_kind, int64_t option_value, int32_t replacing_line, const uint8_t* dest_ptr, uint32_t dest_item_len, uint32_t dest_count, uint32_t dest_table_count, uint8_t* error_key_ptr, uint32_t error_key_len);\n",
