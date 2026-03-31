@@ -42,15 +42,32 @@ Measurement environment: macOS 26.3.1 on Apple Silicon, Apple clang
 
 ## Quick Start
 
+Typical user flow:
+
+1. Build the compiler.
+2. Compile a COBOL source file into a native executable.
+3. Run the generated executable.
+
+Try the bundled `examples/hello.cob` program:
+
 ```bash
-# Build the compiler
+# 1. Build the compiler
 make build
 
-# Compile and run the example
-make example
+# 2. Compile the COBOL source into a native executable
+./target/debug/cobol-driver examples/hello.cob -o /tmp/hello --source-format free
+
+# 3. Run the generated executable
+/tmp/hello
 ```
 
-This compiles `examples/hello.cob` and runs the resulting binary.
+`examples/hello.cob` is the input COBOL program. The `-o` path is the
+output executable path. After compilation finishes, run that generated
+file directly. For example, if you compile with `-o ./hello`, run it
+with `./hello`.
+
+If you just want to try the bundled example end-to-end, `make example`
+performs the same compile step and then runs the generated binary for you.
 
 ```cobol
 IDENTIFICATION DIVISION.
@@ -66,8 +83,11 @@ PROCEDURE DIVISION.
 # Install cobolc to ~/.cargo/bin
 make install
 
-# Compile a COBOL program
+# Compile a COBOL program into a native executable
 cobolc myprogram.cob -o myprogram --source-format free
+
+# Run the generated executable
+./myprogram
 ```
 
 ## Build Commands
