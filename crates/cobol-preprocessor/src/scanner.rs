@@ -505,7 +505,7 @@ fn parse_pseudo_text(source: &str, start: usize, fixed_format: bool) -> Option<(
             .find('\n')
             .map(|idx| pos + idx)
             .unwrap_or(len);
-        let visible_start = if fixed_format && pos > line_start {
+        let visible_start = if fixed_format {
             pos.max((line_start + 7).min(line_end))
         } else {
             pos
@@ -768,6 +768,46 @@ mod tests {
         let (word, end) = parse_cobol_word(source, start, true).expect("word");
         assert_eq!(word, "GRP-001");
         assert_eq!(&source[end..end + 1], " ");
+    }
+
+    #[test]
+    fn test_scan_copy_replacing_keeps_fixed_format_qualified_replacement() {
+        let source = concat!(
+            "036100     COPY                                                    KP002\n",
+            "036200             REPLACING == WRK-DS-09V00-901\n",
+            "036300                          SUBTRACT 1 FROM\n",
+            "036400                          WRK-DS-05V00-O005-001 IN GRP-002 (1)==\n",
+            "036500             BY         WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005\n",
+            "036600-                  F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-0\n",
+            "036700-                      01 (1).\n",
+        );
+
+        let stmts = scan_copy_statements(source, true);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0].replacings.len(), 1);
+        assert_eq!(
+            stmts[0].replacings[0].new_text,
+            concat!(
+                "WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005\n",
+                "036600-                  F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-0\n",
+                "036700-                      01 (1)"
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_pseudo_text_across_fixed_continuations_skips_prefixes() {
+        let source = concat!(
+            "036100 REPLACE   ==\"Z\"== BY                          ==\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036200-    \"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n",
+            "036300-    \"\"\"\"\"\"==.\n",
+        );
+        let start = source.find("==\"\"").expect("opening pseudo text");
+        let (text, end) = parse_pseudo_text(source, start, true).expect("pseudo text");
+        assert!(text.starts_with("\"\"\""), "text: {:?}", text);
+        assert!(!text.contains("036200-"), "text: {:?}", text);
+        assert!(!text.contains("036300-"), "text: {:?}", text);
+        assert_eq!(&source[end..end + 1], ".");
     }
 
     #[test]

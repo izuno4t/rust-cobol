@@ -211,32 +211,59 @@ fn rewrap_fixed_format_lines(source: &str) -> String {
             result.push('\n');
             continue;
         }
-        // Line exceeds 72 columns. Split at a word boundary before column 72.
-        // Find the last space within columns 1-72 for a clean split.
-        let content = &line_no_cr[..72];
-        let split_at = content.rfind(' ').unwrap_or(72);
-        if split_at <= 7 {
-            // No good split point; use column 72 directly
-            result.push_str(content);
-            result.push('\n');
-            let overflow = line_no_cr[72..].trim();
-            if !overflow.is_empty() {
+        let mut remaining = line_no_cr;
+        let mut first = true;
+        while !remaining.is_empty() {
+            let max_len = if first { 72 } else { 65 };
+            if remaining.len() <= max_len {
+                if first {
+                    result.push_str(remaining);
+                } else {
+                    result.push_str("       ");
+                    result.push_str(remaining);
+                }
+                result.push('\n');
+                break;
+            }
+
+            let window = &remaining[..max_len];
+            let min_split = if first { 7 } else { 0 };
+            let split_at = window.rfind(' ').filter(|idx| *idx > min_split);
+
+            if let Some(split_at) = split_at {
+                if first {
+                    result.push_str(&remaining[..split_at]);
+                } else {
+                    result.push_str("       ");
+                    result.push_str(&remaining[..split_at]);
+                }
+                result.push('\n');
+                remaining = remaining[split_at..].trim_start();
+            } else if first {
+                result.push_str(window);
+                result.push('\n');
+                remaining = remaining[max_len..].trim_start();
+                if !remaining.is_empty() {
+                    result.push_str("      -");
+                    let take = remaining
+                        .char_indices()
+                        .nth(65)
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(remaining.len());
+                    result.push_str(&remaining[..take]);
+                    result.push('\n');
+                    remaining = remaining[take..].trim_start();
+                }
+                first = false;
+                continue;
+            } else {
                 result.push_str("      -");
-                result.push_str(overflow);
+                result.push_str(window);
                 result.push('\n');
+                remaining = remaining[max_len..].trim_start();
             }
-        } else {
-            result.push_str(&line_no_cr[..split_at]);
-            result.push('\n');
-            // When splitting on whitespace, keep the continuation as a normal
-            // fixed-format line so token boundaries such as `IN WRK-FIELD`
-            // are preserved instead of being merged into one word.
-            let rest = line_no_cr[split_at..].trim_start();
-            if !rest.is_empty() {
-                result.push_str("       ");
-                result.push_str(rest);
-                result.push('\n');
-            }
+
+            first = false;
         }
     }
     if !source.ends_with('\n') && !source.ends_with("\r\n") {

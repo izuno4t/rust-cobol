@@ -1238,4 +1238,23 @@ mod tests {
             "single-quoted string should be merged across continuation"
         );
     }
+
+    #[test]
+    fn test_continuation_quote_heavy_string_closes_before_next_statement() {
+        let line1 = fixed_line("037600", ' ', r#"IF WRK-X = """"""""""""""""#);
+        let line2 = fixed_line("037700", '-', r#"    """"""""""""""""""""""""""""""""""""""""""""""""""""""""#);
+        let line3 = fixed_line("037800", '-', r#"    """""" TO WRK-X"#);
+        let line4 = fixed_line("037900", ' ', "PERFORM PASS");
+        let src = format!("{}{}{}{}", line1, line2, line3, line4);
+        let tokens = lex(&src);
+
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::To),
+            "TO should be tokenized after the long string"
+        );
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::Perform),
+            "PERFORM should not be swallowed into the string literal"
+        );
+    }
 }

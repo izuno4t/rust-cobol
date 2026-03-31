@@ -368,4 +368,53 @@ mod tests {
         assert_eq!(replace_whole_word(" A ", "A", "B"), " B ");
         assert_eq!(replace_whole_word("A.", "A", "B"), "B.");
     }
+
+    #[test]
+    fn test_normalize_pseudo_text_keeps_fixed_continuation_tail() {
+        let raw = concat!(
+            "WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005\n",
+            "036600-                  F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-0\n",
+            "036700-                      01 (1)"
+        );
+
+        assert_eq!(
+            normalize_pseudo_text(raw),
+            "WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-001 (1)"
+        );
+    }
+
+    #[test]
+    fn test_apply_replacing_fixed_pseudo_text_keeps_continuation_tail() {
+        let content = concat!(
+            "000500                   WRK-DS-09V00-901                               KP0024.2\n",
+            "000600                                   SUBTRACT                       KP0024.2\n",
+            "000700                                            1                     KP0024.2\n",
+            "000800                                             FROM                 KP0024.2\n",
+            "000900                  WRK-DS-05V00-O005-001 IN GRP-002 (1).           KP0024.2\n",
+        );
+        let replacings = vec![ReplacePair {
+            old_text: concat!(
+                " WRK-DS-09V00-901\n",
+                "                          SUBTRACT 1 FROM\n",
+                "                          WRK-DS-05V00-O005-001 IN GRP-002 (1)"
+            )
+            .to_string(),
+            new_text: concat!(
+                "WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005\n",
+                "036600-                  F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-0\n",
+                "036700-                      01 (1)"
+            )
+            .to_string(),
+            is_pseudo_text: true,
+        }];
+
+        let result = apply_replacing(content, &replacings);
+        assert!(
+            result.contains(
+                "WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-001 (1)."
+            ),
+            "result: {:?}",
+            result
+        );
+    }
 }
