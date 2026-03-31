@@ -228,8 +228,9 @@ fn rewrap_fixed_format_lines(source: &str) -> String {
         } else {
             result.push_str(&line_no_cr[..split_at]);
             result.push('\n');
-            // Continuation: cols 1-6 = spaces, col 7 = space (not hyphen),
-            // then the rest of the content
+            // When splitting on whitespace, keep the continuation as a normal
+            // fixed-format line so token boundaries such as `IN WRK-FIELD`
+            // are preserved instead of being merged into one word.
             let rest = line_no_cr[split_at..].trim_start();
             if !rest.is_empty() {
                 result.push_str("       ");
@@ -535,6 +536,50 @@ mod tests {
         let result = preprocess(source, &source_path, &config);
         assert!(
             result.source.contains("NEW-NAME"),
+            "expanded source: {:?}",
+            result.source
+        );
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn test_fixed_copy_replacing_keeps_long_identifier_across_continuations() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("test.cob");
+        fs::write(&source_path, "").unwrap();
+
+        let copybook_content = concat!(
+            "000100     MOVE   +00009 TO WRK-DS-05V00-O005-001  IN WRK-XN-00050-O005FKP0024.2\n",
+            "000200-            -001 OF GRP-006 OF GRP-004 IN GRP-003 ( 2 ).         KP0024.2\n",
+            "000300     ADD                                                          KP0024.2\n",
+            "000400         +00001 TO                                                KP0024.2\n",
+            "000500                   WRK-DS-09V00-901                               KP0024.2\n",
+            "000600                                   SUBTRACT                       KP0024.2\n",
+            "000700                                            1                     KP0024.2\n",
+            "000800                                             FROM                 KP0024.2\n",
+            "000900                  WRK-DS-05V00-O005-001 IN GRP-002 (1).           KP0024.2\n",
+        );
+        fs::write(dir.path().join("kp002.cpy"), copybook_content).unwrap();
+
+        let source = concat!(
+            "036100     COPY                                                    KP002\n",
+            "036200             REPLACING == WRK-DS-09V00-901\n",
+            "036300                          SUBTRACT 1 FROM\n",
+            "036400                          WRK-DS-05V00-O005-001 IN GRP-002 (1)==\n",
+            "036500             BY         WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005\n",
+            "036600-                  F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-0\n",
+            "036700-                      01 (1).\n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            source_format: SourceFormat::Fixed,
+            ..Default::default()
+        };
+        let result = preprocess(source, &source_path, &config);
+        assert!(
+            result
+                .source
+                .contains("WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-001 (1)."),
             "expanded source: {:?}",
             result.source
         );

@@ -225,20 +225,26 @@ impl Lexer {
 
                     if is_string_continuation {
                         // Skip the opening quote on the continuation line
+                        let quote = first_non_space.unwrap();
                         skip += 1;
 
-                        // Trim trailing spaces from the previous segment's text,
-                        // then remove trailing content up to and including the
-                        // last non-space character so that the string contents
-                        // join seamlessly.
-                        //
-                        // In fixed format, the previous line's content area may
-                        // look like: MOVE "THIS IS A VERY L
-                        // (the string is left open, truncated at column 72).
-                        // We need to keep the text as-is (the string is still
-                        // open) and just trim trailing spaces.
+                        // Trim trailing spaces, then drop the previous line's
+                        // trailing quote when present. COBOL fixed-format
+                        // string continuation uses one quote at the end of the
+                        // continued line and one at the start of the next line
+                        // as continuation markers rather than string content.
                         let prev_trimmed_len = prev.text.trim_end().len();
                         prev.text.truncate(prev_trimmed_len);
+                        let trailing_quotes = prev
+                            .text
+                            .as_bytes()
+                            .iter()
+                            .rev()
+                            .take_while(|&&b| b == quote)
+                            .count();
+                        if trailing_quotes % 2 == 1 {
+                            prev.text.pop();
+                        }
 
                         // Append the continuation content (after the quote)
                         let appended = &cont_text[skip..];
@@ -1130,6 +1136,7 @@ mod tests {
             "string should be merged across multiple continuation lines"
         );
     }
+
 
     #[test]
     fn test_continuation_non_string() {

@@ -30,50 +30,25 @@ impl Parser {
 
     /// Parse a qualified data name.
     ///
-    /// Grammar: identifier [OF|IN identifier]... [(subscript, ...)]
+    /// Grammar: identifier [(subscript, ...)] [OF|IN identifier [(subscript, ...)]]...
     pub fn parse_qualified_name(&mut self) -> Result<QualifiedName, ()> {
         let start_span = self.span();
         let name = self.expect_identifier()?;
+
+        let mut subscripts = Vec::new();
+        let mut ref_mod = None;
+        self.parse_subscripts_into(&mut subscripts);
 
         let mut qualifiers = Vec::new();
         while self.check(TokenKind::Of) || self.check(TokenKind::In) {
             self.advance();
             let qual = self.expect_identifier()?;
             qualifiers.push(qual);
+            self.parse_subscripts_into(&mut subscripts);
         }
 
-        let mut subscripts = Vec::new();
-        let mut ref_mod = None;
-        if self.check(TokenKind::LeftParen) {
-            // Peek ahead to decide: reference modification (contains ':')
-            // vs. subscript. We scan tokens inside the parens looking for
-            // a colon at the top nesting level.
-            if !self.is_reference_modification_ahead() {
-                self.advance(); // consume '('
-                loop {
-                    let expr = self.parse_expr()?;
-                    subscripts.push(expr);
-                    // COBOL subscripts can be separated by comma or space
-                    let _ = self.eat(TokenKind::Comma);
-                    // Stop if we hit ')' or end of input
-                    if self.check(TokenKind::RightParen) || self.at_eof() {
-                        break;
-                    }
-                }
-                self.expect(TokenKind::RightParen)?;
-            } else {
-                // Reference modification: consume (start:length)
-                let (ref_start, ref_length) = self.parse_reference_modification()?;
-                ref_mod = Some((Box::new(ref_start), ref_length.map(Box::new)));
-            }
-        }
-
-        // After subscripts, there may also be a reference modification
-        // e.g. TABLE(IDX)(1:3)
-        if ref_mod.is_none()
-            && self.check(TokenKind::LeftParen)
-            && self.is_reference_modification_ahead()
-        {
+        if self.check(TokenKind::LeftParen) && self.is_reference_modification_ahead() {
+            // Reference modification: consume (start:length)
             let (ref_start, ref_length) = self.parse_reference_modification()?;
             ref_mod = Some((Box::new(ref_start), ref_length.map(Box::new)));
         }
@@ -87,6 +62,26 @@ impl Parser {
             ref_mod,
             span: start_span.merge(&end_span),
         })
+    }
+
+    fn parse_subscripts_into(&mut self, subscripts: &mut Vec<Expr>) {
+        while self.check(TokenKind::LeftParen) && !self.is_reference_modification_ahead() {
+            self.advance(); // consume '('
+            loop {
+                let expr = match self.parse_expr() {
+                    Ok(expr) => expr,
+                    Err(_) => return,
+                };
+                subscripts.push(expr);
+                let _ = self.eat(TokenKind::Comma);
+                if self.check(TokenKind::RightParen) || self.at_eof() {
+                    break;
+                }
+            }
+            if self.expect(TokenKind::RightParen).is_err() {
+                return;
+            }
+        }
     }
 
     /// Look ahead from a `(` token to determine whether the parenthesized

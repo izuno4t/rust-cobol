@@ -600,13 +600,22 @@ impl Parser {
     fn parse_move_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Move)?;
+        while self.check(TokenKind::Comma) || self.check(TokenKind::Semicolon) {
+            self.advance();
+        }
 
         let corresponding = self.eat(TokenKind::Corresponding).is_some();
         let from = self.parse_expr()?;
+        while self.check(TokenKind::Comma) || self.check(TokenKind::Semicolon) {
+            self.advance();
+        }
         self.expect(TokenKind::To)?;
 
         let mut to = Vec::new();
         loop {
+            while self.check(TokenKind::Comma) || self.check(TokenKind::Semicolon) {
+                self.advance();
+            }
             let target_start = self.span();
             let qn = self.parse_qualified_name()?;
             // parse_qualified_name now consumes reference modification.
@@ -626,7 +635,9 @@ impl Parser {
                 Expr::Identifier(qn)
             };
             to.push(target_expr);
-            let _ = self.eat(TokenKind::Comma); // Optional comma separator
+            while self.check(TokenKind::Comma) || self.check(TokenKind::Semicolon) {
+                self.advance();
+            }
             if !self.check(TokenKind::Identifier) || self.at_statement_terminator() {
                 break;
             }

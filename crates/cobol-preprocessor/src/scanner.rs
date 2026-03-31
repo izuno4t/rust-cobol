@@ -220,7 +220,7 @@ fn parse_copy_statement(
     }
 
     // Parse copybook name.
-    let (copybook_name, next_pos) = parse_cobol_word(source, pos)?;
+    let (copybook_name, next_pos) = parse_cobol_word(source, pos, fixed_format)?;
     pos = skip_whitespace(source, next_pos, fixed_format);
 
     // Check for optional OF/IN library-name.
@@ -237,7 +237,7 @@ fn parse_copy_statement(
             || upper_rest.starts_with("IN\r")
         {
             pos = skip_whitespace(source, pos + 2, fixed_format);
-            if let Some((lib_name, np)) = parse_cobol_word(source, pos) {
+            if let Some((lib_name, np)) = parse_cobol_word(source, pos, fixed_format) {
                 library_name = Some(lib_name);
                 pos = skip_whitespace(source, np, fixed_format);
             }
@@ -355,14 +355,14 @@ fn parse_replace_pair(
     }
 
     let (old_text, is_pseudo, next_pos) = if source[pos..].starts_with("==") {
-        let (text, np) = parse_pseudo_text(source, pos)?;
+        let (text, np) = parse_pseudo_text(source, pos, fixed_format)?;
         (text, true, np)
     } else if pos < len && (source.as_bytes()[pos] == b'"' || source.as_bytes()[pos] == b'\'') {
         // Handle string literal as old operand (e.g., REPLACING "PIG" BY "HORSE")
         let (text, np) = parse_string_literal(source, pos)?;
         (text, false, np)
     } else {
-        let (word, np) = parse_cobol_word(source, pos)?;
+        let (word, np) = parse_cobol_word(source, pos, fixed_format)?;
         (word, false, np)
     };
 
@@ -380,7 +380,7 @@ fn parse_replace_pair(
     pos = skip_whitespace(source, after_by, fixed_format);
 
     let (new_text, next_pos2) = if pos < len && source[pos..].starts_with("==") {
-        let (text, np) = parse_pseudo_text(source, pos)?;
+        let (text, np) = parse_pseudo_text(source, pos, fixed_format)?;
         (text, np)
     } else if pos < len && (source.as_bytes()[pos] == b'"' || source.as_bytes()[pos] == b'\'') {
         // Handle string literal replacement values (e.g., "TRUE ")
@@ -425,7 +425,7 @@ fn parse_qualified_word(source: &str, start: usize, fixed_format: bool) -> Optio
     let len = source.len();
 
     // Parse the initial COBOL word.
-    let (_, word_end) = parse_cobol_word(source, start)?;
+    let (_, word_end) = parse_cobol_word(source, start, fixed_format)?;
     let mut end = word_end;
 
     loop {
@@ -449,7 +449,7 @@ fn parse_qualified_word(source: &str, start: usize, fixed_format: bool) -> Optio
                     && (ws_end + 2 >= len || !is_cobol_word_char(source.as_bytes()[ws_end + 2])));
             if is_of_in {
                 let after_kw = skip_whitespace(source, ws_end + 2, fixed_format);
-                if let Some((_, np)) = parse_cobol_word(source, after_kw) {
+                if let Some((_, np)) = parse_cobol_word(source, after_kw, fixed_format) {
                     end = np;
                     continue;
                 }
@@ -491,19 +491,44 @@ fn find_closing_paren(source: &str, start: usize) -> Option<usize> {
 
 /// Parses pseudo-text delimited by `==` ... `==`.
 /// Returns the raw text between delimiters and position after closing `==`.
-fn parse_pseudo_text(source: &str, start: usize) -> Option<(String, usize)> {
+fn parse_pseudo_text(source: &str, start: usize, fixed_format: bool) -> Option<(String, usize)> {
     if !source[start..].starts_with("==") {
         return None;
     }
+    let len = source.len();
+    let mut pos = start + 2;
+    let mut text = String::new();
 
-    let content_start = start + 2;
-    let rest = &source[content_start..];
+    loop {
+        let line_start = source[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+        let line_end = source[pos..]
+            .find('\n')
+            .map(|idx| pos + idx)
+            .unwrap_or(len);
+        let visible_start = if fixed_format && pos > line_start {
+            pos.max((line_start + 7).min(line_end))
+        } else {
+            pos
+        };
+        let visible_end = if fixed_format {
+            line_end.min(line_start + 72)
+        } else {
+            line_end
+        };
 
-    let close_pos = rest.find("==")?;
-    let text = rest[..close_pos].to_string();
-    let after_close = content_start + close_pos + 2;
+        if let Some(close_rel) = source[visible_start..visible_end].find("==") {
+            let close_abs = visible_start + close_rel;
+            text.push_str(&source[visible_start..close_abs]);
+            return Some((text, close_abs + 2));
+        }
 
-    Some((text, after_close))
+        text.push_str(&source[visible_start..visible_end]);
+        if line_end == len {
+            return None;
+        }
+        text.push('\n');
+        pos = line_end + 1;
+    }
 }
 
 /// Parses a string literal (single or double quoted) starting at `pos`.
@@ -574,7 +599,7 @@ fn parse_numeric_literal(source: &str, start: usize) -> Option<(String, usize)> 
 
 /// Parses a COBOL word (letters, digits, hyphens) starting at `pos`.
 /// Returns the word and position after it.
-fn parse_cobol_word(source: &str, start: usize) -> Option<(String, usize)> {
+fn parse_cobol_word(source: &str, start: usize, fixed_format: bool) -> Option<(String, usize)> {
     let bytes = source.as_bytes();
     let len = bytes.len();
 
@@ -582,16 +607,48 @@ fn parse_cobol_word(source: &str, start: usize) -> Option<(String, usize)> {
         return None;
     }
 
-    let mut end = start;
-    while end < len && is_cobol_word_char(bytes[end]) {
-        end += 1;
+    let mut text = String::new();
+    let mut segment_start = start;
+    let mut pos = start;
+
+    loop {
+        while pos < len && is_cobol_word_char(bytes[pos]) {
+            pos += 1;
+        }
+        if pos == segment_start {
+            return None;
+        }
+        text.push_str(&source[segment_start..pos]);
+
+        if !fixed_format || pos >= len || bytes[pos] != b'\n' {
+            break;
+        }
+
+        let line_start = pos + 1;
+        if line_start >= len {
+            break;
+        }
+        let mut line_end = line_start;
+        while line_end < len && bytes[line_end] != b'\n' {
+            line_end += 1;
+        }
+        if line_end - line_start < 7 || bytes[line_start + 6] != b'-' {
+            break;
+        }
+
+        let mut next = line_start + 7;
+        while next < line_end && bytes[next] == b' ' {
+            next += 1;
+        }
+        if next >= line_end || !is_cobol_word_char(bytes[next]) {
+            break;
+        }
+
+        segment_start = next;
+        pos = next;
     }
 
-    if end == start {
-        return None;
-    }
-
-    Some((source[start..end].to_string(), end))
+    Some((text, pos))
 }
 
 /// Skips whitespace and newlines starting from `pos`.
@@ -702,6 +759,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_cobol_word_across_fixed_continuation() {
+        let source = concat!(
+            "036600-                  GRP-0\n",
+            "036700-                      01 (1).\n",
+        );
+        let start = source.find("GRP-0").unwrap();
+        let (word, end) = parse_cobol_word(source, start, true).expect("word");
+        assert_eq!(word, "GRP-001");
+        assert_eq!(&source[end..end + 1], " ");
+    }
+
+    #[test]
     fn test_scan_copy_case_insensitive() {
         let source = "copy MYBOOK.\n";
         let stmts = scan_copy_statements(source, false);
@@ -749,7 +818,7 @@ mod tests {
     #[test]
     fn test_parse_pseudo_text_with_spaces() {
         let source = "==  HELLO WORLD  ==";
-        let result = parse_pseudo_text(source, 0);
+        let result = parse_pseudo_text(source, 0, false);
         assert!(result.is_some());
         let (text, _) = result.unwrap();
         assert_eq!(text, "  HELLO WORLD  ");
