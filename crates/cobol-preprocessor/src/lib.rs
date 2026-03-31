@@ -261,7 +261,11 @@ fn quote_char_at_split(text: &str, split: usize) -> Option<char> {
         i += 1;
     }
 
-    if in_string { Some(quote as char) } else { None }
+    if in_string {
+        Some(quote as char)
+    } else {
+        None
+    }
 }
 
 /// Strips columns 73-80 (the identification area) from each line of fixed-format
@@ -692,7 +696,11 @@ mod tests {
             ..Default::default()
         };
         let result = preprocess(source, &source_path, &config);
-        let normalized = result.source.split_whitespace().collect::<Vec<_>>().join(" ");
+        let normalized = result
+            .source
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             normalized.contains(
                 "WRK-DS-05V00-O005-001 IN WRK-XN-00050-O005F-001 IN GRP-006 IN GRP-004 IN GRP-002 IN GRP-001 (1)."

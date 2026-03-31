@@ -235,14 +235,11 @@ impl Lexer {
                         // as continuation markers rather than string content.
                         let prev_trimmed_len = prev.text.trim_end().len();
                         prev.text.truncate(prev_trimmed_len);
-                        let trailing_quotes = prev
-                            .text
-                            .as_bytes()
-                            .iter()
-                            .rev()
-                            .take_while(|&&b| b == quote)
-                            .count();
-                        if trailing_quotes % 2 == 1 {
+                        // In fixed-format string continuation, the previous
+                        // line contributes exactly one trailing continuation
+                        // quote. Counting the whole trailing run breaks when
+                        // the string content itself is quote-heavy.
+                        if prev.text.as_bytes().last().copied() == Some(quote) {
                             prev.text.pop();
                         }
 
@@ -1137,7 +1134,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_continuation_non_string() {
         // Non-string continuation: a long identifier or keyword sequence
@@ -1242,7 +1238,11 @@ mod tests {
     #[test]
     fn test_continuation_quote_heavy_string_closes_before_next_statement() {
         let line1 = fixed_line("037600", ' ', r#"IF WRK-X = """"""""""""""""#);
-        let line2 = fixed_line("037700", '-', r#"    """"""""""""""""""""""""""""""""""""""""""""""""""""""""#);
+        let line2 = fixed_line(
+            "037700",
+            '-',
+            r#"    """"""""""""""""""""""""""""""""""""""""""""""""""""""""#,
+        );
         let line3 = fixed_line("037800", '-', r#"    """""" TO WRK-X"#);
         let line4 = fixed_line("037900", ' ', "PERFORM PASS");
         let src = format!("{}{}{}{}", line1, line2, line3, line4);

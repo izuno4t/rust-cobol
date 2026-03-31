@@ -501,10 +501,7 @@ fn parse_pseudo_text(source: &str, start: usize, fixed_format: bool) -> Option<(
 
     loop {
         let line_start = source[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
-        let line_end = source[pos..]
-            .find('\n')
-            .map(|idx| pos + idx)
-            .unwrap_or(len);
+        let line_end = source[pos..].find('\n').map(|idx| pos + idx).unwrap_or(len);
         let visible_start = if fixed_format {
             pos.max((line_start + 7).min(line_end))
         } else {
