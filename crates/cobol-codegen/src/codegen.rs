@@ -750,7 +750,10 @@ fn emit_runtime_declarations(out: &mut String) {
         "extern uint32_t cobol_comm_send(const uint8_t* name_ptr, uint32_t name_len, const uint8_t* from_ptr, uint32_t from_len, uint32_t effective_len, int32_t option_kind, int64_t option_value, int32_t replacing_line, const uint8_t* dest_ptr, uint32_t dest_item_len, uint32_t dest_count, uint32_t dest_table_count, uint8_t* error_key_ptr, uint32_t error_key_len);\n",
     );
     out.push_str(
-        "extern uint32_t cobol_comm_receive(const uint8_t* name_ptr, uint32_t name_len, uint8_t* into_ptr, uint32_t into_len, uint32_t* text_length, const uint8_t* queue_ptr, uint32_t queue_len, const uint8_t* sub1_ptr, uint32_t sub1_len, const uint8_t* sub2_ptr, uint32_t sub2_len, const uint8_t* sub3_ptr, uint32_t sub3_len);\n",
+        "extern uint32_t cobol_comm_receive(const uint8_t* name_ptr, uint32_t name_len, int32_t mode, uint8_t* into_ptr, uint32_t into_len, uint32_t* text_length, const uint8_t* queue_ptr, uint32_t queue_len, const uint8_t* sub1_ptr, uint32_t sub1_len, const uint8_t* sub2_ptr, uint32_t sub2_len, const uint8_t* sub3_ptr, uint32_t sub3_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_comm_last_end_key(const uint8_t* name_ptr, uint32_t name_len);\n",
     );
     out.push_str("extern uint32_t cobol_comm_purge(const uint8_t* name_ptr, uint32_t name_len);\n");
     out.push_str(

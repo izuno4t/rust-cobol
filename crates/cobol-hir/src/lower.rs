@@ -28,6 +28,7 @@ use crate::hir::{
     HirCompareOp, HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
     HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
     HirParagraph, HirParam, HirParamMode, HirPerformKind, HirPerformTest, HirProgram,
+    HirReceiveMode,
     HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder,
     HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirType, HirUnaryOp,
     HirUnstringDelimiter, HirVaryingAfter,
@@ -1616,6 +1617,10 @@ fn lower_receive(
 ) -> HirStatement {
     HirStatement::Receive {
         target: receive.target.name.clone(),
+        mode: match receive.mode {
+            cobol_ast::statement::ReceiveMode::Message => HirReceiveMode::Message,
+            cobol_ast::statement::ReceiveMode::Segment => HirReceiveMode::Segment,
+        },
         into: receive.into.name.clone(),
         no_data: receive
             .no_data

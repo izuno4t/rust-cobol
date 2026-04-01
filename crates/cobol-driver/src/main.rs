@@ -273,6 +273,10 @@ fn run() -> Result<(), i32> {
 
         let exe_path = output_exe_path(file_path, &cli.output);
         let runtime_lib_path = find_runtime_lib();
+        if let Err(e) = ensure_runtime_staticlib_is_fresh(&runtime_lib_path) {
+            eprintln!("error: failed to prepare COBOL runtime library: {}", e);
+            return Err(1);
+        }
 
         if cli.verbose {
             eprintln!("C source: {}", c_path.display());
@@ -379,6 +383,73 @@ fn find_runtime_lib() -> PathBuf {
 
     // Default to target/debug
     PathBuf::from("target/debug")
+}
+
+fn ensure_runtime_staticlib_is_fresh(runtime_lib_dir: &Path) -> Result<(), String> {
+    let archive = runtime_lib_dir.join("libcobol_runtime.a");
+    let workspace_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let runtime_root = workspace_root.join("crates/cobol-runtime");
+    if !runtime_root.join("Cargo.toml").exists() {
+        return Ok(());
+    }
+
+    let mut newest_source_mtime = std::fs::metadata(runtime_root.join("Cargo.toml"))
+        .and_then(|meta| meta.modified())
+        .map_err(|e| e.to_string())?;
+    let src_root = runtime_root.join("src");
+    if src_root.exists() {
+        collect_newest_mtime(&src_root, &mut newest_source_mtime)?;
+    }
+
+    let archive_is_fresh = std::fs::metadata(&archive)
+        .and_then(|meta| meta.modified())
+        .map(|mtime| mtime >= newest_source_mtime)
+        .unwrap_or(false);
+    if archive_is_fresh {
+        return Ok(());
+    }
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let mut cmd = std::process::Command::new(cargo);
+    cmd.current_dir(&workspace_root)
+        .arg("build")
+        .arg("-p")
+        .arg("cobol-runtime");
+    if runtime_lib_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "release")
+    {
+        cmd.arg("--release");
+    }
+
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to invoke cargo build for cobol-runtime: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "cargo build -p cobol-runtime exited with status {}",
+            status
+        ));
+    }
+    Ok(())
+}
+
+fn collect_newest_mtime(dir: &Path, newest: &mut std::time::SystemTime) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        if metadata.is_dir() {
+            collect_newest_mtime(&path, newest)?;
+            continue;
+        }
+        let modified = metadata.modified().map_err(|e| e.to_string())?;
+        if modified > *newest {
+            *newest = modified;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

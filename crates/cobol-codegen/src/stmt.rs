@@ -1,5 +1,5 @@
 use super::*;
-use cobol_hir::{HirPerformTest, HirType};
+use cobol_hir::{HirPerformTest, HirReceiveMode, HirType};
 
 pub(crate) struct StmtEmitEnv<'a> {
     pub(crate) data_items: &'a [HirDataItem],
@@ -2028,6 +2028,7 @@ pub(crate) fn emit_statement_with_ctx(
         }
         HirStatement::Receive {
             target,
+            mode,
             into,
             no_data,
             ..
@@ -2042,8 +2043,12 @@ pub(crate) fn emit_statement_with_ctx(
                 .map(|binding| emit_comm_selectors(binding, data_items))
                 .unwrap_or_default();
             out.push_str(&format!(
-                "{pad}{{ uint32_t _text_len = 0; uint32_t _rc = cobol_comm_receive((const uint8_t*)\"{c_target}\", {}, (uint8_t*){into_ptr}, {into_len}, &_text_len, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                "{pad}{{ uint32_t _text_len = 0; uint32_t _rc = cobol_comm_receive((const uint8_t*)\"{c_target}\", {}, {}, (uint8_t*){into_ptr}, {into_len}, &_text_len, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
+                match mode {
+                    HirReceiveMode::Message => 1,
+                    HirReceiveMode::Segment => 2,
+                },
                 selectors.queue_ptr,
                 selectors.queue_len,
                 selectors.sub1_ptr,
@@ -2061,6 +2066,16 @@ pub(crate) fn emit_statement_with_ctx(
                 data_items,
                 &format!("{pad}    "),
             );
+            if let Some(binding) = env.ctx.communication_binding(&c_target) {
+                if let Some(end_key) = binding.end_key {
+                    out.push_str(&format!(
+                        "{pad}    cobol_move_string((const uint8_t*)(cobol_comm_last_end_key((const uint8_t*)\"{c_target}\", {}) ? \"1\" : \"0\"), 1, (uint8_t*){}, {});\n",
+                        c_target.len(),
+                        c_ptr_expr(&end_key, data_items),
+                        find_data_item_size(&end_key, data_items)
+                    ));
+                }
+            }
             if !no_data.is_empty() {
                 out.push_str(&format!("{pad}    if (_rc == 10) {{\n"));
                 for stmt in no_data {
@@ -4869,7 +4884,7 @@ fn emit_comm_status_updates(
 
     if let Some(status_key) = binding.status_key {
         out.push_str(&format!(
-            "{pad}cobol_move_string((const uint8_t*)((({rc_expr}) == 0) ? \"00\" : (({rc_expr}) == 10 ? \"10\" : (({rc_expr}) == 20 ? \"20\" : (({rc_expr}) == 21 ? \"21\" : (({rc_expr}) == 30 ? \"30\" : (({rc_expr}) == 40 ? \"40\" : (({rc_expr}) == 60 ? \"60\" : \"99\"))))))), 2, (uint8_t*){}, {});\n",
+            "{pad}cobol_move_string((const uint8_t*)((({rc_expr}) == 0) ? \"00\" : (({rc_expr}) == 10 ? \"10\" : (({rc_expr}) == 20 ? \"20\" : (({rc_expr}) == 21 ? \"21\" : (({rc_expr}) == 30 ? \"30\" : (({rc_expr}) == 40 ? \"40\" : (({rc_expr}) == 50 ? \"50\" : (({rc_expr}) == 60 ? \"60\" : \"99\")))))))), 2, (uint8_t*){}, {});\n",
             c_ptr_expr(&status_key, data_items),
             find_data_item_size(&status_key, data_items)
         ));
@@ -4904,20 +4919,10 @@ fn emit_comm_status_updates(
     }
     if let Some(error_key) = binding.error_key {
         out.push_str(&format!(
-            "{pad}if (({rc_expr}) != 20) cobol_move_string((const uint8_t*)((({rc_expr}) != 0 && ({rc_expr}) != 10) ? \"1\" : \"0\"), 1, (uint8_t*){}, {});\n",
+            "{pad}if (({rc_expr}) != 20) cobol_move_string((const uint8_t*)\"0\", 1, (uint8_t*){}, {});\n",
             c_ptr_expr(&error_key, data_items),
             find_data_item_size(&error_key, data_items)
         ));
-    }
-    if let Some(symbolic_source) = binding.symbolic_source {
-        out.push_str(&format!(
-            "{pad}memset({}, ' ', {});\n",
-            c_ptr_expr(&symbolic_source, data_items),
-            find_data_item_size(&symbolic_source, data_items)
-        ));
-    }
-    if let Some(destination_count) = binding.destination_count {
-        emit_store_int(out, &destination_count, "0", data_items, pad);
     }
 }
 
@@ -4941,7 +4946,7 @@ fn emit_optional_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -> (S
     name.map(|name| {
         (
             format!("(const uint8_t*){}", c_ptr_expr(name, data_items)),
-            find_data_item_size(name, data_items).to_string(),
+            find_data_item_element_size(name, data_items).to_string(),
         )
     })
     .unwrap_or_else(null_comm_arg)
@@ -4951,7 +4956,7 @@ fn emit_optional_mut_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -
     name.map(|name| {
         (
             format!("(uint8_t*){}", c_ptr_expr(name, data_items)),
-            find_data_item_size(name, data_items).to_string(),
+            find_data_item_element_size(name, data_items).to_string(),
         )
     })
     .unwrap_or_else(null_comm_arg)

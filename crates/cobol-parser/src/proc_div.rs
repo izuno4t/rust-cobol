@@ -1261,12 +1261,16 @@ impl Parser {
         self.expect(TokenKind::Receive)?;
         self.warning_at(start_span, "RECEIVE is a non-conforming communication feature");
         let target = self.parse_qualified_name()?;
-        if self.check(TokenKind::Message) || self.check_identifier("SEGMENT") {
+        let mode = if self.check(TokenKind::Message) {
             self.advance();
+            ReceiveMode::Message
+        } else if self.check_identifier("SEGMENT") {
+            self.advance();
+            ReceiveMode::Segment
         } else {
             self.error("expected MESSAGE or SEGMENT in RECEIVE statement");
             return Err(());
-        }
+        };
         self.expect(TokenKind::Into)?;
         let into = self.parse_qualified_name()?;
         let mut no_data = Vec::new();
@@ -1288,6 +1292,7 @@ impl Parser {
         let end_span = self.span();
         Ok(Statement::Receive(ReceiveStatement {
             target,
+            mode,
             into,
             no_data,
             span: start_span.merge(&end_span),

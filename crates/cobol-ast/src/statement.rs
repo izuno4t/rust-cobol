@@ -258,9 +258,16 @@ pub struct SendStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReceiveStatement {
     pub target: QualifiedName,
+    pub mode: ReceiveMode,
     pub into: QualifiedName,
     pub no_data: Vec<Statement>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiveMode {
+    Message,
+    Segment,
 }
 
 /// PURGE statement.

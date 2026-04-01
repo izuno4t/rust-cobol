@@ -19,9 +19,36 @@ struct CommunicationConfig {
 }
 
 #[derive(Default)]
+struct CommunicationMessage {
+    segments: Vec<Vec<u8>>,
+}
+
+#[derive(Default)]
+struct ActiveMessageReceive {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
+#[derive(Default)]
+struct ActiveSegmentReceive {
+    segments: Vec<Vec<u8>>,
+    segment_index: usize,
+    offset: usize,
+}
+
+#[derive(Default)]
+struct PendingMessage {
+    segments: Vec<Vec<u8>>,
+}
+
+#[derive(Default)]
 struct CommunicationState {
     enabled: bool,
-    messages: VecDeque<Vec<u8>>,
+    messages: VecDeque<CommunicationMessage>,
+    pending_send: PendingMessage,
+    active_message_receive: Option<ActiveMessageReceive>,
+    active_segment_receive: Option<ActiveSegmentReceive>,
+    last_end_key: bool,
 }
 
 #[derive(Default)]
@@ -107,7 +134,9 @@ fn load_comm_script(runtime: &mut CommunicationRuntime, script_path: &str) {
                     .entry(name)
                     .or_default()
                     .messages
-                    .push_back(payload);
+                    .push_back(CommunicationMessage {
+                        segments: vec![payload],
+                    });
             }
             "link" => {
                 let mut link_parts = rest.split_whitespace();
@@ -290,6 +319,20 @@ unsafe fn validate_output_destinations(
     };
     if config.destinations.is_empty() {
         return 0;
+    }
+    if comm_debug_enabled() {
+        eprintln!(
+            "[COMM] validate dest_count={dest_count} dest_table_count={dest_table_count} dest_item_len={dest_item_len} configured={:?}",
+            config.destinations
+        );
+        if !dest_ptr.is_null() && dest_item_len != 0 {
+            for idx in 0..dest_count as usize {
+                let offset = idx * dest_item_len as usize;
+                let raw = std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
+                let actual = normalize_comm_value(&String::from_utf8_lossy(raw));
+                eprintln!("[COMM] validate destination[{idx}]='{actual}'");
+            }
+        }
     }
     if dest_count == 0 {
         return 30;
@@ -502,8 +545,8 @@ pub unsafe extern "C" fn cobol_comm_send(
     from_ptr: *const u8,
     from_len: u32,
     effective_len: u32,
-    _option_kind: i32,
-    _option_value: i64,
+    option_kind: i32,
+    option_value: i64,
     _replacing_line: i32,
     dest_ptr: *const u8,
     dest_item_len: u32,
@@ -525,13 +568,20 @@ pub unsafe extern "C" fn cobol_comm_send(
     with_comm_runtime(|runtime| {
         let config = runtime.configs.get(&name);
         write_error_key_flags(error_key_ptr, error_key_len, None);
-        if dest_table_count != 0 && dest_count > dest_table_count {
+        let dest_rc = validate_output_destinations(
+            config,
+            dest_ptr,
+            dest_item_len,
+            dest_count,
+            dest_table_count,
+            error_key_ptr,
+            error_key_len,
+        );
+        if dest_rc != 0 {
             if comm_debug_enabled() {
-                eprintln!(
-                    "[COMM] send {name} rc=30 dest_count={dest_count} dest_table_count={dest_table_count}"
-                );
+                eprintln!("[COMM] send {name} rc={dest_rc}");
             }
-            return 30;
+            return dest_rc;
         }
         if payload.is_empty() {
             if comm_debug_enabled() {
@@ -549,23 +599,6 @@ pub unsafe extern "C" fn cobol_comm_send(
             }
             return 50;
         }
-        if let Some(config) = config {
-            if !config.destinations.is_empty() && !dest_ptr.is_null() && dest_item_len != 0 {
-                for idx in 0..dest_count as usize {
-                    let offset = idx * dest_item_len as usize;
-                    let raw =
-                        std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
-                    let actual = normalize_comm_value(&String::from_utf8_lossy(raw));
-                    if !config.destinations.iter().any(|dest| dest == &actual) {
-                        write_error_key_flags(error_key_ptr, error_key_len, Some(idx));
-                        if comm_debug_enabled() {
-                            eprintln!("[COMM] send {name} rc=20 invalid_dest_index={idx}");
-                        }
-                        return 20;
-                    }
-                }
-            }
-        }
         let state = runtime.queues.entry(name.clone()).or_default();
         if !state.enabled {
             if comm_debug_enabled() {
@@ -573,17 +606,26 @@ pub unsafe extern "C" fn cobol_comm_send(
             }
             return 10;
         }
-        if let Some(routes) = runtime.routes.get(&name).cloned() {
-            for target in routes {
-                runtime
-                    .queues
-                    .entry(target)
-                    .or_default()
-                    .messages
-                    .push_back(payload.clone());
+        let is_continuation = option_kind == 3 || (option_kind == 4 && option_value == 0);
+        state.pending_send.segments.push(payload);
+        if !is_continuation {
+            let message = CommunicationMessage {
+                segments: std::mem::take(&mut state.pending_send.segments),
+            };
+            if let Some(routes) = runtime.routes.get(&name).cloned() {
+                for target in routes {
+                    runtime
+                        .queues
+                        .entry(target)
+                        .or_default()
+                        .messages
+                        .push_back(CommunicationMessage {
+                            segments: message.segments.clone(),
+                        });
+                }
+            } else {
+                state.messages.push_back(message);
             }
-        } else {
-            state.messages.push_back(payload);
         }
         if comm_debug_enabled() {
             eprintln!(
@@ -592,6 +634,83 @@ pub unsafe extern "C" fn cobol_comm_send(
         }
         0
     })
+}
+
+unsafe fn write_receive_bytes(
+    into_ptr: *mut u8,
+    into_len: u32,
+    text_length: *mut u32,
+    bytes: &[u8],
+) {
+    let copy_len = usize::min(bytes.len(), into_len as usize);
+    if !into_ptr.is_null() && copy_len > 0 {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), into_ptr, copy_len);
+    }
+    if !into_ptr.is_null() && copy_len < into_len as usize {
+        std::ptr::write_bytes(into_ptr.add(copy_len), b' ', into_len as usize - copy_len);
+    }
+    if !text_length.is_null() {
+        *text_length = copy_len as u32;
+    }
+}
+
+unsafe fn receive_message(
+    state: &mut CommunicationState,
+    into_ptr: *mut u8,
+    into_len: u32,
+    text_length: *mut u32,
+) -> Option<u32> {
+    if state.active_message_receive.is_none() {
+        let message = state.messages.pop_front()?;
+        let bytes = message.segments.into_iter().flatten().collect();
+        state.active_message_receive = Some(ActiveMessageReceive { bytes, offset: 0 });
+    }
+    let active = state.active_message_receive.as_mut().unwrap();
+    let remaining = &active.bytes[active.offset..];
+    write_receive_bytes(into_ptr, into_len, text_length, remaining);
+    let copied = usize::min(remaining.len(), into_len as usize);
+    active.offset += copied;
+    let done = active.offset >= active.bytes.len();
+    state.last_end_key = done;
+    if done {
+        state.active_message_receive = None;
+    }
+    Some(0)
+}
+
+unsafe fn receive_segment(
+    state: &mut CommunicationState,
+    into_ptr: *mut u8,
+    into_len: u32,
+    text_length: *mut u32,
+) -> Option<u32> {
+    if state.active_segment_receive.is_none() {
+        let message = state.messages.pop_front()?;
+        state.active_segment_receive = Some(ActiveSegmentReceive {
+            segments: message.segments,
+            segment_index: 0,
+            offset: 0,
+        });
+    }
+    let active = state.active_segment_receive.as_mut().unwrap();
+    let segment = &active.segments[active.segment_index];
+    let remaining = &segment[active.offset..];
+    write_receive_bytes(into_ptr, into_len, text_length, remaining);
+    let copied = usize::min(remaining.len(), into_len as usize);
+    active.offset += copied;
+    if active.offset < segment.len() {
+        state.last_end_key = false;
+        return Some(0);
+    }
+    let is_last_segment = active.segment_index + 1 >= active.segments.len();
+    state.last_end_key = is_last_segment;
+    if is_last_segment {
+        state.active_segment_receive = None;
+    } else {
+        active.segment_index += 1;
+        active.offset = 0;
+    }
+    Some(0)
 }
 
 #[no_mangle]
@@ -605,6 +724,7 @@ pub unsafe extern "C" fn cobol_comm_send(
 pub unsafe extern "C" fn cobol_comm_receive(
     name_ptr: *const u8,
     name_len: u32,
+    mode: i32,
     into_ptr: *mut u8,
     into_len: u32,
     text_length: *mut u32,
@@ -637,44 +757,45 @@ pub unsafe extern "C" fn cobol_comm_receive(
                     *text_length = 0;
                 }
             }
+            runtime.queues.entry(name.clone()).or_default().last_end_key = true;
             if comm_debug_enabled() {
                 eprintln!("[COMM] receive {name} rc={selector_rc}");
             }
             return selector_rc;
         }
         let state = runtime.queues.entry(name.clone()).or_default();
+        let receive_rc = match mode {
+            2 => receive_segment(state, into_ptr, into_len, text_length),
+            _ => receive_message(state, into_ptr, into_len, text_length),
+        };
+        if let Some(rc) = receive_rc {
+            if comm_debug_enabled() {
+                eprintln!("[COMM] receive {name} rc={rc}");
+            }
+            return rc;
+        }
         let Some(message) = state.messages.pop_front() else {
             if !text_length.is_null() {
                 unsafe {
                     *text_length = 0;
                 }
             }
+            state.last_end_key = true;
             if comm_debug_enabled() {
                 eprintln!("[COMM] receive {name} rc=10");
             }
             return 10;
         };
-
-        let copy_len = usize::min(message.len(), into_len as usize);
-        if !into_ptr.is_null() && copy_len > 0 {
-            unsafe {
-                std::ptr::copy_nonoverlapping(message.as_ptr(), into_ptr, copy_len);
-            }
+        state.messages.push_front(message);
+        let rc = match mode {
+            2 => receive_segment(state, into_ptr, into_len, text_length),
+            _ => receive_message(state, into_ptr, into_len, text_length),
         }
-        if !into_ptr.is_null() && copy_len < into_len as usize {
-            unsafe {
-                std::ptr::write_bytes(into_ptr.add(copy_len), b' ', into_len as usize - copy_len);
-            }
-        }
-        if !text_length.is_null() {
-            unsafe {
-                *text_length = copy_len as u32;
-            }
-        }
+        .unwrap_or(10);
         if comm_debug_enabled() {
-            eprintln!("[COMM] receive {name} rc=0 len={copy_len}");
+            eprintln!("[COMM] receive {name} rc={rc}");
         }
-        0
+        rc
     })
 }
 
@@ -688,7 +809,12 @@ pub unsafe extern "C" fn cobol_comm_purge(name_ptr: *const u8, name_len: u32) ->
         return 99;
     };
     with_comm_runtime(|runtime| {
-        runtime.queues.entry(name).or_default().messages.clear();
+        let state = runtime.queues.entry(name).or_default();
+        state.messages.clear();
+        state.pending_send.segments.clear();
+        state.active_message_receive = None;
+        state.active_segment_receive = None;
+        state.last_end_key = true;
     });
     0
 }
@@ -706,8 +832,28 @@ pub unsafe extern "C" fn cobol_comm_message_count(name_ptr: *const u8, name_len:
         runtime
             .queues
             .get(&name)
-            .map(|state| state.messages.len() as u32)
+            .map(|state| {
+                state.messages.len() as u32 + u32::from(state.active_message_receive.is_some())
+            })
             .unwrap_or(0)
+    })
+}
+
+#[no_mangle]
+/// # Safety
+///
+/// `name_ptr` must be either null with a zero length or valid for reads of
+/// `name_len` bytes for the duration of this call.
+pub unsafe extern "C" fn cobol_comm_last_end_key(name_ptr: *const u8, name_len: u32) -> u32 {
+    let Some(name) = key_from_raw(name_ptr, name_len) else {
+        return 1;
+    };
+    with_comm_runtime(|runtime| {
+        runtime
+            .queues
+            .get(&name)
+            .map(|state| u32::from(state.last_end_key))
+            .unwrap_or(1)
     })
 }
 
@@ -802,6 +948,7 @@ mod tests {
                 cobol_comm_receive(
                     b"CM_INQUE_1".as_ptr(),
                     10,
+                    1,
                     buf.as_mut_ptr(),
                     buf.len() as u32,
                     &mut text_len,
@@ -891,6 +1038,161 @@ mod tests {
             };
             assert_eq!(rc, 20);
             assert_eq!(&error_key, b"01");
+        });
+    }
+
+    #[test]
+    fn test_comm_send_rejects_zero_destination_count() {
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "enable CM-OUTQUE-1").unwrap();
+            writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+            }
+
+            let rc = unsafe {
+                cobol_comm_send(
+                    b"CM_OUTQUE_1".as_ptr(),
+                    11,
+                    b"PING".as_ptr(),
+                    4,
+                    4,
+                    0,
+                    0,
+                    0,
+                    b"OUTQUEUE".as_ptr(),
+                    8,
+                    0,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            assert_eq!(rc, 30);
+        });
+    }
+
+    #[test]
+    fn test_comm_receive_message_flattens_segmented_message() {
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "enable CM-OUTQUE-1").unwrap();
+            writeln!(script, "enable CM-INQUE-1").unwrap();
+            writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE").unwrap();
+            writeln!(script, "link CM-OUTQUE-1 CM-INQUE-1").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+                assert_eq!(
+                    cobol_comm_send(
+                        b"CM_OUTQUE_1".as_ptr(),
+                        11,
+                        b"HELLO".as_ptr(),
+                        5,
+                        5,
+                        3,
+                        0,
+                        0,
+                        b"OUTQUEUE".as_ptr(),
+                        8,
+                        1,
+                        1,
+                        std::ptr::null_mut(),
+                        0,
+                    ),
+                    0
+                );
+                assert_eq!(
+                    cobol_comm_send(
+                        b"CM_OUTQUE_1".as_ptr(),
+                        11,
+                        b"WORLD".as_ptr(),
+                        5,
+                        5,
+                        1,
+                        0,
+                        0,
+                        b"OUTQUEUE".as_ptr(),
+                        8,
+                        1,
+                        1,
+                        std::ptr::null_mut(),
+                        0,
+                    ),
+                    0
+                );
+            }
+
+            let mut buf = [b' '; 16];
+            let mut text_len = 0u32;
+            let rc = unsafe {
+                cobol_comm_receive(
+                    b"CM_INQUE_1".as_ptr(),
+                    10,
+                    1,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    &mut text_len,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            assert_eq!(rc, 0);
+            assert_eq!(text_len, 10);
+            assert_eq!(&buf[..10], b"HELLOWORLD");
+            assert_eq!(
+                unsafe { cobol_comm_last_end_key(b"CM_INQUE_1".as_ptr(), 10) },
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn test_comm_enable_rejects_invalid_destination() {
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "config CM-OUTQUE-1 key 0001").unwrap();
+            writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+            }
+
+            let key = 1i64.to_ne_bytes();
+            let mut error_key = [b'0'; 1];
+            let rc = unsafe {
+                cobol_comm_enable(
+                    b"CM_OUTQUE_1".as_ptr(),
+                    11,
+                    1,
+                    0,
+                    key.as_ptr(),
+                    key.len() as u32,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    b"GARBAGE".as_ptr(),
+                    7,
+                    1,
+                    1,
+                    error_key.as_mut_ptr(),
+                    1,
+                )
+            };
+            assert_eq!(rc, 20);
+            assert_eq!(&error_key, b"1");
         });
     }
 

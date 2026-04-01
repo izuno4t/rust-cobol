@@ -533,6 +533,7 @@ pub enum HirStatement {
     },
     Receive {
         target: SmolStr,
+        mode: HirReceiveMode,
         into: SmolStr,
         no_data: Vec<HirStatement>,
         span: Span,
@@ -691,6 +692,12 @@ pub enum HirStatement {
         report_names: Vec<SmolStr>,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirReceiveMode {
+    Message,
+    Segment,
 }
 
 /// An expression in the HIR.
@@ -1119,11 +1126,16 @@ fn write_stmt(
         }
         HirStatement::Receive {
             target,
+            mode,
             into,
             no_data,
             ..
         } => {
-            write!(f, "{pad}RECEIVE {target} MESSAGE INTO {into}")?;
+            let mode = match mode {
+                HirReceiveMode::Message => "MESSAGE",
+                HirReceiveMode::Segment => "SEGMENT",
+            };
+            write!(f, "{pad}RECEIVE {target} {mode} INTO {into}")?;
             if let Some(first) = no_data.first() {
                 write!(f, " NO DATA ")?;
                 write_stmt(f, first, indent)?;
