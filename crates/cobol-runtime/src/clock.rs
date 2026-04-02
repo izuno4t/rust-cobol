@@ -1,5 +1,5 @@
 use std::sync::OnceLock;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 struct RuntimeClock {
     base_unix_cs: i128,
@@ -28,6 +28,13 @@ fn runtime_clock() -> &'static RuntimeClock {
     })
 }
 
+fn scaled_elapsed_centis(elapsed: Duration, scale: i128) -> i128 {
+    // Preserve sub-10ms precision before scaling so fast-time test loops
+    // can advance virtual time without waiting for a real centisecond tick.
+    let elapsed_nanos = elapsed.as_nanos() as i128;
+    elapsed_nanos.saturating_mul(scale) / 10_000_000
+}
+
 fn current_unix_centis() -> i128 {
     let clock = runtime_clock();
     if clock.scale == 1 {
@@ -38,8 +45,8 @@ fn current_unix_centis() -> i128 {
             / 10;
     }
 
-    let elapsed_cs = clock.start.elapsed().as_millis() as i128 / 10;
-    clock.base_unix_cs + elapsed_cs * clock.scale
+    let elapsed_cs = scaled_elapsed_centis(clock.start.elapsed(), clock.scale);
+    clock.base_unix_cs + elapsed_cs
 }
 
 /// Fill the current local date/time components used by ACCEPT FROM DATE/TIME.
@@ -93,7 +100,8 @@ pub unsafe extern "C" fn cobol_runtime_now_parts(
 
 #[cfg(test)]
 mod tests {
-    use super::cobol_runtime_now_parts;
+    use super::{cobol_runtime_now_parts, scaled_elapsed_centis};
+    use std::time::Duration;
 
     #[test]
     fn test_cobol_runtime_now_parts_returns_valid_ranges() {
@@ -127,5 +135,11 @@ mod tests {
         assert!((0..=23).contains(&hour));
         assert!((0..=59).contains(&minute));
         assert!((0..=5999).contains(&sec_centis));
+    }
+
+    #[test]
+    fn test_scaled_elapsed_centis_preserves_sub_centisecond_progress() {
+        assert_eq!(scaled_elapsed_centis(Duration::from_millis(1), 100_000), 10_000);
+        assert_eq!(scaled_elapsed_centis(Duration::from_micros(100), 100_000), 1_000);
     }
 }

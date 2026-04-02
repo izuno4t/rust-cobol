@@ -110,10 +110,6 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
                 -e '/^030000/s/^\(.\{6\}\) /\1*/' \
                 -e '/^030100/s/^\(.\{6\}\) /\1*/' \
                 -e '/^030200/s/^\(.\{6\}\) /\1*/'
-        elif [ "$PROG_NAME" = "CM102M" ]; then
-            sed \
-                -e 's/^\(073700     IF\) (HOURS OF SYSTEM-TIME/\1 ((HOURS OF SYSTEM-TIME/' \
-                -e 's/COMP-SECS) IS LESS/COMP-SECS)) IS LESS/'
         else
             cat
         fi

@@ -24,12 +24,6 @@ struct CommunicationMessage {
 }
 
 #[derive(Default)]
-struct ActiveMessageReceive {
-    bytes: Vec<u8>,
-    offset: usize,
-}
-
-#[derive(Default)]
 struct ActiveSegmentReceive {
     segments: Vec<Vec<u8>>,
     segment_index: usize,
@@ -46,7 +40,6 @@ struct CommunicationState {
     enabled: bool,
     messages: VecDeque<CommunicationMessage>,
     pending_send: PendingMessage,
-    active_message_receive: Option<ActiveMessageReceive>,
     active_segment_receive: Option<ActiveSegmentReceive>,
     last_end_key: bool,
 }
@@ -660,21 +653,13 @@ unsafe fn receive_message(
     into_len: u32,
     text_length: *mut u32,
 ) -> Option<u32> {
-    if state.active_message_receive.is_none() {
-        let message = state.messages.pop_front()?;
-        let bytes = message.segments.into_iter().flatten().collect();
-        state.active_message_receive = Some(ActiveMessageReceive { bytes, offset: 0 });
-    }
-    let active = state.active_message_receive.as_mut().unwrap();
-    let remaining = &active.bytes[active.offset..];
-    write_receive_bytes(into_ptr, into_len, text_length, remaining);
-    let copied = usize::min(remaining.len(), into_len as usize);
-    active.offset += copied;
-    let done = active.offset >= active.bytes.len();
-    state.last_end_key = done;
-    if done {
-        state.active_message_receive = None;
-    }
+    let message = state.messages.pop_front()?;
+    let bytes: Vec<u8> = message.segments.into_iter().flatten().collect();
+    write_receive_bytes(into_ptr, into_len, text_length, &bytes);
+    // RECEIVE MESSAGE consumes exactly one message. If the target area is
+    // shorter than the message, excess bytes are discarded rather than
+    // delivered via subsequent RECEIVE MESSAGE calls.
+    state.last_end_key = false;
     Some(0)
 }
 
@@ -812,7 +797,6 @@ pub unsafe extern "C" fn cobol_comm_purge(name_ptr: *const u8, name_len: u32) ->
         let state = runtime.queues.entry(name).or_default();
         state.messages.clear();
         state.pending_send.segments.clear();
-        state.active_message_receive = None;
         state.active_segment_receive = None;
         state.last_end_key = true;
     });
@@ -832,9 +816,7 @@ pub unsafe extern "C" fn cobol_comm_message_count(name_ptr: *const u8, name_len:
         runtime
             .queues
             .get(&name)
-            .map(|state| {
-                state.messages.len() as u32 + u32::from(state.active_message_receive.is_some())
-            })
+            .map(|state| state.messages.len() as u32)
             .unwrap_or(0)
     })
 }
@@ -1148,7 +1130,7 @@ mod tests {
             assert_eq!(&buf[..10], b"HELLOWORLD");
             assert_eq!(
                 unsafe { cobol_comm_last_end_key(b"CM_INQUE_1".as_ptr(), 10) },
-                1
+                0
             );
         });
     }
