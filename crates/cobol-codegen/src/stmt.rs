@@ -1383,7 +1383,7 @@ pub(crate) fn emit_statement_with_ctx(
                         let label_id = with_active_context(|ctx| ctx.label_id(&c_target));
                         if let Some(id) = label_id {
                             out.push_str(&format!(
-                                "{pad}    case {}: _goto_target = {id}; return;\n",
+                                "{pad}    case {}: _goto_target = {id}; goto _goto_dispatch;\n",
                                 i + 1
                             ));
                         } else {
@@ -1403,7 +1403,7 @@ pub(crate) fn emit_statement_with_ctx(
                 } else {
                     let label_id = with_active_context(|ctx| ctx.label_id(&c_target));
                     if let Some(id) = label_id {
-                        out.push_str(&format!("{pad}_goto_target = {id}; return;\n"));
+                        out.push_str(&format!("{pad}_goto_target = {id}; goto _goto_dispatch;\n"));
                     } else {
                         out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
                     }
@@ -1859,7 +1859,7 @@ pub(crate) fn emit_statement_with_ctx(
                             .as_ref()
                             .map(|name| emit_numeric_expr_for_var(name, data_items))
                             .unwrap_or_else(|| "0".to_string()),
-                        emit_optional_mut_comm_item(binding.error_key.as_deref(), data_items),
+                        emit_optional_mut_comm_area(binding.error_key.as_deref(), data_items),
                     )
                 })
                 .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
@@ -1926,7 +1926,7 @@ pub(crate) fn emit_statement_with_ctx(
                             .as_ref()
                             .map(|name| emit_numeric_expr_for_var(name, data_items))
                             .unwrap_or_else(|| "0".to_string()),
-                        emit_optional_mut_comm_item(binding.error_key.as_deref(), data_items),
+                        emit_optional_mut_comm_area(binding.error_key.as_deref(), data_items),
                     )
                 })
                 .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
@@ -1992,7 +1992,7 @@ pub(crate) fn emit_statement_with_ctx(
                             .as_ref()
                             .map(|name| emit_numeric_expr_for_var(name, data_items))
                             .unwrap_or_else(|| "0".to_string()),
-                        emit_optional_mut_comm_item(binding.error_key.as_deref(), data_items),
+                        emit_optional_mut_comm_area(binding.error_key.as_deref(), data_items),
                     )
                 })
                 .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
@@ -2069,7 +2069,9 @@ pub(crate) fn emit_statement_with_ctx(
             if let Some(binding) = env.ctx.communication_binding(&c_target) {
                 if let Some(end_key) = binding.end_key {
                     out.push_str(&format!(
-                        "{pad}    cobol_move_string((const uint8_t*)(cobol_comm_last_end_key((const uint8_t*)\"{c_target}\", {}) ? \"1\" : \"0\"), 1, (uint8_t*){}, {});\n",
+                        "{pad}    cobol_move_string((const uint8_t*)((cobol_comm_last_end_key((const uint8_t*)\"{c_target}\", {}) == 0) ? \"0\" : ((cobol_comm_last_end_key((const uint8_t*)\"{c_target}\", {}) == 1) ? \"1\" : ((cobol_comm_last_end_key((const uint8_t*)\"{c_target}\", {}) == 2) ? \"2\" : \"3\"))), 1, (uint8_t*){}, {});\n",
+                        c_target.len(),
+                        c_target.len(),
                         c_target.len(),
                         c_ptr_expr(&end_key, data_items),
                         find_data_item_size(&end_key, data_items)
@@ -4249,8 +4251,11 @@ pub(crate) fn emit_perform(
                 if need_body_dispatch {
                     out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
                 } else if has_labels {
-                    // In paragraph function: propagate _goto_target via return
-                    out.push_str(&format!("{pad}if (_goto_target) return;\n"));
+                    // In a paragraph function with local labels, consume nested
+                    // paragraph GO TO targets through this function's own
+                    // dispatch table instead of leaking them to the caller's
+                    // label space.
+                    out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
                 }
             }
         }
@@ -4921,7 +4926,7 @@ fn emit_comm_status_updates(
         out.push_str(&format!(
             "{pad}if (({rc_expr}) != 20) cobol_move_string((const uint8_t*)\"0\", 1, (uint8_t*){}, {});\n",
             c_ptr_expr(&error_key, data_items),
-            find_data_item_size(&error_key, data_items)
+            find_data_item_area_size(&error_key, data_items)
         ));
     }
 }
@@ -4952,11 +4957,11 @@ fn emit_optional_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -> (S
     .unwrap_or_else(null_comm_arg)
 }
 
-fn emit_optional_mut_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -> (String, String) {
+fn emit_optional_mut_comm_area(name: Option<&str>, data_items: &[HirDataItem]) -> (String, String) {
     name.map(|name| {
         (
             format!("(uint8_t*){}", c_ptr_expr(name, data_items)),
-            find_data_item_element_size(name, data_items).to_string(),
+            find_data_item_area_size(name, data_items).to_string(),
         )
     })
     .unwrap_or_else(null_comm_arg)

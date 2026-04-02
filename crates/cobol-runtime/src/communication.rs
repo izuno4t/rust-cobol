@@ -18,21 +18,27 @@ struct CommunicationConfig {
     destinations: Vec<String>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
+struct CommunicationSegment {
+    bytes: Vec<u8>,
+    end_key: u8,
+}
+
+#[derive(Clone, Default)]
 struct CommunicationMessage {
-    segments: Vec<Vec<u8>>,
+    segments: Vec<CommunicationSegment>,
 }
 
 #[derive(Default)]
 struct ActiveSegmentReceive {
-    segments: Vec<Vec<u8>>,
+    segments: Vec<CommunicationSegment>,
     segment_index: usize,
     offset: usize,
 }
 
 #[derive(Default)]
 struct PendingMessage {
-    segments: Vec<Vec<u8>>,
+    segments: Vec<CommunicationSegment>,
 }
 
 #[derive(Default)]
@@ -40,8 +46,9 @@ struct CommunicationState {
     enabled: bool,
     messages: VecDeque<CommunicationMessage>,
     pending_send: PendingMessage,
+    active_message_receive: Option<ActiveSegmentReceive>,
     active_segment_receive: Option<ActiveSegmentReceive>,
-    last_end_key: bool,
+    last_end_key: u32,
 }
 
 #[derive(Default)]
@@ -128,7 +135,10 @@ fn load_comm_script(runtime: &mut CommunicationRuntime, script_path: &str) {
                     .or_default()
                     .messages
                     .push_back(CommunicationMessage {
-                        segments: vec![payload],
+                        segments: vec![CommunicationSegment {
+                            bytes: payload,
+                            end_key: 2,
+                        }],
                     });
             }
             "link" => {
@@ -279,6 +289,22 @@ fn validate_key(config: Option<&CommunicationConfig>, key_ptr: *const u8, key_le
         }
     }
     0
+}
+
+fn send_option_to_end_key(option_kind: i32, option_value: i64) -> u8 {
+    match option_kind {
+        3 => 1, // ESI
+        1 => 2, // EMI
+        2 => 3, // EGI
+        4 => match option_value {
+            0 => 1,
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            _ => 0,
+        },
+        _ => 2,
+    }
 }
 
 unsafe fn write_error_key_flags(
@@ -599,8 +625,12 @@ pub unsafe extern "C" fn cobol_comm_send(
             }
             return 10;
         }
-        let is_continuation = option_kind == 3 || (option_kind == 4 && option_value == 0);
-        state.pending_send.segments.push(payload);
+        let end_key = send_option_to_end_key(option_kind, option_value);
+        let is_continuation = end_key == 1;
+        state.pending_send.segments.push(CommunicationSegment {
+            bytes: payload,
+            end_key,
+        });
         if !is_continuation {
             let message = CommunicationMessage {
                 segments: std::mem::take(&mut state.pending_send.segments),
@@ -653,13 +683,64 @@ unsafe fn receive_message(
     into_len: u32,
     text_length: *mut u32,
 ) -> Option<u32> {
-    let message = state.messages.pop_front()?;
-    let bytes: Vec<u8> = message.segments.into_iter().flatten().collect();
-    write_receive_bytes(into_ptr, into_len, text_length, &bytes);
-    // RECEIVE MESSAGE consumes exactly one message. If the target area is
-    // shorter than the message, excess bytes are discarded rather than
-    // delivered via subsequent RECEIVE MESSAGE calls.
-    state.last_end_key = false;
+    if state.active_message_receive.is_none() {
+        let message = state.messages.pop_front()?;
+        state.active_message_receive = Some(ActiveSegmentReceive {
+            segments: message.segments,
+            segment_index: 0,
+            offset: 0,
+        });
+    }
+    let active = state.active_message_receive.as_mut().unwrap();
+    let mut written = 0usize;
+    let buffer_len = into_len as usize;
+
+    while written < buffer_len {
+        let current_segment = &active.segments[active.segment_index];
+        let remaining = &current_segment.bytes[active.offset..];
+        if remaining.is_empty() {
+            if active.segment_index + 1 >= active.segments.len() {
+                break;
+            }
+            active.segment_index += 1;
+            active.offset = 0;
+            continue;
+        }
+
+        let copy_len = usize::min(remaining.len(), buffer_len - written);
+        if !into_ptr.is_null() && copy_len > 0 {
+            std::ptr::copy_nonoverlapping(remaining.as_ptr(), into_ptr.add(written), copy_len);
+        }
+        written += copy_len;
+        active.offset += copy_len;
+
+        if written == buffer_len {
+            break;
+        }
+
+        if active.offset >= current_segment.bytes.len() && active.segment_index + 1 < active.segments.len()
+        {
+            active.segment_index += 1;
+            active.offset = 0;
+        }
+    }
+
+    if !into_ptr.is_null() && written < buffer_len {
+        std::ptr::write_bytes(into_ptr.add(written), b' ', buffer_len - written);
+    }
+    if !text_length.is_null() {
+        *text_length = written as u32;
+    }
+
+    let last_segment = &active.segments[active.segment_index];
+    let message_done =
+        active.segment_index + 1 >= active.segments.len() && active.offset >= last_segment.bytes.len();
+    if message_done {
+        state.last_end_key = last_segment.end_key as u32;
+        state.active_message_receive = None;
+    } else {
+        state.last_end_key = 0;
+    }
     Some(0)
 }
 
@@ -679,16 +760,16 @@ unsafe fn receive_segment(
     }
     let active = state.active_segment_receive.as_mut().unwrap();
     let segment = &active.segments[active.segment_index];
-    let remaining = &segment[active.offset..];
+    let remaining = &segment.bytes[active.offset..];
     write_receive_bytes(into_ptr, into_len, text_length, remaining);
     let copied = usize::min(remaining.len(), into_len as usize);
     active.offset += copied;
-    if active.offset < segment.len() {
-        state.last_end_key = false;
+    if active.offset < segment.bytes.len() {
+        state.last_end_key = 0;
         return Some(0);
     }
     let is_last_segment = active.segment_index + 1 >= active.segments.len();
-    state.last_end_key = is_last_segment;
+    state.last_end_key = segment.end_key as u32;
     if is_last_segment {
         state.active_segment_receive = None;
     } else {
@@ -742,7 +823,7 @@ pub unsafe extern "C" fn cobol_comm_receive(
                     *text_length = 0;
                 }
             }
-            runtime.queues.entry(name.clone()).or_default().last_end_key = true;
+            runtime.queues.entry(name.clone()).or_default().last_end_key = 1;
             if comm_debug_enabled() {
                 eprintln!("[COMM] receive {name} rc={selector_rc}");
             }
@@ -765,7 +846,7 @@ pub unsafe extern "C" fn cobol_comm_receive(
                     *text_length = 0;
                 }
             }
-            state.last_end_key = true;
+            state.last_end_key = 1;
             if comm_debug_enabled() {
                 eprintln!("[COMM] receive {name} rc=10");
             }
@@ -797,8 +878,9 @@ pub unsafe extern "C" fn cobol_comm_purge(name_ptr: *const u8, name_len: u32) ->
         let state = runtime.queues.entry(name).or_default();
         state.messages.clear();
         state.pending_send.segments.clear();
+        state.active_message_receive = None;
         state.active_segment_receive = None;
-        state.last_end_key = true;
+        state.last_end_key = 1;
     });
     0
 }
@@ -834,7 +916,7 @@ pub unsafe extern "C" fn cobol_comm_last_end_key(name_ptr: *const u8, name_len: 
         runtime
             .queues
             .get(&name)
-            .map(|state| u32::from(state.last_end_key))
+            .map(|state| state.last_end_key)
             .unwrap_or(1)
     })
 }
@@ -1130,7 +1212,7 @@ mod tests {
             assert_eq!(&buf[..10], b"HELLOWORLD");
             assert_eq!(
                 unsafe { cobol_comm_last_end_key(b"CM_INQUE_1".as_ptr(), 10) },
-                0
+                2
             );
         });
     }

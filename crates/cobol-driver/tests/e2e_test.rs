@@ -4459,6 +4459,46 @@ fn test_typedef_codegen() {
 }
 
 #[test]
+fn test_communication_error_key_codegen_uses_table_size() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COMM-ERR-KEY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 DEST-COUNT PIC 9 VALUE 2.
+01 DEST-TABLE.
+   05 SYM-DEST PIC X(8) OCCURS 2 TIMES.
+01 ERR-TABLE.
+   05 ERR-KEY PIC X OCCURS 2 TIMES.
+01 OUT-LEN PIC 9(4) VALUE 4.
+01 MSG PIC X(4) VALUE \"PING\".
+COMMUNICATION SECTION.
+CD CM-OUTQUE-1 OUTPUT
+   DESTINATION COUNT DEST-COUNT
+   TEXT LENGTH OUT-LEN
+   DESTINATION TABLE OCCURS 2 TIMES
+   ERROR KEY ERR-KEY
+   DESTINATION SYM-DEST.
+PROCEDURE DIVISION.
+    MOVE \"OUTQ0001\" TO SYM-DEST(1).
+    MOVE \"BADDEST2\" TO SYM-DEST(2).
+    SEND CM-OUTQUE-1 FROM MSG.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("(uint8_t*)ERR_KEY, 2"),
+        "ERROR KEY should pass the full OCCURS area length, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_move_string((const uint8_t*)\"0\", 1, (uint8_t*)ERR_KEY, 2)"),
+        "ERROR KEY reset should clear the full OCCURS area, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
 fn test_report_statements_codegen() {
     let src = "\
 IDENTIFICATION DIVISION.
