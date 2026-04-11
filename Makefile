@@ -9,7 +9,8 @@ NIST_COBOLC ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR)/release/cobol-driver
 .PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
 
 NIST_ENV_ROOT ?= $(CURDIR)/target/nist
-NIST_JOBS ?= 1
+NIST_JOBS ?= 3
+NIST_TIMEOUT_MANUAL_REPORT ?= 5
 NIST_SOURCE_VAL ?=
 RUNTIME_X86_IMAGE := rust-cobol-runtime-x86
 RUNTIME_X86_TARGET := /workspace/target/runtime-x86-linux-amd64
@@ -96,6 +97,7 @@ nist-run:
 		  exit 1 )
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
 	NIST_JOBS="$(NIST_JOBS)" \
+	NIST_TIMEOUT_MANUAL_REPORT="$(NIST_TIMEOUT_MANUAL_REPORT)" \
 	COBOLC="$(NIST_COBOLC)" \
 	bash tests/nist/run_nist.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
@@ -155,7 +157,7 @@ help:
 	@echo "  make example     - examples/hello.cob をコンパイル・実行"
 	@echo "  make nist-prepare - NIST 資材を target/nist/programs に展開"
 	@echo "  make nist-run     - NIST CCVS 85 全モジュール実行"
-	@echo "  make nist-run NIST_JOBS=4 - NIST 全モジュールを4並列で実行"
+	@echo "  make nist-run NIST_JOBS=4 - NIST 全フェーズを4並列で実行"
 	@echo "  make nist-run MODULE=NC - NIST 特定モジュール実行"
 	@echo "  make nist-run MODULE=NC PROGRAM=NC101A - NIST 単一プログラム実行"
 	@echo "  make nist-summary - NIST 結果サマリー表示"

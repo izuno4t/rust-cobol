@@ -16,7 +16,7 @@ COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 NIST_WORK_ROOT="$ENV_ROOT/work/run"
 NIST_TMP_ROOT="/tmp/nc85"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-60}"
-NIST_JOBS="${NIST_JOBS:-1}"
+NIST_JOBS="${NIST_JOBS:-3}"
 NIST_COMPILE_CACHE="${NIST_COMPILE_CACHE:-1}"
 CURRENT_RUN_PID=""
 COMPILER_SIGNATURE=""
@@ -50,17 +50,57 @@ list_modules() {
 inspect_reason_for_program() {
     local src="$1"
     local result_file="$2"
+    local source_reason
+    source_reason="$(source_reason_for_program "$src")"
+    if [ -n "$source_reason" ]; then
+        printf '%s\n' "$source_reason"
+    elif [ ! -s "$result_file" ] || ! grep -q '[^[:space:]]' "$result_file" 2>/dev/null; then
+        printf 'no-output\n'
+    else
+        printf 'unclassified\n'
+    fi
+}
+
+source_reason_for_program() {
+    local src="$1"
     if [ -f "$src" ] && grep -Eq '^[0-9[:space:]]*PROCEDURE DIVISION USING' "$src"; then
         printf 'subprogram-only\n'
     elif [ -f "$src" ] && grep -Eq 'MOVE "INSPT" TO P-OR-F|INSPECT-COUNTER' "$src"; then
         printf 'manual-report\n'
     elif [ -f "$src" ] && grep -Eq 'DUMMY PROCEDURE|DUMMY PARAGRAPH' "$src"; then
         printf 'dummy-display\n'
-    elif [ ! -s "$result_file" ] || ! grep -q '[^[:space:]]' "$result_file" 2>/dev/null; then
-        printf 'no-output\n'
     else
-        printf 'unclassified\n'
+        printf '%s\n' ""
     fi
+}
+
+program_timeout_seconds() {
+    local module="$1"
+    local program="$2"
+    local src="$3"
+    local source_reason
+    source_reason="$(source_reason_for_program "$src")"
+    case "$source_reason" in
+        manual-report)
+            printf '%s\n' "${NIST_TIMEOUT_MANUAL_REPORT:-5}"
+            return
+            ;;
+    esac
+    case "$module/$program" in
+        EX/EXEC85)
+            printf '%s\n' "${NIST_TIMEOUT_EXEC85:-20}"
+            ;;
+        *)
+            printf '%s\n' "$TIMEOUT_SECONDS"
+            ;;
+    esac
+}
+
+program_parallel_mode() {
+    local _module="$1"
+    local _program="$2"
+    local _src="$3"
+    printf 'parallel\n'
 }
 
 prepare_print_file() {
@@ -497,7 +537,8 @@ run_program() {
     local mode="${3:-full}"
     local src="$PROGRAMS_DIR/$module/$program.cob"
     local module_workdir="$NIST_WORK_ROOT/$module"
-    local bin="$module_workdir/nist_${program}"
+    local program_workdir="$module_workdir/$program"
+    local bin="$program_workdir/nist_${program}"
     local log="$RESULTS_DIR/${module}/${program}.log"
     local status_file="$RESULTS_DIR/${module}/${program}.status"
     local reason_file="$RESULTS_DIR/${module}/${program}.reason"
@@ -506,13 +547,15 @@ run_program() {
     local preprocess_meta="$RESULTS_DIR/${module}/${program}.preprocess.meta"
     local fixture_meta="$RESULTS_DIR/${module}/${program}.fixture.meta"
     local fixture_result="$RESULTS_DIR/${module}/${program}.fixture.result"
-    local program_tmpdir="$NIST_TMP_ROOT/${program}"
+    local program_tmpdir="$NIST_TMP_ROOT/${module}/${program}"
     local print_file="$program_tmpdir/P"
-    local preprocessed="$module_workdir/nist_preproc_${program}.cob"
+    local preprocessed="$program_workdir/nist_preproc_${program}.cob"
     local comm_script="$COMM_FIXTURES_DIR/${program}.comm"
+    local runtime_timeout="$TIMEOUT_SECONDS"
 
     mkdir -p "$RESULTS_DIR/$module"
     mkdir -p "$module_workdir"
+    mkdir -p "$program_workdir"
     if [ "$mode" != "run_only" ]; then
         rm -f "$status_file" "$reason_file" "$log"
     else
@@ -619,6 +662,15 @@ run_program() {
         return
     fi
 
+    if [ "$mode" = "run_only" ]; then
+        rm -rf "$program_tmpdir"
+        mkdir -p "$program_tmpdir"
+        stage_nist_aliases "$program_tmpdir"
+        prepare_print_file "$print_file"
+    fi
+
+    runtime_timeout="$(program_timeout_seconds "$module" "$program" "$src")"
+
     local exit_code=0
     (
         if [ -f "$comm_script" ]; then
@@ -632,15 +684,15 @@ run_program() {
             unset COBOL_TEST_FAST_TIME_SCALE || true
         fi
         if command -v setsid >/dev/null 2>&1; then
-            exec setsid timeout -k 5s "$TIMEOUT_SECONDS" perl -e '
+            exec setsid timeout -k 5s "$runtime_timeout" perl -e '
                 chdir $ARGV[0] or die "chdir failed: $!";
                 exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
-            ' "$module_workdir" "$bin"
+            ' "$program_tmpdir" "$bin"
         else
-            exec timeout -k 5s "$TIMEOUT_SECONDS" perl -e '
+            exec timeout -k 5s "$runtime_timeout" perl -e '
                 chdir $ARGV[0] or die "chdir failed: $!";
                 exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
-            ' "$module_workdir" "$bin"
+            ' "$program_tmpdir" "$bin"
         fi
     ) < /dev/null > "$log" 2>&1 &
     CURRENT_RUN_PID=$!
@@ -673,7 +725,7 @@ run_program() {
             return
         fi
         echo "TIMEOUT" > "$status_file"
-        echo "  $program: TIMEOUT (exceeded ${TIMEOUT_SECONDS}s)"
+        echo "  $program: TIMEOUT (exceeded ${runtime_timeout}s)"
         return
     elif [ "$exit_code" -ne 0 ]; then
         # Check for custom judge first for runtime errors too
@@ -792,17 +844,13 @@ run_program() {
     fi
 }
 
-run_all_modules() {
+run_compile_phase() {
     local jobs="$1"
+    shift
+    local modules=("$@")
     local module
-    local modules=()
-    local had_compile_error=0
     local batch_pids=()
     local batch_logs=()
-    local batch_modules=()
-    while IFS= read -r module; do
-        modules+=("$module")
-    done < <(list_modules)
 
     flush_compile_batch() {
         local i
@@ -817,22 +865,19 @@ run_all_modules() {
         done
         batch_pids=()
         batch_logs=()
-        batch_modules=()
     }
 
     for module in "${modules[@]}"; do
+        echo "=== Module: $module (compile) ==="
         if [ "$jobs" -le 1 ]; then
-            echo "=== Module: $module (compile) ==="
             compile_module "$module"
             continue
         fi
         local module_log="$RESULTS_DIR/.compile_${module}.out"
-        echo "=== Module: $module (compile) ==="
         rm -f "$module_log"
         (
             compile_module "$module"
         ) >"$module_log" 2>&1 &
-        batch_modules+=("$module")
         batch_pids+=("$!")
         batch_logs+=("$module_log")
         if [ "${#batch_pids[@]}" -ge "$jobs" ]; then
@@ -843,6 +888,84 @@ run_all_modules() {
     if [ "${#batch_pids[@]}" -gt 0 ]; then
         flush_compile_batch
     fi
+}
+
+run_execute_phase() {
+    local jobs="$1"
+    shift
+    local modules=("$@")
+    local module
+    local execute_pids=()
+    local execute_logs=()
+
+    flush_execute_batch() {
+        local i
+        for i in "${!execute_pids[@]}"; do
+            wait "${execute_pids[$i]}"
+        done
+        for i in "${!execute_logs[@]}"; do
+            if [ -s "${execute_logs[$i]}" ]; then
+                cat "${execute_logs[$i]}"
+            fi
+            rm -f "${execute_logs[$i]}"
+        done
+        execute_pids=()
+        execute_logs=()
+    }
+
+    for module in "${modules[@]}"; do
+        echo "=== Module: $module (execute) ==="
+    done
+
+    for module in "${modules[@]}"; do
+        local mod_dir="$PROGRAMS_DIR/$module"
+        local src program program_log
+        [ -d "$mod_dir" ] || continue
+        for src in "$mod_dir"/*.cob; do
+            [ -f "$src" ] || continue
+            program="$(basename "$src" .cob)"
+            if [ "$(cat "$RESULTS_DIR/$module/${program}.status" 2>/dev/null || printf 'SKIP')" != "COMPILED" ]; then
+                continue
+            fi
+            if [ "$jobs" -le 1 ]; then
+                run_program "$module" "$program" "run_only"
+                continue
+            fi
+            program_log="$(mktemp "$NIST_TMP_ROOT/${module}_${program}.execute.XXXXXX.log")"
+            (
+                run_program "$module" "$program" "run_only"
+            ) >"$program_log" 2>&1 &
+            execute_pids+=("$!")
+            execute_logs+=("$program_log")
+            if [ "${#execute_pids[@]}" -ge "$jobs" ]; then
+                flush_execute_batch
+            fi
+        done
+    done
+
+    if [ "${#execute_pids[@]}" -gt 0 ]; then
+        flush_execute_batch
+    fi
+}
+
+run_collect_phase() {
+    local modules=("$@")
+    local module
+    for module in "${modules[@]}"; do
+        summarize_module "$module"
+    done
+}
+
+run_all_modules() {
+    local jobs="$1"
+    local module
+    local modules=()
+    local had_compile_error=0
+    while IFS= read -r module; do
+        modules+=("$module")
+    done < <(list_modules)
+
+    run_compile_phase "$jobs" "${modules[@]}"
 
     for module in "${modules[@]}"; do
         if module_has_status "$module" "COMPILE_ERROR"; then
@@ -853,17 +976,12 @@ run_all_modules() {
     if [ "$had_compile_error" -ne 0 ]; then
         echo ""
         echo "Compile phase failed. Execution phase skipped."
-        for module in "${modules[@]}"; do
-            summarize_module "$module"
-        done
+        run_collect_phase "${modules[@]}"
         return
     fi
 
-    for module in "${modules[@]}"; do
-        echo "=== Module: $module (execute) ==="
-        execute_module "$module"
-        summarize_module "$module"
-    done
+    run_execute_phase "$jobs" "${modules[@]}"
+    run_collect_phase "${modules[@]}"
 }
 
 run_module() {
@@ -873,17 +991,15 @@ run_module() {
         echo "Module $module: no programs found in $mod_dir"
         return
     }
-    echo "=== Module: $module (compile) ==="
-    compile_module "$module"
+    run_compile_phase "$NIST_JOBS" "$module"
     if module_has_status "$module" "COMPILE_ERROR"; then
         echo ""
         echo "Compile phase failed. Execution phase skipped for module $module."
-        summarize_module "$module"
+        run_collect_phase "$module"
         return
     fi
-    echo "=== Module: $module (execute) ==="
-    execute_module "$module"
-    summarize_module "$module"
+    run_execute_phase "$NIST_JOBS" "$module"
+    run_collect_phase "$module"
 }
 
 compile_module() {
@@ -901,16 +1017,48 @@ compile_module() {
 execute_module() {
     local module="$1"
     local mod_dir="$PROGRAMS_DIR/$module"
+    local jobs="$NIST_JOBS"
+    local -a batch_pids=()
+    local -a batch_logs=()
     [ -d "$mod_dir" ] || return
+
+    flush_execute_batch() {
+        local idx pid program_log
+        for idx in "${!batch_pids[@]}"; do
+            pid="${batch_pids[$idx]}"
+            program_log="${batch_logs[$idx]}"
+            wait "$pid"
+            cat "$program_log"
+            rm -f "$program_log"
+        done
+        batch_pids=()
+        batch_logs=()
+    }
+
     for src in "$mod_dir"/*.cob; do
         [ -f "$src" ] || continue
-        local program
+        local program parallel_mode program_log
         program="$(basename "$src" .cob)"
         if [ "$(cat "$RESULTS_DIR/$module/${program}.status" 2>/dev/null || printf 'SKIP')" != "COMPILED" ]; then
             continue
         fi
-        run_program "$module" "$program" "run_only"
+        parallel_mode="$(program_parallel_mode "$module" "$program" "$src")"
+        if [ "$jobs" -le 1 ] || [ "$parallel_mode" != "parallel" ]; then
+            flush_execute_batch
+            run_program "$module" "$program" "run_only"
+            continue
+        fi
+        program_log="$(mktemp "$NIST_TMP_ROOT/${module}_${program}.execute.XXXXXX.log")"
+        (
+            run_program "$module" "$program" "run_only"
+        ) >"$program_log" 2>&1 &
+        batch_pids+=("$!")
+        batch_logs+=("$program_log")
+        if [ "${#batch_pids[@]}" -ge "$jobs" ]; then
+            flush_execute_batch
+        fi
     done
+    flush_execute_batch
 }
 
 show_summary() {
