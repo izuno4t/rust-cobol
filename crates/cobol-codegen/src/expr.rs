@@ -1,4 +1,5 @@
 use super::*;
+use cobol_hir::{HirDataName, HirDataRef};
 
 pub(crate) fn emit_expr(expr: &HirExpr) -> String {
     with_active_context(|ctx| emit_expr_with_ctx(expr, ctx))
@@ -10,6 +11,60 @@ pub(crate) fn display_numeric_ptr(expr: &str) -> String {
 
 pub(crate) fn display_numeric_const_ptr(expr: &str) -> String {
     format!("(const uint8_t*)&({expr})")
+}
+
+pub(crate) fn data_name_to_c_name(name: &HirDataName) -> String {
+    if name.qualifiers.is_empty() {
+        sanitize_name(name.as_str())
+    } else {
+        let mut parts: Vec<String> = name
+            .qualifiers_outer_to_inner()
+            .map(sanitize_name)
+            .collect();
+        parts.push(sanitize_name(name.as_str()));
+        parts.join("__")
+    }
+}
+
+pub(crate) fn data_ref_base_c_name(data_ref: &HirDataRef) -> String {
+    if data_ref.subscripts.is_empty() {
+        data_name_to_c_name(&data_ref.name)
+    } else {
+        emit_subscript_access(&data_ref.name, &data_ref.subscripts)
+    }
+}
+
+pub(crate) fn emit_data_ref_expr(data_ref: &HirDataRef) -> String {
+    let base = data_ref_base_c_name(data_ref);
+    if let Some(refmod) = &data_ref.refmod {
+        let c_start = emit_expr_as_numeric(&refmod.start);
+        format!("({base} + ({c_start} - 1))")
+    } else {
+        base
+    }
+}
+
+pub(crate) fn find_data_item_by_name<'a>(
+    name: &HirDataName,
+    data_items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    if name.qualifiers.is_empty() {
+        return find_data_item(name.as_str(), data_items);
+    }
+
+    let mut current_items = data_items;
+    for qualifier in name.qualifiers_outer_to_inner() {
+        let qualifier_item = current_items.iter().find(|item| {
+            item.name.as_str() == qualifier.as_str()
+                || sanitize_name(&item.name) == sanitize_name(qualifier)
+        })?;
+        match &qualifier_item.data_type {
+            HirType::Group { members, .. } => current_items = members,
+            _ => return None,
+        }
+    }
+
+    find_data_item(name.as_str(), current_items)
 }
 
 pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String {
@@ -48,7 +103,8 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                 "((int64_t)' ')".to_string()
             }
         }
-        HirExpr::Variable(name) => sanitize_name(name),
+        HirExpr::DataRef(data_ref) => emit_data_ref_expr(data_ref),
+        HirExpr::Variable(name) => data_name_to_c_name(name),
         HirExpr::BinaryOp { op, left, right } => {
             // Use emit_expr_as_numeric to auto-convert CobolDecimal sub-expressions
             let l = emit_expr_as_numeric(left);
@@ -180,7 +236,9 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                                     "cobol_func_ord(0)".to_string()
                                 }
                             }
-                            HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+                            HirExpr::DataRef(_)
+                            | HirExpr::Variable(_)
+                            | HirExpr::Subscript { .. } => {
                                 // Variable may be a char array; dereference
                                 // the first byte.
                                 let c = emit_expr(arg_expr);
@@ -610,7 +668,7 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
             // a pointer expression. This is unusual but we emit it for
             // completeness. Callers like emit_display_operand handle the
             // display case directly.
-            let c_var = sanitize_name(variable);
+            let c_var = data_name_to_c_name(variable);
             let c_start = emit_expr_as_numeric(start);
             format!("({c_var} + ({c_start} - 1))")
         }
@@ -629,11 +687,8 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
 ///   01 TABLE-1. 05 GRP OCCURS 3. 10 ITEM PIC 9 OCCURS 4.
 /// `ITEM(I, J)` becomes:
 ///   `TABLE_1.members._m_GRP[(I)-1].members._m_ITEM[(J)-1]`
-pub(crate) fn emit_subscript_access(
-    variable: &smol_str::SmolStr,
-    subscripts: &[HirExpr],
-) -> String {
-    let c_name = sanitize_name(variable);
+pub(crate) fn emit_subscript_access(variable: &HirDataName, subscripts: &[HirExpr]) -> String {
+    let c_name = data_name_to_c_name(variable);
     // Check if we have pre-computed path info for this variable (nested OCCURS)
     let path_info = with_active_context(|ctx| {
         ctx.subscript_path(&c_name)
@@ -842,38 +897,52 @@ pub(crate) fn emit_store_int_op(
 
 /// Returns true if the given expression refers to a CobolDecimal variable.
 pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
-    let name = expr_var_name(expr);
-    if name.is_empty() {
-        return false;
+    match expr {
+        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
+            .is_some_and(|i| needs_decimal(&i.data_type)),
+        HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
+            find_data_item_by_name(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+        }
+        _ => false,
     }
-    find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
 }
 
 /// Check whether an expression refers to a group variable (emitted as a C union).
 pub(crate) fn is_group_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
-    let name = expr_var_name(expr);
-    if name.is_empty() {
-        return false;
+    match expr {
+        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
+            .is_some_and(|i| matches!(i.data_type, HirType::Group { .. })),
+        HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
+            find_data_item_by_name(name, data_items)
+                .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
+        }
+        _ => false,
     }
-    find_data_item(name, data_items).is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
 }
 
 /// Check whether an expression refers to an alphanumeric variable (emitted as `char[]`).
 pub(crate) fn is_alpha_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
-    let name = expr_var_name(expr);
-    if name.is_empty() {
-        return false;
+    match expr {
+        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
+            .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. })),
+        HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
+            find_data_item_by_name(name, data_items)
+                .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }))
+        }
+        _ => false,
     }
-    find_data_item(name, data_items)
-        .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }))
 }
 
 /// Check whether an expression tree contains any decimal variable or decimal
 /// literal, meaning that converting to int64 would lose fractional precision.
 pub(crate) fn expr_contains_decimal(expr: &HirExpr) -> bool {
     match expr {
+        HirExpr::DataRef(data_ref) => {
+            let c_name = data_name_to_c_name(&data_ref.name);
+            with_active_context(|ctx| ctx.is_decimal_name(&c_name))
+        }
         HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
+            let c_name = data_name_to_c_name(name);
             with_active_context(|ctx| ctx.is_decimal_name(&c_name))
         }
         HirExpr::Literal(HirLiteral::Decimal(_)) => true,
@@ -891,7 +960,7 @@ pub(crate) fn expr_contains_decimal(expr: &HirExpr) -> bool {
 /// For compound expressions (BinaryOp etc), recursively converts sub-expressions.
 pub(crate) fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> String {
     match expr {
-        HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+        HirExpr::DataRef(_) | HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
             if is_decimal_expr(expr, data_items) {
                 let c = emit_expr(expr);
                 format!("cobol_decimal_to_int64(&{c})")
@@ -899,23 +968,22 @@ pub(crate) fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem
                 // Group variables are C unions; convert via cobol_func_numval
                 // (treat group bytes as alphanumeric and parse as a number).
                 let c = emit_expr(expr);
-                let var_name = expr_var_name(expr);
-                let size = find_data_item_size(&sanitize_name(var_name), data_items);
+                let size = find_data_item_size(&c, data_items);
                 format!("cobol_func_numval((const uint8_t*)&{c}, {size})")
             } else if is_alpha_expr(expr, data_items) {
                 // Alphanumeric fields are char[] in C; convert to int via numval.
                 let c = emit_expr(expr);
-                let var_name = expr_var_name(expr);
-                let size = find_data_item_size(&sanitize_name(var_name), data_items);
+                let size = find_data_item_size(&c, data_items);
                 format!("cobol_func_numval((const uint8_t*){c}, {size})")
             } else {
                 // Check if this is a display numeric stored as char[] in a group
                 let c = emit_expr(expr);
-                let var_name = expr_var_name(expr);
-                let c_var = sanitize_name(var_name);
-                if let Some(disp_size) = grp_display_size(&c, data_items)
-                    .or_else(|| grp_display_size(&c_var, data_items))
-                {
+                let c_var = expr_data_name(expr).map(data_name_to_c_name);
+                if let Some(disp_size) = grp_display_size(&c, data_items).or_else(|| {
+                    c_var
+                        .as_deref()
+                        .and_then(|name| grp_display_size(name, data_items))
+                }) {
                     let c_ptr = display_numeric_const_ptr(&c);
                     format!("cobol_display_to_int64({c_ptr}, {disp_size})")
                 } else {
@@ -1018,22 +1086,20 @@ pub(crate) fn emit_assign_to_decimal(
     }
 }
 
-/// Extract the base variable name from a `HirExpr` for data-item lookups.
-/// Returns the variable name for `Variable` and `Subscript` variants,
-/// or an empty string for other expression types.
-pub(crate) fn expr_var_name(expr: &HirExpr) -> &str {
+pub(crate) fn expr_data_name(expr: &HirExpr) -> Option<&HirDataName> {
     match expr {
-        HirExpr::Variable(name) => name.as_str(),
-        HirExpr::Subscript { variable, .. } => variable.as_str(),
-        _ => "",
+        HirExpr::DataRef(data_ref) => Some(&data_ref.name),
+        HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => Some(name),
+        _ => None,
     }
 }
 
 /// Look up a data item by name (searching flattened items including group members).
-pub(crate) fn find_data_item<'a>(
-    name: &str,
-    data_items: &'a [HirDataItem],
-) -> Option<&'a HirDataItem> {
+pub(crate) fn find_data_item(
+    name: impl AsRef<str>,
+    data_items: &[HirDataItem],
+) -> Option<&HirDataItem> {
+    let name = name.as_ref();
     // Handle qualified names like "WS-DST::FIELD-A"
     if let Some(pos) = name.find("::") {
         let group_name = &name[..pos];
@@ -1622,7 +1688,8 @@ pub(crate) fn emit_decimal_giving_add(
     for t in to {
         if first {
             let c_t = emit_expr(t);
-            let t_is_decimal = find_data_item(expr_var_name(t), data_items)
+            let t_is_decimal = expr_data_name(t)
+                .and_then(|name| find_data_item_by_name(name, data_items))
                 .is_some_and(|i| needs_decimal(&i.data_type));
             if t_is_decimal {
                 out.push_str(&format!("{pad}{c_target} = {c_t};\n"));
@@ -1790,6 +1857,12 @@ pub(crate) fn emit_inspect_operand(
     _pad: &str,
 ) -> (String, String) {
     match expr {
+        HirExpr::DataRef(data_ref) => {
+            let c_name = data_name_to_c_name(&data_ref.name);
+            let size = find_data_item_size(&c_name, data_items);
+            let ptr = c_ptr_expr(&c_name, data_items);
+            (format!("(const uint8_t*){ptr}"), format!("{size}"))
+        }
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
             let len = s.len();
@@ -1802,7 +1875,7 @@ pub(crate) fn emit_inspect_operand(
             ("(const uint8_t*)\"0\"".to_string(), "1".to_string())
         }
         HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
+            let c_name = data_name_to_c_name(name);
             let size = find_data_item_size(&c_name, data_items);
             let ptr = c_ptr_expr(&c_name, data_items);
             (format!("(const uint8_t*){ptr}"), format!("{size}"))
@@ -1830,9 +1903,10 @@ pub(crate) fn emit_inspect_tallying(
     }
     for (i, t) in tallying.iter().enumerate() {
         let counter = emit_expr(&t.counter);
-        let counter_var = expr_var_name(&t.counter);
-        let counter_base = sanitize_name(counter_var);
-        let counter_disp = grp_display_size(&counter_base, data_items);
+        let counter_base = expr_data_name(&t.counter).map(data_name_to_c_name);
+        let counter_disp = counter_base
+            .as_deref()
+            .and_then(|name| grp_display_size(name, data_items));
         let (mode, search_ptr, search_len) = match &t.kind {
             cobol_hir::HirTallyingKind::Characters => (0u32, "NULL".to_string(), "0".to_string()),
             cobol_hir::HirTallyingKind::All(expr) => {
@@ -1937,8 +2011,16 @@ pub(crate) fn emit_string_source_value(
                 "{pad}    const void* _src_ptr_{i} = \"{escaped}\"; uint32_t _src_len_{i} = {len};\n"
             ));
         }
+        HirExpr::DataRef(data_ref) => {
+            let c_var = data_name_to_c_name(&data_ref.name);
+            let var_size = find_data_item_size(&c_var, data_items);
+            let ptr = c_ptr_expr(&c_var, data_items);
+            out.push_str(&format!(
+                "{pad}    const void* _src_ptr_{i} = {ptr}; uint32_t _src_len_{i} = {var_size};\n"
+            ));
+        }
         HirExpr::Variable(name) => {
-            let c_var = sanitize_name(name);
+            let c_var = data_name_to_c_name(name);
             let var_size = find_data_item_size(&c_var, data_items);
             let ptr = c_ptr_expr(&c_var, data_items);
             out.push_str(&format!(
@@ -1971,8 +2053,16 @@ pub(crate) fn emit_string_source_delimiter(
                 "{pad}    const uint8_t* _delim_ptr_{i} = (const uint8_t*)\"{escaped}\"; uint32_t _delim_len_{i} = {len};\n"
             ));
         }
+        Some(HirExpr::DataRef(data_ref)) => {
+            let c_var = data_name_to_c_name(&data_ref.name);
+            let var_size = find_data_item_size(&c_var, data_items);
+            let ptr = c_ptr_expr(&c_var, data_items);
+            out.push_str(&format!(
+                "{pad}    const uint8_t* _delim_ptr_{i} = (const uint8_t*){ptr}; uint32_t _delim_len_{i} = {var_size};\n"
+            ));
+        }
         Some(HirExpr::Variable(name)) => {
-            let c_var = sanitize_name(name);
+            let c_var = data_name_to_c_name(name);
             let var_size = find_data_item_size(&c_var, data_items);
             let ptr = c_ptr_expr(&c_var, data_items);
             out.push_str(&format!(
@@ -1991,8 +2081,18 @@ pub(crate) fn emit_string_source_delimiter(
 /// Check whether an HIR expression refers to an alphanumeric field or string literal.
 pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
+        HirExpr::DataRef(data_ref) => {
+            if let Some(item) = find_data_item_by_name(&data_ref.name, data_items) {
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. }
+                )
+            } else {
+                false
+            }
+        }
         HirExpr::Variable(name) => {
-            if let Some(item) = find_data_item(name.as_str(), data_items) {
+            if let Some(item) = find_data_item_by_name(name, data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
@@ -2002,7 +2102,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
             }
         }
         HirExpr::Subscript { variable, .. } => {
-            if let Some(item) = find_data_item(variable.as_str(), data_items) {
+            if let Some(item) = find_data_item_by_name(variable, data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
@@ -2017,7 +2117,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
         | HirExpr::Literal(HirLiteral::LowValue)
         | HirExpr::Literal(HirLiteral::Quote) => true,
         HirExpr::ReferenceModification { variable, .. } => {
-            if let Some(item) = find_data_item(variable.as_str(), data_items) {
+            if let Some(item) = find_data_item_by_name(variable, data_items) {
                 matches!(item.data_type, HirType::Alphanumeric { .. })
             } else {
                 false
@@ -2036,12 +2136,16 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
 
 fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
     match expr {
+        HirExpr::DataRef(data_ref) => {
+            let c_name = data_name_to_c_name(&data_ref.name);
+            Some(find_data_item_size(&c_name, data_items))
+        }
         HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
+            let c_name = data_name_to_c_name(name);
             Some(find_data_item_size(&c_name, data_items))
         }
         HirExpr::Subscript { variable, .. } => {
-            let c_name = sanitize_name(variable);
+            let c_name = data_name_to_c_name(variable);
             Some(find_data_item_size(&c_name, data_items))
         }
         HirExpr::ReferenceModification {
@@ -2051,11 +2155,11 @@ fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u
                 if let HirExpr::Literal(HirLiteral::Integer(n)) = len.as_ref() {
                     Some((*n).max(0) as u32)
                 } else {
-                    let c_name = sanitize_name(variable);
+                    let c_name = data_name_to_c_name(variable);
                     Some(find_data_item_size(&c_name, data_items))
                 }
             } else {
-                let c_name = sanitize_name(variable);
+                let c_name = data_name_to_c_name(variable);
                 Some(find_data_item_size(&c_name, data_items))
             }
         }
@@ -2088,8 +2192,14 @@ pub(crate) fn emit_alphanumeric_operand(
     data_items: &[HirDataItem],
 ) -> (String, String) {
     match expr {
+        HirExpr::DataRef(data_ref) => {
+            let c_name = data_name_to_c_name(&data_ref.name);
+            let size = find_data_item_size(&c_name, data_items);
+            let ptr = c_ptr_expr(&c_name, data_items);
+            (format!("(const uint8_t*){ptr}"), format!("{size}"))
+        }
         HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
+            let c_name = data_name_to_c_name(name);
             let size = find_data_item_size(&c_name, data_items);
             let ptr = c_ptr_expr(&c_name, data_items);
             (format!("(const uint8_t*){ptr}"), format!("{size}"))
@@ -2126,9 +2236,8 @@ pub(crate) fn emit_alphanumeric_operand(
         }
         HirExpr::Subscript { .. } => {
             let c_name = emit_expr(expr);
-            let var_name = expr_var_name(expr);
-            let size = if !var_name.is_empty() {
-                let sz = find_data_item_size(&sanitize_name(var_name), data_items);
+            let size = if let HirExpr::Subscript { variable, .. } = expr {
+                let sz = find_data_item_size(&data_name_to_c_name(variable), data_items);
                 format!("{sz}")
             } else {
                 format!("sizeof({c_name})")
@@ -2150,8 +2259,10 @@ pub(crate) fn emit_alphanumeric_operand(
                 }
                 "UPPER-CASE" | "LOWER-CASE" | "REVERSE" => {
                     let size: u32 = if let Some(arg) = args.first() {
-                        if let HirExpr::Variable(v) = arg {
-                            find_data_item_size(&sanitize_name(v), data_items)
+                        if let HirExpr::DataRef(data_ref) = arg {
+                            find_data_item_size(&data_name_to_c_name(&data_ref.name), data_items)
+                        } else if let HirExpr::Variable(v) = arg {
+                            find_data_item_size(&data_name_to_c_name(v), data_items)
                         } else if let HirExpr::Literal(HirLiteral::String(s)) = arg {
                             s.len() as u32
                         } else {
@@ -2191,7 +2302,7 @@ pub(crate) fn emit_alphanumeric_operand(
             start,
             length,
         } => {
-            let c_src = sanitize_name(variable);
+            let c_src = data_name_to_c_name(variable);
             let src_ptr = c_ptr_expr(&c_src, data_items);
             let c_start = emit_expr(start);
             let src_full_size = find_data_item_size(&c_src, data_items);
@@ -3018,8 +3129,8 @@ fn find_field_in_group(
 /// them with underscores. Additionally, names starting with a digit
 /// are prefixed with `cob_`, and C reserved words are prefixed to
 /// avoid collisions.
-pub(crate) fn sanitize_name(name: &str) -> String {
-    let mut result = name.replace("::", "__").replace('-', "_");
+pub(crate) fn sanitize_name(name: impl AsRef<str>) -> String {
+    let mut result = name.as_ref().replace("::", "__").replace('-', "_");
     // C identifiers cannot start with a digit
     if result.starts_with(|c: char| c.is_ascii_digit()) {
         result.insert_str(0, "cob_");

@@ -569,6 +569,12 @@ pub(crate) fn emit_group_macros(
                     "#define {qualifier}__{c_name} {alias_expr} /* RENAMES {c_from} */\n"
                 ));
             }
+            if qualifier_names.len() > 1 {
+                let chain = qualifier_names.join("__");
+                out.push_str(&format!(
+                    "#define {chain}__{c_name} {alias_expr} /* RENAMES {c_from} */\n"
+                ));
+            }
             continue;
         }
         if member.redefines.is_some() {
@@ -591,6 +597,10 @@ pub(crate) fn emit_group_macros(
         // FIELD OF GROUP-B, etc.
         for qualifier in qualifier_names {
             out.push_str(&format!("#define {qualifier}__{c_name} {access_path}\n"));
+        }
+        if qualifier_names.len() > 1 {
+            let chain = qualifier_names.join("__");
+            out.push_str(&format!("#define {chain}__{c_name} {access_path}\n"));
         }
         if let HirType::Group {
             members: sub_members,

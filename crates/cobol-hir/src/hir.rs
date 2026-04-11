@@ -7,6 +7,92 @@
 use cobol_common::Span;
 use smol_str::SmolStr;
 
+/// A COBOL data name with its qualification path preserved.
+///
+/// `qualifiers` are stored from innermost to outermost to match the parser AST.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HirDataName {
+    pub name: SmolStr,
+    pub qualifiers: Vec<SmolStr>,
+}
+
+impl HirDataName {
+    pub fn new(name: SmolStr, qualifiers: Vec<SmolStr>) -> Self {
+        Self { name, qualifiers }
+    }
+
+    pub fn simple(name: impl Into<SmolStr>) -> Self {
+        Self {
+            name: name.into(),
+            qualifiers: Vec::new(),
+        }
+    }
+
+    pub fn is_qualified(&self) -> bool {
+        !self.qualifiers.is_empty()
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn to_uppercase(&self) -> String {
+        self.name.to_uppercase()
+    }
+
+    /// Returns the qualification path ordered from outermost to innermost.
+    pub fn qualifiers_outer_to_inner(&self) -> impl DoubleEndedIterator<Item = &SmolStr> {
+        self.qualifiers.iter().rev()
+    }
+}
+
+impl From<SmolStr> for HirDataName {
+    fn from(value: SmolStr) -> Self {
+        Self::simple(value)
+    }
+}
+
+impl From<&str> for HirDataName {
+    fn from(value: &str) -> Self {
+        Self::simple(value)
+    }
+}
+
+impl AsRef<str> for HirDataName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq<str> for HirDataName {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for HirDataName {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HirItemId(pub u32);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirRefMod {
+    pub start: Box<HirExpr>,
+    pub length: Option<Box<HirExpr>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirDataRef {
+    pub item_id: HirItemId,
+    pub name: HirDataName,
+    pub subscripts: Vec<HirExpr>,
+    pub refmod: Option<HirRefMod>,
+}
+
 /// A HIR program -- the desugared form of a COBOL compilation unit.
 #[derive(Debug, Clone)]
 pub struct HirProgram {
@@ -265,17 +351,18 @@ pub enum HirLiteral {
 /// A MOVE target, which may be a plain variable or a reference-modified variable.
 #[derive(Debug, Clone)]
 pub enum HirMoveTarget {
+    DataRef(HirDataRef),
     /// A simple variable name (e.g., `WS-NAME`).
-    Variable(SmolStr),
+    Variable(HirDataName),
     /// A reference-modified variable (e.g., `WS-NAME(3:5)`).
     ReferenceModification {
-        variable: SmolStr,
+        variable: HirDataName,
         start: HirExpr,
         length: Option<HirExpr>,
     },
     /// A subscripted table element (e.g., `WS-TABLE(3)`).
     Subscript {
-        variable: SmolStr,
+        variable: HirDataName,
         subscripts: Vec<HirExpr>,
     },
 }
@@ -704,7 +791,8 @@ pub enum HirReceiveMode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirExpr {
     Literal(HirLiteral),
-    Variable(SmolStr),
+    DataRef(HirDataRef),
+    Variable(HirDataName),
     BinaryOp {
         op: HirBinOp,
         left: Box<HirExpr>,
@@ -724,7 +812,7 @@ pub enum HirExpr {
     /// Extracts a substring from an alphanumeric variable.
     /// `start` is 1-based. `length` is optional (defaults to remaining bytes).
     ReferenceModification {
-        variable: SmolStr,
+        variable: HirDataName,
         start: Box<HirExpr>,
         length: Option<Box<HirExpr>>,
     },
@@ -732,7 +820,7 @@ pub enum HirExpr {
     ///
     /// Subscripts are 1-based COBOL indices.
     Subscript {
-        variable: SmolStr,
+        variable: HirDataName,
         subscripts: Vec<HirExpr>,
     },
 }
@@ -794,6 +882,7 @@ pub enum HirCompareOp {
 
 /// The kind of PERFORM construct.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum HirPerformKind {
     /// Inline block of statements.
     Inline { body: Vec<HirStatement> },
@@ -1391,7 +1480,8 @@ fn format_expr(expr: &HirExpr) -> String {
             HirLiteral::Null => "NULL".to_string(),
             HirLiteral::AllChar(s) => format!("ALL \"{}\"", s),
         },
-        HirExpr::Variable(name) => name.to_string(),
+        HirExpr::DataRef(data_ref) => format_data_ref(data_ref),
+        HirExpr::Variable(name) => format_data_name(name),
         HirExpr::BinaryOp { op, left, right } => {
             let op_str = match op {
                 HirBinOp::Add => "+",
@@ -1418,9 +1508,14 @@ fn format_expr(expr: &HirExpr) -> String {
             length,
         } => {
             if let Some(len) = length {
-                format!("{}({}:{})", variable, format_expr(start), format_expr(len))
+                format!(
+                    "{}({}:{})",
+                    format_data_name(variable),
+                    format_expr(start),
+                    format_expr(len)
+                )
             } else {
-                format!("{}({}:)", variable, format_expr(start))
+                format!("{}({}:)", format_data_name(variable), format_expr(start))
             }
         }
         HirExpr::Subscript {
@@ -1428,23 +1523,29 @@ fn format_expr(expr: &HirExpr) -> String {
             subscripts,
         } => {
             let subs: Vec<_> = subscripts.iter().map(format_expr).collect();
-            format!("{}({})", variable, subs.join(", "))
+            format!("{}({})", format_data_name(variable), subs.join(", "))
         }
     }
 }
 
 fn format_move_target(target: &HirMoveTarget) -> String {
     match target {
-        HirMoveTarget::Variable(name) => name.to_string(),
+        HirMoveTarget::DataRef(data_ref) => format_data_ref(data_ref),
+        HirMoveTarget::Variable(name) => format_data_name(name),
         HirMoveTarget::ReferenceModification {
             variable,
             start,
             length,
         } => {
             if let Some(len) = length {
-                format!("{}({}:{})", variable, format_expr(start), format_expr(len))
+                format!(
+                    "{}({}:{})",
+                    format_data_name(variable),
+                    format_expr(start),
+                    format_expr(len)
+                )
             } else {
-                format!("{}({}:)", variable, format_expr(start))
+                format!("{}({}:)", format_data_name(variable), format_expr(start))
             }
         }
         HirMoveTarget::Subscript {
@@ -1452,7 +1553,41 @@ fn format_move_target(target: &HirMoveTarget) -> String {
             subscripts,
         } => {
             let subs: Vec<_> = subscripts.iter().map(format_expr).collect();
-            format!("{}({})", variable, subs.join(", "))
+            format!("{}({})", format_data_name(variable), subs.join(", "))
         }
     }
+}
+
+fn format_data_name(name: &HirDataName) -> String {
+    if name.qualifiers.is_empty() {
+        name.name.to_string()
+    } else {
+        let mut parts = Vec::with_capacity(name.qualifiers.len() + 1);
+        parts.push(name.name.to_string());
+        parts.extend(name.qualifiers.iter().map(ToString::to_string));
+        parts.join(" OF ")
+    }
+}
+
+fn format_data_ref(data_ref: &HirDataRef) -> String {
+    let mut rendered = format_data_name(&data_ref.name);
+    if !data_ref.subscripts.is_empty() {
+        let subs: Vec<_> = data_ref.subscripts.iter().map(format_expr).collect();
+        rendered.push('(');
+        rendered.push_str(&subs.join(", "));
+        rendered.push(')');
+    }
+    if let Some(refmod) = &data_ref.refmod {
+        let start = format_expr(&refmod.start);
+        if let Some(length) = &refmod.length {
+            rendered.push('(');
+            rendered.push_str(&format!("{start}:{}", format_expr(length)));
+            rendered.push(')');
+        } else {
+            rendered.push('(');
+            rendered.push_str(&format!("{start}:"));
+            rendered.push(')');
+        }
+    }
+    rendered
 }

@@ -245,27 +245,18 @@ fn build_communication_map(
             (
                 sanitize_name(&cd.name),
                 CommunicationBinding {
-                    symbolic_queue: cd.symbolic_queue.as_ref().map(|v| sanitize_name(v)),
-                    symbolic_sub_queue_1: cd
-                        .symbolic_sub_queue_1
-                        .as_ref()
-                        .map(|v| sanitize_name(v)),
-                    symbolic_sub_queue_2: cd
-                        .symbolic_sub_queue_2
-                        .as_ref()
-                        .map(|v| sanitize_name(v)),
-                    symbolic_sub_queue_3: cd
-                        .symbolic_sub_queue_3
-                        .as_ref()
-                        .map(|v| sanitize_name(v)),
-                    status_key: cd.status_key.as_ref().map(|v| sanitize_name(v)),
-                    message_count: cd.message_count.as_ref().map(|v| sanitize_name(v)),
-                    text_length: cd.text_length.as_ref().map(|v| sanitize_name(v)),
-                    end_key: cd.end_key.as_ref().map(|v| sanitize_name(v)),
-                    error_key: cd.error_key.as_ref().map(|v| sanitize_name(v)),
-                    symbolic_source: cd.symbolic_source.as_ref().map(|v| sanitize_name(v)),
-                    destination_count: cd.destination_count.as_ref().map(|v| sanitize_name(v)),
-                    destination: cd.destination.as_ref().map(|v| sanitize_name(v)),
+                    symbolic_queue: cd.symbolic_queue.as_ref().map(sanitize_name),
+                    symbolic_sub_queue_1: cd.symbolic_sub_queue_1.as_ref().map(sanitize_name),
+                    symbolic_sub_queue_2: cd.symbolic_sub_queue_2.as_ref().map(sanitize_name),
+                    symbolic_sub_queue_3: cd.symbolic_sub_queue_3.as_ref().map(sanitize_name),
+                    status_key: cd.status_key.as_ref().map(sanitize_name),
+                    message_count: cd.message_count.as_ref().map(sanitize_name),
+                    text_length: cd.text_length.as_ref().map(sanitize_name),
+                    end_key: cd.end_key.as_ref().map(sanitize_name),
+                    error_key: cd.error_key.as_ref().map(sanitize_name),
+                    symbolic_source: cd.symbolic_source.as_ref().map(sanitize_name),
+                    destination_count: cd.destination_count.as_ref().map(sanitize_name),
+                    destination: cd.destination.as_ref().map(sanitize_name),
                     destination_table_count: cd.destination_table_count,
                 },
             )

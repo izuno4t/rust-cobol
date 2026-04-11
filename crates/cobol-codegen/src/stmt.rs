@@ -1,5 +1,5 @@
 use super::*;
-use cobol_hir::{HirPerformTest, HirReceiveMode, HirType};
+use cobol_hir::{HirDataName, HirPerformTest, HirReceiveMode, HirType};
 
 pub(crate) struct StmtEmitEnv<'a> {
     pub(crate) data_items: &'a [HirDataItem],
@@ -66,8 +66,24 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::Move { from, to, .. } => {
             for target in to {
                 match target {
+                    HirMoveTarget::DataRef(data_ref) => {
+                        if let Some(refmod) = &data_ref.refmod {
+                            emit_move_to_refmod(
+                                out,
+                                from,
+                                &data_ref.name,
+                                &refmod.start,
+                                &refmod.length.as_deref().cloned(),
+                                data_items,
+                                &pad,
+                            );
+                        } else {
+                            let c_target = data_ref_base_c_name(data_ref);
+                            emit_move_to(out, from, &data_ref.name, &c_target, data_items, &pad);
+                        }
+                    }
                     HirMoveTarget::Variable(name) => {
-                        let c_target = sanitize_name(name);
+                        let c_target = data_name_to_c_name(name);
                         emit_move_to(out, from, name, &c_target, data_items, &pad);
                     }
                     HirMoveTarget::ReferenceModification {
@@ -226,8 +242,9 @@ pub(crate) fn emit_statement_with_ctx(
                 let sum_expr = all_addends.join(" + ");
                 for target in giving {
                     let c_target = emit_expr(target);
-                    let var_name = expr_var_name(target);
-                    let target_is_decimal = find_data_item(var_name, data_items)
+                    let target_name = expr_data_name(target);
+                    let target_is_decimal = target_name
+                        .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         // For decimal GIVING, build a temp sum then assign
@@ -250,7 +267,13 @@ pub(crate) fn emit_statement_with_ctx(
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                             out.push_str(&format!("{pad}{c_target} = {sum_expr};\n"));
                         }
-                        emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
+                        emit_integer_overflow_check(
+                            out,
+                            target_name.map_or("", HirDataName::as_str),
+                            &c_target,
+                            data_items,
+                            &pad,
+                        );
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
                         emit_store_int(out, &c_target, &sum_expr, data_items, &pad);
@@ -259,8 +282,9 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 for target in to {
                     let c_target = emit_expr(target);
-                    let var_name = expr_var_name(target);
-                    let target_is_decimal = find_data_item(var_name, data_items)
+                    let target_name = expr_data_name(target);
+                    let target_is_decimal = target_name
+                        .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         for op in operands {
@@ -301,7 +325,13 @@ pub(crate) fn emit_statement_with_ctx(
                                 out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                                 out.push_str(&format!("{pad}{c_target} += {sum_expr};\n"));
                             }
-                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(
+                                out,
+                                target_name.map_or("", HirDataName::as_str),
+                                &c_target,
+                                data_items,
+                                &pad,
+                            );
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             emit_store_int_op(out, &c_target, "+", &sum_expr, data_items, &pad);
@@ -350,8 +380,9 @@ pub(crate) fn emit_statement_with_ctx(
                 };
                 for target in giving {
                     let c_target = emit_expr(target);
-                    let var_name = expr_var_name(target);
-                    let target_is_decimal = find_data_item(var_name, data_items)
+                    let target_name = expr_data_name(target);
+                    let target_is_decimal = target_name
+                        .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         // SUBTRACT GIVING decimal: result = from - sub
@@ -376,7 +407,13 @@ pub(crate) fn emit_statement_with_ctx(
                             out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                             out.push_str(&format!("{pad}{c_target} = {result_expr};\n"));
                         }
-                        emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
+                        emit_integer_overflow_check(
+                            out,
+                            target_name.map_or("", HirDataName::as_str),
+                            &c_target,
+                            data_items,
+                            &pad,
+                        );
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
                         let result_expr = format!("{from_val} - ({sub_expr})");
@@ -386,8 +423,9 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 for target in from {
                     let c_target = emit_expr(target);
-                    let var_name = expr_var_name(target);
-                    let target_is_decimal = find_data_item(var_name, data_items)
+                    let target_name = expr_data_name(target);
+                    let target_is_decimal = target_name
+                        .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         for op in operands {
@@ -428,7 +466,13 @@ pub(crate) fn emit_statement_with_ctx(
                                 out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                                 out.push_str(&format!("{pad}{c_target} -= ({sum_expr});\n"));
                             }
-                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(
+                                out,
+                                target_name.map_or("", HirDataName::as_str),
+                                &c_target,
+                                data_items,
+                                &pad,
+                            );
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             emit_store_int_op(
@@ -530,8 +574,9 @@ pub(crate) fn emit_statement_with_ctx(
                     .unwrap_or_default();
                 for target in giving {
                     let c_target = emit_expr(target);
-                    let var_name = expr_var_name(target);
-                    let target_is_decimal = find_data_item(var_name, data_items)
+                    let target_name = expr_data_name(target);
+                    let target_is_decimal = target_name
+                        .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal || any_src_decimal {
                         if target_is_decimal
@@ -596,7 +641,13 @@ pub(crate) fn emit_statement_with_ctx(
                                 out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                                 out.push_str(&format!("{pad}{c_target} = {mul_expr};\n"));
                             }
-                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(
+                                out,
+                                target_name.map_or("", HirDataName::as_str),
+                                &c_target,
+                                data_items,
+                                &pad,
+                            );
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             emit_store_int(out, &c_target, &mul_expr, data_items, &pad);
@@ -606,8 +657,9 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 for target in by {
                     let c_target = emit_expr(target);
-                    let var_name = expr_var_name(target);
-                    let target_is_decimal = find_data_item(var_name, data_items)
+                    let target_name = expr_data_name(target);
+                    let target_is_decimal = target_name
+                        .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         emit_decimal_arith(
@@ -660,7 +712,13 @@ pub(crate) fn emit_statement_with_ctx(
                                 out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
                                 out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
                             }
-                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(
+                                out,
+                                target_name.map_or("", HirDataName::as_str),
+                                &c_target,
+                                data_items,
+                                &pad,
+                            );
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             emit_store_int_op(out, &c_target, "*", &c_operand, data_items, &pad);
@@ -709,15 +767,14 @@ pub(crate) fn emit_statement_with_ctx(
                     .unwrap_or_default();
                 for target in giving {
                     let c_target = emit_expr(target);
-                    let var_name = expr_var_name(target);
+                    let target_name = expr_data_name(target);
                     if let Some(rem) = remainder {
                         let c_rem = emit_expr(rem);
-                        let rem_name = expr_var_name(rem);
                         let rem_expr = format!("{first_into_int} % {c_operand_int}");
                         emit_store_int(out, &c_rem, &rem_expr, data_items, &pad);
-                        let _ = rem_name; // suppress unused warning
                     }
-                    let target_is_decimal = find_data_item(var_name, data_items)
+                    let target_is_decimal = target_name
+                        .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal && any_src_decimal {
                         // Use decimal division
@@ -768,7 +825,13 @@ pub(crate) fn emit_statement_with_ctx(
                                  else {{ {c_target} = {div_expr}; }}\n"
                             ));
                         }
-                        emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
+                        emit_integer_overflow_check(
+                            out,
+                            target_name.map_or("", HirDataName::as_str),
+                            &c_target,
+                            data_items,
+                            &pad,
+                        );
                         out.push_str(&format!("{pad}}}\n"));
                     } else {
                         let div_expr = format!("{first_into_int} / {c_operand_int}");
@@ -778,8 +841,9 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 for target in into {
                     let c_target = emit_expr(target);
-                    let var_name = expr_var_name(target);
-                    let target_is_decimal = find_data_item(var_name, data_items)
+                    let target_name = expr_data_name(target);
+                    let target_is_decimal = target_name
+                        .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
                         emit_decimal_arith(
@@ -814,7 +878,6 @@ pub(crate) fn emit_statement_with_ctx(
                     } else {
                         if let Some(rem) = remainder {
                             let c_rem = emit_expr(rem);
-                            let rem_name = expr_var_name(rem);
                             if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 let c_target_const_ptr = display_numeric_const_ptr(&c_target);
                                 let rem_expr = format!(
@@ -826,7 +889,6 @@ pub(crate) fn emit_statement_with_ctx(
                                 let rem_expr = format!("{c_target} % {c_operand_int}");
                                 emit_store_int(out, &c_rem, &rem_expr, data_items, &pad);
                             }
-                            let _ = rem_name;
                         }
                         if has_size_error {
                             if let Some(disp_size) = grp_display_size(&c_target, data_items) {
@@ -850,7 +912,13 @@ pub(crate) fn emit_statement_with_ctx(
                                      else {{ {c_target} /= {c_operand_int}; }}\n"
                                 ));
                             }
-                            emit_integer_overflow_check(out, var_name, &c_target, data_items, &pad);
+                            emit_integer_overflow_check(
+                                out,
+                                target_name.map_or("", HirDataName::as_str),
+                                &c_target,
+                                data_items,
+                                &pad,
+                            );
                             out.push_str(&format!("{pad}}}\n"));
                         } else {
                             emit_store_int_op(
@@ -893,8 +961,8 @@ pub(crate) fn emit_statement_with_ctx(
                 HirExpr::Variable(name) => {
                     // Check if the variable is a data item (dynamic CALL) or
                     // could be a literal-like reference.
-                    let sname = sanitize_name(name);
-                    if find_data_item(name, data_items).is_some() {
+                    let sname = data_name_to_c_name(name);
+                    if find_data_item_by_name(name, data_items).is_some() {
                         (sname, true)
                     } else {
                         (sname, false)
@@ -1154,7 +1222,8 @@ pub(crate) fn emit_statement_with_ctx(
                     let n = sanitize_name(into_var);
                     (n.clone(), n)
                 } else {
-                    let access = emit_subscript_access(into_var, into_subs);
+                    let access =
+                        emit_subscript_access(&HirDataName::simple(into_var.clone()), into_subs);
                     let n = sanitize_name(into_var);
                     (access, n)
                 }
@@ -1422,15 +1491,16 @@ pub(crate) fn emit_statement_with_ctx(
         }
         HirStatement::Set { targets, value, .. } => {
             for target in targets {
-                let target_name = expr_var_name(target);
+                let target_name = expr_data_name(target);
                 let c_target = emit_expr(target);
-                let target_item = find_data_item(target_name, data_items);
+                let target_item =
+                    target_name.and_then(|name| find_data_item_by_name(name, data_items));
                 let target_is_decimal = target_item.is_some_and(|i| needs_decimal(&i.data_type));
                 let target_is_alpha = target_item
                     .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
                 let target_is_group =
                     target_item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
-                let c_tgt_base = sanitize_name(target_name);
+                let c_tgt_base = target_name.map(data_name_to_c_name).unwrap_or_default();
                 if target_is_decimal {
                     emit_assign_to_decimal(out, value, &c_target, data_items, &pad);
                 } else if target_is_alpha {
@@ -1531,7 +1601,7 @@ pub(crate) fn emit_statement_with_ctx(
         } => {
             let c_source = sanitize_name(source);
             let src_size = find_data_item_size(&c_source, data_items);
-            let targets: Vec<_> = into.iter().map(|s| sanitize_name(s)).collect();
+            let targets: Vec<_> = into.iter().map(sanitize_name).collect();
             let tgt_count = targets.len();
             out.push_str(&format!(
                 "{pad}/* UNSTRING {c_source} INTO {} */\n",
@@ -1563,7 +1633,7 @@ pub(crate) fn emit_statement_with_ctx(
                         ("(const uint8_t*)_ustr_delim".to_string(), format!("{len}"))
                     }
                     HirExpr::Variable(name) => {
-                        let c_d = sanitize_name(name);
+                        let c_d = data_name_to_c_name(name);
                         let d_size = find_data_item_size(&c_d, data_items);
                         let d_ptr = c_ptr_expr(&c_d, data_items);
                         (format!("(const uint8_t*){d_ptr}"), format!("{d_size}"))
@@ -2636,7 +2706,7 @@ pub(crate) fn emit_statement_with_ctx(
                 if into_subs.is_empty() {
                     sanitize_name(into_var)
                 } else {
-                    emit_subscript_access(into_var, into_subs)
+                    emit_subscript_access(&HirDataName::simple(into_var.clone()), into_subs)
                 }
             });
             out.push_str(&format!("{pad}/* RETURN {c_name} */\n"));
@@ -2911,6 +2981,63 @@ pub(crate) fn emit_display_operand(
     pad: &str,
 ) {
     match expr {
+        HirExpr::DataRef(data_ref) => {
+            let c_expr = emit_data_ref_expr(data_ref);
+            let item = find_data_item_by_name(&data_ref.name, data_items);
+            let is_alphanumeric =
+                item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
+            let is_group = item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
+            let is_decimal = item.is_some_and(|i| needs_decimal(&i.data_type));
+
+            if is_decimal {
+                let pic_str = item
+                    .map(|i| generate_pic_string(&i.data_type))
+                    .unwrap_or_else(|| "9".to_string());
+                let pic_len = pic_str.len();
+                out.push_str(&format!(
+                    "{pad}{{ char _dbuf[64]; uint32_t _dlen = cobol_decimal_to_display(&{c_expr}, (uint8_t*)_dbuf, 64, (const uint8_t*)\"{pic_str}\", {pic_len}); cobol_display_string((const uint8_t*)_dbuf, _dlen); }}\n"
+                ));
+            } else if is_group {
+                let size = match &item.unwrap().data_type {
+                    HirType::Group { size, .. } => *size,
+                    _ => 1,
+                };
+                out.push_str(&format!(
+                    "{pad}cobol_display_string((const uint8_t*)&{c_expr}, {size});\n"
+                ));
+            } else if is_alphanumeric {
+                let size = item
+                    .and_then(|i| match &i.data_type {
+                        HirType::Alphanumeric { size } => Some(*size),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                out.push_str(&format!(
+                    "{pad}cobol_display_string((const uint8_t*){c_expr}, {size});\n"
+                ));
+            } else if item.is_some_and(|i| matches!(i.data_type, HirType::National { .. })) {
+                let size = item
+                    .and_then(|i| match &i.data_type {
+                        HirType::National { size } => Some(*size),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                out.push_str(&format!(
+                    "{pad}cobol_display_national((const uint16_t*){c_expr}, {size});\n"
+                ));
+            } else if let Some(disp_size) =
+                grp_display_size(&data_name_to_c_name(&data_ref.name), data_items)
+            {
+                let c_name_ptr = display_numeric_const_ptr(&c_expr);
+                out.push_str(&format!(
+                    "{pad}cobol_display_int(cobol_display_to_int64(\
+                     {c_name_ptr}, {disp_size}));\n"
+                ));
+            } else {
+                let e = emit_int_compatible_expr(expr, data_items);
+                out.push_str(&format!("{pad}cobol_display_int({e});\n"));
+            }
+        }
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
             let len = s.len();
@@ -2960,8 +3087,8 @@ pub(crate) fn emit_display_operand(
             ));
         }
         HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
-            let item = find_data_item(name, data_items);
+            let c_name = data_name_to_c_name(name);
+            let item = find_data_item_by_name(name, data_items);
 
             // If this is a screen item, emit positioning and attribute code
             if let Some(si) = item.and_then(|i| i.screen_info.as_ref()) {
@@ -3151,7 +3278,7 @@ pub(crate) fn emit_display_operand(
             start,
             length,
         } => {
-            let c_var = sanitize_name(variable);
+            let c_var = data_name_to_c_name(variable);
             let c_start = emit_expr(start);
             let var_size = find_data_item_layout(&c_var, data_items).item_len;
             let c_len = if let Some(len) = length {
@@ -3169,7 +3296,7 @@ pub(crate) fn emit_display_operand(
             subscripts,
         } => {
             let c_access = emit_subscript_access(variable, subscripts);
-            let item = find_data_item(variable, data_items);
+            let item = find_data_item_by_name(variable, data_items);
             let is_alpha =
                 item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
             let is_decimal = item.is_some_and(|i| needs_decimal(&i.data_type));
@@ -3192,7 +3319,7 @@ pub(crate) fn emit_display_operand(
                     "{pad}{{ char _dbuf[64]; uint32_t _dlen = cobol_decimal_to_display(&{c_access}, (uint8_t*)_dbuf, 64, (const uint8_t*)\"{pic_str}\", {pic_len}); cobol_display_string((const uint8_t*)_dbuf, _dlen); }}\n"
                 ));
             } else {
-                let c_var = sanitize_name(variable);
+                let c_var = data_name_to_c_name(variable);
                 if let Some(disp_size) = grp_display_size(&c_var, data_items) {
                     let c_access_ptr = display_numeric_const_ptr(&c_access);
                     out.push_str(&format!(
@@ -3278,13 +3405,13 @@ pub(crate) fn emit_screen_display(
 pub(crate) fn emit_move_to(
     out: &mut String,
     from: &HirExpr,
-    target_name: &smol_str::SmolStr,
+    target_name: &HirDataName,
     c_target: &str,
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    let target_c_name = sanitize_name(target_name);
-    let target_type = find_data_item(target_name.as_str(), data_items).map(|item| &item.data_type);
+    let target_c_name = data_name_to_c_name(target_name);
+    let target_type = find_data_item_by_name(target_name, data_items).map(|item| &item.data_type);
     let inherited_target_alpha = with_active_context(|ctx| ctx.is_group_alpha_name(&target_c_name));
     let inherited_target_group = with_active_context(|ctx| ctx.is_group_name(&target_c_name));
     let is_target_alpha =
@@ -3323,9 +3450,32 @@ pub(crate) fn emit_move_to(
                      {{ {c_target}[_i] = 0x0020; }}\n"
                 ));
             }
+            HirExpr::DataRef(data_ref) => {
+                let c_src = emit_data_ref_expr(data_ref);
+                let src_item =
+                    find_data_item_by_name(&data_ref.name, data_items).map(|i| &i.data_type);
+                if matches!(src_item, Some(HirType::National { .. })) {
+                    let src_size = match src_item {
+                        Some(HirType::National { size }) => *size,
+                        _ => 1,
+                    };
+                    out.push_str(&format!(
+                        "{pad}cobol_move_national_to_national(\
+                         (const uint16_t*){c_src}, {src_size}, \
+                         {c_target}, {tgt_size});\n"
+                    ));
+                } else {
+                    let src_size = find_data_item_layout(&c_src, data_items).item_len;
+                    out.push_str(&format!(
+                        "{pad}cobol_move_to_national(\
+                         (const uint8_t*){c_src}, {src_size}, \
+                         {c_target}, {tgt_size});\n"
+                    ));
+                }
+            }
             HirExpr::Variable(src_name) => {
-                let c_src = sanitize_name(src_name);
-                let src_item = find_data_item(src_name.as_str(), data_items).map(|i| &i.data_type);
+                let c_src = data_name_to_c_name(src_name);
+                let src_item = find_data_item_by_name(src_name, data_items).map(|i| &i.data_type);
                 if matches!(src_item, Some(HirType::National { .. })) {
                     let src_size = match src_item {
                         Some(HirType::National { size }) => *size,
@@ -3357,8 +3507,8 @@ pub(crate) fn emit_move_to(
     // copy only the backing storage, not the overlay's expanded view.
     if is_target_group {
         if let HirExpr::Variable(src_name) = from {
-            let c_src = sanitize_name(src_name);
-            let is_source_group = find_data_item(src_name.as_str(), data_items)
+            let c_src = data_name_to_c_name(src_name);
+            let is_source_group = find_data_item_by_name(src_name, data_items)
                 .is_some_and(|item| matches!(item.data_type, HirType::Group { .. }));
             if is_source_group {
                 let src_ptr = c_ptr_expr(&c_src, data_items);
@@ -3391,13 +3541,14 @@ pub(crate) fn emit_move_to(
         } else if let HirExpr::Subscript { variable, .. } = from {
             // Subscripted source to group target: check type and use memcpy
             let c_src = emit_expr(from);
-            let src_item = find_data_item(variable.as_str(), data_items);
+            let src_item = find_data_item_by_name(variable, data_items);
             let is_src_alpha =
                 src_item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
             let is_src_group =
                 src_item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
             if is_src_alpha || is_src_group {
-                let src_size = find_data_item_layout(&sanitize_name(variable), data_items).item_len;
+                let src_size =
+                    find_data_item_layout(&data_name_to_c_name(variable), data_items).item_len;
                 let tgt_size = find_data_item_storage_size(c_target, data_items);
                 let copy_size = src_size.min(tgt_size);
                 let src_ptr = if is_src_group {
@@ -3427,7 +3578,7 @@ pub(crate) fn emit_move_to(
         } = from
         {
             // Reference-modified source to group target: copy substring
-            let c_src = sanitize_name(variable);
+            let c_src = data_name_to_c_name(variable);
             let src_ptr = c_ptr_expr(&c_src, data_items);
             let c_start = emit_expr(start);
             let src_full_size = find_data_item_layout(&c_src, data_items).item_len;
@@ -3481,9 +3632,10 @@ pub(crate) fn emit_move_to(
                     // Check if source expr refers to an alpha/group field
                     if is_alpha_expr(from, data_items) || is_group_expr(from, data_items) {
                         let e = emit_expr(from);
-                        let src_name = expr_var_name(from);
-                        let src_size =
-                            find_data_item_layout(&sanitize_name(src_name), data_items).item_len;
+                        let src_size = expr_data_name(from)
+                            .map(data_name_to_c_name)
+                            .map(|name| find_data_item_layout(&name, data_items).item_len)
+                            .unwrap_or(0);
                         let tgt_size = find_data_item_storage_size(c_target, data_items);
                         let copy_size = src_size.min(tgt_size);
                         let src_ptr = if is_group_expr(from, data_items) {
@@ -3519,14 +3671,13 @@ pub(crate) fn emit_move_to(
     }
 
     // Detect source type for cross-type moves (handles Variable and Subscript)
-    let src_var_name = expr_var_name(from);
-    let src_type = if !src_var_name.is_empty() {
-        find_data_item(src_var_name, data_items).map(|i| &i.data_type)
-    } else {
-        None
-    };
+    let src_data_name = expr_data_name(from);
+    let src_var_name = src_data_name.map(HirDataName::as_str).unwrap_or("");
+    let src_type = src_data_name
+        .and_then(|name| find_data_item_by_name(name, data_items))
+        .map(|i| &i.data_type);
     let is_source_index =
-        !src_var_name.is_empty() && src_type.is_none() && is_index_name(src_var_name, data_items);
+        src_data_name.is_some() && src_type.is_none() && is_index_name(src_var_name, data_items);
     let is_source_numeric_var = is_source_index
         || matches!(
             src_type,
@@ -3544,21 +3695,31 @@ pub(crate) fn emit_move_to(
 
     // National source -> alphanumeric target: use DISPLAY-OF conversion
     if is_target_alpha && is_source_national_var {
-        if let HirExpr::Variable(name) = from {
-            let c_src = sanitize_name(name);
-            let src_size = match find_data_item(name.as_str(), data_items).map(|i| &i.data_type) {
-                Some(HirType::National { size }) => *size,
-                _ => 1,
-            };
-            let tgt_size = find_data_item_layout(c_target, data_items).item_len;
-            out.push_str(&format!(
-                "{pad}cobol_func_display_of(\
-                 (const uint16_t*){c_src}, {src_size}, \
-                 (uint8_t*){c_target}, {tgt_size});\n"
-            ));
-            if !is_group_member_field(c_target) {
-                out.push_str(&format!("{pad}{c_target}[{tgt_size}] = '\\0';\n"));
-            }
+        let (c_src, src_size) = match from {
+            HirExpr::DataRef(data_ref) => (
+                emit_data_ref_expr(data_ref),
+                match find_data_item_by_name(&data_ref.name, data_items).map(|i| &i.data_type) {
+                    Some(HirType::National { size }) => *size,
+                    _ => 1,
+                },
+            ),
+            HirExpr::Variable(name) => (
+                data_name_to_c_name(name),
+                match find_data_item_by_name(name, data_items).map(|i| &i.data_type) {
+                    Some(HirType::National { size }) => *size,
+                    _ => 1,
+                },
+            ),
+            _ => return,
+        };
+        let tgt_size = find_data_item_layout(c_target, data_items).item_len;
+        out.push_str(&format!(
+            "{pad}cobol_func_display_of(\
+             (const uint16_t*){c_src}, {src_size}, \
+             (uint8_t*){c_target}, {tgt_size});\n"
+        ));
+        if !is_group_member_field(c_target) {
+            out.push_str(&format!("{pad}{c_target}[{tgt_size}] = '\\0';\n"));
         }
         return;
     }
@@ -3770,9 +3931,9 @@ pub(crate) fn emit_move_to(
             if is_target_alpha && is_source_decimal_var {
                 // CobolDecimal variable → alphanumeric: use cobol_decimal_to_display
                 if let HirExpr::Variable(name) = from {
-                    let c_src = sanitize_name(name);
+                    let c_src = data_name_to_c_name(name);
                     let tgt_size = find_data_item_layout(c_target, data_items).item_len;
-                    let src_type = find_data_item(name.as_str(), data_items).map(|i| &i.data_type);
+                    let src_type = find_data_item_by_name(name, data_items).map(|i| &i.data_type);
                     let pic_str = src_type
                         .map(generate_pic_string)
                         .unwrap_or_else(|| "9".to_string());
@@ -3795,7 +3956,7 @@ pub(crate) fn emit_move_to(
             } else if !is_target_alpha && is_source_alpha_var {
                 // Alphanumeric variable/subscript → numeric: use cobol_func_numval
                 if let HirExpr::Variable(name) = from {
-                    let c_src = sanitize_name(name);
+                    let c_src = data_name_to_c_name(name);
                     let src_size = find_data_item_layout(&c_src, data_items).item_len;
                     let numval_expr =
                         format!("cobol_func_numval((const uint8_t*){c_src}, {src_size})");
@@ -3803,7 +3964,7 @@ pub(crate) fn emit_move_to(
                 } else if let HirExpr::Subscript { variable, .. } = from {
                     let e = emit_expr(from);
                     let src_size =
-                        find_data_item_layout(&sanitize_name(variable), data_items).item_len;
+                        find_data_item_layout(&data_name_to_c_name(variable), data_items).item_len;
                     let numval_expr = format!("cobol_func_numval((const uint8_t*){e}, {src_size})");
                     emit_store_int(out, c_target, &numval_expr, data_items, pad);
                 } else {
@@ -3813,7 +3974,7 @@ pub(crate) fn emit_move_to(
             } else if is_target_alpha && is_source_group_var {
                 // Group variable → alphanumeric: copy bytes with & prefix (group is a C union)
                 if let HirExpr::Variable(name) = from {
-                    let c_src = sanitize_name(name);
+                    let c_src = data_name_to_c_name(name);
                     let src_size = find_data_item_layout(&c_src, data_items).item_len;
                     let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                     out.push_str(&format!(
@@ -3823,7 +3984,7 @@ pub(crate) fn emit_move_to(
             } else if is_target_alpha {
                 // Alphanumeric → alphanumeric: use cobol_move_string
                 if let HirExpr::Variable(name) = from {
-                    let c_src = sanitize_name(name);
+                    let c_src = data_name_to_c_name(name);
                     let src_size = find_data_item_layout(&c_src, data_items).item_len;
                     let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                     out.push_str(&format!(
@@ -3835,7 +3996,7 @@ pub(crate) fn emit_move_to(
                     length,
                 } = from
                 {
-                    let c_src = sanitize_name(variable);
+                    let c_src = data_name_to_c_name(variable);
                     let c_start = emit_expr(start);
                     let src_full_size = find_data_item_layout(&c_src, data_items).item_len;
                     let c_len = if let Some(len) = length {
@@ -3874,7 +4035,7 @@ pub(crate) fn emit_move_to(
                 // Group variable → numeric target: treat group as alphanumeric bytes
                 // and convert via cobol_func_numval (group is a C union).
                 if let HirExpr::Variable(name) = from {
-                    let c_src = sanitize_name(name);
+                    let c_src = data_name_to_c_name(name);
                     let src_size = find_data_item_layout(&c_src, data_items).item_len;
                     if is_target_decimal {
                         // Target is CobolDecimal
@@ -3910,13 +4071,13 @@ pub(crate) fn emit_move_to(
 pub(crate) fn emit_move_to_refmod(
     out: &mut String,
     from: &HirExpr,
-    variable: &smol_str::SmolStr,
+    variable: &HirDataName,
     start: &HirExpr,
     length: &Option<HirExpr>,
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    let c_var = sanitize_name(variable);
+    let c_var = data_name_to_c_name(variable);
     let c_start = emit_expr(start);
     let var_size = find_data_item_layout(&c_var, data_items).item_len;
     let c_len = if let Some(len) = length {
@@ -3946,7 +4107,7 @@ pub(crate) fn emit_move_to_refmod(
             ));
         }
         HirExpr::Variable(src_name) => {
-            let c_src = sanitize_name(src_name);
+            let c_src = data_name_to_c_name(src_name);
             let src_size = find_data_item_layout(&c_src, data_items).item_len;
             out.push_str(&format!(
                 "{pad}memcpy({c_var} + ({c_start} - 1), {c_src}, \
@@ -3958,7 +4119,7 @@ pub(crate) fn emit_move_to_refmod(
             start: src_start,
             length: src_length,
         } => {
-            let c_src_var = sanitize_name(src_var);
+            let c_src_var = data_name_to_c_name(src_var);
             let c_src_start = emit_expr(src_start);
             let src_size = find_data_item_size(&c_src_var, data_items);
             let c_src_len = if let Some(sl) = src_length {
@@ -4335,6 +4496,16 @@ fn decimal_item_scale(name: &str, data_items: &[HirDataItem]) -> Option<u32> {
     })
 }
 
+fn decimal_expr_scale(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
+    expr_data_name(expr)
+        .and_then(|name| find_data_item_by_name(name, data_items))
+        .and_then(|item| match item.data_type {
+            HirType::Numeric { decimal_places, .. } => Some(decimal_places),
+            HirType::Comp3 { decimal_places, .. } => Some(decimal_places),
+            _ => None,
+        })
+}
+
 fn signed_decimal_literal_expr(expr: &HirExpr) -> Option<(i64, u32)> {
     match expr {
         HirExpr::Literal(HirLiteral::Decimal(d)) => Some(parse_decimal_literal(d)),
@@ -4348,6 +4519,7 @@ fn signed_decimal_literal_expr(expr: &HirExpr) -> Option<(i64, u32)> {
 
 fn expr_mentions_var(expr: &HirExpr, var: &str) -> bool {
     match expr {
+        HirExpr::DataRef(data_ref) => data_ref.name.name == var,
         HirExpr::Variable(name) => name == var,
         HirExpr::Subscript { variable, .. } => variable == var,
         HirExpr::UnaryOp { operand, .. } => expr_mentions_var(operand, var),
@@ -4396,10 +4568,10 @@ fn decimal_expr_as_scaled_int64(
     data_items: &[HirDataItem],
 ) -> Option<String> {
     match expr {
-        HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+        HirExpr::DataRef(_) | HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
             if is_decimal_expr(expr, data_items) {
                 let c_expr = emit_expr(expr);
-                let scale = decimal_item_scale(expr_var_name(expr), data_items)?;
+                let scale = decimal_expr_scale(expr, data_items)?;
                 if scale > target_scale {
                     return None;
                 }
@@ -4462,7 +4634,7 @@ fn emit_fast_decimal_add_assign(
     data_items: &[HirDataItem],
     pad: &str,
 ) -> bool {
-    let target_scale = match decimal_item_scale(expr_var_name(target), data_items) {
+    let target_scale = match decimal_expr_scale(target, data_items) {
         Some(scale) => scale,
         None => return false,
     };
@@ -4482,7 +4654,7 @@ fn emit_fast_decimal_sub_assign(
     data_items: &[HirDataItem],
     pad: &str,
 ) -> bool {
-    let target_scale = match decimal_item_scale(expr_var_name(target), data_items) {
+    let target_scale = match decimal_expr_scale(target, data_items) {
         Some(scale) => scale,
         None => return false,
     };
@@ -4503,7 +4675,7 @@ fn emit_fast_decimal_multiply_giving(
     data_items: &[HirDataItem],
     pad: &str,
 ) -> bool {
-    let target_scale = match decimal_item_scale(expr_var_name(target), data_items) {
+    let target_scale = match decimal_expr_scale(target, data_items) {
         Some(scale) => scale,
         None => return false,
     };
@@ -4744,10 +4916,10 @@ pub(crate) fn emit_expr_as_numeric_with_ctx(expr: &HirExpr, ctx: &CodegenContext
     match expr {
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
             let c_name = match expr {
-                HirExpr::Variable(_) => sanitize_name(name),
+                HirExpr::Variable(_) => data_name_to_c_name(name),
                 _ => emit_expr(expr),
             };
-            let base_name = sanitize_name(name);
+            let base_name = sanitize_name(name.as_str());
             let leaf_name = extract_leaf_member(&c_name);
             let is_dec = ctx.is_decimal_name(&base_name) || ctx.is_decimal_name(leaf_name);
             let is_grp = ctx.is_group_name(&base_name) || ctx.is_group_name(leaf_name);
@@ -4803,8 +4975,9 @@ pub(crate) fn emit_expr_as_double_with_ctx(expr: &HirExpr, ctx: &CodegenContext)
     match expr {
         HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
             let c_name = super::emit_expr_with_ctx(expr, ctx);
-            let var_name = expr_var_name(expr);
-            let base_name = sanitize_name(var_name);
+            let base_name = expr_data_name(expr)
+                .map(data_name_to_c_name)
+                .unwrap_or_default();
             let leaf_name = extract_leaf_member(&c_name);
             let is_dec = (!base_name.is_empty() && ctx.is_decimal_name(&base_name))
                 || ctx.is_decimal_name(leaf_name);
@@ -4913,7 +5086,7 @@ fn emit_comm_arg(expr: &HirExpr, data_items: &[HirDataItem]) -> (String, String)
             )
         }
         HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
+            let c_name = data_name_to_c_name(name);
             let ptr = c_ptr_expr(&c_name, data_items);
             let len = find_data_item_size(&c_name, data_items).to_string();
             (format!("(const uint8_t*)(const void*){ptr}"), len)
@@ -4921,9 +5094,14 @@ fn emit_comm_arg(expr: &HirExpr, data_items: &[HirDataItem]) -> (String, String)
         HirExpr::Subscript { .. } => {
             let c_name = emit_expr(expr);
             let ptr = format!("(const uint8_t*)(const void*){c_name}");
-            let len = find_data_item_layout(expr_var_name(expr), data_items)
-                .item_len
-                .to_string();
+            let len = expr_data_name(expr)
+                .map(data_name_to_c_name)
+                .map(|name| {
+                    find_data_item_layout(&name, data_items)
+                        .item_len
+                        .to_string()
+                })
+                .unwrap_or_else(|| "0".to_string());
             (ptr, len)
         }
         _ => {
@@ -5122,7 +5300,7 @@ pub(crate) fn emit_string_func_arg(expr: &HirExpr) -> (String, String) {
             (format!("\"{escaped}\""), format!("{}", s.len()))
         }
         HirExpr::Variable(name) => {
-            let c_name = sanitize_name(name);
+            let c_name = data_name_to_c_name(name);
             (c_name.clone(), format!("sizeof({c_name})"))
         }
         HirExpr::FunctionCall { name, args } => {

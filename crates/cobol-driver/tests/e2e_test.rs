@@ -862,17 +862,14 @@ PROCEDURE DIVISION.
         HirStatement::Display { operands, .. } => {
             assert_eq!(operands.len(), 1);
             match &operands[0] {
-                cobol_hir::HirExpr::ReferenceModification {
-                    variable,
-                    start,
-                    length,
-                } => {
-                    assert_eq!(variable.as_str(), "WS-NAME");
+                cobol_hir::HirExpr::DataRef(data_ref) => {
+                    assert_eq!(data_ref.name.as_str(), "WS-NAME");
+                    let refmod = data_ref.refmod.as_ref().expect("expected refmod");
                     assert!(matches!(
-                        **start,
+                        *refmod.start,
                         cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::Integer(1))
                     ));
-                    assert!(length.is_some());
+                    assert!(refmod.length.is_some());
                 }
                 other => panic!("expected ReferenceModification, got {:?}", other),
             }
@@ -979,18 +976,15 @@ PROCEDURE DIVISION.
     assert!(!hir.body.is_empty());
     match &hir.body[0] {
         HirStatement::Move { from, .. } => match from {
-            cobol_hir::HirExpr::ReferenceModification {
-                variable,
-                start,
-                length,
-            } => {
-                assert_eq!(variable.as_str(), "WS-SRC");
+            cobol_hir::HirExpr::DataRef(data_ref) => {
+                assert_eq!(data_ref.name.as_str(), "WS-SRC");
+                let refmod = data_ref.refmod.as_ref().expect("expected refmod");
                 assert!(matches!(
-                    **start,
+                    *refmod.start,
                     cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::Integer(7))
                 ));
-                assert!(length.is_some());
-                let len = length.as_ref().unwrap();
+                assert!(refmod.length.is_some());
+                let len = refmod.length.as_ref().unwrap();
                 assert!(matches!(
                     **len,
                     cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::Integer(5))
@@ -2929,6 +2923,67 @@ PROCEDURE DIVISION.
         lines[1].contains("999"),
         "FIELD-C should remain 999: got '{}'",
         lines[1]
+    );
+}
+
+#[test]
+fn test_qualified_display_lowers_to_data_ref() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. QUAL-HIR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SRC.
+   05 FIELD-A PIC 9(3) VALUE 111.
+01 WS-DST.
+   05 FIELD-A PIC 9(3) VALUE 222.
+PROCEDURE DIVISION.
+    DISPLAY FIELD-A OF WS-DST.
+    STOP RUN.
+";
+    let hir = compile_to_hir(src);
+    match &hir.body[0] {
+        HirStatement::Display { operands, .. } => match &operands[0] {
+            cobol_hir::HirExpr::DataRef(data_ref) => {
+                assert_eq!(data_ref.name.name.as_str(), "FIELD-A");
+                assert_eq!(data_ref.name.qualifiers, vec!["WS-DST"]);
+                assert!(data_ref.subscripts.is_empty());
+                assert!(data_ref.refmod.is_none());
+            }
+            other => panic!("expected DataRef, got {:?}", other),
+        },
+        other => panic!("expected Display, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_native_qualified_display_with_duplicate_member_names() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. QUAL-DISPLAY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SRC.
+   05 FIELD-A PIC 9(3) VALUE 111.
+01 WS-DST.
+   05 FIELD-A PIC 9(3) VALUE 222.
+PROCEDURE DIVISION.
+    DISPLAY FIELD-A OF WS-DST.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("WS_DST__FIELD_A"),
+        "qualified display should use the resolved group member, got:\n{}",
+        c_code
+    );
+
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.trim().contains("222"),
+        "qualified display should resolve WS-DST.FIELD-A, got '{}'",
+        stdout.trim()
     );
 }
 

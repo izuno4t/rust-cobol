@@ -5,7 +5,10 @@
 // - Flattens PROCEDURE DIVISION into a list of HIR statements
 // - Desugars EVALUATE into nested IF
 
-use std::collections::HashMap;
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+};
 
 use cobol_ast::{
     data_div::ValueClause,
@@ -25,13 +28,23 @@ use smol_str::SmolStr;
 
 use crate::hir::{
     HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCommunicationMode,
-    HirCompareOp, HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
-    HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
-    HirParagraph, HirParam, HirParamMode, HirPerformKind, HirPerformTest, HirProgram,
-    HirReceiveMode, HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey,
-    HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirType,
-    HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
+    HirCompareOp, HirCondition, HirDataItem, HirDataName, HirDataRef, HirDeclarative, HirExpr,
+    HirFileInfo, HirInspectKind, HirInspectReplacing, HirInspectTallying, HirItemId, HirLiteral,
+    HirMoveTarget, HirOpenEntry, HirOpenMode, HirParagraph, HirParam, HirParamMode, HirPerformKind,
+    HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind, HirScreenInfo,
+    HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
+    HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
 };
+
+#[derive(Debug, Clone)]
+struct ResolvedDataItemEntry {
+    item_id: HirItemId,
+    name: HirDataName,
+}
+
+thread_local! {
+    static ACTIVE_DATA_CATALOG: RefCell<Option<Vec<ResolvedDataItemEntry>>> = const { RefCell::new(None) };
+}
 
 /// A single or range value for an 88-level condition.
 #[derive(Debug, Clone)]
@@ -44,7 +57,7 @@ enum ConditionValue {
 /// and the literal values that make the condition true.
 #[derive(Debug, Clone)]
 struct ConditionNameInfo {
-    parent_name: SmolStr,
+    parent_name: HirDataName,
     values: Vec<ConditionValue>,
 }
 
@@ -134,11 +147,15 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         }
     }
 
-    let (body, mut paragraphs) = program
-        .procedure
-        .as_ref()
-        .map(|proc| lower_procedure_division(proc, &condition_names))
-        .unwrap_or_default();
+    let data_catalog = build_resolved_data_catalog(&data_items);
+
+    let (body, mut paragraphs) = with_resolved_data_catalog(data_catalog.clone(), || {
+        program
+            .procedure
+            .as_ref()
+            .map(|proc| lower_procedure_division(proc, &condition_names))
+            .unwrap_or_default()
+    });
 
     // Extract FILE STATUS variable mappings from ENVIRONMENT DIVISION.
     let file_status_vars = extract_file_status_vars(program);
@@ -152,7 +169,9 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Lower DECLARATIVES sections (USE AFTER EXCEPTION handlers).
     // Also collect individual paragraphs defined inside declarative sections
     // so they get proper forward declarations and function definitions in codegen.
-    let (declaratives, decl_paragraphs) = lower_declaratives(program, &condition_names);
+    let (declaratives, decl_paragraphs) = with_resolved_data_catalog(data_catalog, || {
+        lower_declaratives(program, &condition_names)
+    });
     // Only add declarative paragraphs that don't already exist in the main
     // paragraph list (some COBOL programs reuse paragraph names across
     // DECLARATIVES and normal procedure sections).
@@ -257,6 +276,101 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     hir
 }
 
+fn with_resolved_data_catalog<T>(catalog: Vec<ResolvedDataItemEntry>, f: impl FnOnce() -> T) -> T {
+    ACTIVE_DATA_CATALOG.with(|slot| {
+        let previous = slot.replace(Some(catalog));
+        let result = f();
+        slot.replace(previous);
+        result
+    })
+}
+
+fn build_resolved_data_catalog(data_items: &[HirDataItem]) -> Vec<ResolvedDataItemEntry> {
+    fn collect(
+        items: &[HirDataItem],
+        ancestors_outer_to_inner: &[SmolStr],
+        seen: &mut HashSet<(Span, SmolStr)>,
+        next_id: &mut u32,
+        out: &mut Vec<ResolvedDataItemEntry>,
+    ) {
+        for item in items {
+            let duplicate_key = (item.span, item.name.clone());
+            if !seen.insert(duplicate_key) {
+                continue;
+            }
+
+            let qualifiers = ancestors_outer_to_inner.iter().rev().cloned().collect();
+            out.push(ResolvedDataItemEntry {
+                item_id: HirItemId(*next_id),
+                name: HirDataName::new(item.name.clone(), qualifiers),
+            });
+            *next_id += 1;
+
+            if let HirType::Group { members, .. } = &item.data_type {
+                let mut child_ancestors = ancestors_outer_to_inner.to_vec();
+                child_ancestors.push(item.name.clone());
+                collect(members, &child_ancestors, seen, next_id, out);
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut next_id = 0;
+    let mut out = Vec::new();
+    collect(data_items, &[], &mut seen, &mut next_id, &mut out);
+    out
+}
+
+fn resolve_data_name(name: &HirDataName) -> Option<ResolvedDataItemEntry> {
+    fn matches_qualifiers(candidate: &HirDataName, query: &HirDataName) -> bool {
+        if query.qualifiers.is_empty() {
+            return true;
+        }
+
+        let mut search_from = 0usize;
+        for qualifier in &query.qualifiers {
+            let Some(offset) = candidate.qualifiers[search_from..]
+                .iter()
+                .position(|ancestor| ancestor.eq(qualifier.as_str()))
+            else {
+                return false;
+            };
+            search_from += offset + 1;
+        }
+        true
+    }
+
+    ACTIVE_DATA_CATALOG.with(|slot| {
+        let catalog = slot.borrow();
+        let catalog = catalog.as_ref()?;
+        let mut matches = catalog
+            .iter()
+            .filter(|entry| entry.name.name.eq(name.name.as_str()))
+            .filter(|entry| matches_qualifiers(&entry.name, name))
+            .cloned();
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
+    })
+}
+
+fn build_data_ref(
+    name: HirDataName,
+    subscripts: Vec<HirExpr>,
+    refmod: Option<HirRefMod>,
+) -> Option<HirDataRef> {
+    let resolved = resolve_data_name(&name)?;
+    Some(HirDataRef {
+        item_id: resolved.item_id,
+        name: resolved.name,
+        subscripts,
+        refmod,
+    })
+}
+
 fn lower_communication_descriptions(
     data: Option<&DataDivision>,
 ) -> Vec<crate::hir::HirCommunicationDescription> {
@@ -336,40 +450,45 @@ fn collect_condition_names(data: &DataDivision) -> HashMap<SmolStr, ConditionNam
     let mut map = HashMap::new();
     for fd in &data.file_section {
         for item in &fd.items {
-            collect_condition_names_from_item(item, None, &mut map);
+            collect_condition_names_from_item(item, &[], &mut map);
         }
     }
     for item in &data.working_storage {
-        collect_condition_names_from_item(item, None, &mut map);
+        collect_condition_names_from_item(item, &[], &mut map);
     }
     for item in &data.local_storage {
-        collect_condition_names_from_item(item, None, &mut map);
+        collect_condition_names_from_item(item, &[], &mut map);
     }
     for item in &data.linkage {
-        collect_condition_names_from_item(item, None, &mut map);
+        collect_condition_names_from_item(item, &[], &mut map);
     }
     for item in &data.screen {
-        collect_condition_names_from_item(item, None, &mut map);
+        collect_condition_names_from_item(item, &[], &mut map);
     }
     for cd in &data.communication {
         for item in &cd.data_items {
-            collect_condition_names_from_item(item, None, &mut map);
+            collect_condition_names_from_item(item, &[], &mut map);
         }
     }
     for item in &data.report {
-        collect_condition_names_from_item(item, None, &mut map);
+        collect_condition_names_from_item(item, &[], &mut map);
     }
     map
 }
 
 fn collect_condition_names_from_item(
     item: &DataItem,
-    inherited_parent_name: Option<&SmolStr>,
+    inherited_ancestors: &[SmolStr],
     map: &mut HashMap<SmolStr, ConditionNameInfo>,
 ) {
-    let current_parent_name = item.name.as_ref().or(inherited_parent_name);
+    let current_parent_name = item.name.as_ref().map(|name| {
+        HirDataName::new(
+            name.clone(),
+            inherited_ancestors.iter().rev().cloned().collect(),
+        )
+    });
     // Check children for 88-level items that belong to this parent
-    if let Some(parent_name) = current_parent_name {
+    if let Some(parent_name) = current_parent_name.clone() {
         for child in &item.children {
             if child.level == 88 {
                 if let Some(cond_name) = &child.name {
@@ -402,9 +521,13 @@ fn collect_condition_names_from_item(
     }
 
     // Recurse into non-88 children
+    let mut child_ancestors = inherited_ancestors.to_vec();
+    if let Some(name) = &item.name {
+        child_ancestors.push(name.clone());
+    }
     for child in &item.children {
         if child.level != 88 {
-            collect_condition_names_from_item(child, current_parent_name, map);
+            collect_condition_names_from_item(child, &child_ancestors, map);
         }
     }
 }
@@ -1044,29 +1167,45 @@ fn lower_move(mv: &MoveStatement) -> HirStatement {
 fn lower_move_target(expr: &Expr) -> HirMoveTarget {
     match expr {
         Expr::Identifier(qname) => {
-            let var_name = qualified_name_str(qname);
-            if qname.subscripts.is_empty() {
-                HirMoveTarget::Variable(var_name)
-            } else {
-                HirMoveTarget::Subscript {
-                    variable: var_name,
-                    subscripts: qname.subscripts.iter().map(lower_expr).collect(),
-                }
-            }
+            let var_name = lower_data_name(qname);
+            let subscripts: Vec<_> = qname.subscripts.iter().map(lower_expr).collect();
+            build_data_ref(var_name.clone(), subscripts.clone(), None)
+                .map(HirMoveTarget::DataRef)
+                .unwrap_or_else(|| {
+                    if qname.subscripts.is_empty() {
+                        HirMoveTarget::Variable(var_name)
+                    } else {
+                        HirMoveTarget::Subscript {
+                            variable: var_name,
+                            subscripts,
+                        }
+                    }
+                })
         }
         Expr::ReferenceModification {
             variable,
             start,
             length,
             ..
-        } => HirMoveTarget::ReferenceModification {
-            variable: qualified_name_str(variable),
-            start: lower_expr(start),
-            length: length.as_ref().map(|l| lower_expr(l)),
-        },
+        } => {
+            let variable = lower_data_name(variable);
+            let start = lower_expr(start);
+            let length = length.as_ref().map(|expr| lower_expr(expr));
+            let refmod = HirRefMod {
+                start: Box::new(start.clone()),
+                length: length.clone().map(Box::new),
+            };
+            build_data_ref(variable.clone(), Vec::new(), Some(refmod))
+                .map(HirMoveTarget::DataRef)
+                .unwrap_or(HirMoveTarget::ReferenceModification {
+                    variable,
+                    start,
+                    length,
+                })
+        }
         _ => {
             // Fallback: should not happen for well-formed MOVE targets
-            HirMoveTarget::Variable(SmolStr::from("FILLER"))
+            HirMoveTarget::Variable(HirDataName::simple("FILLER"))
         }
     }
 }
@@ -1803,7 +1942,10 @@ fn lower_set(
             for cond_qn in conditions {
                 let cond_name = &cond_qn.name;
                 if let Some(info) = condition_names.get(cond_name) {
-                    targets.push(HirMoveTarget::Variable(info.parent_name.clone()));
+                    let target = build_data_ref(info.parent_name.clone(), Vec::new(), None)
+                        .map(HirMoveTarget::DataRef)
+                        .unwrap_or_else(|| HirMoveTarget::Variable(info.parent_name.clone()));
+                    targets.push(target);
                     // Use the first value of the condition-name
                     if let Some(first_cv) = info.values.first() {
                         hir_value = match first_cv {
@@ -1812,7 +1954,11 @@ fn lower_set(
                         };
                     }
                 } else {
-                    targets.push(HirMoveTarget::Variable(cond_name.clone()));
+                    let fallback_name: HirDataName = cond_name.clone().into();
+                    let target = build_data_ref(fallback_name.clone(), Vec::new(), None)
+                        .map(HirMoveTarget::DataRef)
+                        .unwrap_or(HirMoveTarget::Variable(fallback_name));
+                    targets.push(target);
                 }
             }
             HirStatement::Move {
@@ -2229,30 +2375,28 @@ fn lower_xml_parse(xp: &cobol_ast::statement::XmlParseStatement) -> HirStatement
     }
 }
 
-/// Produce a (possibly qualified) name string from a QualifiedName.
-/// If qualifiers exist, the outermost qualifier is used as a prefix:
-///   `FIELD OF GROUP` becomes `GROUP::FIELD`.
-fn qualified_name_str(qname: &cobol_ast::expr::QualifiedName) -> SmolStr {
-    if qname.qualifiers.is_empty() {
-        qname.name.clone()
-    } else {
-        let group = qname.qualifiers.last().unwrap();
-        SmolStr::new(format!("{}::{}", group, qname.name))
-    }
+/// Produce a structured data name from a `QualifiedName`.
+fn lower_data_name(qname: &cobol_ast::expr::QualifiedName) -> HirDataName {
+    HirDataName::new(qname.name.clone(), qname.qualifiers.clone())
 }
 
 /// Lower a `QualifiedName` (used as an arithmetic target) to a `HirExpr`.
 /// Handles subscripts so that `TABLE(IDX)` becomes `HirExpr::Subscript`.
 fn lower_qualified_name_to_expr(qname: &cobol_ast::expr::QualifiedName) -> HirExpr {
-    let var_name = qualified_name_str(qname);
-    if qname.subscripts.is_empty() {
-        HirExpr::Variable(var_name)
-    } else {
-        HirExpr::Subscript {
-            variable: var_name,
-            subscripts: qname.subscripts.iter().map(lower_expr).collect(),
-        }
-    }
+    let var_name = lower_data_name(qname);
+    let subscripts: Vec<_> = qname.subscripts.iter().map(lower_expr).collect();
+    build_data_ref(var_name.clone(), subscripts.clone(), None)
+        .map(HirExpr::DataRef)
+        .unwrap_or_else(|| {
+            if qname.subscripts.is_empty() {
+                HirExpr::Variable(var_name)
+            } else {
+                HirExpr::Subscript {
+                    variable: var_name,
+                    subscripts,
+                }
+            }
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -2262,25 +2406,7 @@ fn lower_qualified_name_to_expr(qname: &cobol_ast::expr::QualifiedName) -> HirEx
 fn lower_expr(expr: &Expr) -> HirExpr {
     match expr {
         Expr::Literal(lit) => HirExpr::Literal(lower_literal(lit)),
-        Expr::Identifier(qname) => {
-            // When qualifiers exist (e.g., FIELD-A OF WS-DST), compose a
-            // disambiguated name using the outermost qualifier as prefix.
-            let var_name = if qname.qualifiers.is_empty() {
-                qname.name.clone()
-            } else {
-                // Use outermost qualifier (last element) as prefix
-                let group = qname.qualifiers.last().unwrap();
-                SmolStr::new(format!("{}::{}", group, qname.name))
-            };
-            if qname.subscripts.is_empty() {
-                HirExpr::Variable(var_name)
-            } else {
-                HirExpr::Subscript {
-                    variable: var_name,
-                    subscripts: qname.subscripts.iter().map(lower_expr).collect(),
-                }
-            }
-        }
+        Expr::Identifier(qname) => lower_qualified_name_to_expr(qname),
         Expr::BinaryOp {
             op, left, right, ..
         } => {
@@ -2318,11 +2444,22 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             start,
             length,
             ..
-        } => HirExpr::ReferenceModification {
-            variable: qualified_name_str(variable),
-            start: Box::new(lower_expr(start)),
-            length: length.as_ref().map(|l| Box::new(lower_expr(l))),
-        },
+        } => {
+            let variable = lower_data_name(variable);
+            let start_expr = lower_expr(start);
+            let length_expr = length.as_ref().map(|expr| lower_expr(expr));
+            let refmod = HirRefMod {
+                start: Box::new(start_expr.clone()),
+                length: length_expr.clone().map(Box::new),
+            };
+            build_data_ref(variable.clone(), Vec::new(), Some(refmod))
+                .map(HirExpr::DataRef)
+                .unwrap_or(HirExpr::ReferenceModification {
+                    variable,
+                    start: Box::new(start_expr),
+                    length: length_expr.map(Box::new),
+                })
+        }
     }
 }
 
@@ -2414,14 +2551,20 @@ fn lower_condition(
         Condition::ConditionName(qname) => {
             // 88-level condition name: look up the parent variable and values
             if let Some(info) = condition_names.get(&qname.name) {
-                let parent_expr = if qname.subscripts.is_empty() {
-                    HirExpr::Variable(info.parent_name.clone())
-                } else {
-                    HirExpr::Subscript {
-                        variable: info.parent_name.clone(),
-                        subscripts: qname.subscripts.iter().map(lower_expr).collect(),
-                    }
-                };
+                let subscripts: Vec<_> = qname.subscripts.iter().map(lower_expr).collect();
+                let parent_expr =
+                    build_data_ref(info.parent_name.clone(), subscripts.clone(), None)
+                        .map(HirExpr::DataRef)
+                        .unwrap_or_else(|| {
+                            if qname.subscripts.is_empty() {
+                                HirExpr::Variable(info.parent_name.clone())
+                            } else {
+                                HirExpr::Subscript {
+                                    variable: info.parent_name.clone(),
+                                    subscripts,
+                                }
+                            }
+                        });
                 let conditions: Vec<HirCondition> = info
                     .values
                     .iter()
@@ -2460,8 +2603,12 @@ fn lower_condition(
                 }
             } else {
                 // Not a known 88-level, fall back to variable == 1
+                let name: HirDataName = qname.name.clone().into();
+                let left = build_data_ref(name.clone(), Vec::new(), None)
+                    .map(HirExpr::DataRef)
+                    .unwrap_or(HirExpr::Variable(name));
                 HirCondition::Compare {
-                    left: HirExpr::Variable(qname.name.clone()),
+                    left,
                     op: HirCompareOp::Eq,
                     right: HirExpr::Literal(HirLiteral::Integer(1)),
                 }
@@ -2794,6 +2941,42 @@ fn fix_subscript_dimensions(stmts: &mut [HirStatement], occurs_dims: &HashMap<Sm
 
 fn fix_subscripts_in_expr(expr: &mut HirExpr, occurs_dims: &HashMap<SmolStr, usize>) {
     match expr {
+        HirExpr::DataRef(data_ref) => {
+            for sub in data_ref.subscripts.iter_mut() {
+                fix_subscripts_in_expr(sub, occurs_dims);
+            }
+            if let Some(refmod) = &mut data_ref.refmod {
+                fix_subscripts_in_expr(&mut refmod.start, occurs_dims);
+                if let Some(length) = &mut refmod.length {
+                    fix_subscripts_in_expr(length, occurs_dims);
+                }
+            }
+            let var_upper = SmolStr::new(data_ref.name.name.to_uppercase());
+            let expected = occurs_dims
+                .get(&var_upper)
+                .or_else(|| occurs_dims.get(data_ref.name.name.as_str()))
+                .copied()
+                .unwrap_or(0);
+            if expected > data_ref.subscripts.len() {
+                let missing = expected - data_ref.subscripts.len();
+                let mut new_subs = Vec::new();
+                let mut remaining = missing;
+                for sub in data_ref.subscripts.iter() {
+                    if remaining > 0 {
+                        let need = remaining + 1;
+                        let parts = split_subscript_expr(sub, need);
+                        let actually_added = parts.len().saturating_sub(1);
+                        remaining = remaining.saturating_sub(actually_added);
+                        new_subs.extend(parts);
+                    } else {
+                        new_subs.push(sub.clone());
+                    }
+                }
+                if new_subs.len() == expected {
+                    data_ref.subscripts = new_subs;
+                }
+            }
+        }
         HirExpr::Subscript {
             variable,
             subscripts,
@@ -2803,10 +2986,10 @@ fn fix_subscripts_in_expr(expr: &mut HirExpr, occurs_dims: &HashMap<SmolStr, usi
                 fix_subscripts_in_expr(sub, occurs_dims);
             }
             // Check if we need to split subscripts
-            let var_upper = SmolStr::new(variable.to_uppercase());
+            let var_upper = SmolStr::new(variable.name.to_uppercase());
             let expected = occurs_dims
                 .get(&var_upper)
-                .or_else(|| occurs_dims.get(variable.as_str()))
+                .or_else(|| occurs_dims.get(variable.name.as_str()))
                 .copied()
                 .unwrap_or(0);
             if expected > subscripts.len() {
@@ -2848,39 +3031,77 @@ fn fix_subscripts_in_move_target(
     target: &mut HirMoveTarget,
     occurs_dims: &HashMap<SmolStr, usize>,
 ) {
-    if let HirMoveTarget::Subscript {
-        variable,
-        subscripts,
-    } = target
-    {
-        for sub in subscripts.iter_mut() {
-            fix_subscripts_in_expr(sub, occurs_dims);
-        }
-        let var_upper = SmolStr::new(variable.to_uppercase());
-        let expected = occurs_dims
-            .get(&var_upper)
-            .or_else(|| occurs_dims.get(variable.as_str()))
-            .copied()
-            .unwrap_or(0);
-        if expected > subscripts.len() {
-            let missing = expected - subscripts.len();
-            let mut new_subs = Vec::new();
-            let mut remaining = missing;
-            for sub in subscripts.iter() {
-                if remaining > 0 {
-                    let need = remaining + 1;
-                    let parts = split_subscript_expr(sub, need);
-                    let actually_added = parts.len().saturating_sub(1);
-                    remaining = remaining.saturating_sub(actually_added);
-                    new_subs.extend(parts);
-                } else {
-                    new_subs.push(sub.clone());
+    match target {
+        HirMoveTarget::DataRef(data_ref) => {
+            for sub in data_ref.subscripts.iter_mut() {
+                fix_subscripts_in_expr(sub, occurs_dims);
+            }
+            if let Some(refmod) = &mut data_ref.refmod {
+                fix_subscripts_in_expr(&mut refmod.start, occurs_dims);
+                if let Some(length) = &mut refmod.length {
+                    fix_subscripts_in_expr(length, occurs_dims);
                 }
             }
-            if new_subs.len() == expected {
-                *subscripts = new_subs;
+            let var_upper = SmolStr::new(data_ref.name.name.to_uppercase());
+            let expected = occurs_dims
+                .get(&var_upper)
+                .or_else(|| occurs_dims.get(data_ref.name.name.as_str()))
+                .copied()
+                .unwrap_or(0);
+            if expected > data_ref.subscripts.len() {
+                let missing = expected - data_ref.subscripts.len();
+                let mut new_subs = Vec::new();
+                let mut remaining = missing;
+                for sub in data_ref.subscripts.iter() {
+                    if remaining > 0 {
+                        let need = remaining + 1;
+                        let parts = split_subscript_expr(sub, need);
+                        let actually_added = parts.len().saturating_sub(1);
+                        remaining = remaining.saturating_sub(actually_added);
+                        new_subs.extend(parts);
+                    } else {
+                        new_subs.push(sub.clone());
+                    }
+                }
+                if new_subs.len() == expected {
+                    data_ref.subscripts = new_subs;
+                }
             }
         }
+        HirMoveTarget::Subscript {
+            variable,
+            subscripts,
+        } => {
+            for sub in subscripts.iter_mut() {
+                fix_subscripts_in_expr(sub, occurs_dims);
+            }
+            let var_upper = SmolStr::new(variable.name.to_uppercase());
+            let expected = occurs_dims
+                .get(&var_upper)
+                .or_else(|| occurs_dims.get(variable.name.as_str()))
+                .copied()
+                .unwrap_or(0);
+            if expected > subscripts.len() {
+                let missing = expected - subscripts.len();
+                let mut new_subs = Vec::new();
+                let mut remaining = missing;
+                for sub in subscripts.iter() {
+                    if remaining > 0 {
+                        let need = remaining + 1;
+                        let parts = split_subscript_expr(sub, need);
+                        let actually_added = parts.len().saturating_sub(1);
+                        remaining = remaining.saturating_sub(actually_added);
+                        new_subs.extend(parts);
+                    } else {
+                        new_subs.push(sub.clone());
+                    }
+                }
+                if new_subs.len() == expected {
+                    *subscripts = new_subs;
+                }
+            }
+        }
+        HirMoveTarget::Variable(_) | HirMoveTarget::ReferenceModification { .. } => {}
     }
 }
 
@@ -3485,18 +3706,15 @@ PROCEDURE DIVISION.
             crate::hir::HirStatement::Display { operands, .. } => {
                 assert_eq!(operands.len(), 1);
                 match &operands[0] {
-                    crate::hir::HirExpr::ReferenceModification {
-                        variable,
-                        start,
-                        length,
-                    } => {
-                        assert_eq!(variable.as_str(), "WS-NAME");
+                    crate::hir::HirExpr::DataRef(data_ref) => {
+                        assert_eq!(data_ref.name.as_str(), "WS-NAME");
+                        let refmod = data_ref.refmod.as_ref().expect("expected refmod");
                         assert!(matches!(
-                            **start,
+                            *refmod.start,
                             crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(1))
                         ));
-                        assert!(length.is_some());
-                        let len = length.as_ref().unwrap();
+                        assert!(refmod.length.is_some());
+                        let len = refmod.length.as_ref().unwrap();
                         assert!(matches!(
                             **len,
                             crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(5))
@@ -3527,20 +3745,17 @@ PROCEDURE DIVISION.
             crate::hir::HirStatement::Move { to, .. } => {
                 assert_eq!(to.len(), 1);
                 match &to[0] {
-                    crate::hir::HirMoveTarget::ReferenceModification {
-                        variable,
-                        start,
-                        length,
-                    } => {
-                        assert_eq!(variable.as_str(), "WS-NAME");
+                    crate::hir::HirMoveTarget::DataRef(data_ref) => {
+                        assert_eq!(data_ref.name.as_str(), "WS-NAME");
+                        let refmod = data_ref.refmod.as_ref().expect("expected refmod");
                         assert!(matches!(
-                            start,
+                            *refmod.start,
                             crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(3))
                         ));
-                        assert!(length.is_some());
-                        let len = length.as_ref().unwrap();
+                        assert!(refmod.length.is_some());
+                        let len = refmod.length.as_ref().unwrap();
                         assert!(matches!(
-                            len,
+                            **len,
                             crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(3))
                         ));
                     }
@@ -3566,18 +3781,15 @@ PROCEDURE DIVISION.
         let hir = parse_and_lower(src);
         match &hir.body[0] {
             crate::hir::HirStatement::Display { operands, .. } => match &operands[0] {
-                crate::hir::HirExpr::ReferenceModification {
-                    variable,
-                    start,
-                    length,
-                } => {
-                    assert_eq!(variable.as_str(), "WS-NAME");
+                crate::hir::HirExpr::DataRef(data_ref) => {
+                    assert_eq!(data_ref.name.as_str(), "WS-NAME");
+                    let refmod = data_ref.refmod.as_ref().expect("expected refmod");
                     assert!(matches!(
-                        **start,
+                        *refmod.start,
                         crate::hir::HirExpr::Literal(crate::hir::HirLiteral::Integer(5))
                     ));
                     assert!(
-                        length.is_none(),
+                        refmod.length.is_none(),
                         "length should be None for start-only ref mod"
                     );
                 }

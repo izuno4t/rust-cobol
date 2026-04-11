@@ -94,7 +94,7 @@ pub fn generate_c(program: &HirProgram) -> String {
         let top_level_fd_aliases: HashSet<String> = program
             .fd_record_aliases
             .keys()
-            .map(|k| sanitize_name(k))
+            .map(sanitize_name)
             .collect();
         emit_data_items(
             &mut out,
@@ -538,7 +538,7 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
         let nested_fd_aliases: HashSet<String> = program
             .fd_record_aliases
             .keys()
-            .map(|k| sanitize_name(k))
+            .map(sanitize_name)
             .collect();
         emit_data_items(
             out,
@@ -659,7 +659,7 @@ fn collect_top_level_data_item_c_names(program: &HirProgram) -> Vec<String> {
     let fd_aliases: HashSet<String> = program
         .fd_record_aliases
         .keys()
-        .map(|k| sanitize_name(k))
+        .map(sanitize_name)
         .collect();
     let mut names = BTreeSet::new();
     for item in &program.data_items {
