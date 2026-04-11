@@ -2892,20 +2892,38 @@ pub(crate) fn find_data_item_storage_size(c_name: &str, data_items: &[HirDataIte
     find_data_item_size(c_name, data_items)
 }
 
-pub(crate) fn find_data_item_element_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
-    let lookup = extract_leaf_member(c_name);
-    if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {
-        return data_item_byte_size(&item.data_type);
-    }
-    find_data_item_size(c_name, data_items)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Layout {
+    pub(crate) item_len: u32,
+    pub(crate) stride: u32,
+    pub(crate) count: u32,
+    pub(crate) area_len: u32,
 }
 
-pub(crate) fn find_data_item_area_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+impl Layout {
+    fn scalar(len: u32) -> Self {
+        Self {
+            item_len: len,
+            stride: len,
+            count: 1,
+            area_len: len,
+        }
+    }
+}
+
+pub(crate) fn find_data_item_layout(c_name: &str, data_items: &[HirDataItem]) -> Layout {
     let lookup = extract_leaf_member(c_name);
     if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {
-        return data_item_byte_size(&item.data_type) * item.occurs.unwrap_or(1);
+        let item_len = data_item_byte_size(&item.data_type);
+        let count = item.occurs.unwrap_or(1);
+        return Layout {
+            item_len,
+            stride: item_len,
+            count,
+            area_len: item_len.saturating_mul(count),
+        };
     }
-    find_data_item_size(c_name, data_items)
+    Layout::scalar(find_data_item_size(c_name, data_items))
 }
 
 /// Compute the byte size of an HIR type.
