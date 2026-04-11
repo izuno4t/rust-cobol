@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF107A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF107A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 2
+# Expected Feature: CURRENT-DATE
 # Purpose: It contains tests for the Intrinsic Function
 # Purpose: Variables specific to the Intrinsic Function Test IF107A
 # Purpose: Intrinsic Function Tests IF107A - CURRENT-DATE

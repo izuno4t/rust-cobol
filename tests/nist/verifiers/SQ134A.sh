@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: SQ134A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ134A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 8
+# Expected Feature: REWRITE SHORTER RECORD
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

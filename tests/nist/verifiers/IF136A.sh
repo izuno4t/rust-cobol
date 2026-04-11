@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF136A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF136A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 26
+# Expected Feature: SQRT Function
 # Purpose: It contains tests for the Intrinsic Function SQRT.
 # Purpose: Variables specific to the Intrinsic Function Test IF136A
 # Purpose: Intrinsic Function Tests IF136A - SQRT

@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: NC246A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC246A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 13
+# Expected Feature: STORE TABLE VALUES
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

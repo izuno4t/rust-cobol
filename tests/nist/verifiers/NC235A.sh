@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: NC235A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC235A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 14
+# Expected Feature: LEVEL 3 TBL HANDLING
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

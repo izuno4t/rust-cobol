@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: SG105A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SG/SG105A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 18
+# Expected Feature: SORT - 8 ASC. KEYS
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"

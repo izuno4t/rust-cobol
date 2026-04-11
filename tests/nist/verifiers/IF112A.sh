@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF112A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF112A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 8
+# Expected Feature: INTEGER-OF-DATE
 # Purpose: It contains tests for the Intrinsic Function
 # Purpose: Variables specific to the Intrinsic Function Test IF112A
 # Purpose: Intrinsic Function Test IF112A - INTEGER-OF-DATE

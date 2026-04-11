@@ -4,6 +4,7 @@ set -euo pipefail
 # Program: IC103A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC103A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 0
 # Purpose: VALIDATION FOR:-
 # Purpose: THE SUBPROGRAM IC105 HAS TWO OPERANDS IN THE
 

@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF111A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF111A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 23
+# Expected Feature: INTEGER Function
 # Purpose: It contains tests for the Intrinsic Function
 # Purpose: Variables specific to the Intrinsic Function Test IF111A
 # Purpose: Intrinsic Function Tests IF111A - INTEGER

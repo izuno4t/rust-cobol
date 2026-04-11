@@ -4,6 +4,7 @@ set -euo pipefail
 # Program: IC213A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC213A.cob
 # Verifier: verifier_subprogram_standalone
+# Expected Cases: 0
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

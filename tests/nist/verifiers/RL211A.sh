@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: RL211A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RL/RL211A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 8
+# Expected Feature: FILE CREATE RL-VS1
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

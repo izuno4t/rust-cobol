@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IX212A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX212A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 24
+# Expected Feature: WRITE INVALID KEY
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -51,6 +51,28 @@ select_verifier_fn() {
     fi
 }
 
+extract_expected_case_count() {
+    local src="$1"
+    perl -ne '
+        if (/MOVE\s+"[^"]+"\s+TO\s+PAR-NAME\./) {
+            $count++;
+        }
+        END {
+            print(($count || 0) . "\n");
+        }
+    ' "$src" | tail -n 1
+}
+
+extract_expected_feature_name() {
+    local src="$1"
+    perl -ne '
+        if (/MOVE\s+"([^"]+)"\s+TO\s+FEATURE\./) {
+            print "$1\n";
+            exit;
+        }
+    ' "$src" | head -n 1
+}
+
 find "$PROGRAMS_DIR" -path '*/COPYLIB' -prune -o -name '*.cob' -print | while IFS= read -r src; do
     program="$(basename "$src" .cob)"
     verifier="$VERIFIERS_DIR/${program}.sh"
@@ -60,6 +82,8 @@ find "$PROGRAMS_DIR" -path '*/COPYLIB' -prune -o -name '*.cob' -print | while IF
     fi
     verifier_fn="$(select_verifier_fn "$src")"
     purpose="$(extract_program_purpose "$src")"
+    expected_cases="$(extract_expected_case_count "$src")"
+    expected_feature="$(extract_expected_feature_name "$src")"
     cat > "$verifier" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -67,7 +91,11 @@ set -euo pipefail
 # Program: ${program}
 # Source: ${src}
 # Verifier: ${verifier_fn}
+# Expected Cases: ${expected_cases}
 EOF
+    if [ -n "$expected_feature" ]; then
+        printf '# Expected Feature: %s\n' "$expected_feature" >> "$verifier"
+    fi
     if [ -n "$purpose" ]; then
         while IFS= read -r line; do
             printf '# Purpose: %s\n' "$line" >> "$verifier"

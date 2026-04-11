@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF140A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF140A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 13
+# Expected Feature: UPPER-CASE Function
 # Purpose: It contains tests for the Intrinsic Function
 # Purpose: Variables specific to the Intrinsic Function Test IF140A
 # Purpose: Intrinsic Function Tests IF140A - UPCASE

@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: ST108A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/ST/ST108A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 18
+# Expected Feature: SORT - 8 ASC. KEYS
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

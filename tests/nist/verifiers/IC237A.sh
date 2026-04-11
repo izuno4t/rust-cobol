@@ -4,6 +4,7 @@ set -euo pipefail
 # Program: IC237A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC237A.cob
 # Verifier: verifier_subprogram_standalone
+# Expected Cases: 1
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 

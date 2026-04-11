@@ -46,8 +46,9 @@ make nist-summary
 The same `make nist-prepare` and `make nist-run` flow is intended for
 both local execution and CI jobs.
 
-`NIST_JOBS` is optional and only affects `--all` execution. It runs
-modules in parallel while keeping per-module work directories isolated.
+`NIST_JOBS` is optional and controls the global parallelism for all
+three phases: compile, execute, and collect. Each program runs in its
+own isolated work directory.
 
 Compilation is cached by default per program. If the preprocessed source,
 compiler binary, and `COPYLIB` inputs are unchanged, `run_nist.sh` reuses
@@ -57,16 +58,16 @@ when the source file and `preprocess.sh` are unchanged.
 
 ## Result Model
 
-- `PASS` — CCVS summary says there are no failures and no inspections
-- `FAIL` — CCVS summary or `FAIL*` lines report failures
-- `INSPECT` — the run completed, but the report still requires
-  inspection or has no decisive summary
+- `PASS` — the program-specific verifier and CCVS report both satisfy
+  the expected result
+- `FAIL` — compilation succeeded, but the verifier found a mismatch,
+  missing report, or reported failures
 - `COMPILE_ERROR` — compilation failed
 - `RUNTIME_ERROR` — execution returned non-zero
 - `TIMEOUT` — execution exceeded the timeout
 
-`INSPECT` stores an additional `*.reason` file to separate manual-report
-cases, subprogram-only cases, dummy outputs, and other unresolved runs.
+`FAIL` stores an additional `*.reason` file when the verifier can attach
+a more specific machine-readable cause.
 
 ## Output Location
 

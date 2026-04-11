@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF131A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF131A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 8
+# Expected Feature: RANDOM Function
 # Purpose: It contains tests for the Intrinsic Function
 # Purpose: Variables specific to the Intrinsic Function Test IF131A
 # Purpose: Intrinsic Function Tests IF131A - RANDOM

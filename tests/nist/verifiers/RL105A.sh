@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: RL105A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RL/RL105A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 8
+# Expected Feature: READ/WRITE INVAL KEY
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

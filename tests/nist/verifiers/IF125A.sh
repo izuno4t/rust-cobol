@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF125A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF125A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 20
+# Expected Feature: NUMVAL Function
 # Purpose: It contains tests for the Intrinsic Function NUMVAL.
 # Purpose: Variables specific to the Intrinsic Function Test IF125A
 # Purpose: Intrinsic Function Tests IF125A - NUMVAL

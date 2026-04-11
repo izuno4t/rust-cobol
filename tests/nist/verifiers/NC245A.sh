@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: NC245A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC245A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 5
+# Expected Feature: SEMICLN AS SEPARATOR
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

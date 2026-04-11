@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF129A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF129A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 17
+# Expected Feature: ORD-MIN Function
 # Purpose: It contains tests for the Intrinsic Function ORD-MIN.
 # Purpose: Variables specific to the Intrinsic Function Test IF129A
 # Purpose: Intrinsic Function Tests IF129A - ORD-MIN

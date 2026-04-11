@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF134A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF134A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 13
+# Expected Feature: REVERSE Function
 # Purpose: It contains tests for the Intrinsic Function REVERSE.
 # Purpose: Variables specific to the Intrinsic Function Test IF134A
 # Purpose: Intrinsic Function Tests IF134A - REVERSE

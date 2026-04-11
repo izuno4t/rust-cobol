@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF124A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF124A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 21
+# Expected Feature: MOD Function
 # Purpose: This program is intended to form part of the CCVS85
 # Purpose: Intrinsic Function MOD.
 # Purpose: Variables specific to the Intrinsic Function Test IF124A

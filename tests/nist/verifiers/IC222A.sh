@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IC222A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC222A.cob
 # Verifier: verifier_subprogram_standalone
+# Expected Cases: 8
+# Expected Feature: AVAILABLE ON 
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 

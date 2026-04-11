@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IX204A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX204A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 14
+# Expected Feature: WRITE  IX-FD2.
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

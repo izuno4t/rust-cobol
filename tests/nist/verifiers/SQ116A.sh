@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: SQ116A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ116A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 11
+# Expected Feature: CREATE FILE SQ-FS6
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

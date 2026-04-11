@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: OBSQ3A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/OB/OBSQ3A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 5
+# Expected Feature: VERIFY FILE SQ-FS3
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

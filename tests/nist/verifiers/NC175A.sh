@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: NC175A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC175A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 109
+# Expected Feature: SUBTRACT FROM GIVING
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

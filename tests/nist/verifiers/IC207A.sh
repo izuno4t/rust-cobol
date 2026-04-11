@@ -4,6 +4,7 @@ set -euo pipefail
 # Program: IC207A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC207A.cob
 # Verifier: verifier_subprogram_standalone
+# Expected Cases: 0
 # Purpose: VALIDATION FOR:-
 # Purpose: THE SUBPROGRAM IC208 CONTAINS TABLES AND AN INDEX
 

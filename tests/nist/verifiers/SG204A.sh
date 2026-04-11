@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: SG204A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SG/SG204A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 18
+# Expected Feature: SORT, INPUT PROC
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"

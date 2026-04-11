@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF128A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF128A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 16
+# Expected Feature: ORD-MAX Function
 # Purpose: It contains tests for the Intrinsic Function ORD-MAX.
 # Purpose: Variables specific to the Intrinsic Function Test IF128A
 # Purpose: Intrinsic Function Tests IF128A - ORD-MAX

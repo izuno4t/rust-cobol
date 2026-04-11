@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: SQ101M
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ101M.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 58
+# Expected Feature: WRT BEFORE ADV INT LINES
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

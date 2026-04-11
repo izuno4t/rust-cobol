@@ -363,7 +363,7 @@ print_inspect_groups() {
     local reason_file reason
     local matches=()
     [ -d "$mod_results" ] || return 0
-    for reason in subprogram-only manual-report dummy-display missing-fixture no-output unclassified; do
+    for reason in subprogram-only dummy-display missing-fixture no-output unclassified blank-output-timeout; do
         matches=()
         for reason_file in "$mod_results"/*.reason; do
             [ -f "$reason_file" ] || continue
@@ -373,7 +373,7 @@ print_inspect_groups() {
             matches+=("$(basename "$reason_file" .reason)")
         done
         if [ "${#matches[@]}" -gt 0 ]; then
-            echo "  INSPECT/$reason: ${matches[*]}"
+            echo "  FAIL/$reason: ${matches[*]}"
         fi
     done
 }
@@ -555,7 +555,7 @@ summarize_module() {
         total=$((total + 1))
         case "$(cat "$RESULTS_DIR/$module/${program}.status" 2>/dev/null || printf 'SKIP')" in
             PASS) pass=$((pass + 1)) ;;
-            FAIL|INSPECT) fail=$((fail + 1)) ;;
+            FAIL) fail=$((fail + 1)) ;;
             COMPILED) compile_ready=$((compile_ready + 1)) ;;
             COMPILE_ERROR) compile_err=$((compile_err + 1)) ;;
             RUNTIME_ERROR) runtime_err=$((runtime_err + 1)) ;;
@@ -603,7 +603,7 @@ print_single_result_summary() {
     echo "  Program: $program"
     echo "  Status: $(cat "$status_file")"
     if [ -f "$reason_file" ]; then
-        echo "  Inspect Reason: $(cat "$reason_file")"
+        echo "  Reason: $(cat "$reason_file")"
     fi
     if [ -f "$log_file" ] && [ -s "$log_file" ]; then
         echo "  Output Log: $log_file"
@@ -796,13 +796,10 @@ run_program() {
             case "$judge_status" in
                 PASS|FAIL)
                     echo "$judge_status" > "$status_file"
+                    if [ "$judge_status" = "FAIL" ] && [ "$judge_output" != "$judge_status" ]; then
+                        printf '%s\n' "${judge_output#*|}" > "$reason_file"
+                    fi
                     echo "  $program: $judge_status (judge override for timeout)"
-                    return
-                    ;;
-                INSPECT)
-                    echo "FAIL" > "$status_file"
-                    printf '%s\n' "${judge_output#*|}" > "$reason_file"
-                    echo "  $program: FAIL (judge requires inspection: ${judge_output#*|})"
                     return
                     ;;
             esac
@@ -826,13 +823,10 @@ run_program() {
             case "$judge_status" in
                 PASS|FAIL)
                     echo "$judge_status" > "$status_file"
+                    if [ "$judge_status" = "FAIL" ] && [ "$judge_output" != "$judge_status" ]; then
+                        printf '%s\n' "${judge_output#*|}" > "$reason_file"
+                    fi
                     echo "  $program: $judge_status (judge override for exit $exit_code)"
-                    return
-                    ;;
-                INSPECT)
-                    echo "FAIL" > "$status_file"
-                    printf '%s\n' "${judge_output#*|}" > "$reason_file"
-                    echo "  $program: FAIL (judge requires inspection: ${judge_output#*|})"
                     return
                     ;;
             esac
@@ -858,17 +852,14 @@ run_program() {
         case "$judge_status" in
             PASS|FAIL)
                 echo "$judge_status" > "$status_file"
+                if [ "$judge_status" = "FAIL" ] && [ "$judge_output" != "$judge_status" ]; then
+                    printf '%s\n' "${judge_output#*|}" > "$reason_file"
+                fi
                 if [ "$judge_output" = "$judge_status" ]; then
                     echo "  $program: $judge_status"
                 else
                     echo "  $program: $judge_status (${judge_output#*|})"
                 fi
-                return
-                ;;
-            INSPECT)
-                echo "FAIL" > "$status_file"
-                printf '%s\n' "${judge_output#*|}" > "$reason_file"
-                echo "  $program: FAIL (judge requires inspection: ${judge_output#*|})"
                 return
                 ;;
         esac

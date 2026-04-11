@@ -4,6 +4,7 @@ set -euo pipefail
 # Program: IC112A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC112A.cob
 # Verifier: verifier_subprogram_standalone
+# Expected Cases: 0
 # Purpose: VALIDATION FOR:-
 # Purpose: THE SUBPROGRAM IC113 IS CALLED BY THE MAIN PROGRAM
 # Purpose: SECTION OF THE SUBPROGRAM. IF ANY ERRORS ARE ENCOUNTERED

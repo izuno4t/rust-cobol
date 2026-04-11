@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF102A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF102A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 13
+# Expected Feature: ANNUITY Function
 # Purpose: This program is intended to form part of the CCVS85
 # Purpose: Intrinsic Function ANNUITY.
 # Purpose: Variables specific to the Intrinsic Function Test IF102A

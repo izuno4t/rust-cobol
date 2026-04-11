@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: DB101A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/DB/DB101A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 14
+# Expected Feature: DEBUG ON PROC-NAME
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"

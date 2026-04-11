@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF122A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF122A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 17
+# Expected Feature: MIDRANGE Function
 # Purpose: It contains tests for the Intrinsic Function MIDRANGE
 # Purpose: Variables specific to the Intrinsic Function Test IF122A
 # Purpose: Intrinsic Function Tests IF122A - MIDRANGE

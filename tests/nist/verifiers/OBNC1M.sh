@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: OBNC1M
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/OB/OBNC1M.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 16
+# Expected Feature: COBOL REMARKS PARA
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

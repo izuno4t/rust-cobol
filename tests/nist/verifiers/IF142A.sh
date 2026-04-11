@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF142A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF142A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 2
+# Expected Feature: WHEN-COMPILED
 # Purpose: It contains tests for the Intrinsic Function
 # Purpose: Variables specific to the Intrinsic Function Test IF142A
 # Purpose: Intrinsic Function Tests IF142A - WHEN-COMPILED

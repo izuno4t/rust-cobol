@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IC228A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC228A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 4
+# Expected Feature: GLOBAL CLAUSE
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 

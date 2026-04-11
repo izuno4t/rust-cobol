@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: SQ151A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ151A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 1
+# Expected Feature: WRITE CLOSED FILE
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

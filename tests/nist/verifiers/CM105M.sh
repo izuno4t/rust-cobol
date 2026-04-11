@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: CM105M
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/CM/CM105M.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 11
+# Expected Feature: QUEUE SERIES PPPP
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"

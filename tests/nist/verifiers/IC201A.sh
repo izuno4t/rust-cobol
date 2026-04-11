@@ -4,6 +4,7 @@ set -euo pipefail
 # Program: IC201A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC201A.cob
 # Verifier: verifier_subprogram_standalone
+# Expected Cases: 0
 # Purpose: VALIDATION FOR:-
 # Purpose: THE SUBPROGRAM IC202 IS CALLED BY THE PROGRAM IC201.
 # Purpose: THE SUBPROGRAM HAS FOUR OPERANDS IN THE USING PHRASE

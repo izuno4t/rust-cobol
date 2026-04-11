@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF123A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF123A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 23
+# Expected Feature: MIN Function
 # Purpose: It contains tests for the Intrinsic Function MIN.
 # Purpose: Variables specific to the Intrinsic Function Test IF123A
 # Purpose: Intrinsic Function Tests IF123A - MIN

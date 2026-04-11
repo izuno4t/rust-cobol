@@ -4,6 +4,7 @@ set -euo pipefail
 # Program: ST301M
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/ST/ST301M.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"

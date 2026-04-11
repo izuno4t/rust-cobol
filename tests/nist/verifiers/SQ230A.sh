@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: SQ230A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ230A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 1
+# Expected Feature: READ FILE OPENED EXTEND
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -90,6 +90,63 @@ verifier_compile_warnings() {
     fi
 }
 
+verifier_expected_case_count() {
+    local src="$1"
+    local count
+    count="$(
+        perl -ne '
+            if (/MOVE\s+"[^"]+"\s+TO\s+PAR-NAME\./) {
+                $count++;
+            }
+            END {
+                print(($count || 0) . "\n");
+            }
+        ' "$src" 2>/dev/null | tail -n 1
+    )"
+    if [ -n "$count" ]; then
+        printf '%s\n' "$count"
+    else
+        printf '0\n'
+    fi
+}
+
+verifier_expected_feature_name() {
+    local src="$1"
+    local value
+    value="$(
+        perl -ne '
+            if (/MOVE\s+"([^"]+)"\s+TO\s+FEATURE\./) {
+                print "$1\n";
+                exit;
+            }
+        ' "$src" 2>/dev/null | head -n 1
+    )"
+    printf '%s\n' "$value"
+}
+
+verifier_count_feature_rows() {
+    local file="$1"
+    local feature_name="$2"
+    local count
+    count="$(
+        perl -ne '
+            our $feature;
+            BEGIN { $feature = shift @ARGV; }
+            if ($feature ne "" && index($_, $feature) >= 0 && /PASS |FAIL\*|\*{5}/) {
+                $count++;
+            }
+            END {
+                print(($count || 0) . "\n");
+            }
+        ' "$feature_name" "$file" 2>/dev/null | tail -n 1
+    )"
+    if [ -n "$count" ]; then
+        printf '%s\n' "$count"
+    else
+        printf '0\n'
+    fi
+}
+
 verifier_has_non_whitespace() {
     local file="$1"
     [ -s "$file" ] || return 1
@@ -101,7 +158,7 @@ verifier_standard_ccvs() {
     local result_file="$2"
     local compile_log="$3"
     local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors
-    local expected_flags warning_count
+    local expected_flags warning_count expected_cases feature_name feature_rows
 
     if [ ! -f "$result_file" ] || ! verifier_has_non_whitespace "$result_file"; then
         printf 'FAIL|blank-or-empty-report\n'
@@ -114,6 +171,9 @@ verifier_standard_ccvs() {
     ccvs_failed=$(verifier_count_summary "$result_file" 'TEST\(S\) FAILED')
     ccvs_inspect=$(verifier_count_summary "$result_file" 'TEST\(S\) REQUIRE INSPECTION')
     footer_errors="$(verifier_footer_errors "$result_file")"
+    expected_cases="$(verifier_expected_case_count "$src")"
+    feature_name="$(verifier_expected_feature_name "$src")"
+    feature_rows="$(verifier_count_feature_rows "$result_file" "$feature_name")"
 
     if [ "$ccvs_failed" -gt 0 ] || [ "$fail" -gt 0 ]; then
         printf 'FAIL|%s passed, %s failed\n' "$ccvs_pass" "$ccvs_failed"
@@ -135,13 +195,31 @@ verifier_standard_ccvs() {
         return 0
     fi
 
+    if [ "$expected_cases" -gt 0 ] && [ "$feature_rows" -gt 0 ] && [ "$feature_rows" -ne "$expected_cases" ]; then
+        printf 'FAIL|expected %s detail row(s), got %s\n' "$expected_cases" "$feature_rows"
+        return 0
+    fi
+
+    if [ "$expected_cases" -gt 0 ] && [ "$ccvs_pass" -gt 0 ] && [ "$ccvs_pass" -ne "$expected_cases" ]; then
+        printf 'FAIL|expected %s passed case(s), got %s\n' "$expected_cases" "$ccvs_pass"
+        return 0
+    fi
+
     if [ "$ccvs_pass" -gt 0 ]; then
-        printf 'PASS|%s passed\n' "$ccvs_pass"
+        if [ "$expected_cases" -gt 0 ]; then
+            printf 'PASS|%s/%s passed\n' "$ccvs_pass" "$expected_cases"
+        else
+            printf 'PASS|%s passed\n' "$ccvs_pass"
+        fi
         return 0
     fi
 
     if [ "$pass" -gt 0 ] && [ "$fail" -eq 0 ]; then
-        printf 'PASS|%s passed\n' "$pass"
+        if [ "$expected_cases" -gt 0 ] && [ "$pass" -ne "$expected_cases" ]; then
+            printf 'FAIL|expected %s passed line(s), got %s\n' "$expected_cases" "$pass"
+        else
+            printf 'PASS|%s passed\n' "$pass"
+        fi
         return 0
     fi
 

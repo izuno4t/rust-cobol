@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: NC223A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC223A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 94
+# Expected Feature: INITIALIZE STATEMENT
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IC235A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC235A.cob
 # Verifier: verifier_subprogram_standalone
+# Expected Cases: 9
+# Expected Feature: MULTIPLE EXIT PROGRM
 # Purpose: VALIDATION FOR:-
 # Purpose: THE SAME AS IN THE SUBPROGRAM BUT THE NUMBER OF CHARACTERS
 # Purpose: TAKEN FOR EACH CALL TO THE SUBPROGRAM.

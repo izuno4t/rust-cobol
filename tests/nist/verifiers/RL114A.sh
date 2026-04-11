@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: RL114A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RL/RL114A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 3
+# Expected Feature: USE/FILE STATUS
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

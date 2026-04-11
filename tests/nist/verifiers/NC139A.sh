@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: NC139A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC139A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 6
+# Expected Feature: INDEXES AND LITERALS
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

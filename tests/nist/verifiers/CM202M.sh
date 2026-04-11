@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: CM202M
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/CM/CM202M.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 14
+# Expected Feature: RCV MSG/SHORT AREA
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"

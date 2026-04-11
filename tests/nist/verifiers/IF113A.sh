@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF113A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF113A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 8
+# Expected Feature: INTEGER-OF-DAY
 # Purpose: It contains tests for the Intrinsic Function
 # Purpose: Variables specific to the Intrinsic Function Test IF113A
 # Purpose: Intrinsic Function Test IF113A - INTEGER-OF-DAY

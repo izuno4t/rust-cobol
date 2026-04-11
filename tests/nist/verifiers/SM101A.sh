@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: SM101A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SM/SM101A.cob
 # Verifier: verifier_standard_ccvs
+# Expected Cases: 5
+# Expected Feature: COPY FILE DESCR
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

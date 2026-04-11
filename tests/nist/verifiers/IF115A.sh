@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF115A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF115A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 8
+# Expected Feature: LENGTH Function
 # Purpose: It contains tests for the Intrinsic Function LENGTH.
 # Purpose: Variables specific to the Intrinsic Function Test IF115A
 # Purpose: Intrinsic Function Tests IF115A - LENGTH

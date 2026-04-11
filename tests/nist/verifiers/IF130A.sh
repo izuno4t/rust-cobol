@@ -4,6 +4,8 @@ set -euo pipefail
 # Program: IF130A
 # Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF130A.cob
 # Verifier: verifier_intrinsic_function
+# Expected Cases: 21
+# Expected Feature: PRESENT-VALUE Function
 # Purpose: It contains tests for the Intrinsic Function
 # Purpose: Variables specific to the Intrinsic Function Test IF130A
 # Purpose: Intrinsic Function Tests IF130A - PRESENT-VALUE
