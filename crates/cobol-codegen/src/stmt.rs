@@ -3096,7 +3096,7 @@ pub(crate) fn emit_display_operand(
         } => {
             let c_var = sanitize_name(variable);
             let c_start = emit_expr(start);
-            let var_size = find_data_item_size(&c_var, data_items);
+            let var_size = find_data_item_layout(&c_var, data_items).item_len;
             let c_len = if let Some(len) = length {
                 emit_expr(len)
             } else {
@@ -3280,7 +3280,7 @@ pub(crate) fn emit_move_to(
                          {c_target}, {tgt_size});\n"
                     ));
                 } else {
-                    let src_size = find_data_item_size(&c_src, data_items);
+                    let src_size = find_data_item_layout(&c_src, data_items).item_len;
                     out.push_str(&format!(
                         "{pad}cobol_move_to_national(\
                          (const uint8_t*){c_src}, {src_size}, \
@@ -3322,7 +3322,7 @@ pub(crate) fn emit_move_to(
                 ));
             } else {
                 // Non-group source to group target: copy by COBOL data size
-                let src_size = find_data_item_size(&c_src, data_items);
+                let src_size = find_data_item_layout(&c_src, data_items).item_len;
                 let tgt_size = find_data_item_storage_size(c_target, data_items);
                 let copy_size = src_size.min(tgt_size);
                 let src_ptr = c_ptr_expr(&c_src, data_items);
@@ -3340,7 +3340,7 @@ pub(crate) fn emit_move_to(
             let is_src_group =
                 src_item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
             if is_src_alpha || is_src_group {
-                let src_size = find_data_item_size(&sanitize_name(variable), data_items);
+                let src_size = find_data_item_layout(&sanitize_name(variable), data_items).item_len;
                 let tgt_size = find_data_item_storage_size(c_target, data_items);
                 let copy_size = src_size.min(tgt_size);
                 let src_ptr = if is_src_group {
@@ -3355,7 +3355,7 @@ pub(crate) fn emit_move_to(
                 ));
             } else {
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 let e = emit_int_compatible_expr(from, data_items);
                 out.push_str(&format!(
                     "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
@@ -3373,7 +3373,7 @@ pub(crate) fn emit_move_to(
             let c_src = sanitize_name(variable);
             let src_ptr = c_ptr_expr(&c_src, data_items);
             let c_start = emit_expr(start);
-            let src_full_size = find_data_item_size(&c_src, data_items);
+            let src_full_size = find_data_item_layout(&c_src, data_items).item_len;
             let c_len = if let Some(len) = length {
                 emit_expr(len)
             } else {
@@ -3425,7 +3425,8 @@ pub(crate) fn emit_move_to(
                     if is_alpha_expr(from, data_items) || is_group_expr(from, data_items) {
                         let e = emit_expr(from);
                         let src_name = expr_var_name(from);
-                        let src_size = find_data_item_size(&sanitize_name(src_name), data_items);
+                        let src_size =
+                            find_data_item_layout(&sanitize_name(src_name), data_items).item_len;
                         let tgt_size = find_data_item_storage_size(c_target, data_items);
                         let copy_size = src_size.min(tgt_size);
                         let src_ptr = if is_group_expr(from, data_items) {
@@ -3492,7 +3493,7 @@ pub(crate) fn emit_move_to(
                 Some(HirType::National { size }) => *size,
                 _ => 1,
             };
-            let tgt_size = find_data_item_size(c_target, data_items);
+            let tgt_size = find_data_item_layout(c_target, data_items).item_len;
             out.push_str(&format!(
                 "{pad}cobol_func_display_of(\
                  (const uint16_t*){c_src}, {src_size}, \
@@ -3510,14 +3511,14 @@ pub(crate) fn emit_move_to(
             if is_target_alpha {
                 let escaped = escape_c_string(s);
                 let src_len = s.len();
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 out.push_str(&format!(
                     "{pad}{move_fn}((const uint8_t*)\"{escaped}\", {src_len}, (uint8_t*){c_target}, {tgt_size});\n"
                 ));
             } else if is_target_group {
                 let escaped = escape_c_string(s);
                 let src_len = s.len();
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 out.push_str(&format!(
                     "{pad}{move_fn}((const uint8_t*)\"{escaped}\", {src_len}, (uint8_t*)&{c_target}, {tgt_size});\n"
                 ));
@@ -3533,7 +3534,7 @@ pub(crate) fn emit_move_to(
         HirExpr::Literal(HirLiteral::Integer(n)) => {
             if is_target_alpha {
                 // Numeric literal → alphanumeric: right-justify with leading spaces
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 out.push_str(&format!(
                     "{pad}cobol_move_numeric_to_display({n}, 0, (uint8_t*){c_target}, {tgt_size});\n"
                 ));
@@ -3543,7 +3544,7 @@ pub(crate) fn emit_move_to(
         }
         HirExpr::Literal(HirLiteral::Zero) => {
             if is_target_alpha {
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 if is_group_member_field(c_target) {
                     out.push_str(&format!("{pad}memset({c_target}, '0', {tgt_size});\n"));
                 } else {
@@ -3557,7 +3558,7 @@ pub(crate) fn emit_move_to(
         }
         HirExpr::Literal(HirLiteral::Space) => {
             if is_target_alpha {
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 if is_group_member_field(c_target) {
                     out.push_str(&format!("{pad}memset({c_target}, ' ', {tgt_size});\n"));
                 } else {
@@ -3600,7 +3601,7 @@ pub(crate) fn emit_move_to(
         }
         HirExpr::Literal(HirLiteral::AllChar(s)) => {
             if is_target_alpha {
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 let grp_member = is_group_member_field(c_target);
                 if s.len() == 1 {
                     let ch = s.chars().next().unwrap();
@@ -3642,7 +3643,7 @@ pub(crate) fn emit_move_to(
                                 "LOWER-CASE" => "cobol_func_lower_case",
                                 _ => "cobol_func_reverse",
                             };
-                            let tgt_size = find_data_item_size(c_target, data_items);
+                            let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                             let (c_src, src_size_str) = emit_string_func_arg(arg);
                             out.push_str(&format!(
                                 "{pad}{{ uint8_t _fbuf[{src_size_str}]; memcpy(_fbuf, (const uint8_t*){c_src}, {src_size_str}); {func}(_fbuf, {src_size_str}); cobol_move_string(_fbuf, {src_size_str}, (uint8_t*){c_target}, {tgt_size}); }}\n"
@@ -3651,14 +3652,14 @@ pub(crate) fn emit_move_to(
                         return;
                     }
                     "CURRENT-DATE" => {
-                        let tgt_size = find_data_item_size(c_target, data_items);
+                        let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                         out.push_str(&format!(
                             "{pad}{{ uint8_t _cdbuf[21]; cobol_func_current_date(_cdbuf, 21); cobol_move_string(_cdbuf, 21, (uint8_t*){c_target}, {tgt_size}); }}\n"
                         ));
                         return;
                     }
                     "WHEN-COMPILED" => {
-                        let tgt_size = find_data_item_size(c_target, data_items);
+                        let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                         out.push_str(&format!(
                             "{pad}{{ uint8_t _wcbuf[21]; cobol_func_when_compiled(_wcbuf, 21); cobol_move_string(_wcbuf, 21, (uint8_t*){c_target}, {tgt_size}); }}\n"
                         ));
@@ -3667,7 +3668,7 @@ pub(crate) fn emit_move_to(
                     "CHAR" => {
                         if let Some(arg) = args.first() {
                             let c_arg = emit_expr_as_numeric(arg);
-                            let tgt_size = find_data_item_size(c_target, data_items);
+                            let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                             out.push_str(&format!(
                                 "{pad}{{ uint8_t _chval = cobol_func_char((uint32_t){c_arg}); cobol_move_string(&_chval, 1, (uint8_t*){c_target}, {tgt_size}); }}\n"
                             ));
@@ -3685,7 +3686,7 @@ pub(crate) fn emit_move_to(
                             } else {
                                 "cobol_func_min_alpha"
                             };
-                            let tgt_size = find_data_item_size(c_target, data_items);
+                            let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                             let n = args.len();
                             let mut ptrs = Vec::new();
                             let mut lens = Vec::new();
@@ -3713,7 +3714,7 @@ pub(crate) fn emit_move_to(
                 // CobolDecimal variable → alphanumeric: use cobol_decimal_to_display
                 if let HirExpr::Variable(name) = from {
                     let c_src = sanitize_name(name);
-                    let tgt_size = find_data_item_size(c_target, data_items);
+                    let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                     let src_type = find_data_item(name.as_str(), data_items).map(|i| &i.data_type);
                     let pic_str = src_type
                         .map(generate_pic_string)
@@ -3730,7 +3731,7 @@ pub(crate) fn emit_move_to(
             } else if is_target_alpha && is_source_numeric_var {
                 // Numeric variable → alphanumeric: use cobol_move_numeric_to_display
                 let e = emit_int_compatible_expr(from, data_items);
-                let tgt_size = find_data_item_size(c_target, data_items);
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 out.push_str(&format!(
                     "{pad}cobol_move_numeric_to_display({e}, 0, (uint8_t*){c_target}, {tgt_size});\n"
                 ));
@@ -3738,13 +3739,14 @@ pub(crate) fn emit_move_to(
                 // Alphanumeric variable/subscript → numeric: use cobol_func_numval
                 if let HirExpr::Variable(name) = from {
                     let c_src = sanitize_name(name);
-                    let src_size = find_data_item_size(&c_src, data_items);
+                    let src_size = find_data_item_layout(&c_src, data_items).item_len;
                     let numval_expr =
                         format!("cobol_func_numval((const uint8_t*){c_src}, {src_size})");
                     emit_store_int(out, c_target, &numval_expr, data_items, pad);
                 } else if let HirExpr::Subscript { variable, .. } = from {
                     let e = emit_expr(from);
-                    let src_size = find_data_item_size(&sanitize_name(variable), data_items);
+                    let src_size =
+                        find_data_item_layout(&sanitize_name(variable), data_items).item_len;
                     let numval_expr = format!("cobol_func_numval((const uint8_t*){e}, {src_size})");
                     emit_store_int(out, c_target, &numval_expr, data_items, pad);
                 } else {
@@ -3755,8 +3757,8 @@ pub(crate) fn emit_move_to(
                 // Group variable → alphanumeric: copy bytes with & prefix (group is a C union)
                 if let HirExpr::Variable(name) = from {
                     let c_src = sanitize_name(name);
-                    let src_size = find_data_item_size(&c_src, data_items);
-                    let tgt_size = find_data_item_size(c_target, data_items);
+                    let src_size = find_data_item_layout(&c_src, data_items).item_len;
+                    let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                     out.push_str(&format!(
                         "{pad}{move_fn}((const uint8_t*)&{c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
@@ -3765,8 +3767,8 @@ pub(crate) fn emit_move_to(
                 // Alphanumeric → alphanumeric: use cobol_move_string
                 if let HirExpr::Variable(name) = from {
                     let c_src = sanitize_name(name);
-                    let src_size = find_data_item_size(&c_src, data_items);
-                    let tgt_size = find_data_item_size(c_target, data_items);
+                    let src_size = find_data_item_layout(&c_src, data_items).item_len;
+                    let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                     out.push_str(&format!(
                         "{pad}{move_fn}((const uint8_t*){c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
@@ -3778,13 +3780,13 @@ pub(crate) fn emit_move_to(
                 {
                     let c_src = sanitize_name(variable);
                     let c_start = emit_expr(start);
-                    let src_full_size = find_data_item_size(&c_src, data_items);
+                    let src_full_size = find_data_item_layout(&c_src, data_items).item_len;
                     let c_len = if let Some(len) = length {
                         emit_expr(len)
                     } else {
                         format!("({src_full_size} - ({c_start} - 1))")
                     };
-                    let tgt_size = find_data_item_size(c_target, data_items);
+                    let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                     out.push_str(&format!(
                         "{pad}{move_fn}((const uint8_t*){c_src} + ({c_start} - 1), {c_len}, (uint8_t*){c_target}, {tgt_size});\n"
                     ));
@@ -3792,7 +3794,7 @@ pub(crate) fn emit_move_to(
                     // Subscripted or other alphanumeric/group source
                     let e = emit_expr(from);
                     let src_size = find_data_item_size(&sanitize_name(src_var_name), data_items);
-                    let tgt_size = find_data_item_size(c_target, data_items);
+                    let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                     let addr_prefix = if matches!(from, HirExpr::Subscript { .. }) {
                         "&"
                     } else {
@@ -3805,7 +3807,7 @@ pub(crate) fn emit_move_to(
                     // Fallback for alpha target with unrecognized source:
                     // use cobol_move_numeric_to_display to safely convert
                     let e = emit_int_compatible_expr(from, data_items);
-                    let tgt_size = find_data_item_size(c_target, data_items);
+                    let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                     out.push_str(&format!(
                         "{pad}cobol_move_numeric_to_display({e}, 0, \
                          (uint8_t*){c_target}, {tgt_size});\n"
@@ -3816,7 +3818,7 @@ pub(crate) fn emit_move_to(
                 // and convert via cobol_func_numval (group is a C union).
                 if let HirExpr::Variable(name) = from {
                     let c_src = sanitize_name(name);
-                    let src_size = find_data_item_size(&c_src, data_items);
+                    let src_size = find_data_item_layout(&c_src, data_items).item_len;
                     if is_target_decimal {
                         // Target is CobolDecimal
                         out.push_str(&format!(
@@ -3859,7 +3861,7 @@ pub(crate) fn emit_move_to_refmod(
 ) {
     let c_var = sanitize_name(variable);
     let c_start = emit_expr(start);
-    let var_size = find_data_item_size(&c_var, data_items);
+    let var_size = find_data_item_layout(&c_var, data_items).item_len;
     let c_len = if let Some(len) = length {
         emit_expr(len)
     } else {
@@ -3888,7 +3890,7 @@ pub(crate) fn emit_move_to_refmod(
         }
         HirExpr::Variable(src_name) => {
             let c_src = sanitize_name(src_name);
-            let src_size = find_data_item_size(&c_src, data_items);
+            let src_size = find_data_item_layout(&c_src, data_items).item_len;
             out.push_str(&format!(
                 "{pad}memcpy({c_var} + ({c_start} - 1), {c_src}, \
                  ({src_size} < (uint32_t)({c_len}) ? {src_size} : (uint32_t)({c_len})));\n"
@@ -4862,7 +4864,9 @@ fn emit_comm_arg(expr: &HirExpr, data_items: &[HirDataItem]) -> (String, String)
         HirExpr::Subscript { .. } => {
             let c_name = emit_expr(expr);
             let ptr = format!("(const uint8_t*)(const void*){c_name}");
-            let len = find_data_item_size(expr_var_name(expr), data_items).to_string();
+            let len = find_data_item_layout(expr_var_name(expr), data_items)
+                .item_len
+                .to_string();
             (ptr, len)
         }
         _ => {
@@ -4926,7 +4930,7 @@ fn emit_comm_status_updates(
         out.push_str(&format!(
             "{pad}if (({rc_expr}) != 20) cobol_move_string((const uint8_t*)\"0\", 1, (uint8_t*){}, {});\n",
             c_ptr_expr(&error_key, data_items),
-            find_data_item_area_size(&error_key, data_items)
+            find_data_item_layout(&error_key, data_items).area_len
         ));
     }
 }
@@ -4951,7 +4955,7 @@ fn emit_optional_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -> (S
     name.map(|name| {
         (
             format!("(const uint8_t*){}", c_ptr_expr(name, data_items)),
-            find_data_item_element_size(name, data_items).to_string(),
+            find_data_item_layout(name, data_items).item_len.to_string(),
         )
     })
     .unwrap_or_else(null_comm_arg)
@@ -4961,7 +4965,7 @@ fn emit_optional_mut_comm_area(name: Option<&str>, data_items: &[HirDataItem]) -
     name.map(|name| {
         (
             format!("(uint8_t*){}", c_ptr_expr(name, data_items)),
-            find_data_item_area_size(name, data_items).to_string(),
+            find_data_item_layout(name, data_items).area_len.to_string(),
         )
     })
     .unwrap_or_else(null_comm_arg)
