@@ -263,6 +263,27 @@ runtime は単なる補助ライブラリではなく、COBOL の実行意味を
 - 数値/I/O/呼び出し規約の不整合を抑止できる
 - 将来の runtime 最適化や別 backend への足場になる
 
+状態:
+
+- 2026-04-12 完了
+
+実施結果:
+
+- `crates/cobol-runtime/src/abi.rs` を追加し、generated C に埋め込む runtime ABI 宣言の単一ソースを作った
+- `CobolDecimal`, `CobolStringSource`, `CobolUnstringTarget`, `SortKey` を
+  named ABI 型として固定した
+- codegen 側の `STRING`, `UNSTRING`, `SORT` 生成で匿名 struct をやめ、
+  named ABI 型を使うようにした
+- `emit_runtime_declarations` の重複管理をやめ、runtime 側の ABI 定義へ集約した
+- `docs/runtime-abi-contract.md` を追加し、責務分担、主要 ABI 型、
+  `CALL/GOBACK`, decimal, sort/string 系の契約、未整理領域を明文化した
+- `cargo test -p cobol-runtime abi::tests::test_emit_c_declarations_exposes_named_runtime_abi_types`
+  で ABI 宣言の整合を確認した
+- `cargo test -p cobol-codegen test_generate_runtime_abi_typedefs`,
+  `test_generate_string_uses_named_runtime_descriptor`,
+  `test_generate_unstring_uses_named_runtime_descriptor`
+  で generated C 側の利用を確認した
+
 ## Phase 4: 正しさ中心の検証体系へ移行
 
 目的:

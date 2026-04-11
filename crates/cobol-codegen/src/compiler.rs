@@ -837,6 +837,83 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_generate_runtime_abi_typedefs() {
+        use cobol_common::Span;
+
+        let hir = HirProgram {
+            name: "TEST-ABI".into(),
+            data_items: Vec::new(),
+            communication_descriptions: Vec::new(),
+            paragraphs: Vec::new(),
+            body: Vec::new(),
+            classes: Vec::new(),
+            functions: Vec::new(),
+            typedefs: Vec::new(),
+            interfaces: Vec::new(),
+            using_params: Vec::new(),
+            file_organizations: std::collections::HashMap::new(),
+            file_assignments: std::collections::HashMap::new(),
+            file_status_vars: Vec::new(),
+            declaratives: Vec::new(),
+            file_records: std::collections::HashMap::new(),
+            fd_record_aliases: std::collections::HashMap::new(),
+            nested_programs: Vec::new(),
+            span: Span::dummy(),
+        };
+
+        let c_code = generate_c(&hir);
+        assert!(c_code.contains("typedef struct CobolDecimal"));
+        assert!(c_code.contains("typedef struct CobolStringSource"));
+        assert!(c_code.contains("typedef struct CobolUnstringTarget"));
+        assert!(c_code.contains("typedef struct SortKey"));
+        assert!(c_code.contains("const CobolStringSource* sources"));
+        assert!(c_code.contains("CobolUnstringTarget* targets"));
+        assert!(c_code.contains("const SortKey* keys"));
+    }
+
+    #[test]
+    fn test_generate_string_uses_named_runtime_descriptor() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-STRING-ABI.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC X(5) VALUE 'HELLO'.
+01  DST PIC X(10).
+PROCEDURE DIVISION.
+    STRING SRC DELIMITED BY SIZE INTO DST
+    END-STRING.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("CobolStringSource _sources[1];"),
+            "STRING should use named runtime descriptor"
+        );
+    }
+
+    #[test]
+    fn test_generate_unstring_uses_named_runtime_descriptor() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-UNSTRING-ABI.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC X(10) VALUE 'A B'.
+01  DST PIC X(10).
+PROCEDURE DIVISION.
+    UNSTRING SRC DELIMITED BY SPACE INTO DST
+    END-UNSTRING.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("CobolUnstringTarget _targets[1];"),
+            "UNSTRING should use named runtime descriptor"
+        );
+    }
+
+    #[test]
     fn test_generate_xml_generate_statement() {
         use cobol_common::Span;
 

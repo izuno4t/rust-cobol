@@ -1567,7 +1567,7 @@ pub(crate) fn emit_statement_with_ctx(
             }
             // Build the CobolStringSource array
             out.push_str(&format!(
-                "{pad}    struct {{ const uint8_t* ptr; uint32_t len; const uint8_t* delim_ptr; uint32_t delim_len; }} _sources[{src_count}];\n"
+                "{pad}    CobolStringSource _sources[{src_count}];\n"
             ));
             for i in 0..src_count {
                 out.push_str(&format!(
@@ -1613,7 +1613,7 @@ pub(crate) fn emit_statement_with_ctx(
             ));
             out.push_str(&format!("{pad}{{\n"));
             out.push_str(&format!(
-                "{pad}    struct {{ uint8_t* ptr; uint32_t len; uint8_t* delimiter_ptr; uint32_t delimiter_len; uint32_t* count_ptr; }} _targets[{tgt_count}];\n"
+                "{pad}    CobolUnstringTarget _targets[{tgt_count}];\n"
             ));
             for (i, tgt) in targets.iter().enumerate() {
                 let tgt_size = find_data_item_size(tgt, data_items);
@@ -2269,9 +2269,7 @@ pub(crate) fn emit_statement_with_ctx(
                 flat_keys.len()
             };
             out.push_str(&format!("{pad}{{\n"));
-            out.push_str(&format!(
-                "{pad}    struct {{ uint32_t offset; uint32_t length; uint8_t ascending; uint8_t key_type; }} _sort_keys[{key_count}];\n"
-            ));
+            out.push_str(&format!("{pad}    SortKey _sort_keys[{key_count}];\n"));
             if flat_keys.is_empty() {
                 out.push_str(&format!(
                     "{pad}    _sort_keys[0].offset = 0; _sort_keys[0].length = {rec_len}; _sort_keys[0].ascending = 1; _sort_keys[0].key_type = 0;\n"
