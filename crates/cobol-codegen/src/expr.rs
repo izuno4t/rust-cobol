@@ -21,6 +21,19 @@ pub(crate) fn display_numeric_const_ptr(expr: &str) -> String {
     }
 }
 
+fn alphanumeric_operand_ptr_expr(expr: &HirExpr, c_expr: &str, data_items: &[HirDataItem]) -> String {
+    if is_group_expr(expr, data_items) {
+        return format!("(const uint8_t*)&({c_expr})");
+    }
+    if let Some(item) = expr_data_name(expr).and_then(|name| find_data_item_by_name(name, data_items)) {
+        return match item.data_type {
+            HirType::Numeric { .. } => display_numeric_const_ptr(c_expr),
+            _ => format!("(const uint8_t*){c_expr}"),
+        };
+    }
+    format!("(const uint8_t*){c_expr}")
+}
+
 pub(crate) fn data_name_to_c_name(name: &HirDataName) -> String {
     if name.qualifiers.is_empty() {
         sanitize_name(name.as_str())
@@ -57,7 +70,8 @@ pub(crate) fn find_data_item_by_name<'a>(
     data_items: &'a [HirDataItem],
 ) -> Option<&'a HirDataItem> {
     if name.qualifiers.is_empty() {
-        return find_data_item(name.as_str(), data_items);
+        return find_data_item(name.as_str(), data_items)
+            .or_else(|| find_data_item_by_c_name(&data_name_to_c_name(name), data_items));
     }
 
     let mut current_items = data_items;
@@ -68,11 +82,14 @@ pub(crate) fn find_data_item_by_name<'a>(
         })?;
         match &qualifier_item.data_type {
             HirType::Group { members, .. } => current_items = members,
-            _ => return None,
+            _ => {
+                return find_data_item_by_c_name(&data_name_to_c_name(name), data_items);
+            }
         }
     }
 
     find_data_item(name.as_str(), current_items)
+        .or_else(|| find_data_item_by_c_name(&data_name_to_c_name(name), data_items))
 }
 
 pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String {
@@ -2184,16 +2201,40 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
 pub(crate) fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
     match expr {
         HirExpr::DataRef(data_ref) => {
-            let c_name = data_name_to_c_name(&data_ref.name);
-            Some(find_data_item_size(&c_name, data_items))
+            find_data_item_by_name(&data_ref.name, data_items).and_then(|item| {
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
+                )
+                .then(|| {
+                    let c_name = data_name_to_c_name(&data_ref.name);
+                    find_data_item_size(&c_name, data_items)
+                })
+            })
         }
         HirExpr::Variable(name) => {
-            let c_name = data_name_to_c_name(name);
-            Some(find_data_item_size(&c_name, data_items))
+            find_data_item_by_name(name, data_items).and_then(|item| {
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
+                )
+                .then(|| {
+                    let c_name = data_name_to_c_name(name);
+                    find_data_item_size(&c_name, data_items)
+                })
+            })
         }
         HirExpr::Subscript { variable, .. } => {
-            let c_name = data_name_to_c_name(variable);
-            Some(find_data_item_size(&c_name, data_items))
+            find_data_item_by_name(variable, data_items).and_then(|item| {
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
+                )
+                .then(|| {
+                    let c_name = data_name_to_c_name(variable);
+                    find_data_item_size(&c_name, data_items)
+                })
+            })
         }
         HirExpr::ReferenceModification {
             length, variable, ..
@@ -2243,20 +2284,14 @@ pub(crate) fn emit_alphanumeric_operand(
             let c_name = emit_data_ref_expr(data_ref);
             let base_name = data_name_to_c_name(&data_ref.name);
             let size = find_data_item_size(&base_name, data_items);
-            let ptr = find_data_item_by_name(&data_ref.name, data_items)
-                .filter(|item| item.occurs.is_some())
-                .map(|_| c_name.clone())
-                .unwrap_or_else(|| c_ptr_expr(&c_name, data_items));
-            (format!("(const uint8_t*){ptr}"), format!("{size}"))
+            let ptr = alphanumeric_operand_ptr_expr(expr, &c_name, data_items);
+            (ptr, format!("{size}"))
         }
         HirExpr::Variable(name) => {
             let c_name = data_name_to_c_name(name);
             let size = find_data_item_size(&c_name, data_items);
-            let ptr = find_data_item_by_name(name, data_items)
-                .filter(|item| item.occurs.is_some())
-                .map(|_| c_name.clone())
-                .unwrap_or_else(|| c_ptr_expr(&c_name, data_items));
-            (format!("(const uint8_t*){ptr}"), format!("{size}"))
+            let ptr = alphanumeric_operand_ptr_expr(expr, &c_name, data_items);
+            (ptr, format!("{size}"))
         }
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
@@ -2296,11 +2331,7 @@ pub(crate) fn emit_alphanumeric_operand(
             } else {
                 format!("sizeof({c_name})")
             };
-            let ptr = if is_group_expr(expr, data_items) {
-                format!("(const uint8_t*)&{c_name}")
-            } else {
-                format!("(const uint8_t*){c_name}")
-            };
+            let ptr = alphanumeric_operand_ptr_expr(expr, &c_name, data_items);
             (ptr, size)
         }
         HirExpr::FunctionCall { name, args } => {

@@ -939,6 +939,7 @@ pub enum HirPerformKind {
     Varying {
         test: HirPerformTest,
         var: SmolStr,
+        var_expr: HirExpr,
         from: HirExpr,
         by: HirExpr,
         until: HirCondition,
@@ -962,6 +963,7 @@ pub enum HirPerformTest {
 #[derive(Debug, Clone)]
 pub struct HirVaryingAfter {
     pub var: SmolStr,
+    pub var_expr: HirExpr,
     pub from: HirExpr,
     pub by: HirExpr,
     pub until: HirCondition,

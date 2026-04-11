@@ -1674,6 +1674,7 @@ fn lower_perform(
         } => {
             if let Some(clause) = varying.first() {
                 let var = clause.identifier.name.clone();
+                let var_expr = lower_qualified_name_to_expr(&clause.identifier);
                 let from = lower_expr(&clause.from);
                 let by = lower_expr(&clause.by);
                 let until = lower_condition(&clause.until, condition_names);
@@ -1685,6 +1686,7 @@ fn lower_perform(
                     .iter()
                     .map(|c| HirVaryingAfter {
                         var: c.identifier.name.clone(),
+                        var_expr: lower_qualified_name_to_expr(&c.identifier),
                         from: lower_expr(&c.from),
                         by: lower_expr(&c.by),
                         until: lower_condition(&c.until, condition_names),
@@ -1693,6 +1695,7 @@ fn lower_perform(
                 HirPerformKind::Varying {
                     test: lower_perform_test(*test),
                     var,
+                    var_expr,
                     from,
                     by,
                     until,

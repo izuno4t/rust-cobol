@@ -3415,7 +3415,9 @@ pub(crate) fn emit_move_to(
     pad: &str,
 ) {
     let target_c_name = data_name_to_c_name(target_name);
-    let target_type = find_data_item_by_name(target_name, data_items).map(|item| &item.data_type);
+    let target_item = find_data_item_by_name(target_name, data_items)
+        .or_else(|| find_data_item_by_c_name(c_target, data_items));
+    let target_type = target_item.map(|item| &item.data_type);
     let inherited_target_alpha = with_active_context(|ctx| ctx.is_group_alpha_name(&target_c_name));
     let inherited_target_group = with_active_context(|ctx| ctx.is_group_name(&target_c_name));
     let is_target_alpha =
@@ -3512,8 +3514,15 @@ pub(crate) fn emit_move_to(
     if is_target_group {
         if let HirExpr::Variable(src_name) = from {
             let c_src = data_name_to_c_name(src_name);
-            let is_source_group = find_data_item_by_name(src_name, data_items)
-                .is_some_and(|item| matches!(item.data_type, HirType::Group { .. }));
+            let src_item = find_data_item_by_name(src_name, data_items);
+            let is_source_group =
+                src_item.is_some_and(|item| matches!(item.data_type, HirType::Group { .. }));
+            let is_source_alpha_like = src_item.is_some_and(|item| {
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::National { .. }
+                )
+            }) || alphanumeric_expr_len(from, data_items).is_some();
             if is_source_group {
                 let src_ptr = c_ptr_expr(&c_src, data_items);
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
@@ -3531,16 +3540,36 @@ pub(crate) fn emit_move_to(
                      {pad}    }}\n\
                      {pad}}}\n"
                 ));
-            } else {
-                // Non-group source to group target: copy by COBOL data size
-                let src_size = find_data_item_layout(&c_src, data_items).item_len;
+            } else if is_source_alpha_like {
+                let src_size = alphanumeric_expr_len(from, data_items)
+                    .unwrap_or_else(|| find_data_item_layout(&c_src, data_items).item_len);
                 let tgt_size = find_data_item_storage_size(c_target, data_items);
                 let copy_size = src_size.min(tgt_size);
-                let src_ptr = c_ptr_expr(&c_src, data_items);
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
                 out.push_str(&format!(
-                    "{pad}memcpy({tgt_ptr}, {src_ptr}, {copy_size});\n"
+                    "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
+                     {pad}memcpy({tgt_ptr}, (const uint8_t*){c_src}, {copy_size});\n"
                 ));
+            } else {
+                let tgt_size = find_data_item_storage_size(c_target, data_items);
+                let tgt_ptr = c_ptr_expr(c_target, data_items);
+                if src_item.is_some_and(|i| needs_decimal(&i.data_type)) {
+                    let pic_str = src_item
+                        .map(|i| generate_pic_string(&i.data_type))
+                        .unwrap_or_else(|| "9".to_string());
+                    let pic_len = pic_str.len();
+                    out.push_str(&format!(
+                        "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
+                         {pad}{{ char _dbuf[64]; uint32_t _dlen = \
+                         cobol_decimal_to_display(&{c_src}, (uint8_t*)_dbuf, 64, \
+                         (const uint8_t*)\"{pic_str}\", {pic_len}); \
+                         memcpy({tgt_ptr}, _dbuf, _dlen < {tgt_size} ? _dlen : {tgt_size}); }}\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}cobol_move_numeric_to_display({c_src}, 0, (uint8_t*){tgt_ptr}, {tgt_size});\n"
+                    ));
+                }
             }
         } else if let HirExpr::Subscript { variable, .. } = from {
             // Subscripted source to group target: check type and use memcpy
@@ -3569,12 +3598,25 @@ pub(crate) fn emit_move_to(
             } else {
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
                 let tgt_size = find_data_item_layout(c_target, data_items).item_len;
-                let e = emit_int_compatible_expr(from, data_items);
-                out.push_str(&format!(
-                    "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
-                     {pad}{{ int64_t _v = {e}; memcpy({tgt_ptr}, &_v, \
-                     sizeof(_v) < {tgt_size} ? sizeof(_v) : {tgt_size}); }}\n"
-                ));
+                if src_item.is_some_and(|i| needs_decimal(&i.data_type)) {
+                    let c_src = emit_expr(from);
+                    let pic_str = src_item
+                        .map(|i| generate_pic_string(&i.data_type))
+                        .unwrap_or_else(|| "9".to_string());
+                    let pic_len = pic_str.len();
+                    out.push_str(&format!(
+                        "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
+                         {pad}{{ char _dbuf[64]; uint32_t _dlen = \
+                         cobol_decimal_to_display(&{c_src}, (uint8_t*)_dbuf, 64, \
+                         (const uint8_t*)\"{pic_str}\", {pic_len}); \
+                         memcpy({tgt_ptr}, _dbuf, _dlen < {tgt_size} ? _dlen : {tgt_size}); }}\n"
+                    ));
+                } else {
+                    let e = emit_int_compatible_expr(from, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_numeric_to_display({e}, 0, (uint8_t*){tgt_ptr}, {tgt_size});\n"
+                    ));
+                }
             }
         } else if let HirExpr::ReferenceModification {
             variable,
@@ -3634,40 +3676,57 @@ pub(crate) fn emit_move_to(
                     ));
                 }
                 _ => {
-                    // Check if source expr refers to an alpha/group field
+                    // Byte-like sources for group targets use category move semantics,
+                    // including numeric literals which should be copied as their
+                    // display representation rather than raw int64 bytes.
                     if is_alpha_expr(from, data_items)
                         || is_group_expr(from, data_items)
                         || alphanumeric_expr_len(from, data_items).is_some()
+                        || matches!(
+                            from,
+                            HirExpr::Literal(HirLiteral::Integer(_))
+                                | HirExpr::Literal(HirLiteral::Zero)
+                                | HirExpr::Literal(HirLiteral::Decimal(_))
+                        )
                     {
-                        let e = emit_expr(from);
-                        let src_size =
-                            alphanumeric_expr_len(from, data_items).unwrap_or_else(|| {
-                                expr_data_name(from)
-                                    .map(data_name_to_c_name)
-                                    .map(|name| find_data_item_layout(&name, data_items).item_len)
-                                    .unwrap_or(0)
-                            });
+                        let (src_ptr, src_size) = emit_alphanumeric_operand(from, data_items);
                         let tgt_size = find_data_item_storage_size(c_target, data_items);
-                        let copy_size = src_size.min(tgt_size);
-                        let src_ptr = if is_group_expr(from, data_items) {
-                            c_ptr_expr(&e, data_items)
-                        } else {
-                            e
-                        };
                         let tgt_ptr = c_ptr_expr(c_target, data_items);
                         out.push_str(&format!(
                             "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
-                             {pad}memcpy({tgt_ptr}, {src_ptr}, {copy_size});\n"
+                             {pad}memcpy({tgt_ptr}, {src_ptr}, ({src_size}) < {tgt_size} ? ({src_size}) : {tgt_size});\n"
                         ));
                     } else {
                         let tgt_ptr = c_ptr_expr(c_target, data_items);
                         let tgt_size = find_data_item_storage_size(c_target, data_items);
-                        let e = emit_int_compatible_expr(from, data_items);
-                        out.push_str(&format!(
-                            "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
-                             {pad}{{ int64_t _v = {e}; memcpy({tgt_ptr}, &_v, \
-                             sizeof(_v) < {tgt_size} ? sizeof(_v) : {tgt_size}); }}\n"
-                        ));
+                        if is_decimal_expr(from, data_items) {
+                            let c_src = emit_expr(from);
+                            if let Some(name) = expr_data_name(from) {
+                                let src_type =
+                                    find_data_item_by_name(name, data_items).map(|i| &i.data_type);
+                                let pic_str = src_type
+                                    .map(generate_pic_string)
+                                    .unwrap_or_else(|| "9".to_string());
+                                let pic_len = pic_str.len();
+                                out.push_str(&format!(
+                                    "{pad}memset({tgt_ptr}, ' ', {tgt_size});\n\
+                                     {pad}{{ char _dbuf[64]; uint32_t _dlen = \
+                                     cobol_decimal_to_display(&{c_src}, (uint8_t*)_dbuf, 64, \
+                                     (const uint8_t*)\"{pic_str}\", {pic_len}); \
+                                     memcpy({tgt_ptr}, _dbuf, _dlen < {tgt_size} ? _dlen : {tgt_size}); }}\n"
+                                ));
+                            } else {
+                                let e = emit_expr_as_double(from);
+                                out.push_str(&format!(
+                                    "{pad}cobol_move_numeric_to_display((int64_t)({e}), 0, (uint8_t*){tgt_ptr}, {tgt_size});\n"
+                                ));
+                            }
+                        } else {
+                            let e = emit_int_compatible_expr(from, data_items);
+                            out.push_str(&format!(
+                                "{pad}cobol_move_numeric_to_display({e}, 0, (uint8_t*){tgt_ptr}, {tgt_size});\n"
+                            ));
+                        }
                     }
                 }
             }
@@ -3767,6 +3826,12 @@ pub(crate) fn emit_move_to(
                 out.push_str(&format!(
                     "{pad}cobol_move_numeric_to_display({n}, 0, (uint8_t*){c_target}, {tgt_size});\n"
                 ));
+            } else if is_target_group {
+                let tgt_size = find_data_item_storage_size(c_target, data_items);
+                let tgt_ptr = c_ptr_expr(c_target, data_items);
+                out.push_str(&format!(
+                    "{pad}cobol_move_numeric_to_display({n}, 0, (uint8_t*){tgt_ptr}, {tgt_size});\n"
+                ));
             } else {
                 emit_store_int(out, c_target, &n.to_string(), data_items, pad);
             }
@@ -3781,6 +3846,10 @@ pub(crate) fn emit_move_to(
                         "{pad}memset({c_target}, '0', {tgt_size}); {c_target}[{tgt_size}] = '\\0';\n"
                     ));
                 }
+            } else if is_target_group {
+                let tgt_size = find_data_item_storage_size(c_target, data_items);
+                let tgt_ptr = c_ptr_expr(c_target, data_items);
+                out.push_str(&format!("{pad}memset({tgt_ptr}, '0', {tgt_size});\n"));
             } else {
                 emit_store_int(out, c_target, "0", data_items, pad);
             }
@@ -3795,6 +3864,10 @@ pub(crate) fn emit_move_to(
                         "{pad}memset({c_target}, ' ', {tgt_size}); {c_target}[{tgt_size}] = '\\0';\n"
                     ));
                 }
+            } else if is_target_group {
+                let tgt_size = find_data_item_storage_size(c_target, data_items);
+                let tgt_ptr = c_ptr_expr(c_target, data_items);
+                out.push_str(&format!("{pad}memset({tgt_ptr}, ' ', {tgt_size});\n"));
             } else {
                 out.push_str(&format!(
                     "{pad}memset({c_target}, ' ', sizeof({c_target}) - 1);\n"
@@ -4237,13 +4310,14 @@ pub(crate) fn emit_perform(
         HirPerformKind::Varying {
             test,
             var,
+            var_expr,
             from,
             by,
             until,
             after_clauses,
             body,
         } => {
-            let c_var_target = varying_target_c_expr(var, until);
+            let c_var_target = varying_target_c_expr(var, var_expr, until);
             let var_is_decimal =
                 find_data_item(var, data_items).is_some_and(|i| needs_decimal(&i.data_type));
             let cond = emit_condition(until, data_items);
@@ -4335,7 +4409,7 @@ pub(crate) fn emit_perform(
                 let after_indent = indent + 1;
                 let after_pad = "    ".repeat(after_indent);
                 for ac in after_clauses {
-                    let ac_var = varying_target_c_expr(&ac.var, &ac.until);
+                    let ac_var = varying_target_c_expr(&ac.var, &ac.var_expr, &ac.until);
                     let ac_from = emit_int_compatible_expr(&ac.from, data_items);
                     emit_store_int(out, &ac_var, &ac_from, data_items, &after_pad);
                 }
@@ -4366,7 +4440,7 @@ pub(crate) fn emit_perform(
                 }
                 for ac in after_clauses.iter().rev() {
                     current_indent -= 1;
-                    let ac_var = varying_target_c_expr(&ac.var, &ac.until);
+                    let ac_var = varying_target_c_expr(&ac.var, &ac.var_expr, &ac.until);
                     let ac_by = emit_int_compatible_expr(&ac.by, data_items);
                     let ac_cond = emit_condition(&ac.until, data_items);
                     let lpad = "    ".repeat(current_indent + 1);
@@ -4491,7 +4565,14 @@ pub(crate) fn emit_perform(
     }
 }
 
-fn varying_target_c_expr(var: &str, until: &HirCondition) -> String {
+fn varying_target_c_expr(var: &str, var_expr: &HirExpr, until: &HirCondition) -> String {
+    match var_expr {
+        HirExpr::Subscript { .. } => return super::emit_expr(var_expr),
+        HirExpr::DataRef(data_ref) if !data_ref.subscripts.is_empty() => {
+            return super::emit_expr(var_expr);
+        }
+        _ => {}
+    }
     find_subscripted_var_in_condition(until, var)
         .map(super::emit_expr)
         .unwrap_or_else(|| sanitize_name(var))
