@@ -56,6 +56,8 @@ After any implementation change or test expectation change, run the
 directly affected test target immediately, then run the full test suite
 for the affected crate before reporting completion unless that is
 impossible.
+After applying a fix, always run `make clean test lint` before reporting
+completion.
 
 ## Commit & Pull Request Guidelines
 

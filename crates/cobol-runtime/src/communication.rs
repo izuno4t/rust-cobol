@@ -307,26 +307,97 @@ fn send_option_to_end_key(option_kind: i32, option_value: i64) -> u8 {
     }
 }
 
-unsafe fn write_error_key_flags(
-    error_key_ptr: *mut u8,
-    error_key_item_len: u32,
-    error_key_stride: u32,
-    error_key_count: u32,
-    error_key_area_len: u32,
-    invalid_destination: Option<usize>,
-) {
-    if error_key_ptr.is_null() || error_key_area_len == 0 {
-        return;
+#[derive(Clone, Copy)]
+struct CommAreaInput {
+    ptr: *const u8,
+    item_len: u32,
+    stride: u32,
+    count: u32,
+    area_len: u32,
+}
+
+impl CommAreaInput {
+    fn from_raw(ptr: *const u8, item_len: u32, stride: u32, count: u32, area_len: u32) -> Self {
+        Self {
+            ptr,
+            item_len,
+            stride,
+            count,
+            area_len,
+        }
     }
-    std::ptr::write_bytes(error_key_ptr, b'0', error_key_area_len as usize);
-    if error_key_item_len == 0 || error_key_stride == 0 || error_key_count == 0 {
-        return;
+
+    fn is_unbounded(&self) -> bool {
+        self.count == 0
     }
-    if let Some(index) = invalid_destination {
-        if index < error_key_count as usize {
-            let offset = index * error_key_stride as usize;
-            if offset < error_key_area_len as usize {
-                *error_key_ptr.add(offset) = b'1';
+
+    fn has_storage(&self) -> bool {
+        self.item_len != 0 && self.stride != 0 && self.area_len != 0
+    }
+
+    fn validates_storage_bounds(&self) -> bool {
+        if self.is_unbounded() || !self.has_storage() {
+            return false;
+        }
+        let max_offset = (self.count as usize - 1) * self.stride as usize;
+        max_offset + self.item_len as usize <= self.area_len as usize
+    }
+
+    unsafe fn item_value(&self, index: usize) -> Option<String> {
+        if self.ptr.is_null() {
+            return None;
+        }
+        let offset = index * self.stride as usize;
+        if offset + self.item_len as usize > self.area_len as usize {
+            return None;
+        }
+        let raw = std::slice::from_raw_parts(self.ptr.add(offset), self.item_len as usize);
+        Some(normalize_comm_value(&String::from_utf8_lossy(raw)))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CommAreaOutput {
+    ptr: *mut u8,
+    item_len: u32,
+    stride: u32,
+    count: u32,
+    area_len: u32,
+}
+
+impl CommAreaOutput {
+    fn from_raw(ptr: *mut u8, item_len: u32, stride: u32, count: u32, area_len: u32) -> Self {
+        Self {
+            ptr,
+            item_len,
+            stride,
+            count,
+            area_len,
+        }
+    }
+
+    fn clear_flags(self) {
+        self.write_flags(None);
+    }
+
+    fn write_flags(self, invalid_destination: Option<usize>) {
+        if self.ptr.is_null() || self.area_len == 0 {
+            return;
+        }
+        unsafe {
+            std::ptr::write_bytes(self.ptr, b'0', self.area_len as usize);
+        }
+        if self.item_len == 0 || self.stride == 0 || self.count == 0 {
+            return;
+        }
+        if let Some(index) = invalid_destination {
+            if index < self.count as usize {
+                let offset = index * self.stride as usize;
+                if offset < self.area_len as usize {
+                    unsafe {
+                        *self.ptr.add(offset) = b'1';
+                    }
+                }
             }
         }
     }
@@ -334,100 +405,54 @@ unsafe fn write_error_key_flags(
 
 unsafe fn validate_output_destinations(
     config: Option<&CommunicationConfig>,
-    dest_ptr: *const u8,
-    dest_item_len: u32,
-    dest_stride: u32,
-    dest_count: u32,
-    dest_area_count: u32,
-    dest_area_len: u32,
-    error_key_ptr: *mut u8,
-    error_key_item_len: u32,
-    error_key_stride: u32,
-    error_key_count: u32,
-    error_key_area_len: u32,
+    destinations: CommAreaInput,
+    destination_count: u32,
+    error_key: CommAreaOutput,
 ) -> u32 {
-    write_error_key_flags(
-        error_key_ptr,
-        error_key_item_len,
-        error_key_stride,
-        error_key_count,
-        error_key_area_len,
-        None,
-    );
+    error_key.clear_flags();
     let Some(config) = config else {
         return 0;
     };
     if config.destinations.is_empty() {
         return 0;
     }
+    if destinations.item_len == 0 || destinations.stride == 0 || destinations.area_len == 0 {
+        return 30;
+    }
+    if destinations.count == 0 {
+        return 30;
+    }
+    if destination_count == 0 || destination_count > destinations.count {
+        return 30;
+    }
+    if !destinations.validates_storage_bounds() {
+        return 30;
+    }
+    if destinations.ptr.is_null() {
+        error_key.write_flags(Some(0));
+        return 20;
+    }
     if comm_debug_enabled() {
         eprintln!(
-            "[COMM] validate dest_count={dest_count} dest_area_count={dest_area_count} dest_item_len={dest_item_len} dest_stride={dest_stride} dest_area_len={dest_area_len} configured={:?}",
+            "[COMM] validate dest_count={destination_count} dest_area_count={} dest_item_len={} dest_stride={} dest_area_len={} configured={:?}",
+            destinations.count,
+            destinations.item_len,
+            destinations.stride,
+            destinations.area_len,
             config.destinations
         );
-        if !dest_ptr.is_null() && dest_item_len != 0 && dest_stride != 0 {
-            for idx in 0..dest_count as usize {
-                let offset = idx * dest_stride as usize;
-                if offset + dest_item_len as usize > dest_area_len as usize {
-                    break;
-                }
-                let raw = std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
-                let actual = normalize_comm_value(&String::from_utf8_lossy(raw));
+        for idx in 0..destination_count as usize {
+            if let Some(actual) = destinations.item_value(idx) {
                 eprintln!("[COMM] validate destination[{idx}]='{actual}'");
             }
         }
     }
-    if dest_count == 0 {
-        return 30;
-    }
-    if dest_area_count != 0 && dest_count > dest_area_count {
-        return 30;
-    }
-    if dest_item_len == 0 || dest_stride == 0 || dest_area_len == 0 {
-        return 30;
-    }
-    if dest_area_count != 0 {
-        let max_offset = (dest_area_count as usize - 1) * dest_stride as usize;
-        if max_offset + dest_item_len as usize > dest_area_len as usize {
+    for idx in 0..destination_count as usize {
+        let Some(actual) = destinations.item_value(idx) else {
             return 30;
-        }
-    }
-    if dest_ptr.is_null() {
-        write_error_key_flags(
-            error_key_ptr,
-            error_key_item_len,
-            error_key_stride,
-            error_key_count,
-            error_key_area_len,
-            Some(0),
-        );
-        return 20;
-    }
-    if dest_item_len == 0 || dest_stride == 0 || dest_area_len == 0 {
-        return 30;
-    }
-    if dest_area_count != 0 {
-        let max_offset = (dest_area_count as usize - 1) * dest_stride as usize;
-        if max_offset + dest_item_len as usize > dest_area_len as usize {
-            return 30;
-        }
-    }
-    for idx in 0..dest_count as usize {
-        let offset = idx * dest_stride as usize;
-        if offset + dest_item_len as usize > dest_area_len as usize {
-            return 30;
-        }
-        let raw = std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
-        let actual = normalize_comm_value(&String::from_utf8_lossy(raw));
+        };
         if !config.destinations.iter().any(|dest| dest == &actual) {
-            write_error_key_flags(
-                error_key_ptr,
-                error_key_item_len,
-                error_key_stride,
-                error_key_count,
-                error_key_area_len,
-                Some(idx),
-            );
+            error_key.write_flags(Some(idx));
             return 20;
         }
     }
@@ -508,17 +533,21 @@ pub unsafe extern "C" fn cobol_comm_enable(
         if mode != 0 {
             let dest_rc = validate_output_destinations(
                 config,
-                dest_ptr,
-                dest_item_len,
-                dest_stride,
+                CommAreaInput::from_raw(
+                    dest_ptr,
+                    dest_item_len,
+                    dest_stride,
+                    dest_area_count,
+                    dest_area_len,
+                ),
                 dest_count,
-                dest_area_count,
-                dest_area_len,
-                error_key_ptr,
-                error_key_item_len,
-                error_key_stride,
-                error_key_count,
-                error_key_area_len,
+                CommAreaOutput::from_raw(
+                    error_key_ptr,
+                    error_key_item_len,
+                    error_key_stride,
+                    error_key_count,
+                    error_key_area_len,
+                ),
             );
             if dest_rc != 0 {
                 return dest_rc;
@@ -606,17 +635,21 @@ pub unsafe extern "C" fn cobol_comm_disable(
         if mode != 0 {
             let dest_rc = validate_output_destinations(
                 config,
-                dest_ptr,
-                dest_item_len,
-                dest_stride,
+                CommAreaInput::from_raw(
+                    dest_ptr,
+                    dest_item_len,
+                    dest_stride,
+                    dest_area_count,
+                    dest_area_len,
+                ),
                 dest_count,
-                dest_area_count,
-                dest_area_len,
-                error_key_ptr,
-                error_key_item_len,
-                error_key_stride,
-                error_key_count,
-                error_key_area_len,
+                CommAreaOutput::from_raw(
+                    error_key_ptr,
+                    error_key_item_len,
+                    error_key_stride,
+                    error_key_count,
+                    error_key_area_len,
+                ),
             );
             if dest_rc != 0 {
                 return dest_rc;
@@ -670,27 +703,25 @@ pub unsafe extern "C" fn cobol_comm_send(
     let payload_len = payload.len();
     with_comm_runtime(|runtime| {
         let config = runtime.configs.get(&name);
-        write_error_key_flags(
+        let error_key = CommAreaOutput::from_raw(
             error_key_ptr,
             error_key_item_len,
             error_key_stride,
             error_key_count,
             error_key_area_len,
-            None,
         );
+        error_key.clear_flags();
         let dest_rc = validate_output_destinations(
             config,
-            dest_ptr,
-            dest_item_len,
-            dest_stride,
+            CommAreaInput::from_raw(
+                dest_ptr,
+                dest_item_len,
+                dest_stride,
+                dest_area_count,
+                dest_area_len,
+            ),
             dest_count,
-            dest_area_count,
-            dest_area_len,
-            error_key_ptr,
-            error_key_item_len,
-            error_key_stride,
-            error_key_count,
-            error_key_area_len,
+            error_key,
         );
         if dest_rc != 0 {
             if comm_debug_enabled() {

@@ -990,9 +990,7 @@ mod tests {
             stmts[0].replacings[0].old_text
         );
         assert!(
-            stmts[0].replacings[0]
-                .new_text
-                .contains("MOVE"),
+            stmts[0].replacings[0].new_text.contains("MOVE"),
             "new text: {:?}",
             stmts[0].replacings[0].new_text
         );
@@ -1011,7 +1009,12 @@ mod tests {
 
         let stmts = scan_copy_statements(source, true);
         assert_eq!(stmts.len(), 1, "statements: {:?}", stmts);
-        assert_eq!(stmts[0].replacings.len(), 2, "replacings: {:?}", stmts[0].replacings);
+        assert_eq!(
+            stmts[0].replacings.len(),
+            2,
+            "replacings: {:?}",
+            stmts[0].replacings
+        );
         assert_eq!(stmts[0].replacings[0].new_text, "MOVE");
         assert_eq!(stmts[0].replacings[1].old_text, " DELETE");
         assert_eq!(stmts[0].replacings[1].new_text, "DE-LETE");

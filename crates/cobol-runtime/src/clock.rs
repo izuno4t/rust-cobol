@@ -139,7 +139,13 @@ mod tests {
 
     #[test]
     fn test_scaled_elapsed_centis_preserves_sub_centisecond_progress() {
-        assert_eq!(scaled_elapsed_centis(Duration::from_millis(1), 100_000), 10_000);
-        assert_eq!(scaled_elapsed_centis(Duration::from_micros(100), 100_000), 1_000);
+        assert_eq!(
+            scaled_elapsed_centis(Duration::from_millis(1), 100_000),
+            10_000
+        );
+        assert_eq!(
+            scaled_elapsed_centis(Duration::from_micros(100), 100_000),
+            1_000
+        );
     }
 }

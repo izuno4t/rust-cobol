@@ -2926,6 +2926,14 @@ pub(crate) fn find_data_item_layout(c_name: &str, data_items: &[HirDataItem]) ->
     Layout::scalar(find_data_item_size(c_name, data_items))
 }
 
+pub(crate) fn find_data_item_element_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    find_data_item_layout(c_name, data_items).item_len
+}
+
+pub(crate) fn find_data_item_area_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    find_data_item_layout(c_name, data_items).area_len
+}
+
 pub(crate) fn find_data_item_occurs_count(c_name: &str, data_items: &[HirDataItem]) -> u32 {
     let lookup = extract_leaf_member(c_name);
     if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {

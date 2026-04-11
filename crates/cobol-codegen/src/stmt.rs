@@ -1875,6 +1875,8 @@ pub(crate) fn emit_statement_with_ctx(
                         emit_optional_comm_area_layout(None, data_items),
                     )
                 });
+            let dest_ptr = format!("(const uint8_t*){}", dest_layout.ptr);
+            let error_key_ptr = format!("(uint8_t*){}", error_key_layout.ptr);
             out.push_str(&format!(
                 "{pad}{{ uint32_t _rc = cobol_comm_enable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
@@ -1890,13 +1892,13 @@ pub(crate) fn emit_statement_with_ctx(
                 selectors.sub3_len,
                 source.0,
                 source.1,
-                format!("(const uint8_t*){}", dest_layout.ptr),
+                dest_ptr,
                 dest_layout.item_len,
                 dest_layout.stride,
                 dest_count_expr,
                 dest_layout.count,
                 dest_layout.area_len,
-                format!("(uint8_t*){}", error_key_layout.ptr),
+                error_key_ptr,
                 error_key_layout.item_len,
                 error_key_layout.stride,
                 error_key_layout.count,
@@ -1959,6 +1961,8 @@ pub(crate) fn emit_statement_with_ctx(
                         emit_optional_comm_area_layout(None, data_items),
                     )
                 });
+            let dest_ptr = format!("(const uint8_t*){}", dest_layout.ptr);
+            let error_key_ptr = format!("(uint8_t*){}", error_key_layout.ptr);
             out.push_str(&format!(
                 "{pad}{{ uint32_t _rc = cobol_comm_disable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
@@ -1974,13 +1978,13 @@ pub(crate) fn emit_statement_with_ctx(
                 selectors.sub3_len,
                 source.0,
                 source.1,
-                format!("(const uint8_t*){}", dest_layout.ptr),
+                dest_ptr,
                 dest_layout.item_len,
                 dest_layout.stride,
                 dest_count_expr,
                 dest_layout.count,
                 dest_layout.area_len,
-                format!("(uint8_t*){}", error_key_layout.ptr),
+                error_key_ptr,
                 error_key_layout.item_len,
                 error_key_layout.stride,
                 error_key_layout.count,
@@ -2051,17 +2055,19 @@ pub(crate) fn emit_statement_with_ctx(
                 }
                 None => ("0".to_string(), "0".to_string()),
             };
+            let dest_ptr = format!("(const uint8_t*){}", dest_layout.ptr);
+            let error_key_ptr = format!("(uint8_t*){}", error_key_layout.ptr);
             out.push_str(&format!(
                 "{pad}{{ uint32_t _rc = cobol_comm_send((const uint8_t*)\"{c_target}\", {}, {c_from_ptr}, {c_from_len}, {effective_len}, {option_kind}, {option_value}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
                 if *replacing_line { 1 } else { 0 },
-                format!("(const uint8_t*){}", dest_layout.ptr),
+                dest_ptr,
                 dest_layout.item_len,
                 dest_layout.stride,
                 dest_count_expr,
                 dest_layout.count,
                 dest_layout.area_len,
-                format!("(uint8_t*){}", error_key_layout.ptr),
+                error_key_ptr,
                 error_key_layout.item_len,
                 error_key_layout.stride,
                 error_key_layout.count,

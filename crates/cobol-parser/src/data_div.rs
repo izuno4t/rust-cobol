@@ -397,10 +397,7 @@ impl Parser {
             FdType::Fd
         } else {
             self.expect(TokenKind::Sd)?;
-            self.warning_at(
-                start_span,
-                "SD is a non-conforming sort/merge feature",
-            );
+            self.warning_at(start_span, "SD is a non-conforming sort/merge feature");
             FdType::Sd
         };
 

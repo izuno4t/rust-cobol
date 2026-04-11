@@ -28,10 +28,9 @@ use crate::hir::{
     HirCompareOp, HirCondition, HirDataItem, HirDeclarative, HirExpr, HirFileInfo, HirInspectKind,
     HirInspectReplacing, HirInspectTallying, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
     HirParagraph, HirParam, HirParamMode, HirPerformKind, HirPerformTest, HirProgram,
-    HirReceiveMode,
-    HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder,
-    HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirType, HirUnaryOp,
-    HirUnstringDelimiter, HirVaryingAfter,
+    HirReceiveMode, HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey,
+    HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirType,
+    HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
 };
 
 /// A single or range value for an 88-level condition.

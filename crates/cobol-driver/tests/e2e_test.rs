@@ -2606,6 +2606,11 @@ fn test_c2_move_corresponding() {
         "Should move matching FIELD-A with qualified names via display store, got:\n{}",
         c_code
     );
+    assert!(
+        !c_code.contains("#define FIELD_A "),
+        "Duplicate group members should not emit unqualified FIELD_A macros, got:\n{}",
+        c_code
+    );
     // FIELD-B and FIELD-C don't match → should NOT appear in MOVE section
     assert!(
         !c_code.contains("FIELD_B = ") && !c_code.contains("FIELD_C = "),

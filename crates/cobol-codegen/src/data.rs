@@ -39,6 +39,7 @@ pub(crate) fn emit_fd_alias_macros(
                 members,
                 std::slice::from_ref(&c_alias),
                 &format!("{c_alias}.members"),
+                &duplicate_member_names,
             );
             emit_group_redefines(
                 out,
@@ -265,6 +266,7 @@ pub(crate) fn emit_single_data_item(
                     members,
                     std::slice::from_ref(&c_name),
                     &format!("(*({td}*)&{c_redef})"),
+                    duplicate_member_names,
                 );
                 // Emit nested REDEFINES within this top-level REDEFINES group
                 emit_group_redefines(
@@ -353,6 +355,7 @@ pub(crate) fn emit_single_data_item(
                 members,
                 std::slice::from_ref(&c_name),
                 &format!("{c_name}.members"),
+                duplicate_member_names,
             );
             // Emit REDEFINES members as separate static pointers
             emit_group_redefines(
@@ -538,6 +541,7 @@ pub(crate) fn emit_group_macros(
     members: &[HirDataItem],
     qualifier_names: &[String],
     path_prefix: &str,
+    duplicate_names: &BTreeSet<String>,
 ) {
     let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
@@ -554,7 +558,8 @@ pub(crate) fn emit_group_macros(
                 None if thru.is_some() => format!("((char*)&{c_from})"),
                 None => c_from.clone(),
             };
-            if member.name != "FILLER" && member.name != "PIC" {
+            if member.name != "FILLER" && member.name != "PIC" && !duplicate_names.contains(&c_name)
+            {
                 out.push_str(&format!(
                     "#define {c_name} {alias_expr} /* RENAMES {c_from} */\n"
                 ));
@@ -578,10 +583,7 @@ pub(crate) fn emit_group_macros(
             base_c_name
         };
         let access_path = format!("{path_prefix}._m_{c_name}");
-        // Emit unqualified macros even for duplicate names so legacy NIST
-        // programs that rely on unqualified references continue to compile.
-        // In duplicate cases, the later definition wins and emits a warning.
-        if member.name != "FILLER" && member.name != "PIC" {
+        if member.name != "FILLER" && member.name != "PIC" && !duplicate_names.contains(&c_name) {
             out.push_str(&format!("#define {c_name} {access_path}\n"));
         }
         // Qualified macros: QUALIFIER__FIELD for each ancestor group name.
@@ -610,7 +612,13 @@ pub(crate) fn emit_group_macros(
             if !child_qualifiers.contains(&c_name) {
                 child_qualifiers.push(c_name);
             }
-            emit_group_macros(out, sub_members, &child_qualifiers, &sub_prefix);
+            emit_group_macros(
+                out,
+                sub_members,
+                &child_qualifiers,
+                &sub_prefix,
+                duplicate_names,
+            );
         }
     }
 }
@@ -664,7 +672,13 @@ pub(crate) fn emit_group_redefines(
                         child_qualifiers.push(c_name.clone());
                     }
                     let access_expr = format!("(*({td}*)&{qualified_target})");
-                    emit_group_macros(out, grp_members, &child_qualifiers, &access_expr);
+                    emit_group_macros(
+                        out,
+                        grp_members,
+                        &child_qualifiers,
+                        &access_expr,
+                        duplicate_names,
+                    );
                     // Recurse into REDEFINES group children to emit nested
                     // REDEFINES macros (e.g. RDF3-5-1 REDEFINES RDF3-5).
                     emit_group_redefines(

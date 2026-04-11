@@ -161,10 +161,7 @@ fn report_nonconforming_source_manipulation_warnings(
     }
 
     for (line_idx, line) in source.lines().enumerate() {
-        if line
-            .to_ascii_uppercase()
-            .contains("SAME SORT-MERGE AREA")
-        {
+        if line.to_ascii_uppercase().contains("SAME SORT-MERGE AREA") {
             let start = source
                 .lines()
                 .take(line_idx)
@@ -536,11 +533,17 @@ fn is_known_nist_trailer_artifact(line: &str) -> bool {
     }
 
     let bytes = tail.as_bytes();
-    bytes.get(0..2).is_some_and(|s| s.iter().all(u8::is_ascii_uppercase))
-        && bytes.get(2..6).is_some_and(|s| s.iter().all(u8::is_ascii_digit))
+    bytes
+        .get(0..2)
+        .is_some_and(|s| s.iter().all(u8::is_ascii_uppercase))
+        && bytes
+            .get(2..6)
+            .is_some_and(|s| s.iter().all(u8::is_ascii_digit))
         && bytes.get(6) == Some(&b'.')
         && bytes.get(7) == Some(&b'2')
-        && bytes.get(8..14).is_some_and(|s| s.iter().all(u8::is_ascii_digit))
+        && bytes
+            .get(8..14)
+            .is_some_and(|s| s.iter().all(u8::is_ascii_digit))
         && tail[14..].contains("TOTAL NUMBER OF FLAGS EXPECTED")
 }
 
@@ -1325,7 +1328,11 @@ mod tests {
         let dir = setup_test_dir();
         let source_path = dir.path().join("test.cob");
         fs::write(&source_path, "").unwrap();
-        fs::write(dir.path().join("ksm41.cpy"), "000100     DISPLAY \"COW\".\n").unwrap();
+        fs::write(
+            dir.path().join("ksm41.cpy"),
+            "000100     DISPLAY \"COW\".\n",
+        )
+        .unwrap();
 
         let source = concat!(
             "000100 IDENTIFICATION DIVISION.\n",

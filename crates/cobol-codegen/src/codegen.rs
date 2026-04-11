@@ -345,15 +345,19 @@ pub fn generate_c(program: &HirProgram) -> String {
                     let mut next_id = 1usize;
                     for sp in section_paras {
                         let sp_c = sanitize_name(&sp.name);
-                        if !merged_label_map.contains_key(&sp_c) {
-                            merged_label_map.insert(sp_c.clone(), next_id);
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            merged_label_map.entry(sp_c.clone())
+                        {
+                            entry.insert(next_id);
                             next_id += 1;
                         }
                         // Also include any labels referenced by GO TO within the body
                         let sp_labels = build_paragraph_label_map(&sp.name, &sp.body);
                         for (lbl_name, _) in sp_labels {
-                            if !merged_label_map.contains_key(&lbl_name) {
-                                merged_label_map.insert(lbl_name, next_id);
+                            if let std::collections::hash_map::Entry::Vacant(entry) =
+                                merged_label_map.entry(lbl_name)
+                            {
+                                entry.insert(next_id);
                                 next_id += 1;
                             }
                         }
