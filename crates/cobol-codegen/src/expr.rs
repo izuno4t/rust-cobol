@@ -6,11 +6,19 @@ pub(crate) fn emit_expr(expr: &HirExpr) -> String {
 }
 
 pub(crate) fn display_numeric_ptr(expr: &str) -> String {
-    format!("(uint8_t*)&({expr})")
+    if expr.starts_with('(') && expr.contains(" + (") {
+        format!("(uint8_t*)({expr})")
+    } else {
+        format!("(uint8_t*)&({expr})")
+    }
 }
 
 pub(crate) fn display_numeric_const_ptr(expr: &str) -> String {
-    format!("(const uint8_t*)&({expr})")
+    if expr.starts_with('(') && expr.contains(" + (") {
+        format!("(const uint8_t*)({expr})")
+    } else {
+        format!("(const uint8_t*)&({expr})")
+    }
 }
 
 pub(crate) fn data_name_to_c_name(name: &HirDataName) -> String {
@@ -1061,10 +1069,7 @@ pub(crate) fn emit_assign_to_decimal(
                 // CobolDecimal to CobolDecimal: struct copy
                 let c_src = emit_expr(from);
                 out.push_str(&format!("{pad}{c_target} = {c_src};\n"));
-            } else if expr_contains_decimal(from)
-                || matches!(from, HirExpr::BinaryOp { .. } | HirExpr::UnaryOp { .. }
-                    if expr_contains_decimal(from))
-            {
+            } else if expr_requires_double_precision(from, data_items) {
                 // Expression contains decimal sub-expressions or fractional
                 // literals: use double arithmetic to preserve precision, then
                 // convert back via cobol_decimal_from_double which respects the
@@ -1083,6 +1088,48 @@ pub(crate) fn emit_assign_to_decimal(
                 ));
             }
         }
+    }
+}
+
+fn intrinsic_returns_double(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "SQRT"
+            | "EXP"
+            | "EXP10"
+            | "LOG"
+            | "LOG10"
+            | "SIN"
+            | "COS"
+            | "TAN"
+            | "ASIN"
+            | "ACOS"
+            | "ATAN"
+            | "REM"
+            | "REMAINDER"
+            | "ANNUITY"
+            | "MEAN"
+            | "MEDIAN"
+            | "RANGE"
+    )
+}
+
+fn expr_requires_double_precision(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+    match expr {
+        HirExpr::Literal(HirLiteral::Decimal(_)) => true,
+        HirExpr::FunctionCall { name, args } => {
+            intrinsic_returns_double(name)
+                || args
+                    .iter()
+                    .any(|arg| expr_requires_double_precision(arg, data_items))
+        }
+        HirExpr::UnaryOp { operand, .. } => expr_requires_double_precision(operand, data_items),
+        HirExpr::BinaryOp { left, right, .. } => {
+            expr_requires_double_precision(left, data_items)
+                || expr_requires_double_precision(right, data_items)
+                || expr_contains_decimal(expr)
+        }
+        _ => expr_contains_decimal(expr) && !is_decimal_expr(expr, data_items),
     }
 }
 
@@ -2134,7 +2181,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
     }
 }
 
-fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
+pub(crate) fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
     match expr {
         HirExpr::DataRef(data_ref) => {
             let c_name = data_name_to_c_name(&data_ref.name);
@@ -2193,15 +2240,22 @@ pub(crate) fn emit_alphanumeric_operand(
 ) -> (String, String) {
     match expr {
         HirExpr::DataRef(data_ref) => {
-            let c_name = data_name_to_c_name(&data_ref.name);
-            let size = find_data_item_size(&c_name, data_items);
-            let ptr = c_ptr_expr(&c_name, data_items);
+            let c_name = emit_data_ref_expr(data_ref);
+            let base_name = data_name_to_c_name(&data_ref.name);
+            let size = find_data_item_size(&base_name, data_items);
+            let ptr = find_data_item_by_name(&data_ref.name, data_items)
+                .filter(|item| item.occurs.is_some())
+                .map(|_| c_name.clone())
+                .unwrap_or_else(|| c_ptr_expr(&c_name, data_items));
             (format!("(const uint8_t*){ptr}"), format!("{size}"))
         }
         HirExpr::Variable(name) => {
             let c_name = data_name_to_c_name(name);
             let size = find_data_item_size(&c_name, data_items);
-            let ptr = c_ptr_expr(&c_name, data_items);
+            let ptr = find_data_item_by_name(name, data_items)
+                .filter(|item| item.occurs.is_some())
+                .map(|_| c_name.clone())
+                .unwrap_or_else(|| c_ptr_expr(&c_name, data_items));
             (format!("(const uint8_t*){ptr}"), format!("{size}"))
         }
         HirExpr::Literal(HirLiteral::String(s)) => {
@@ -2242,7 +2296,11 @@ pub(crate) fn emit_alphanumeric_operand(
             } else {
                 format!("sizeof({c_name})")
             };
-            let ptr = format!("(const uint8_t*)&{c_name}");
+            let ptr = if is_group_expr(expr, data_items) {
+                format!("(const uint8_t*)&{c_name}")
+            } else {
+                format!("(const uint8_t*){c_name}")
+            };
             (ptr, size)
         }
         HirExpr::FunctionCall { name, args } => {

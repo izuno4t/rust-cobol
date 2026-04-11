@@ -607,6 +607,7 @@ impl Parser {
             // qualifier, NOT, or sign/class condition keyword).
             if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
                 && self.current().kind != TokenKind::Not
+                && self.current().kind != TokenKind::Function
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
                 && self.peek(1).kind != TokenKind::Of
@@ -722,6 +723,7 @@ impl Parser {
             // Identifier-based abbreviated: AND <ident>
             if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
                 && self.current().kind != TokenKind::Not
+                && self.current().kind != TokenKind::Function
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
                 && self.peek(1).kind != TokenKind::Of
@@ -817,6 +819,7 @@ impl Parser {
             // Handle identifier-based abbreviated: IF A = B AND C AND D - 1
             if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
                 && self.current().kind != TokenKind::Not
+                && self.current().kind != TokenKind::Function
                 && !is_comparison_op_kind(self.peek(1).kind)
                 && self.peek(1).kind != TokenKind::Not
                 && self.peek(1).kind != TokenKind::Of

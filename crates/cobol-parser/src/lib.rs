@@ -117,6 +117,40 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_if_with_and_function_condition_continuation() {
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-IF-FUNC.
+       PROCEDURE DIVISION.
+           IF FUNCTION ACOS(0) > 1
+              AND FUNCTION ACOS(0) < 2
+               DISPLAY \"OK\"
+           ELSE
+               DISPLAY \"BAD\"
+           END-IF.
+           STOP RUN.";
+        let program = parse(src).unwrap();
+        let proc = program.procedure.unwrap();
+        let stmts: Vec<_> = proc
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.sentences.iter())
+            .flat_map(|s| s.statements.iter())
+            .collect();
+        match &stmts[0] {
+            Statement::If(if_stmt) => {
+                assert!(
+                    matches!(if_stmt.condition, cobol_ast::expr::Condition::And(_, _)),
+                    "IF condition should parse as conjunction"
+                );
+                assert_eq!(if_stmt.then_body.len(), 1);
+                assert_eq!(if_stmt.else_body.len(), 1);
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_parse_communication_section_synthetic_items() {
         let src = "\
        IDENTIFICATION DIVISION.

@@ -344,4 +344,16 @@ mod tests {
         assert!(out.contains("CobolUnstringTarget* targets"));
         assert!(out.contains("const SortKey* keys"));
     }
+
+    #[test]
+    fn test_emit_c_declarations_keeps_runtime_boundary_hooks() {
+        let mut out = String::new();
+        super::emit_c_declarations(&mut out);
+        assert!(out.contains("cobol_comm_enable"));
+        assert!(out.contains("cobol_json_generate"));
+        assert!(out.contains("cobol_json_parse"));
+        assert!(out.contains("cobol_xml_generate"));
+        assert!(out.contains("cobol_xml_parse"));
+        assert!(out.contains("cobol_sort_buffer_sort"));
+    }
 }

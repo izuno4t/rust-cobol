@@ -2988,6 +2988,75 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_qualified_subscripted_display_lowers_to_data_ref() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. QUAL-SUB-HIR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SRC.
+   05 ITEM-GRP OCCURS 2 TIMES.
+      10 FIELD-A PIC 9(3) VALUE 111.
+01 WS-DST.
+   05 ITEM-GRP OCCURS 2 TIMES.
+      10 FIELD-A PIC 9(3) VALUE 222.
+PROCEDURE DIVISION.
+    DISPLAY FIELD-A OF ITEM-GRP(2) OF WS-DST.
+    STOP RUN.
+";
+    let hir = compile_to_hir(src);
+    match &hir.body[0] {
+        HirStatement::Display { operands, .. } => match &operands[0] {
+            cobol_hir::HirExpr::DataRef(data_ref) => {
+                assert_eq!(data_ref.name.name.as_str(), "FIELD-A");
+                assert_eq!(data_ref.name.qualifiers, vec!["ITEM-GRP", "WS-DST"]);
+                assert_eq!(data_ref.subscripts.len(), 1);
+            }
+            other => panic!("expected DataRef, got {:?}", other),
+        },
+        other => panic!("expected Display, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_native_qualified_subscripted_display_with_duplicate_member_names() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. QUAL-SUB-DISPLAY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SRC.
+   05 ITEM-GRP OCCURS 2 TIMES.
+      10 FIELD-A PIC 9(3).
+01 WS-DST.
+   05 ITEM-GRP OCCURS 2 TIMES.
+      10 FIELD-A PIC 9(3).
+PROCEDURE DIVISION.
+    MOVE 111 TO FIELD-A OF ITEM-GRP(1) OF WS-SRC.
+    MOVE 222 TO FIELD-A OF ITEM-GRP(2) OF WS-SRC.
+    MOVE 333 TO FIELD-A OF ITEM-GRP(1) OF WS-DST.
+    MOVE 444 TO FIELD-A OF ITEM-GRP(2) OF WS-DST.
+    DISPLAY FIELD-A OF ITEM-GRP(2) OF WS-DST.
+    DISPLAY FIELD-A OF ITEM-GRP(1) OF WS-SRC.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 2, "expected 2 output lines, got '{}'", stdout);
+    assert!(
+        lines[0].contains("444"),
+        "qualified subscripted display should resolve WS-DST item 2, got '{}'",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("111"),
+        "qualified subscripted display should resolve WS-SRC item 1, got '{}'",
+        lines[1]
+    );
+}
+
+#[test]
 fn test_native_unstring_statement() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3025,6 +3094,33 @@ PROCEDURE DIVISION.
         "Part3 should be BYE: got '{}'",
         lines[2]
     );
+}
+
+#[test]
+fn test_native_perform_thru_with_goto_inside_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. THRU-GOTO-RANGE.
+PROCEDURE DIVISION.
+    PERFORM PARA-A THRU PARA-C.
+    DISPLAY 'DONE'.
+    STOP RUN.
+PARA-A.
+    DISPLAY 'A'.
+    GO TO PARA-C.
+    DISPLAY 'BAD-A'.
+PARA-B.
+    DISPLAY 'BAD-B'.
+PARA-C.
+    DISPLAY 'C'.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 3, "expected A/C/DONE only, got '{stdout}'");
+    assert_eq!(lines[0].trim(), "A");
+    assert_eq!(lines[1].trim(), "C");
+    assert_eq!(lines[2].trim(), "DONE");
 }
 
 #[test]
@@ -3915,6 +4011,30 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_nist_if101a_intrinsic_acos_zero_is_in_expected_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IF101A-SMALL.
+PROCEDURE DIVISION.
+    IF FUNCTION ACOS(0) > 1
+       AND FUNCTION ACOS(0) < 2
+        DISPLAY 'OK'
+    ELSE
+        DISPLAY 'BAD'
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout.trim(),
+        "OK",
+        "ACOS(0) should fall between 1 and 2 radians, got '{}'",
+        stdout.trim()
+    );
+}
+
+#[test]
 fn test_renames_clause() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -4053,6 +4173,76 @@ PROCEDURE DIVISION.
         stdout.contains("FILE IO WORKS"),
         "should read back written data, got: {}",
         stdout
+    );
+}
+
+#[test]
+fn test_nist_ix111a_open_missing_indexed_file_sets_status_35() {
+    let path = format!(
+        "/tmp/cobol_ix_missing_{}_{}.dat",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos()
+    );
+    let _ = std::fs::remove_file(&path);
+    let src = format!(
+        "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IX111A-SMALL.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-NOP ASSIGN TO '{path}'
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS SEQUENTIAL
+        RECORD KEY IS IX-NOP-KEY
+        FILE STATUS IS IX-NOP-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD IX-NOP.
+01 IX-NOP-REC.
+   05 IX-NOP-KEY PIC X(10).
+   05 IX-NOP-DATA PIC X(10).
+WORKING-STORAGE SECTION.
+01 IX-NOP-STATUS PIC XX.
+PROCEDURE DIVISION.
+    OPEN INPUT IX-NOP.
+    DISPLAY IX-NOP-STATUS.
+    STOP RUN.
+"
+    );
+    let (stdout, _, code) = compile_and_run_no_sema(&src);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.trim().starts_with("35"),
+        "missing indexed file should report status 35, got '{}'",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_nist_nc101a_multiply_rounded_preserves_fractional_result() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NC101A-SMALL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-RESULT PIC 9V99 VALUE 0.
+PROCEDURE DIVISION.
+    MOVE 1.25 TO WS-RESULT.
+    MULTIPLY 2 BY WS-RESULT ROUNDED.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("2.50") || stdout.contains("250"),
+        "1.25 * 2 with ROUNDED should keep fractional result, got '{}'",
+        stdout.trim()
     );
 }
 

@@ -59,6 +59,31 @@ impossible.
 After applying a fix, always run `make clean test lint` before reporting
 completion.
 
+## Reporting Discipline
+
+Keep progress updates and final reports short, factual, and directly
+relevant to the user's requested completion criteria.
+
+- Do not pad reports with self-justification, excuses, or progress that
+  does not materially advance the requested goal.
+- Do not present partial symptom movement, such as `COMPILE_ERROR ->
+  FAIL`, as meaningful completion when the user asked for full
+  completion.
+- When work is incomplete, state the exact unmet condition plainly and
+  continue from the highest-leverage remaining blocker.
+
+## GitHub Actions Discipline
+
+For Linux-based GitHub Actions jobs, inspect the actual job result on
+GitHub before concluding CI status. Use the GitHub Actions UI or `gh`
+to review the job conclusion, step logs, and uploaded artifacts for the
+relevant Linux run.
+
+- Treat GitHub-hosted Linux job logs and artifacts as the source of
+  truth when reporting CI failures or recoveries.
+- When a workflow uploads diagnostic artifacts, review those artifacts
+  in addition to the live job log before proposing or declaring a fix.
+
 ## Commit & Pull Request Guidelines
 
 Recent history favors short, imperative subjects with conventional

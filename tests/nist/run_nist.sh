@@ -631,10 +631,17 @@ run_program() {
         else
             unset COBOL_TEST_FAST_TIME_SCALE || true
         fi
-        exec setsid timeout -k 5s "$TIMEOUT_SECONDS" perl -e '
-            chdir $ARGV[0] or die "chdir failed: $!";
-            exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
-        ' "$module_workdir" "$bin"
+        if command -v setsid >/dev/null 2>&1; then
+            exec setsid timeout -k 5s "$TIMEOUT_SECONDS" perl -e '
+                chdir $ARGV[0] or die "chdir failed: $!";
+                exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
+            ' "$module_workdir" "$bin"
+        else
+            exec timeout -k 5s "$TIMEOUT_SECONDS" perl -e '
+                chdir $ARGV[0] or die "chdir failed: $!";
+                exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
+            ' "$module_workdir" "$bin"
+        fi
     ) < /dev/null > "$log" 2>&1 &
     CURRENT_RUN_PID=$!
     wait "$CURRENT_RUN_PID" || exit_code=$?

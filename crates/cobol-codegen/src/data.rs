@@ -619,7 +619,7 @@ pub(crate) fn emit_group_macros(
             // Add current member name as qualifier for children, then
             // recurse once (avoids exponential blowup from double recursion).
             let mut child_qualifiers = qualifier_names.to_vec();
-            if !child_qualifiers.contains(&c_name) {
+            if member.name != "PIC" {
                 child_qualifiers.push(c_name);
             }
             emit_group_macros(
@@ -662,6 +662,10 @@ pub(crate) fn emit_group_redefines(
                     for qualifier in qualifier_names {
                         out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
                     }
+                    if qualifier_names.len() > 1 {
+                        let chain = qualifier_names.join("__");
+                        out.push_str(&format!("#define {chain}__{c_name} {alias_expr}\n"));
+                    }
                 }
                 HirType::Group {
                     members: grp_members,
@@ -677,8 +681,12 @@ pub(crate) fn emit_group_redefines(
                     for qualifier in qualifier_names {
                         out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
                     }
+                    if qualifier_names.len() > 1 {
+                        let chain = qualifier_names.join("__");
+                        out.push_str(&format!("#define {chain}__{c_name} {alias_expr}\n"));
+                    }
                     let mut child_qualifiers = qualifier_names.to_vec();
-                    if emit_aliases && !child_qualifiers.contains(&c_name) {
+                    if member.name != "PIC" {
                         child_qualifiers.push(c_name.clone());
                     }
                     let access_expr = format!("(*({td}*)&{qualified_target})");
@@ -712,6 +720,10 @@ pub(crate) fn emit_group_redefines(
                         for qualifier in qualifier_names {
                             out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
                         }
+                        if qualifier_names.len() > 1 {
+                            let chain = qualifier_names.join("__");
+                            out.push_str(&format!("#define {chain}__{c_name} {alias_expr}\n"));
+                        }
                     } else {
                         let alias_expr =
                             format!("(*({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */");
@@ -720,6 +732,10 @@ pub(crate) fn emit_group_redefines(
                         }
                         for qualifier in qualifier_names {
                             out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
+                        }
+                        if qualifier_names.len() > 1 {
+                            let chain = qualifier_names.join("__");
+                            out.push_str(&format!("#define {chain}__{c_name} {alias_expr}\n"));
                         }
                     }
                 }
@@ -738,10 +754,7 @@ pub(crate) fn emit_group_redefines(
                     format!("{path_prefix}._m_{c_name}.members")
                 };
                 let mut child_qualifiers = qualifier_names.to_vec();
-                if member.name != "FILLER"
-                    && member.name != "PIC"
-                    && !child_qualifiers.contains(&c_name)
-                {
+                if member.name != "PIC" {
                     child_qualifiers.push(c_name.clone());
                 }
                 emit_group_redefines(

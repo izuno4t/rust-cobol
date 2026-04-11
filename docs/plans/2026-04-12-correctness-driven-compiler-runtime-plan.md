@@ -309,6 +309,57 @@ runtime は単なる補助ライブラリではなく、COBOL の実行意味を
 - compile error が消えても意味が壊れている状態を検出できる
 - NIST 依存だけでは拾えない regressions を早期に捕まえられる
 
+状態:
+
+- 2026-04-12 完了
+
+実施結果:
+
+- `crates/cobol-driver/tests/e2e_test.rs` に NIST 由来の縮小回帰を追加し、
+  `ACOS(0)` の条件評価、indexed file open failure の `FILE STATUS 35`、
+  `MULTIPLY ... ROUNDED` の小数保持を意味ベースで検証するようにした
+- qualified reference と table access の組み合わせを確認する
+  `test_qualified_subscripted_display_lowers_to_data_ref` と
+  `test_native_qualified_subscripted_display_with_duplicate_member_names`
+  を追加した
+- nested control flow の回帰として
+  `test_native_perform_thru_with_goto_inside_range` を追加し、
+  `PERFORM THRU` 範囲内 `GO TO` の伝播不整合を修正した
+- `crates/cobol-runtime/src/abi.rs` に
+  `test_emit_c_declarations_keeps_runtime_boundary_hooks` を追加し、
+  generated C 境界に必要な runtime hook 宣言の維持を固定した
+- 追加回帰で露出した 3 件の実装不整合を修正した
+  1. fully qualified + subscripted 参照で duplicate member 名が衝突する問題
+  2. `PERFORM THRU` 内 paragraph function のローカル dispatch が
+     範囲外 `GO TO` を消してしまう問題
+  3. `AND FUNCTION ...` 継続条件を略記条件として誤解釈する parser 問題
+- `crates/cobol-parser/src/lib.rs` に
+  `test_parse_if_with_and_function_condition_continuation` を追加し、
+  `AND FUNCTION ACOS(0) < 2` を完全条件として解析できることを固定した
+- 対象回帰として
+  `cargo test -p cobol-driver`
+  `test_native_qualified_subscripted_display_with_duplicate_member_names`
+  `with output visible`
+  `cargo test -p cobol-driver`
+  `test_native_perform_thru_with_goto_inside_range`
+  `with output visible`
+  `cargo test -p cobol-driver`
+  `test_nist_if101a_intrinsic_acos_zero_is_in_expected_range`
+  `with output visible`
+  `cargo test -p cobol-driver`
+  `test_nist_ix111a_open_missing_indexed_file_sets_status_35`
+  `with output visible`
+  `cargo test -p cobol-driver`
+  `test_nist_nc101a_multiply_rounded_preserves_fractional_result`
+  `with output visible`
+  `cargo test -p cobol-runtime`
+  `test_emit_c_declarations_keeps_runtime_boundary_hooks`
+  `with output visible`
+  `cargo test -p cobol-parser`
+  `test_parse_if_with_and_function_condition_continuation`
+  `with output visible`
+  を通した
+
 ---
 
 ## NIST の位置づけ

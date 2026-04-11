@@ -259,6 +259,7 @@ pub fn generate_c(program: &HirProgram) -> String {
         // Collect labels from body and build label ID map for goto dispatch
         let label_map = build_body_label_map(&program.body);
         let has_labels = !label_map.is_empty();
+        with_active_context(|ctx| ctx.set_body_label_map(label_map.clone()));
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
 
         // Emit goto dispatch variable if needed
@@ -316,6 +317,7 @@ pub fn generate_c(program: &HirProgram) -> String {
 
         let t_para = std::time::Instant::now();
         emit_program_paragraph_definitions(&mut out, program, &fs_map, has_decl);
+        with_active_context(|ctx| ctx.set_body_label_map(label_map.clone()));
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
 
         cg_timing!("emit_paragraphs", t_para);
@@ -323,6 +325,7 @@ pub fn generate_c(program: &HirProgram) -> String {
         // Emit declarative handler function definitions
         for decl in &program.declaratives {
             let c_name = sanitize_name(&decl.name);
+            with_active_context(|ctx| ctx.set_label_map(HashMap::new()));
             out.push_str(&format!("\nstatic void decl_{c_name}(void) {{\n"));
             for stmt in &decl.body {
                 let env = StmtEmitEnv {
@@ -336,6 +339,7 @@ pub fn generate_c(program: &HirProgram) -> String {
             }
             out.push_str("}\n");
         }
+        with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
 
         // For sub-programs (those with USING params), emit a callable entry point.
         // This allows other programs to CALL this program by name.
@@ -447,6 +451,7 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
         let label_map = build_body_label_map(&program.body);
         let has_decl = !program.declaratives.is_empty();
         if !label_map.is_empty() {
+            with_active_context(|ctx| ctx.set_body_label_map(label_map.clone()));
             with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
         }
 
@@ -597,7 +602,7 @@ fn emit_program_paragraph_definitions(
                             ));
                         }
                     }
-                    out.push_str("        default: return;\n");
+                    out.push_str("        default: _goto_target = _t; return;\n");
                     out.push_str("      }\n");
                     out.push_str("    }\n");
                 }
@@ -633,7 +638,7 @@ fn emit_program_paragraph_definitions(
                     if let Some(id) = para_label_map.get(&paragraphs[i].id) {
                         out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
                     }
-                    out.push_str("        default: return;\n");
+                    out.push_str("        default: _goto_target = _t; return;\n");
                     out.push_str("      }\n");
                     out.push_str("    }\n");
                 }

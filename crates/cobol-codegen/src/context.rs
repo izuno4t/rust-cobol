@@ -40,6 +40,7 @@ pub(crate) struct CodegenContext {
     communication_map: HashMap<String, CommunicationBinding>,
     decimal_names: HashSet<String>,
     group_names: HashSet<String>,
+    alpha_names: HashSet<String>,
     display_numeric_sizes: HashMap<String, u32>,
     group_alpha_names: HashSet<String>,
     justified_names: HashSet<String>,
@@ -50,6 +51,7 @@ pub(crate) struct CodegenContext {
     fd_max_record_sizes: HashMap<String, u32>,
     in_body_context: Cell<bool>,
     goto_label_map: RefCell<HashMap<HirParagraphId, usize>>,
+    body_goto_label_map: RefCell<HashMap<HirParagraphId, usize>>,
     perform_thru_counter: Cell<usize>,
     emitted_labels: RefCell<HashSet<String>>,
 }
@@ -89,6 +91,9 @@ impl CodegenContext {
         let mut group_names = parent.group_names.clone();
         group_names.extend(build_group_names(&program.data_items));
 
+        let mut alpha_names = parent.alpha_names.clone();
+        alpha_names.extend(build_alpha_names(&program.data_items));
+
         let mut display_numeric_sizes = parent.display_numeric_sizes.clone();
         display_numeric_sizes.extend(build_display_numeric_sizes(&program.data_items));
 
@@ -113,6 +118,7 @@ impl CodegenContext {
             communication_map,
             decimal_names,
             group_names,
+            alpha_names,
             display_numeric_sizes,
             group_alpha_names,
             justified_names,
@@ -120,6 +126,7 @@ impl CodegenContext {
             fd_max_record_sizes,
             in_body_context: Cell::new(false),
             goto_label_map: RefCell::new(HashMap::new()),
+            body_goto_label_map: RefCell::new(HashMap::new()),
             perform_thru_counter: Cell::new(0),
             emitted_labels: RefCell::new(HashSet::new()),
         }
@@ -140,6 +147,7 @@ impl CodegenContext {
             communication_map: build_communication_map(communication_descriptions),
             decimal_names: build_decimal_names(data_items),
             group_names: build_group_names(data_items),
+            alpha_names: build_alpha_names(data_items),
             display_numeric_sizes: build_display_numeric_sizes(data_items),
             group_alpha_names: build_group_alpha_names(data_items),
             justified_names: build_justified_names(data_items),
@@ -147,6 +155,7 @@ impl CodegenContext {
             fd_max_record_sizes: build_fd_max_record_sizes(data_items, fd_record_aliases),
             in_body_context: Cell::new(false),
             goto_label_map: RefCell::new(HashMap::new()),
+            body_goto_label_map: RefCell::new(HashMap::new()),
             perform_thru_counter: Cell::new(0),
             emitted_labels: RefCell::new(HashSet::new()),
         }
@@ -166,8 +175,16 @@ impl CodegenContext {
         self.emitted_labels.borrow_mut().clear();
     }
 
+    pub(crate) fn set_body_label_map(&self, map: HashMap<HirParagraphId, usize>) {
+        *self.body_goto_label_map.borrow_mut() = map;
+    }
+
     pub(crate) fn label_id(&self, id: HirParagraphId) -> Option<usize> {
         self.goto_label_map.borrow().get(&id).copied()
+    }
+
+    pub(crate) fn body_label_id(&self, id: HirParagraphId) -> Option<usize> {
+        self.body_goto_label_map.borrow().get(&id).copied()
     }
 
     pub(crate) fn has_labels(&self) -> bool {
@@ -208,6 +225,10 @@ impl CodegenContext {
 
     pub(crate) fn is_group_name(&self, c_name: &str) -> bool {
         self.group_names.contains(c_name)
+    }
+
+    pub(crate) fn is_alpha_name(&self, c_name: &str) -> bool {
+        self.alpha_names.contains(c_name)
     }
 
     pub(crate) fn is_justified_name(&self, c_name: &str) -> bool {
@@ -265,6 +286,23 @@ fn build_communication_map(
         .collect()
 }
 
+fn build_alpha_names(items: &[HirDataItem]) -> HashSet<String> {
+    fn collect(items: &[HirDataItem], acc: &mut HashSet<String>) {
+        for item in items {
+            if matches!(item.data_type, HirType::Alphanumeric { .. }) {
+                acc.insert(sanitize_name(&item.name));
+            }
+            if let HirType::Group { members, .. } = &item.data_type {
+                collect(members, acc);
+            }
+        }
+    }
+
+    let mut names = HashSet::new();
+    collect(items, &mut names);
+    names
+}
+
 pub(crate) fn with_pushed_context<R>(ctx: &CodegenContext, f: impl FnOnce() -> R) -> R {
     ACTIVE_CONTEXT_STACK.with(|stack| stack.borrow_mut().push(ctx as *const CodegenContext));
     let result = f();
@@ -299,6 +337,7 @@ pub(crate) fn build_subscript_paths(
                 &mut map,
                 members,
                 &root,
+                &[],
                 &[],
                 root_has_occurs,
                 root_is_redefines,
@@ -434,6 +473,7 @@ pub(crate) fn collect_subscript_paths(
     members: &[HirDataItem],
     root: &str,
     ancestor_segments: &[(String, bool)],
+    ancestor_names: &[String],
     root_has_occurs: bool,
     parent_is_redefines: bool,
 ) {
@@ -458,10 +498,16 @@ pub(crate) fn collect_subscript_paths(
         };
         let mut segments: Vec<(String, bool)> = ancestor_segments.to_vec();
         segments.push((segment_suffix, member_has_occurs));
+        let mut qualified_names: Vec<String> = ancestor_names.to_vec();
+        qualified_names.push(member_c_name.clone());
 
         let any_occurs = root_has_occurs || segments.iter().any(|(_, has)| *has);
         if any_occurs {
             let new_occurs_count = segments.iter().filter(|(_, has)| *has).count();
+            let candidate = SubscriptPathInfo {
+                segments: segments.clone(),
+                root: root.to_string(),
+            };
             let should_insert = match map.get(&base_c_name) {
                 Some(existing) => {
                     let existing_count = existing.segments.iter().filter(|(_, has)| *has).count();
@@ -478,14 +524,13 @@ pub(crate) fn collect_subscript_paths(
                 None => true,
             };
             if should_insert {
-                map.insert(
-                    base_c_name.clone(),
-                    SubscriptPathInfo {
-                        segments: segments.clone(),
-                        root: root.to_string(),
-                    },
-                );
+                map.insert(base_c_name.clone(), candidate.clone());
             }
+            let qualified_key = std::iter::once(root.to_string())
+                .chain(qualified_names.iter().cloned())
+                .collect::<Vec<_>>()
+                .join("__");
+            map.insert(qualified_key, candidate);
         }
 
         if let HirType::Group {
@@ -493,7 +538,15 @@ pub(crate) fn collect_subscript_paths(
             ..
         } = &member.data_type
         {
-            collect_subscript_paths(map, sub_members, root, &segments, root_has_occurs, false);
+            collect_subscript_paths(
+                map,
+                sub_members,
+                root,
+                &segments,
+                &qualified_names,
+                root_has_occurs,
+                false,
+            );
         }
     }
 }
