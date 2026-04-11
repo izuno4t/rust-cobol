@@ -1848,23 +1848,35 @@ pub(crate) fn emit_statement_with_ctx(
                     emit_optional_comm_item(binding.symbolic_source.as_deref(), data_items)
                 })
                 .unwrap_or_else(null_comm_arg);
-            let (dest_arg, dest_table_count, dest_count_expr, error_key_arg) = binding
+            let (dest_layout, dest_count_expr, error_key_layout) = binding
                 .as_ref()
                 .map(|binding| {
+                    let mut dest_layout =
+                        emit_optional_comm_area_layout(binding.destination.as_deref(), data_items);
+                    if let Some(legacy_table_count) = binding.destination_table_count {
+                        if legacy_table_count != 0 {
+                            dest_layout.count = legacy_table_count.to_string();
+                        }
+                    }
                     (
-                        emit_optional_comm_item(binding.destination.as_deref(), data_items),
-                        binding.destination_table_count.unwrap_or(0),
+                        dest_layout,
                         binding
                             .destination_count
                             .as_ref()
                             .map(|name| emit_numeric_expr_for_var(name, data_items))
                             .unwrap_or_else(|| "0".to_string()),
-                        emit_optional_mut_comm_area(binding.error_key.as_deref(), data_items),
+                        emit_optional_comm_area_layout(binding.error_key.as_deref(), data_items),
                     )
                 })
-                .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
+                .unwrap_or_else(|| {
+                    (
+                        emit_optional_comm_area_layout(None, data_items),
+                        "0".to_string(),
+                        emit_optional_comm_area_layout(None, data_items),
+                    )
+                });
             out.push_str(&format!(
-                "{pad}{{ uint32_t _rc = cobol_comm_enable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                "{pad}{{ uint32_t _rc = cobol_comm_enable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
                 emit_comm_mode(mode),
                 if *terminal { 1 } else { 0 },
@@ -1878,12 +1890,17 @@ pub(crate) fn emit_statement_with_ctx(
                 selectors.sub3_len,
                 source.0,
                 source.1,
-                dest_arg.0,
-                dest_arg.1,
+                format!("(const uint8_t*){}", dest_layout.ptr),
+                dest_layout.item_len,
+                dest_layout.stride,
                 dest_count_expr,
-                dest_table_count,
-                error_key_arg.0,
-                error_key_arg.1
+                dest_layout.count,
+                dest_layout.area_len,
+                format!("(uint8_t*){}", error_key_layout.ptr),
+                error_key_layout.item_len,
+                error_key_layout.stride,
+                error_key_layout.count,
+                error_key_layout.area_len
             ));
             emit_comm_status_updates(
                 out,
@@ -1915,23 +1932,35 @@ pub(crate) fn emit_statement_with_ctx(
                     emit_optional_comm_item(binding.symbolic_source.as_deref(), data_items)
                 })
                 .unwrap_or_else(null_comm_arg);
-            let (dest_arg, dest_table_count, dest_count_expr, error_key_arg) = binding
+            let (dest_layout, dest_count_expr, error_key_layout) = binding
                 .as_ref()
                 .map(|binding| {
+                    let mut dest_layout =
+                        emit_optional_comm_area_layout(binding.destination.as_deref(), data_items);
+                    if let Some(legacy_table_count) = binding.destination_table_count {
+                        if legacy_table_count != 0 {
+                            dest_layout.count = legacy_table_count.to_string();
+                        }
+                    }
                     (
-                        emit_optional_comm_item(binding.destination.as_deref(), data_items),
-                        binding.destination_table_count.unwrap_or(0),
+                        dest_layout,
                         binding
                             .destination_count
                             .as_ref()
                             .map(|name| emit_numeric_expr_for_var(name, data_items))
                             .unwrap_or_else(|| "0".to_string()),
-                        emit_optional_mut_comm_area(binding.error_key.as_deref(), data_items),
+                        emit_optional_comm_area_layout(binding.error_key.as_deref(), data_items),
                     )
                 })
-                .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
+                .unwrap_or_else(|| {
+                    (
+                        emit_optional_comm_area_layout(None, data_items),
+                        "0".to_string(),
+                        emit_optional_comm_area_layout(None, data_items),
+                    )
+                });
             out.push_str(&format!(
-                "{pad}{{ uint32_t _rc = cobol_comm_disable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                "{pad}{{ uint32_t _rc = cobol_comm_disable((const uint8_t*)\"{c_target}\", {}, {}, {}, {c_key_ptr}, {c_key_len}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
                 emit_comm_mode(mode),
                 if *terminal { 1 } else { 0 },
@@ -1945,12 +1974,17 @@ pub(crate) fn emit_statement_with_ctx(
                 selectors.sub3_len,
                 source.0,
                 source.1,
-                dest_arg.0,
-                dest_arg.1,
+                format!("(const uint8_t*){}", dest_layout.ptr),
+                dest_layout.item_len,
+                dest_layout.stride,
                 dest_count_expr,
-                dest_table_count,
-                error_key_arg.0,
-                error_key_arg.1
+                dest_layout.count,
+                dest_layout.area_len,
+                format!("(uint8_t*){}", error_key_layout.ptr),
+                error_key_layout.item_len,
+                error_key_layout.stride,
+                error_key_layout.count,
+                error_key_layout.area_len
             ));
             emit_comm_status_updates(
                 out,
@@ -1981,21 +2015,33 @@ pub(crate) fn emit_statement_with_ctx(
                 .and_then(|binding| binding.text_length.as_ref())
                 .map(|name| emit_numeric_expr_for_var(name, data_items))
                 .unwrap_or_else(|| c_from_len.clone());
-            let (dest_arg, dest_table_count, dest_count_expr, error_key_arg) = binding
+            let (dest_layout, dest_count_expr, error_key_layout) = binding
                 .as_ref()
                 .map(|binding| {
+                    let mut dest_layout =
+                        emit_optional_comm_area_layout(binding.destination.as_deref(), data_items);
+                    if let Some(legacy_table_count) = binding.destination_table_count {
+                        if legacy_table_count != 0 {
+                            dest_layout.count = legacy_table_count.to_string();
+                        }
+                    }
                     (
-                        emit_optional_comm_item(binding.destination.as_deref(), data_items),
-                        binding.destination_table_count.unwrap_or(0),
+                        dest_layout,
                         binding
                             .destination_count
                             .as_ref()
                             .map(|name| emit_numeric_expr_for_var(name, data_items))
                             .unwrap_or_else(|| "0".to_string()),
-                        emit_optional_mut_comm_area(binding.error_key.as_deref(), data_items),
+                        emit_optional_comm_area_layout(binding.error_key.as_deref(), data_items),
                     )
                 })
-                .unwrap_or_else(|| ((null_comm_arg()), 0, "0".to_string(), (null_comm_arg())));
+                .unwrap_or_else(|| {
+                    (
+                        emit_optional_comm_area_layout(None, data_items),
+                        "0".to_string(),
+                        emit_optional_comm_area_layout(None, data_items),
+                    )
+                });
             let (option_kind, option_value) = match with {
                 Some(cobol_hir::HirSendOption::Emi) => ("1".to_string(), "0".to_string()),
                 Some(cobol_hir::HirSendOption::Egi) => ("2".to_string(), "0".to_string()),
@@ -2006,15 +2052,20 @@ pub(crate) fn emit_statement_with_ctx(
                 None => ("0".to_string(), "0".to_string()),
             };
             out.push_str(&format!(
-                "{pad}{{ uint32_t _rc = cobol_comm_send((const uint8_t*)\"{c_target}\", {}, {c_from_ptr}, {c_from_len}, {effective_len}, {option_kind}, {option_value}, {}, {}, {}, {}, {}, {}, {});\n",
+                "{pad}{{ uint32_t _rc = cobol_comm_send((const uint8_t*)\"{c_target}\", {}, {c_from_ptr}, {c_from_len}, {effective_len}, {option_kind}, {option_value}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 c_target.len(),
                 if *replacing_line { 1 } else { 0 },
-                dest_arg.0,
-                dest_arg.1,
+                format!("(const uint8_t*){}", dest_layout.ptr),
+                dest_layout.item_len,
+                dest_layout.stride,
                 dest_count_expr,
-                dest_table_count,
-                error_key_arg.0,
-                error_key_arg.1
+                dest_layout.count,
+                dest_layout.area_len,
+                format!("(uint8_t*){}", error_key_layout.ptr),
+                error_key_layout.item_len,
+                error_key_layout.stride,
+                error_key_layout.count,
+                error_key_layout.area_len
             ));
             emit_comm_status_updates(
                 out,
@@ -4961,14 +5012,24 @@ fn emit_optional_comm_item(name: Option<&str>, data_items: &[HirDataItem]) -> (S
     .unwrap_or_else(null_comm_arg)
 }
 
-fn emit_optional_mut_comm_area(name: Option<&str>, data_items: &[HirDataItem]) -> (String, String) {
+struct CommAreaLayoutArg {
+    ptr: String,
+    item_len: String,
+    stride: String,
+    count: String,
+    area_len: String,
+}
+
+fn emit_optional_comm_area_layout(
+    name: Option<&str>,
+    data_items: &[HirDataItem],
+) -> CommAreaLayoutArg {
     name.map(|name| {
         (
             format!("(uint8_t*){}", c_ptr_expr(name, data_items)),
             find_data_item_layout(name, data_items).area_len.to_string(),
         )
     })
-    .unwrap_or_else(null_comm_arg)
 }
 
 fn emit_comm_selectors(

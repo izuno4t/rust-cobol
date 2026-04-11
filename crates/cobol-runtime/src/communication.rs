@@ -309,16 +309,25 @@ fn send_option_to_end_key(option_kind: i32, option_value: i64) -> u8 {
 
 unsafe fn write_error_key_flags(
     error_key_ptr: *mut u8,
-    error_key_len: u32,
+    error_key_item_len: u32,
+    error_key_stride: u32,
+    error_key_count: u32,
+    error_key_area_len: u32,
     invalid_destination: Option<usize>,
 ) {
-    if error_key_ptr.is_null() || error_key_len == 0 {
+    if error_key_ptr.is_null() || error_key_area_len == 0 {
         return;
     }
-    std::ptr::write_bytes(error_key_ptr, b'0', error_key_len as usize);
+    std::ptr::write_bytes(error_key_ptr, b'0', error_key_area_len as usize);
+    if error_key_item_len == 0 || error_key_stride == 0 || error_key_count == 0 {
+        return;
+    }
     if let Some(index) = invalid_destination {
-        if index < error_key_len as usize {
-            *error_key_ptr.add(index) = b'1';
+        if index < error_key_count as usize {
+            let offset = index * error_key_stride as usize;
+            if offset < error_key_area_len as usize {
+                *error_key_ptr.add(offset) = b'1';
+            }
         }
     }
 }
@@ -327,12 +336,24 @@ unsafe fn validate_output_destinations(
     config: Option<&CommunicationConfig>,
     dest_ptr: *const u8,
     dest_item_len: u32,
+    dest_stride: u32,
     dest_count: u32,
-    dest_table_count: u32,
+    dest_area_count: u32,
+    dest_area_len: u32,
     error_key_ptr: *mut u8,
-    error_key_len: u32,
+    error_key_item_len: u32,
+    error_key_stride: u32,
+    error_key_count: u32,
+    error_key_area_len: u32,
 ) -> u32 {
-    write_error_key_flags(error_key_ptr, error_key_len, None);
+    write_error_key_flags(
+        error_key_ptr,
+        error_key_item_len,
+        error_key_stride,
+        error_key_count,
+        error_key_area_len,
+        None,
+    );
     let Some(config) = config else {
         return 0;
     };
@@ -341,12 +362,15 @@ unsafe fn validate_output_destinations(
     }
     if comm_debug_enabled() {
         eprintln!(
-            "[COMM] validate dest_count={dest_count} dest_table_count={dest_table_count} dest_item_len={dest_item_len} configured={:?}",
+            "[COMM] validate dest_count={dest_count} dest_area_count={dest_area_count} dest_item_len={dest_item_len} dest_stride={dest_stride} dest_area_len={dest_area_len} configured={:?}",
             config.destinations
         );
-        if !dest_ptr.is_null() && dest_item_len != 0 {
+        if !dest_ptr.is_null() && dest_item_len != 0 && dest_stride != 0 {
             for idx in 0..dest_count as usize {
-                let offset = idx * dest_item_len as usize;
+                let offset = idx * dest_stride as usize;
+                if offset + dest_item_len as usize > dest_area_len as usize {
+                    break;
+                }
                 let raw = std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
                 let actual = normalize_comm_value(&String::from_utf8_lossy(raw));
                 eprintln!("[COMM] validate destination[{idx}]='{actual}'");
@@ -356,19 +380,45 @@ unsafe fn validate_output_destinations(
     if dest_count == 0 {
         return 30;
     }
-    if dest_table_count != 0 && dest_count > dest_table_count {
+    if dest_area_count != 0 && dest_count > dest_area_count {
         return 30;
     }
-    if dest_ptr.is_null() || dest_item_len == 0 {
-        write_error_key_flags(error_key_ptr, error_key_len, Some(0));
+    if dest_item_len == 0 || dest_stride == 0 || dest_area_len == 0 {
+        return 30;
+    }
+    if dest_area_count != 0 {
+        let max_offset = (dest_area_count as usize - 1) * dest_stride as usize;
+        if max_offset + dest_item_len as usize > dest_area_len as usize {
+            return 30;
+        }
+    }
+    if dest_ptr.is_null() {
+        write_error_key_flags(
+            error_key_ptr,
+            error_key_item_len,
+            error_key_stride,
+            error_key_count,
+            error_key_area_len,
+            Some(0),
+        );
         return 20;
     }
     for idx in 0..dest_count as usize {
-        let offset = idx * dest_item_len as usize;
+        let offset = idx * dest_stride as usize;
+        if offset + dest_item_len as usize > dest_area_len as usize {
+            return 30;
+        }
         let raw = std::slice::from_raw_parts(dest_ptr.add(offset), dest_item_len as usize);
         let actual = normalize_comm_value(&String::from_utf8_lossy(raw));
         if !config.destinations.iter().any(|dest| dest == &actual) {
-            write_error_key_flags(error_key_ptr, error_key_len, Some(idx));
+            write_error_key_flags(
+                error_key_ptr,
+                error_key_item_len,
+                error_key_stride,
+                error_key_count,
+                error_key_area_len,
+                Some(idx),
+            );
             return 20;
         }
     }
@@ -400,10 +450,15 @@ pub unsafe extern "C" fn cobol_comm_enable(
     source_len: u32,
     dest_ptr: *const u8,
     dest_item_len: u32,
+    dest_stride: u32,
     dest_count: u32,
-    dest_table_count: u32,
+    dest_area_count: u32,
+    dest_area_len: u32,
     error_key_ptr: *mut u8,
-    error_key_len: u32,
+    error_key_item_len: u32,
+    error_key_stride: u32,
+    error_key_count: u32,
+    error_key_area_len: u32,
 ) -> u32 {
     let Some(name) = key_from_raw(name_ptr, name_len) else {
         return 99;
@@ -446,10 +501,15 @@ pub unsafe extern "C" fn cobol_comm_enable(
                 config,
                 dest_ptr,
                 dest_item_len,
+                dest_stride,
                 dest_count,
-                dest_table_count,
+                dest_area_count,
+                dest_area_len,
                 error_key_ptr,
-                error_key_len,
+                error_key_item_len,
+                error_key_stride,
+                error_key_count,
+                error_key_area_len,
             );
             if dest_rc != 0 {
                 return dest_rc;
@@ -488,10 +548,15 @@ pub unsafe extern "C" fn cobol_comm_disable(
     source_len: u32,
     dest_ptr: *const u8,
     dest_item_len: u32,
+    dest_stride: u32,
     dest_count: u32,
-    dest_table_count: u32,
+    dest_area_count: u32,
+    dest_area_len: u32,
     error_key_ptr: *mut u8,
-    error_key_len: u32,
+    error_key_item_len: u32,
+    error_key_stride: u32,
+    error_key_count: u32,
+    error_key_area_len: u32,
 ) -> u32 {
     let Some(name) = key_from_raw(name_ptr, name_len) else {
         return 99;
@@ -534,10 +599,15 @@ pub unsafe extern "C" fn cobol_comm_disable(
                 config,
                 dest_ptr,
                 dest_item_len,
+                dest_stride,
                 dest_count,
-                dest_table_count,
+                dest_area_count,
+                dest_area_len,
                 error_key_ptr,
-                error_key_len,
+                error_key_item_len,
+                error_key_stride,
+                error_key_count,
+                error_key_area_len,
             );
             if dest_rc != 0 {
                 return dest_rc;
@@ -557,7 +627,7 @@ pub unsafe extern "C" fn cobol_comm_disable(
 /// `name_ptr`, `from_ptr`, and `dest_ptr` must be either null with a zero
 /// length or valid for reads of the supplied byte lengths. `error_key_ptr`
 /// must be either null with a zero length or valid for writes of
-/// `error_key_len` bytes for the duration of this call.
+/// `error_key_area_len` bytes for the duration of this call.
 pub unsafe extern "C" fn cobol_comm_send(
     name_ptr: *const u8,
     name_len: u32,
@@ -569,10 +639,15 @@ pub unsafe extern "C" fn cobol_comm_send(
     _replacing_line: i32,
     dest_ptr: *const u8,
     dest_item_len: u32,
+    dest_stride: u32,
     dest_count: u32,
-    dest_table_count: u32,
+    dest_area_count: u32,
+    dest_area_len: u32,
     error_key_ptr: *mut u8,
-    error_key_len: u32,
+    error_key_item_len: u32,
+    error_key_stride: u32,
+    error_key_count: u32,
+    error_key_area_len: u32,
 ) -> u32 {
     let Some(name) = key_from_raw(name_ptr, name_len) else {
         return 99;
@@ -586,15 +661,27 @@ pub unsafe extern "C" fn cobol_comm_send(
     let payload_len = payload.len();
     with_comm_runtime(|runtime| {
         let config = runtime.configs.get(&name);
-        write_error_key_flags(error_key_ptr, error_key_len, None);
+        write_error_key_flags(
+            error_key_ptr,
+            error_key_item_len,
+            error_key_stride,
+            error_key_count,
+            error_key_area_len,
+            None,
+        );
         let dest_rc = validate_output_destinations(
             config,
             dest_ptr,
             dest_item_len,
+            dest_stride,
             dest_count,
-            dest_table_count,
+            dest_area_count,
+            dest_area_len,
             error_key_ptr,
-            error_key_len,
+            error_key_item_len,
+            error_key_stride,
+            error_key_count,
+            error_key_area_len,
         );
         if dest_rc != 0 {
             if comm_debug_enabled() {
@@ -718,7 +805,8 @@ unsafe fn receive_message(
             break;
         }
 
-        if active.offset >= current_segment.bytes.len() && active.segment_index + 1 < active.segments.len()
+        if active.offset >= current_segment.bytes.len()
+            && active.segment_index + 1 < active.segments.len()
         {
             active.segment_index += 1;
             active.offset = 0;
@@ -733,8 +821,8 @@ unsafe fn receive_message(
     }
 
     let last_segment = &active.segments[active.segment_index];
-    let message_done =
-        active.segment_index + 1 >= active.segments.len() && active.offset >= last_segment.bytes.len();
+    let message_done = active.segment_index + 1 >= active.segments.len()
+        && active.offset >= last_segment.bytes.len();
     if message_done {
         state.last_end_key = last_segment.end_key as u32;
         state.active_message_receive = None;
@@ -1056,9 +1144,14 @@ mod tests {
                     0,
                     b"OUTQUEUE".as_ptr(),
                     8,
+                    8,
                     1,
                     1,
+                    8,
                     std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
                     0,
                 )
             };
@@ -1094,9 +1187,14 @@ mod tests {
                     0,
                     b"OUTQUEUE     GARBAGE     ".as_ptr(),
                     12,
+                    12,
                     2,
                     2,
+                    24,
                     error_key.as_mut_ptr(),
+                    1,
+                    1,
+                    2,
                     2,
                 )
             };
@@ -1127,9 +1225,14 @@ mod tests {
                     0,
                     b"OUTQUEUE".as_ptr(),
                     8,
+                    8,
                     0,
                     1,
+                    8,
                     std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
                     0,
                 )
             };
@@ -1159,9 +1262,14 @@ mod tests {
                         0,
                         b"OUTQUEUE".as_ptr(),
                         8,
+                        8,
                         1,
                         1,
+                        8,
                         std::ptr::null_mut(),
+                        0,
+                        0,
+                        0,
                         0,
                     ),
                     0
@@ -1178,9 +1286,14 @@ mod tests {
                         0,
                         b"OUTQUEUE".as_ptr(),
                         8,
+                        8,
                         1,
                         1,
+                        8,
                         std::ptr::null_mut(),
+                        0,
+                        0,
+                        0,
                         0,
                     ),
                     0
@@ -1249,9 +1362,14 @@ mod tests {
                     0,
                     b"GARBAGE".as_ptr(),
                     7,
+                    7,
                     1,
                     1,
+                    7,
                     error_key.as_mut_ptr(),
+                    1,
+                    1,
+                    1,
                     1,
                 )
             };
@@ -1298,7 +1416,12 @@ mod tests {
                     0,
                     0,
                     0,
+                    0,
+                    0,
                     std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
                     0,
                 )
             };
