@@ -1,5 +1,5 @@
 use super::*;
-use cobol_hir::{HirDataName, HirPerformTest, HirReceiveMode, HirType};
+use cobol_hir::{HirDataName, HirParagraphId, HirPerformTest, HirReceiveMode, HirType};
 
 pub(crate) struct StmtEmitEnv<'a> {
     pub(crate) data_items: &'a [HirDataItem],
@@ -1442,14 +1442,16 @@ pub(crate) fn emit_statement_with_ctx(
         } => {
             let in_body = with_active_context(|ctx| ctx.in_body_context());
             if let Some(dep) = depending_on {
-                let c_dep = sanitize_name(dep);
+                let c_dep = data_name_to_c_name(dep);
                 out.push_str(&format!("{pad}switch ((int){c_dep}) {{\n"));
                 for (i, target) in targets.iter().enumerate() {
-                    let c_target = sanitize_name(target);
+                    let c_target = transfer_target_c_name(target, paragraphs);
                     if in_body {
                         out.push_str(&format!("{pad}    case {}: goto lbl_{c_target};\n", i + 1));
                     } else {
-                        let label_id = with_active_context(|ctx| ctx.label_id(&c_target));
+                        let label_id = target
+                            .paragraph_id()
+                            .and_then(|id| with_active_context(|ctx| ctx.label_id(id)));
                         if let Some(id) = label_id {
                             out.push_str(&format!(
                                 "{pad}    case {}: _goto_target = {id}; goto _goto_dispatch;\n",
@@ -1466,11 +1468,13 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}    default: break;\n"));
                 out.push_str(&format!("{pad}}}\n"));
             } else if let Some(target) = targets.first() {
-                let c_target = sanitize_name(target);
+                let c_target = transfer_target_c_name(target, paragraphs);
                 if in_body {
                     out.push_str(&format!("{pad}goto lbl_{c_target};\n"));
                 } else {
-                    let label_id = with_active_context(|ctx| ctx.label_id(&c_target));
+                    let label_id = target
+                        .paragraph_id()
+                        .and_then(|id| with_active_context(|ctx| ctx.label_id(id)));
                     if let Some(id) = label_id {
                         out.push_str(&format!("{pad}_goto_target = {id}; goto _goto_dispatch;\n"));
                     } else {
@@ -2511,8 +2515,8 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::Continue { .. } => {
             out.push_str(&format!("{pad}/* CONTINUE */\n"));
         }
-        HirStatement::Label { name } => {
-            let c_name = sanitize_name(name);
+        HirStatement::Label { target } => {
+            let c_name = transfer_target_c_name(target, paragraphs);
             let label = format!("lbl_{c_name}");
             let is_new = with_active_context(|ctx| ctx.mark_label_emitted(label.clone()));
             if is_new {
@@ -4379,42 +4383,42 @@ pub(crate) fn emit_perform(
                 out.push_str(&format!("{pad}}}\n"));
             }
         }
-        HirPerformKind::ProcedureName { name, through } => {
-            let c_name = sanitize_name(name);
+        HirPerformKind::ProcedureName { target, through } => {
+            let c_name = transfer_target_c_name(target, paragraphs);
             let in_body = with_active_context(|ctx| ctx.in_body_context());
             let has_labels = with_active_context(|ctx| ctx.has_labels());
             let need_body_dispatch = in_body && has_labels;
             if let Some(thru) = through {
                 // PERFORM name THRU through: call all paragraphs from name to through
-                let c_thru = sanitize_name(thru);
+                let c_thru = transfer_target_c_name(thru, paragraphs);
                 out.push_str(&format!("{pad}/* PERFORM {c_name} THRU {c_thru} */\n"));
-                let start_idx = paragraphs
-                    .iter()
-                    .position(|p| sanitize_name(&p.name) == c_name);
-                let end_idx = paragraphs
-                    .iter()
-                    .position(|p| sanitize_name(&p.name) == c_thru);
+                let start_idx = target
+                    .paragraph_id()
+                    .and_then(|target_id| paragraphs.iter().position(|p| p.id == target_id));
+                let end_idx = thru
+                    .paragraph_id()
+                    .and_then(|target_id| paragraphs.iter().position(|p| p.id == target_id));
                 if let (Some(si), Some(ei)) = (start_idx, end_idx) {
                     let (lo, hi) = if si <= ei { (si, ei) } else { (ei, si) };
-                    let thru_paras: Vec<_> = paragraphs[lo..=hi]
-                        .iter()
-                        .map(|p| sanitize_name(&p.name))
-                        .collect();
+                    let thru_paras: Vec<_> = paragraphs[lo..=hi].iter().collect();
 
                     if has_labels && thru_paras.len() > 1 {
                         // Generate unique label suffix for this PERFORM THRU
                         let pt_id = with_active_context(|ctx| ctx.next_perform_thru_id());
                         let suffix = format!("pt{pt_id}");
                         // Collect label IDs for paragraphs in the THRU range
-                        let thru_ids: Vec<(String, usize)> = with_active_context(|ctx| {
+                        let thru_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
                             thru_paras
                                 .iter()
-                                .filter_map(|pn| ctx.label_id(pn).map(|id| (pn.clone(), id)))
+                                .filter_map(|paragraph| {
+                                    ctx.label_id(paragraph.id).map(|id| (paragraph.id, id))
+                                })
                                 .collect()
                         });
 
                         // Emit each paragraph call with goto dispatch
-                        for (idx, pn) in thru_paras.iter().enumerate() {
+                        for (idx, paragraph) in thru_paras.iter().enumerate() {
+                            let pn = sanitize_name(&paragraph.name);
                             out.push_str(&format!("_pt_{suffix}_{pn}:\n"));
                             out.push_str(&format!("{pad}para_{pn}();\n"));
                             if idx < thru_paras.len() - 1 {
@@ -4436,7 +4440,10 @@ pub(crate) fn emit_perform(
                         // Dispatch table for this PERFORM THRU
                         out.push_str(&format!("_pt_disp_{suffix}:\n"));
                         out.push_str(&format!("{pad}{{ int _t = _goto_target;\n"));
-                        for (pn, id) in &thru_ids {
+                        for (paragraph_id, id) in &thru_ids {
+                            let Some(pn) = paragraph_c_name(paragraphs, *paragraph_id) else {
+                                continue;
+                            };
                             out.push_str(&format!(
                                 "{pad}  if (_t == {id}) {{ _goto_target = 0; goto _pt_{suffix}_{pn}; }}\n"
                             ));
@@ -4450,7 +4457,8 @@ pub(crate) fn emit_perform(
                         out.push_str(&format!("{pad}}}\n"));
                         out.push_str(&format!("_pt_end_{suffix}:;\n"));
                     } else {
-                        for pn in &thru_paras {
+                        for paragraph in &thru_paras {
+                            let pn = sanitize_name(&paragraph.name);
                             out.push_str(&format!("{pad}para_{pn}();\n"));
                             if need_body_dispatch {
                                 out.push_str(&format!(

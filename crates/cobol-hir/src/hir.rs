@@ -79,6 +79,12 @@ impl PartialEq<&str> for HirDataName {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HirItemId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HirParagraphId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HirLabelId(pub u32);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirRefMod {
     pub start: Box<HirExpr>,
@@ -246,9 +252,41 @@ pub struct HirCallParam {
 /// PERFORM procedure-name support.
 #[derive(Debug, Clone)]
 pub struct HirParagraph {
+    pub id: HirParagraphId,
     pub name: SmolStr,
+    pub kind: HirParagraphKind,
+    pub section_id: Option<HirParagraphId>,
     pub body: Vec<HirStatement>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirParagraphKind {
+    Paragraph,
+    Section,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HirTransferTarget {
+    Paragraph { id: HirParagraphId, name: SmolStr },
+    Label { id: HirLabelId, name: SmolStr },
+}
+
+impl HirTransferTarget {
+    pub fn name(&self) -> &str {
+        match self {
+            HirTransferTarget::Paragraph { name, .. } | HirTransferTarget::Label { name, .. } => {
+                name.as_str()
+            }
+        }
+    }
+
+    pub fn paragraph_id(&self) -> Option<HirParagraphId> {
+        match self {
+            HirTransferTarget::Paragraph { id, .. } => Some(*id),
+            HirTransferTarget::Label { .. } => None,
+        }
+    }
 }
 
 /// Screen section item attributes.
@@ -509,7 +547,7 @@ pub enum HirStatement {
     },
     /// A label marker for a paragraph in the body (used for GO TO targets).
     Label {
-        name: SmolStr,
+        target: HirTransferTarget,
     },
     /// OPEN statement.
     Open {
@@ -555,8 +593,8 @@ pub enum HirStatement {
     },
     /// GO TO statement.
     GoTo {
-        targets: Vec<SmolStr>,
-        depending_on: Option<SmolStr>,
+        targets: Vec<HirTransferTarget>,
+        depending_on: Option<HirDataName>,
         span: Span,
     },
     /// INITIALIZE statement.
@@ -909,8 +947,8 @@ pub enum HirPerformKind {
     },
     /// PERFORM procedure-name [THRU procedure-name].
     ProcedureName {
-        name: SmolStr,
-        through: Option<SmolStr>,
+        target: HirTransferTarget,
+        through: Option<HirTransferTarget>,
     },
 }
 
@@ -1330,7 +1368,7 @@ fn write_stmt(
         HirStatement::ExitParagraph { .. } => writeln!(f, "{pad}EXIT PARAGRAPH"),
         HirStatement::Goback { .. } => writeln!(f, "{pad}GOBACK"),
         HirStatement::Continue { .. } => writeln!(f, "{pad}CONTINUE"),
-        HirStatement::Label { name } => writeln!(f, "{pad}{name}."),
+        HirStatement::Label { target } => writeln!(f, "{pad}{}.", target.name()),
         HirStatement::Open { entries, .. } => {
             let names: Vec<_> = entries.iter().map(|e| e.file_name.to_string()).collect();
             writeln!(f, "{pad}OPEN {}", names.join(", "))
@@ -1356,7 +1394,7 @@ fn write_stmt(
                 "{pad}GO TO {}",
                 targets
                     .iter()
-                    .map(|s| s.as_str())
+                    .map(|target| target.name())
                     .collect::<Vec<_>>()
                     .join(", ")
             )

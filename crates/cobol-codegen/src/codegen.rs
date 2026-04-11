@@ -20,8 +20,9 @@ use std::hash::{Hash, Hasher};
 
 use cobol_hir::{
     HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem, HirExpr,
-    HirFileInfo, HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph, HirPerformKind, HirProgram,
-    HirStartRelation, HirStatement, HirType, HirUnaryOp,
+    HirFileInfo, HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph, HirParagraphId,
+    HirParagraphKind, HirPerformKind, HirProgram, HirStartRelation, HirStatement,
+    HirTransferTarget, HirType, HirUnaryOp,
 };
 
 pub use self::compiler::compile_c_to_executable;
@@ -300,8 +301,11 @@ pub fn generate_c(program: &HirProgram) -> String {
             out.push_str("_goto_dispatch:\n");
             out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
             out.push_str("      switch(_t) {\n");
-            for (name, id) in &label_map {
-                out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
+            for paragraph in &program.paragraphs {
+                if let Some(id) = label_map.get(&paragraph.id) {
+                    let c_name = sanitize_name(&paragraph.name);
+                    out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
+                }
             }
             out.push_str("        default: cobol_stop_run();\n");
             out.push_str("      }\n");
@@ -310,139 +314,8 @@ pub fn generate_c(program: &HirProgram) -> String {
 
         out.push_str("}\n");
 
-        // Emit paragraph function definitions.
-        // Group paragraphs by section: a section header (name ends with "__")
-        // and all subsequent paragraphs until the next section header form a
-        // single C function. Section-internal GO TO uses C goto labels.
         let t_para = std::time::Instant::now();
-        {
-            let paragraphs = &program.paragraphs;
-            let mut i = 0;
-            while i < paragraphs.len() {
-                let c_name = sanitize_name(&paragraphs[i].name);
-                let is_section_header = c_name.ends_with("__");
-
-                // Collect section members: the header + subsequent non-header paragraphs
-                let section_start = i;
-                let mut section_end = i + 1;
-                if is_section_header {
-                    while section_end < paragraphs.len() {
-                        let next_c = sanitize_name(&paragraphs[section_end].name);
-                        if next_c.ends_with("__") {
-                            break; // next section
-                        }
-                        section_end += 1;
-                    }
-                }
-
-                let section_paras = &paragraphs[section_start..section_end];
-                let section_len = section_end - section_start;
-
-                if section_len > 1 {
-                    // Multi-paragraph section: emit as single function with goto labels.
-                    // Build a unified label map with unique IDs.
-                    let mut merged_label_map: HashMap<String, usize> = HashMap::new();
-                    let mut next_id = 1usize;
-                    for sp in section_paras {
-                        let sp_c = sanitize_name(&sp.name);
-                        if let std::collections::hash_map::Entry::Vacant(entry) =
-                            merged_label_map.entry(sp_c.clone())
-                        {
-                            entry.insert(next_id);
-                            next_id += 1;
-                        }
-                        // Also include any labels referenced by GO TO within the body
-                        let sp_labels = build_paragraph_label_map(&sp.name, &sp.body);
-                        for (lbl_name, _) in sp_labels {
-                            if let std::collections::hash_map::Entry::Vacant(entry) =
-                                merged_label_map.entry(lbl_name)
-                            {
-                                entry.insert(next_id);
-                                next_id += 1;
-                            }
-                        }
-                    }
-                    with_active_context(|ctx| ctx.set_label_map(merged_label_map.clone()));
-
-                    // Emit section function (named after the header)
-                    out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
-                    // If _goto_target is set (from wrapper), dispatch immediately
-                    out.push_str("    if (_goto_target) goto _goto_dispatch;\n");
-                    for sp in section_paras {
-                        let sp_c = sanitize_name(&sp.name);
-                        out.push_str(&format!("lbl_{sp_c}:;\n"));
-                        with_active_context(|ctx| ctx.set_in_body_context(true));
-                        for stmt in &sp.body {
-                            let env = StmtEmitEnv {
-                                data_items: &program.data_items,
-                                paragraphs,
-                                fs_map: &fs_map,
-                                has_declaratives: has_decl,
-                                ctx: &ctx,
-                            };
-                            emit_statement_with_ctx(&mut out, stmt, &env, 1);
-                        }
-                        with_active_context(|ctx| ctx.set_in_body_context(false));
-                    }
-                    if !merged_label_map.is_empty() {
-                        out.push_str("_goto_dispatch:\n");
-                        out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
-                        out.push_str("      switch(_t) {\n");
-                        for (name, id) in &merged_label_map {
-                            out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
-                        }
-                        out.push_str("        default: return;\n");
-                        out.push_str("      }\n");
-                        out.push_str("    }\n");
-                    }
-                    out.push_str("}\n");
-
-                    // Emit individual wrapper functions for each member paragraph
-                    // so PERFORM of a specific paragraph still works.
-                    // These set _goto_target to jump to the right label within the
-                    // section function.
-                    for sp in &section_paras[1..] {
-                        let sp_c = sanitize_name(&sp.name);
-                        if let Some(id) = merged_label_map.get(&sp_c) {
-                            out.push_str(&format!(
-                                "\nstatic void para_{sp_c}(void) {{ _goto_target = {id}; para_{c_name}(); }}\n"
-                            ));
-                        }
-                    }
-                } else {
-                    // Single paragraph (not part of a multi-paragraph section)
-                    let para_label_map =
-                        build_paragraph_label_map(&paragraphs[i].name, &paragraphs[i].body);
-                    with_active_context(|ctx| ctx.set_label_map(para_label_map.clone()));
-                    out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
-                    out.push_str(&format!("lbl_{c_name}:;\n"));
-                    for stmt in &paragraphs[i].body {
-                        let env = StmtEmitEnv {
-                            data_items: &program.data_items,
-                            paragraphs,
-                            fs_map: &fs_map,
-                            has_declaratives: has_decl,
-                            ctx: &ctx,
-                        };
-                        emit_statement_with_ctx(&mut out, stmt, &env, 1);
-                    }
-                    if !para_label_map.is_empty() {
-                        out.push_str("_goto_dispatch:\n");
-                        out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
-                        out.push_str("      switch(_t) {\n");
-                        for (name, id) in &para_label_map {
-                            out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
-                        }
-                        out.push_str("        default: return;\n");
-                        out.push_str("      }\n");
-                        out.push_str("    }\n");
-                    }
-                    out.push_str("}\n");
-                }
-
-                i = section_end;
-            }
-        }
+        emit_program_paragraph_definitions(&mut out, program, &fs_map, has_decl);
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
 
         cg_timing!("emit_paragraphs", t_para);
@@ -490,8 +363,11 @@ pub fn generate_c(program: &HirProgram) -> String {
                 out.push_str("_goto_dispatch:\n");
                 out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
                 out.push_str("      switch(_t) {\n");
-                for (name, id) in &label_map {
-                    out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
+                for paragraph in &program.paragraphs {
+                    if let Some(id) = label_map.get(&paragraph.id) {
+                        let c_name = sanitize_name(&paragraph.name);
+                        out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
+                    }
                 }
                 out.push_str("        default: return;\n");
                 out.push_str("      }\n");
@@ -608,8 +484,11 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
             out.push_str("_goto_dispatch:\n");
             out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
             out.push_str("      switch(_t) {\n");
-            for (name, id) in &label_map {
-                out.push_str(&format!("        case {id}: goto lbl_{name};\n"));
+            for paragraph in &program.paragraphs {
+                if let Some(id) = label_map.get(&paragraph.id) {
+                    let c_name = sanitize_name(&paragraph.name);
+                    out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
+                }
             }
             out.push_str("        default: return;\n");
             out.push_str("      }\n");
@@ -617,22 +496,7 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
         }
         out.push_str("}\n");
 
-        // Emit paragraph function definitions for nested program
-        for para in &program.paragraphs {
-            let c_name = sanitize_name(&para.name);
-            out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
-            for stmt in &para.body {
-                let env = StmtEmitEnv {
-                    data_items: &program.data_items,
-                    paragraphs: &program.paragraphs,
-                    fs_map: &fs_map,
-                    has_declaratives: has_decl,
-                    ctx: &ctx,
-                };
-                emit_statement_with_ctx(out, stmt, &env, 1);
-            }
-            out.push_str("}\n");
-        }
+        emit_program_paragraph_definitions(out, program, &fs_map, has_decl);
 
         // Recursively emit any further nested programs
         for nested in &program.nested_programs {
@@ -650,6 +514,133 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
             for c_name in &nested_data_names {
                 out.push_str(&format!("#undef {c_name}\n"));
             }
+        }
+    });
+}
+
+fn emit_program_paragraph_definitions(
+    out: &mut String,
+    program: &HirProgram,
+    fs_map: &FileStatusMap,
+    has_decl: bool,
+) {
+    with_active_context(|ctx| {
+        let paragraphs = &program.paragraphs;
+        let mut i = 0;
+        while i < paragraphs.len() {
+            let c_name = sanitize_name(&paragraphs[i].name);
+            let is_section_header = matches!(paragraphs[i].kind, HirParagraphKind::Section);
+
+            let section_start = i;
+            let mut section_end = i + 1;
+            if is_section_header {
+                while section_end < paragraphs.len() {
+                    if paragraphs[section_end].section_id == Some(paragraphs[i].id) {
+                        section_end += 1;
+                        continue;
+                    }
+                    break;
+                }
+            }
+
+            let section_paras = &paragraphs[section_start..section_end];
+            let section_len = section_end - section_start;
+
+            if section_len > 1 {
+                let mut merged_label_map: HashMap<HirParagraphId, usize> = HashMap::new();
+                let mut next_id = 1usize;
+                for paragraph in section_paras {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        merged_label_map.entry(paragraph.id)
+                    {
+                        entry.insert(next_id);
+                        next_id += 1;
+                    }
+                    for (paragraph_id, _) in build_paragraph_label_map(paragraph) {
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            merged_label_map.entry(paragraph_id)
+                        {
+                            entry.insert(next_id);
+                            next_id += 1;
+                        }
+                    }
+                }
+                ctx.set_label_map(merged_label_map.clone());
+
+                out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+                out.push_str("    if (_goto_target) goto _goto_dispatch;\n");
+                for paragraph in section_paras {
+                    let paragraph_c_name = sanitize_name(&paragraph.name);
+                    out.push_str(&format!("lbl_{paragraph_c_name}:;\n"));
+                    ctx.set_in_body_context(true);
+                    for stmt in &paragraph.body {
+                        let env = StmtEmitEnv {
+                            data_items: &program.data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives: has_decl,
+                            ctx,
+                        };
+                        emit_statement_with_ctx(out, stmt, &env, 1);
+                    }
+                    ctx.set_in_body_context(false);
+                }
+                if !merged_label_map.is_empty() {
+                    out.push_str("_goto_dispatch:\n");
+                    out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
+                    out.push_str("      switch(_t) {\n");
+                    for paragraph in section_paras {
+                        if let Some(id) = merged_label_map.get(&paragraph.id) {
+                            let paragraph_c_name = sanitize_name(&paragraph.name);
+                            out.push_str(&format!(
+                                "        case {id}: goto lbl_{paragraph_c_name};\n"
+                            ));
+                        }
+                    }
+                    out.push_str("        default: return;\n");
+                    out.push_str("      }\n");
+                    out.push_str("    }\n");
+                }
+                out.push_str("}\n");
+
+                for paragraph in &section_paras[1..] {
+                    let paragraph_c_name = sanitize_name(&paragraph.name);
+                    if let Some(id) = merged_label_map.get(&paragraph.id) {
+                        out.push_str(&format!(
+                            "\nstatic void para_{paragraph_c_name}(void) {{ _goto_target = {id}; para_{c_name}(); }}\n"
+                        ));
+                    }
+                }
+            } else {
+                let para_label_map = build_paragraph_label_map(&paragraphs[i]);
+                ctx.set_label_map(para_label_map.clone());
+                out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+                out.push_str(&format!("lbl_{c_name}:;\n"));
+                for stmt in &paragraphs[i].body {
+                    let env = StmtEmitEnv {
+                        data_items: &program.data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives: has_decl,
+                        ctx,
+                    };
+                    emit_statement_with_ctx(out, stmt, &env, 1);
+                }
+                if !para_label_map.is_empty() {
+                    out.push_str("_goto_dispatch:\n");
+                    out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
+                    out.push_str("      switch(_t) {\n");
+                    if let Some(id) = para_label_map.get(&paragraphs[i].id) {
+                        out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
+                    }
+                    out.push_str("        default: return;\n");
+                    out.push_str("      }\n");
+                    out.push_str("    }\n");
+                }
+                out.push_str("}\n");
+            }
+
+            i = section_end;
         }
     });
 }
@@ -675,35 +666,57 @@ fn collect_top_level_data_item_c_names(program: &HirProgram) -> Vec<String> {
     names.into_iter().collect()
 }
 
+pub(crate) fn paragraph_c_name(paragraphs: &[HirParagraph], id: HirParagraphId) -> Option<String> {
+    paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == id)
+        .map(|paragraph| sanitize_name(&paragraph.name))
+}
+
+pub(crate) fn transfer_target_c_name(
+    target: &HirTransferTarget,
+    paragraphs: &[HirParagraph],
+) -> String {
+    match target {
+        HirTransferTarget::Paragraph { id, name } => {
+            paragraph_c_name(paragraphs, *id).unwrap_or_else(|| sanitize_name(name))
+        }
+        HirTransferTarget::Label { name, .. } => sanitize_name(name),
+    }
+}
+
 /// Collect all Label statements from the body and assign each a unique integer ID.
-fn build_body_label_map(body: &[HirStatement]) -> HashMap<String, usize> {
+fn build_body_label_map(body: &[HirStatement]) -> HashMap<HirParagraphId, usize> {
     let mut map = HashMap::new();
     let mut id = 1usize;
     for stmt in body {
-        if let HirStatement::Label { name } = stmt {
-            let c_name = sanitize_name(name);
-            map.entry(c_name).or_insert_with(|| {
-                let current = id;
-                id += 1;
-                current
-            });
+        if let HirStatement::Label { target } = stmt {
+            if let Some(paragraph_id) = target.paragraph_id() {
+                map.entry(paragraph_id).or_insert_with(|| {
+                    let current = id;
+                    id += 1;
+                    current
+                });
+            }
         }
     }
     map
 }
 
-fn build_paragraph_label_map(name: &str, body: &[HirStatement]) -> HashMap<String, usize> {
+fn build_paragraph_label_map(paragraph: &HirParagraph) -> HashMap<HirParagraphId, usize> {
     let mut map = HashMap::new();
     let mut id = 1usize;
-    map.insert(sanitize_name(name), id);
+    map.insert(paragraph.id, id);
     id += 1;
-    for stmt in body {
-        if let HirStatement::Label { name } = stmt {
-            map.entry(sanitize_name(name)).or_insert_with(|| {
-                let current = id;
-                id += 1;
-                current
-            });
+    for stmt in &paragraph.body {
+        if let HirStatement::Label { target } = stmt {
+            if let Some(paragraph_id) = target.paragraph_id() {
+                map.entry(paragraph_id).or_insert_with(|| {
+                    let current = id;
+                    id += 1;
+                    current
+                });
+            }
         }
     }
     map

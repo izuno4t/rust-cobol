@@ -1,4 +1,5 @@
 use super::*;
+use cobol_hir::HirParagraphId;
 use std::cell::{Cell, RefCell};
 
 pub(crate) type FileStatusMap = HashMap<String, String>;
@@ -48,7 +49,7 @@ pub(crate) struct CodegenContext {
     /// buffer size for file I/O operations.
     fd_max_record_sizes: HashMap<String, u32>,
     in_body_context: Cell<bool>,
-    goto_label_map: RefCell<HashMap<String, usize>>,
+    goto_label_map: RefCell<HashMap<HirParagraphId, usize>>,
     perform_thru_counter: Cell<usize>,
     emitted_labels: RefCell<HashSet<String>>,
 }
@@ -159,14 +160,14 @@ impl CodegenContext {
         self.in_body_context.get()
     }
 
-    pub(crate) fn set_label_map(&self, map: HashMap<String, usize>) {
+    pub(crate) fn set_label_map(&self, map: HashMap<HirParagraphId, usize>) {
         *self.goto_label_map.borrow_mut() = map;
         self.perform_thru_counter.set(0);
         self.emitted_labels.borrow_mut().clear();
     }
 
-    pub(crate) fn label_id(&self, name: &str) -> Option<usize> {
-        self.goto_label_map.borrow().get(name).copied()
+    pub(crate) fn label_id(&self, id: HirParagraphId) -> Option<usize> {
+        self.goto_label_map.borrow().get(&id).copied()
     }
 
     pub(crate) fn has_labels(&self) -> bool {

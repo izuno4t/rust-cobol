@@ -30,10 +30,11 @@ use crate::hir::{
     HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCommunicationMode,
     HirCompareOp, HirCondition, HirDataItem, HirDataName, HirDataRef, HirDeclarative, HirExpr,
     HirFileInfo, HirInspectKind, HirInspectReplacing, HirInspectTallying, HirItemId, HirLiteral,
-    HirMoveTarget, HirOpenEntry, HirOpenMode, HirParagraph, HirParam, HirParamMode, HirPerformKind,
-    HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind, HirScreenInfo,
-    HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
-    HirStringSource, HirTallyingKind, HirType, HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
+    HirMoveTarget, HirOpenEntry, HirOpenMode, HirParagraph, HirParagraphId, HirParagraphKind,
+    HirParam, HirParamMode, HirPerformKind, HirPerformTest, HirProgram, HirReceiveMode, HirRefMod,
+    HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder,
+    HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirTransferTarget, HirType,
+    HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
 };
 
 #[derive(Debug, Clone)]
@@ -44,6 +45,7 @@ struct ResolvedDataItemEntry {
 
 thread_local! {
     static ACTIVE_DATA_CATALOG: RefCell<Option<Vec<ResolvedDataItemEntry>>> = const { RefCell::new(None) };
+    static ACTIVE_TRANSFER_TARGETS: RefCell<Option<HashMap<SmolStr, HirTransferTarget>>> = const { RefCell::new(None) };
 }
 
 /// A single or range value for an 88-level condition.
@@ -59,6 +61,21 @@ enum ConditionValue {
 struct ConditionNameInfo {
     parent_name: HirDataName,
     values: Vec<ConditionValue>,
+}
+
+#[derive(Debug, Clone)]
+struct ParagraphPlan {
+    id: HirParagraphId,
+    name: SmolStr,
+    kind: HirParagraphKind,
+    section_id: Option<HirParagraphId>,
+    span: Span,
+}
+
+#[derive(Debug, Clone)]
+struct SectionPlan {
+    entry: ParagraphPlan,
+    paragraphs: Vec<ParagraphPlan>,
 }
 
 /// Lowers a COBOL AST program into the HIR.
@@ -149,13 +166,14 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
 
     let data_catalog = build_resolved_data_catalog(&data_items);
 
-    let (body, mut paragraphs) = with_resolved_data_catalog(data_catalog.clone(), || {
-        program
-            .procedure
-            .as_ref()
-            .map(|proc| lower_procedure_division(proc, &condition_names))
-            .unwrap_or_default()
-    });
+    let (body, mut paragraphs, next_paragraph_id) =
+        with_resolved_data_catalog(data_catalog.clone(), || {
+            program
+                .procedure
+                .as_ref()
+                .map(|proc| lower_procedure_division(proc, &condition_names))
+                .unwrap_or_else(|| (Vec::new(), Vec::new(), 1))
+        });
 
     // Extract FILE STATUS variable mappings from ENVIRONMENT DIVISION.
     let file_status_vars = extract_file_status_vars(program);
@@ -170,7 +188,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Also collect individual paragraphs defined inside declarative sections
     // so they get proper forward declarations and function definitions in codegen.
     let (declaratives, decl_paragraphs) = with_resolved_data_catalog(data_catalog, || {
-        lower_declaratives(program, &condition_names)
+        lower_declaratives(program, &condition_names, next_paragraph_id)
     });
     // Only add declarative paragraphs that don't already exist in the main
     // paragraph list (some COBOL programs reuse paragraph names across
@@ -282,6 +300,31 @@ fn with_resolved_data_catalog<T>(catalog: Vec<ResolvedDataItemEntry>, f: impl Fn
         let result = f();
         slot.replace(previous);
         result
+    })
+}
+
+fn with_transfer_targets<T>(
+    targets: HashMap<SmolStr, HirTransferTarget>,
+    f: impl FnOnce() -> T,
+) -> T {
+    ACTIVE_TRANSFER_TARGETS.with(|slot| {
+        let previous = slot.replace(Some(targets));
+        let result = f();
+        slot.replace(previous);
+        result
+    })
+}
+
+fn resolve_transfer_target(name: &SmolStr) -> HirTransferTarget {
+    ACTIVE_TRANSFER_TARGETS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|targets| targets.get(name))
+            .cloned()
+            .unwrap_or_else(|| HirTransferTarget::Paragraph {
+                id: HirParagraphId(u32::MAX),
+                name: name.clone(),
+            })
     })
 }
 
@@ -883,55 +926,46 @@ fn lower_literal(lit: &Literal) -> HirLiteral {
 fn lower_procedure_division(
     proc: &ProcedureDivision,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> (Vec<HirStatement>, Vec<HirParagraph>) {
-    let mut body = Vec::new();
-    let mut paragraphs = Vec::new();
-
-    // Lower top-level paragraphs
+) -> (Vec<HirStatement>, Vec<HirParagraph>, u32) {
+    let mut next_paragraph_id = 1u32;
+    let mut alloc_paragraph_id = || {
+        let id = HirParagraphId(next_paragraph_id);
+        next_paragraph_id += 1;
+        id
+    };
+    let mut top_level_plans = Vec::with_capacity(proc.paragraphs.len());
     for para in &proc.paragraphs {
-        let stmts = lower_paragraph(para, condition_names);
         if para.name.is_empty() {
-            // Unnamed paragraphs: inline their statements into the body.
-            body.extend(stmts);
+            top_level_plans.push(None);
         } else {
-            // Named paragraphs are always registered, even if empty,
-            // because they may be targets of GO TO or PERFORM THRU.
-            paragraphs.push(HirParagraph {
+            top_level_plans.push(Some(ParagraphPlan {
+                id: alloc_paragraph_id(),
                 name: para.name.clone(),
-                body: stmts,
+                kind: HirParagraphKind::Paragraph,
+                section_id: None,
                 span: para.span,
-            });
-            body.push(HirStatement::Label {
-                name: para.name.clone(),
-            });
-            body.push(HirStatement::Perform {
-                kind: HirPerformKind::ProcedureName {
-                    name: para.name.clone(),
-                    through: None,
-                },
-                span: para.span,
-            });
+            }));
         }
     }
 
-    // Lower sections and their paragraphs.
-    // Track paragraph names to detect cross-section duplicates that would
-    // cause C-level label/function redefinition errors.
-    let mut seen_para_names: std::collections::HashSet<SmolStr> =
-        paragraphs.iter().map(|p| p.name.clone()).collect();
-    let mut seen_effective_names: std::collections::HashSet<SmolStr> =
-        paragraphs.iter().map(|p| p.name.clone()).collect();
+    let mut section_plans = Vec::with_capacity(proc.sections.len());
+    let mut seen_para_names: HashSet<SmolStr> = top_level_plans
+        .iter()
+        .flatten()
+        .map(|plan| plan.name.clone())
+        .collect();
+    let mut seen_effective_names = seen_para_names.clone();
     for section in &proc.sections {
-        // Collect all statements in this section for the section-level paragraph
-        let mut section_stmts = Vec::new();
-        // Add a label for the section itself (for GO TO section-name)
-        body.push(HirStatement::Label {
+        let section_id = alloc_paragraph_id();
+        let entry = ParagraphPlan {
+            id: section_id,
             name: section.name.clone(),
-        });
+            kind: HirParagraphKind::Section,
+            section_id: None,
+            span: section.span,
+        };
+        let mut paragraph_plans = Vec::with_capacity(section.paragraphs.len());
         for para in &section.paragraphs {
-            let stmts = lower_paragraph(para, condition_names);
-            // If this paragraph name already exists in another section,
-            // qualify it with the section name to avoid C-level collisions.
             let effective_name = if seen_para_names.contains(&para.name) {
                 let base: SmolStr = format!("{}--{}", section.name, para.name).into();
                 if seen_effective_names.insert(base.clone()) {
@@ -953,32 +987,132 @@ fn lower_procedure_division(
                 seen_effective_names.insert(base.clone());
                 base
             };
-            body.push(HirStatement::Label {
-                name: effective_name.clone(),
-            });
-            body.push(HirStatement::Perform {
-                kind: HirPerformKind::ProcedureName {
-                    name: effective_name.clone(),
-                    through: None,
-                },
-                span: para.span,
-            });
-            section_stmts.extend(stmts.clone());
-            paragraphs.push(HirParagraph {
+            paragraph_plans.push(ParagraphPlan {
+                id: alloc_paragraph_id(),
                 name: effective_name,
-                body: stmts,
+                kind: HirParagraphKind::Paragraph,
+                section_id: Some(section_id),
                 span: para.span,
             });
         }
-        // Register section name as a callable paragraph (for PERFORM section-name)
-        paragraphs.push(HirParagraph {
-            name: section.name.clone(),
-            body: section_stmts,
-            span: section.span,
+        section_plans.push(SectionPlan {
+            entry,
+            paragraphs: paragraph_plans,
         });
     }
 
-    (body, paragraphs)
+    let mut transfer_targets = HashMap::new();
+    for plan in top_level_plans.iter().flatten() {
+        transfer_targets.insert(
+            plan.name.clone(),
+            HirTransferTarget::Paragraph {
+                id: plan.id,
+                name: plan.name.clone(),
+            },
+        );
+    }
+    for section in &section_plans {
+        transfer_targets.insert(
+            section.entry.name.clone(),
+            HirTransferTarget::Paragraph {
+                id: section.entry.id,
+                name: section.entry.name.clone(),
+            },
+        );
+        for plan in &section.paragraphs {
+            transfer_targets.insert(
+                plan.name.clone(),
+                HirTransferTarget::Paragraph {
+                    id: plan.id,
+                    name: plan.name.clone(),
+                },
+            );
+        }
+    }
+
+    let mut body = Vec::new();
+    let mut paragraphs = Vec::new();
+    with_transfer_targets(transfer_targets, || {
+        for (para, plan) in proc.paragraphs.iter().zip(top_level_plans.iter()) {
+            let stmts = lower_paragraph(para, condition_names);
+            if let Some(plan) = plan {
+                paragraphs.push(HirParagraph {
+                    id: plan.id,
+                    name: plan.name.clone(),
+                    kind: plan.kind,
+                    section_id: plan.section_id,
+                    body: stmts,
+                    span: plan.span,
+                });
+                body.push(HirStatement::Label {
+                    target: HirTransferTarget::Paragraph {
+                        id: plan.id,
+                        name: plan.name.clone(),
+                    },
+                });
+                body.push(HirStatement::Perform {
+                    kind: HirPerformKind::ProcedureName {
+                        target: HirTransferTarget::Paragraph {
+                            id: plan.id,
+                            name: plan.name.clone(),
+                        },
+                        through: None,
+                    },
+                    span: para.span,
+                });
+            } else {
+                body.extend(stmts);
+            }
+        }
+
+        for (section, plan) in proc.sections.iter().zip(section_plans.iter()) {
+            let mut section_stmts = Vec::new();
+            body.push(HirStatement::Label {
+                target: HirTransferTarget::Paragraph {
+                    id: plan.entry.id,
+                    name: plan.entry.name.clone(),
+                },
+            });
+            for (para, para_plan) in section.paragraphs.iter().zip(plan.paragraphs.iter()) {
+                let stmts = lower_paragraph(para, condition_names);
+                body.push(HirStatement::Label {
+                    target: HirTransferTarget::Paragraph {
+                        id: para_plan.id,
+                        name: para_plan.name.clone(),
+                    },
+                });
+                body.push(HirStatement::Perform {
+                    kind: HirPerformKind::ProcedureName {
+                        target: HirTransferTarget::Paragraph {
+                            id: para_plan.id,
+                            name: para_plan.name.clone(),
+                        },
+                        through: None,
+                    },
+                    span: para.span,
+                });
+                section_stmts.extend(stmts.clone());
+                paragraphs.push(HirParagraph {
+                    id: para_plan.id,
+                    name: para_plan.name.clone(),
+                    kind: para_plan.kind,
+                    section_id: para_plan.section_id,
+                    body: stmts,
+                    span: para_plan.span,
+                });
+            }
+            paragraphs.push(HirParagraph {
+                id: plan.entry.id,
+                name: plan.entry.name.clone(),
+                kind: plan.entry.kind,
+                section_id: None,
+                body: section_stmts,
+                span: plan.entry.span,
+            });
+        }
+    });
+
+    (body, paragraphs, next_paragraph_id)
 }
 
 fn lower_paragraph(
@@ -1503,8 +1637,8 @@ fn lower_perform(
             HirPerformKind::Inline { body: hir_body }
         }
         PerformKind::ProcedureName { procedure, through } => HirPerformKind::ProcedureName {
-            name: procedure.clone(),
-            through: through.clone(),
+            target: resolve_transfer_target(procedure),
+            through: through.as_ref().map(resolve_transfer_target),
         },
         PerformKind::Times { times, body } => {
             let count = lower_expr(times);
@@ -1777,8 +1911,8 @@ fn lower_purge(purge: &PurgeStatement) -> HirStatement {
 }
 
 fn lower_goto(goto: &GoToStatement) -> HirStatement {
-    let targets = goto.targets.clone();
-    let depending_on = goto.depending_on.as_ref().map(|q| q.name.clone());
+    let targets = goto.targets.iter().map(resolve_transfer_target).collect();
+    let depending_on = goto.depending_on.as_ref().map(lower_data_name);
     HirStatement::GoTo {
         targets,
         depending_on,
@@ -2801,6 +2935,7 @@ fn extract_file_organizations(program: &CobolProgram) -> HashMap<SmolStr, u32> {
 fn lower_declaratives(
     program: &CobolProgram,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    next_paragraph_id_start: u32,
 ) -> (Vec<HirDeclarative>, Vec<HirParagraph>) {
     let Some(proc) = &program.procedure else {
         return (Vec::new(), Vec::new());
@@ -2808,35 +2943,62 @@ fn lower_declaratives(
     let mut decls = Vec::new();
     let mut extra_paras = Vec::new();
     let mut seen_para_names = std::collections::HashSet::new();
+    let mut next_paragraph_id = next_paragraph_id_start;
+    let mut transfer_targets = HashMap::new();
     for decl in &proc.declaratives {
-        if let UseStatement::AfterException { file_names } = &decl.use_statement {
-            let body: Vec<HirStatement> = decl
-                .paragraphs
-                .iter()
-                .flat_map(|para| lower_paragraph(para, condition_names))
-                .collect();
-            decls.push(HirDeclarative {
-                name: decl.name.clone(),
-                file_names: file_names.clone(),
-                body,
-            });
-            // Also register each named paragraph inside the declarative section
-            // so that codegen emits forward declarations and function definitions.
-            // Skip duplicate paragraph names across declarative sections to avoid
-            // C-level redefinition errors (e.g. INPUT-PROCESS in IX218A).
+        if let UseStatement::AfterException { .. } = &decl.use_statement {
             for para in &decl.paragraphs {
                 if !para.name.is_empty() && !seen_para_names.contains(&para.name) {
                     seen_para_names.insert(para.name.clone());
-                    let stmts = lower_paragraph(para, condition_names);
-                    extra_paras.push(HirParagraph {
-                        name: para.name.clone(),
-                        body: stmts,
-                        span: para.span,
-                    });
+                    let id = HirParagraphId(next_paragraph_id);
+                    next_paragraph_id += 1;
+                    transfer_targets.insert(
+                        para.name.clone(),
+                        HirTransferTarget::Paragraph {
+                            id,
+                            name: para.name.clone(),
+                        },
+                    );
                 }
             }
         }
     }
+    let mut seen_para_names = std::collections::HashSet::new();
+    with_transfer_targets(transfer_targets.clone(), || {
+        for decl in &proc.declaratives {
+            if let UseStatement::AfterException { file_names } = &decl.use_statement {
+                let body: Vec<HirStatement> = decl
+                    .paragraphs
+                    .iter()
+                    .flat_map(|para| lower_paragraph(para, condition_names))
+                    .collect();
+                decls.push(HirDeclarative {
+                    name: decl.name.clone(),
+                    file_names: file_names.clone(),
+                    body,
+                });
+                for para in &decl.paragraphs {
+                    if !para.name.is_empty() && !seen_para_names.contains(&para.name) {
+                        seen_para_names.insert(para.name.clone());
+                        let target = transfer_targets
+                            .get(&para.name)
+                            .cloned()
+                            .unwrap_or_else(|| resolve_transfer_target(&para.name));
+                        let id = target.paragraph_id().unwrap_or(HirParagraphId(u32::MAX));
+                        let stmts = lower_paragraph(para, condition_names);
+                        extra_paras.push(HirParagraph {
+                            id,
+                            name: para.name.clone(),
+                            kind: HirParagraphKind::Paragraph,
+                            section_id: None,
+                            body: stmts,
+                            span: para.span,
+                        });
+                    }
+                }
+            }
+        }
+    });
     (decls, extra_paras)
 }
 
@@ -3796,6 +3958,76 @@ PROCEDURE DIVISION.
                 other => panic!("expected ReferenceModification, got {:?}", other),
             },
             other => panic!("expected Display, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_lower_control_flow_targets_are_resolved_to_paragraph_ids() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FLOW.
+PROCEDURE DIVISION.
+    GO TO PARA-2.
+PARA-1.
+    PERFORM PARA-2 THRU PARA-3.
+    STOP RUN.
+PARA-2.
+    DISPLAY \"TWO\".
+PARA-3.
+    DISPLAY \"THREE\".
+";
+        let hir = parse_and_lower(src);
+        let para_2 = hir
+            .paragraphs
+            .iter()
+            .find(|paragraph| paragraph.name.as_str() == "PARA-2")
+            .expect("expected PARA-2 paragraph");
+        let para_3 = hir
+            .paragraphs
+            .iter()
+            .find(|paragraph| paragraph.name.as_str() == "PARA-3")
+            .expect("expected PARA-3 paragraph");
+
+        match &hir.body[0] {
+            HirStatement::GoTo { targets, .. } => {
+                assert_eq!(targets.len(), 1);
+                match &targets[0] {
+                    HirTransferTarget::Paragraph { id, name } => {
+                        assert_eq!(*id, para_2.id);
+                        assert_eq!(name.as_str(), "PARA-2");
+                    }
+                    other => panic!("expected paragraph target, got {:?}", other),
+                }
+            }
+            other => panic!("expected GO TO, got {:?}", other),
+        }
+
+        let para_1 = hir
+            .paragraphs
+            .iter()
+            .find(|paragraph| paragraph.name.as_str() == "PARA-1")
+            .expect("expected PARA-1 paragraph");
+        match &para_1.body[0] {
+            HirStatement::Perform { kind, .. } => match kind {
+                HirPerformKind::ProcedureName { target, through } => {
+                    match target {
+                        HirTransferTarget::Paragraph { id, name } => {
+                            assert_eq!(*id, para_2.id);
+                            assert_eq!(name.as_str(), "PARA-2");
+                        }
+                        other => panic!("expected paragraph target, got {:?}", other),
+                    }
+                    match through.as_ref().expect("expected THRU target") {
+                        HirTransferTarget::Paragraph { id, name } => {
+                            assert_eq!(*id, para_3.id);
+                            assert_eq!(name.as_str(), "PARA-3");
+                        }
+                        other => panic!("expected paragraph THRU target, got {:?}", other),
+                    }
+                }
+                other => panic!("expected procedure-name perform, got {:?}", other),
+            },
+            other => panic!("expected PERFORM, got {:?}", other),
         }
     }
 }

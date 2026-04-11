@@ -215,6 +215,22 @@ runtime は単なる補助ライブラリではなく、COBOL の実行意味を
 3. top-level / nested program の paragraph emission を共通化する
 4. `_goto_target` / `_goto_dispatch` を内部 detail に閉じ込めるか、より単純な表現に置き換える
 
+状態:
+
+- 2026-04-12 完了
+
+実施結果:
+
+- `HirParagraphId`, `HirLabelId`, `HirTransferTarget` を導入した
+- paragraph/section 遷移を解決済み target として保持するようにした
+- lower で top-level paragraph と section paragraph の ID を先に計画した
+- `GO TO`, `PERFORM`, `PERFORM THRU` を ID ベース target へ lower した
+- `HirParagraph` に kind と section 関係を保持し、codegen の section 判定を名前規約から明示的な構造へ置き換えた
+- top-level と nested program の paragraph emission を共通 helper に寄せ、同じ dispatch モデルで生成するようにした
+- `cargo test -p cobol-hir` と `cargo test -p cobol-codegen` で確認した
+- `cargo test -p cobol-driver test_native_go_to_paragraph` と
+  `cargo test -p cobol-driver test_native_perform_thru_multiple_paragraphs` で対象ケースを確認した
+
 期待効果:
 
 - `_goto_dispatch` のような症状が設計上出にくくなる
