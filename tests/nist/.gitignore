@@ -7,3 +7,10 @@
 !preprocess.sh
 !run_compare.sh
 !run_nist.sh
+!generate_verifiers.sh
+!judges/
+!judges/*.sh
+!verifiers/
+!verifiers/*.sh
+!verifiers/overrides/
+!verifiers/overrides/*.sh

@@ -12,6 +12,8 @@ COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
 PREPROCESS="$SCRIPT_DIR/preprocess.sh"
 COMM_FIXTURES_DIR="$SCRIPT_DIR/fixtures/comm"
 JUDGES_DIR="$SCRIPT_DIR/judges"
+VERIFIERS_DIR="$SCRIPT_DIR/verifiers"
+VERIFIER_OVERRIDES_DIR="$VERIFIERS_DIR/overrides"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 NIST_WORK_ROOT="$ENV_ROOT/work/run"
 NIST_TMP_ROOT="/tmp/nc85"
@@ -65,8 +67,6 @@ source_reason_for_program() {
     local src="$1"
     if [ -f "$src" ] && grep -Eq '^[0-9[:space:]]*PROCEDURE DIVISION USING' "$src"; then
         printf 'subprogram-only\n'
-    elif [ -f "$src" ] && grep -Eq 'MOVE "INSPT" TO P-OR-F|INSPECT-COUNTER' "$src"; then
-        printf 'manual-report\n'
     elif [ -f "$src" ] && grep -Eq 'DUMMY PROCEDURE|DUMMY PARAGRAPH' "$src"; then
         printf 'dummy-display\n'
     else
@@ -77,15 +77,7 @@ source_reason_for_program() {
 program_timeout_seconds() {
     local module="$1"
     local program="$2"
-    local src="$3"
-    local source_reason
-    source_reason="$(source_reason_for_program "$src")"
-    case "$source_reason" in
-        manual-report)
-            printf '%s\n' "${NIST_TIMEOUT_MANUAL_REPORT:-5}"
-            return
-            ;;
-    esac
+    local _src="$3"
     case "$module/$program" in
         EX/EXEC85)
             printf '%s\n' "${NIST_TIMEOUT_EXEC85:-20}"
@@ -207,6 +199,12 @@ ccvs_footer_error_count() {
     fi
 }
 
+file_has_non_whitespace() {
+    local file="$1"
+    [ -s "$file" ] || return 1
+    grep -q '[^[:space:]]' "$file" 2>/dev/null
+}
+
 expected_flag_count() {
     local src="$1"
     local value
@@ -252,6 +250,91 @@ run_custom_judge() {
     local judge="$JUDGES_DIR/${program}.sh"
     [ -x "$judge" ] || return 1
     "$judge" "$module" "$program" "$result_file"
+}
+
+run_common_judge() {
+    local module="$1"
+    local program="$2"
+    local src="$3"
+    local result_file="$4"
+    local _module="$module"
+    local _program="$program"
+    local _src="$src"
+    local _result_file="$result_file"
+    return 1
+}
+
+run_program_verifier() {
+    local module="$1"
+    local program="$2"
+    local src="$3"
+    local result_file="$4"
+    local compile_log="$5"
+    local verifier="$VERIFIER_OVERRIDES_DIR/${program}.sh"
+    if [ ! -x "$verifier" ]; then
+        verifier="$VERIFIERS_DIR/${program}.sh"
+    fi
+    [ -x "$verifier" ] || return 1
+    "$verifier" "$module" "$program" "$src" "$result_file" "$compile_log"
+}
+
+judge_ccvs_result() {
+    local src="$1"
+    local result_file="$2"
+    local compile_log="$3"
+    local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors
+    local inspect_reason expected_flags warning_count
+
+    pass=$(grep -ca " PASS " "$result_file" 2>/dev/null) || pass=0
+    fail=$(grep -ca "FAIL\*" "$result_file" 2>/dev/null) || fail=0
+    ccvs_pass=$(ccvs_summary_count "$result_file" 'TESTS WERE EXECUTED SUCCESSFULLY')
+    ccvs_failed=$(ccvs_summary_count "$result_file" 'TEST\(S\) FAILED')
+    ccvs_inspect=$(ccvs_summary_count "$result_file" 'TEST\(S\) REQUIRE INSPECTION')
+    footer_errors="$(ccvs_footer_error_count "$result_file")"
+
+    if [ "$ccvs_failed" -gt 0 ] || [ "$fail" -gt 0 ]; then
+        printf 'FAIL|%s passed, %s failed\n' "$ccvs_pass" "$ccvs_failed"
+    elif [ -n "$footer_errors" ] && [ "$footer_errors" -gt 0 ]; then
+        printf 'FAIL|%s error(s) reported in footer\n' "$footer_errors"
+    elif [ -n "$footer_errors" ] && [ "$footer_errors" -eq 0 ]; then
+        printf 'PASS|0 errors reported in footer\n'
+    elif [ "$ccvs_inspect" -gt 0 ]; then
+        printf 'FAIL|%s test(s) require inspection\n' "$ccvs_inspect"
+    elif [ "$ccvs_pass" -gt 0 ]; then
+        printf 'PASS|%s passed\n' "$ccvs_pass"
+    elif [ "$pass" -gt 0 ] && [ "$fail" -eq 0 ]; then
+        printf 'PASS|%s passed\n' "$pass"
+    else
+        expected_flags="$(expected_flag_count "$src")"
+        warning_count="$(compile_warning_count "$compile_log")"
+        if [ "$expected_flags" -gt 0 ]; then
+            if [ "$warning_count" -eq "$expected_flags" ]; then
+                printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
+            else
+                printf 'FAIL|expected %s warning flag(s), got %s\n' "$expected_flags" "$warning_count"
+            fi
+            return
+        fi
+
+        inspect_reason="$(inspect_reason_for_program "$src" "$result_file")"
+        case "$inspect_reason" in
+            no-output|subprogram-only)
+                printf 'PASS|completed without report output\n'
+                ;;
+            dummy-display)
+                expected_flags="$(expected_flag_count "$src")"
+                warning_count="$(compile_warning_count "$compile_log")"
+                if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
+                    printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
+                else
+                    printf 'FAIL|expected %s warning flag(s), got %s\n' "$expected_flags" "$warning_count"
+                fi
+                ;;
+            *)
+                printf 'FAIL|no decisive CCVS summary (%s)\n' "$inspect_reason"
+                ;;
+        esac
+    fi
 }
 
 print_status_group() {
@@ -441,7 +524,6 @@ print_module_diagnostics() {
     print_status_group "$module" "COMPILE_ERROR" "COMPILE_ERROR"
     print_status_group "$module" "RUNTIME_ERROR" "RUNTIME_ERROR"
     print_status_group "$module" "TIMEOUT" "TIMEOUT"
-    print_status_group "$module" "INSPECT" "INSPECT"
     print_inspect_groups "$module"
 }
 
@@ -596,10 +678,10 @@ run_program() {
             printf '%s\n' "$missing_fixture" > "$fixture_result"
         fi
         if [ -n "$missing_fixture" ]; then
-            echo "INSPECT" > "$status_file"
+            echo "FAIL" > "$status_file"
             printf '%s\n' "missing-fixture" > "$reason_file"
             if [ "$mode" != "compile_only" ]; then
-                echo "  $program: INSPECT (missing input fixture: ${missing_fixture#*|})"
+                echo "  $program: FAIL (missing input fixture: ${missing_fixture#*|})"
             fi
             return
         fi
@@ -707,21 +789,28 @@ run_program() {
         # Check for custom judge first — some tests legitimately time out
         # (e.g., communication tests, subprogram tests) but should be PASS.
         local judge_output judge_status
-        if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)"; then
+        if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
+            judge_output="$(run_program_verifier "$module" "$program" "$src" "$log" "$compile_log" 2>/dev/null)" || \
+            judge_output="$(run_common_judge "$module" "$program" "$src" "$log" 2>/dev/null)"; then
             judge_status="${judge_output%%|*}"
             case "$judge_status" in
-                PASS|FAIL|INSPECT)
+                PASS|FAIL)
                     echo "$judge_status" > "$status_file"
                     echo "  $program: $judge_status (judge override for timeout)"
                     return
                     ;;
+                INSPECT)
+                    echo "FAIL" > "$status_file"
+                    printf '%s\n' "${judge_output#*|}" > "$reason_file"
+                    echo "  $program: FAIL (judge requires inspection: ${judge_output#*|})"
+                    return
+                    ;;
             esac
         fi
-        local inspect_reason
-        inspect_reason="$(inspect_reason_for_program "$src" "$log")"
-        if [ "$inspect_reason" = "manual-report" ]; then
+        if [ -f "$print_file" ] && ! file_has_non_whitespace "$print_file"; then
             echo "FAIL" > "$status_file"
-            echo "  $program: FAIL (manual-report timed out waiting for external interaction)"
+            printf '%s\n' "blank-output-timeout" > "$reason_file"
+            echo "  $program: FAIL (timed out with blank report output)"
             return
         fi
         echo "TIMEOUT" > "$status_file"
@@ -730,12 +819,20 @@ run_program() {
     elif [ "$exit_code" -ne 0 ]; then
         # Check for custom judge first for runtime errors too
         local judge_output judge_status
-        if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)"; then
+        if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
+            judge_output="$(run_program_verifier "$module" "$program" "$src" "$log" "$compile_log" 2>/dev/null)" || \
+            judge_output="$(run_common_judge "$module" "$program" "$src" "$log" 2>/dev/null)"; then
             judge_status="${judge_output%%|*}"
             case "$judge_status" in
-                PASS|FAIL|INSPECT)
+                PASS|FAIL)
                     echo "$judge_status" > "$status_file"
                     echo "  $program: $judge_status (judge override for exit $exit_code)"
+                    return
+                    ;;
+                INSPECT)
+                    echo "FAIL" > "$status_file"
+                    printf '%s\n' "${judge_output#*|}" > "$reason_file"
+                    echo "  $program: FAIL (judge requires inspection: ${judge_output#*|})"
                     return
                     ;;
             esac
@@ -754,94 +851,42 @@ run_program() {
 
     # Check for custom judge.
     local judge_output judge_status
-    if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)"; then
+    if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
+        judge_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)" || \
+        judge_output="$(run_common_judge "$module" "$program" "$src" "$log" 2>/dev/null)"; then
         judge_status="${judge_output%%|*}"
         case "$judge_status" in
-            PASS|FAIL|INSPECT)
+            PASS|FAIL)
                 echo "$judge_status" > "$status_file"
-                if [ "$judge_status" = "INSPECT" ]; then
-                    printf '%s\n' "${judge_output#*|}" > "$reason_file"
-                    echo "  $program: INSPECT (${judge_output#*|})"
-                elif [ "$judge_output" = "$judge_status" ]; then
+                if [ "$judge_output" = "$judge_status" ]; then
                     echo "  $program: $judge_status"
                 else
                     echo "  $program: $judge_status (${judge_output#*|})"
                 fi
                 return
                 ;;
+            INSPECT)
+                echo "FAIL" > "$status_file"
+                printf '%s\n' "${judge_output#*|}" > "$reason_file"
+                echo "  $program: FAIL (judge requires inspection: ${judge_output#*|})"
+                return
+                ;;
         esac
     fi
 
-    local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors
-    pass=$(grep -ca " PASS " "$result_file" 2>/dev/null) || pass=0
-    fail=$(grep -ca "FAIL\*" "$result_file" 2>/dev/null) || fail=0
-    ccvs_pass=$(ccvs_summary_count "$result_file" 'TESTS WERE EXECUTED SUCCESSFULLY')
-    ccvs_failed=$(ccvs_summary_count "$result_file" 'TEST\(S\) FAILED')
-    ccvs_inspect=$(ccvs_summary_count "$result_file" 'TEST\(S\) REQUIRE INSPECTION')
-    footer_errors="$(ccvs_footer_error_count "$result_file")"
-
-    if [ "$ccvs_failed" -gt 0 ] || [ "$fail" -gt 0 ]; then
-        echo "FAIL" > "$status_file"
-        echo "  $program: FAIL ($ccvs_pass passed, $ccvs_failed failed)"
-    elif [ -n "$footer_errors" ] && [ "$footer_errors" -gt 0 ]; then
-        echo "FAIL" > "$status_file"
-        echo "  $program: FAIL ($footer_errors error(s) reported in footer)"
-    elif [ -n "$footer_errors" ] && [ "$footer_errors" -eq 0 ]; then
-        echo "PASS" > "$status_file"
-        echo "  $program: PASS (0 errors reported in footer)"
-    elif [ "$ccvs_inspect" -gt 0 ]; then
-        echo "INSPECT" > "$status_file"
-        inspect_reason_for_program "$src" "$result_file" > "$reason_file"
-        echo "  $program: INSPECT ($ccvs_inspect test(s) require inspection)"
-    elif [ "$ccvs_pass" -gt 0 ]; then
-        echo "PASS" > "$status_file"
-        echo "  $program: PASS ($ccvs_pass passed)"
-    elif [ "$pass" -gt 0 ] && [ "$fail" -eq 0 ]; then
-        echo "PASS" > "$status_file"
-        echo "  $program: PASS ($pass passed)"
+    local verdict_output verdict_status verdict_message
+    if verdict_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)"; then
+        :
     else
-        local inspect_reason expected_flags warning_count
-        expected_flags="$(expected_flag_count "$src")"
-        warning_count="$(compile_warning_count "$compile_log")"
-        if [ "$expected_flags" -gt 0 ]; then
-            if [ "$warning_count" -eq "$expected_flags" ]; then
-                echo "PASS" > "$status_file"
-                echo "  $program: PASS ($warning_count warning flag(s) matched expected count)"
-            else
-                echo "FAIL" > "$status_file"
-                echo "  $program: FAIL (expected $expected_flags warning flag(s), got $warning_count)"
-            fi
-            return
-        fi
-
-        inspect_reason="$(inspect_reason_for_program "$src" "$result_file")"
-        case "$inspect_reason" in
-            manual-report)
-                echo "FAIL" > "$status_file"
-                echo "  $program: FAIL (manual-report produced no decisive summary)"
-                ;;
-            no-output|subprogram-only)
-                echo "PASS" > "$status_file"
-                echo "  $program: PASS (completed without report output)"
-                ;;
-            dummy-display)
-                expected_flags="$(expected_flag_count "$src")"
-                warning_count="$(compile_warning_count "$compile_log")"
-                if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
-                    echo "PASS" > "$status_file"
-                    echo "  $program: PASS ($warning_count warning flag(s) matched expected count)"
-                else
-                    echo "FAIL" > "$status_file"
-                    echo "  $program: FAIL (expected $expected_flags warning flag(s), got $warning_count)"
-                fi
-                ;;
-            *)
-                echo "INSPECT" > "$status_file"
-                printf '%s\n' "$inspect_reason" > "$reason_file"
-                echo "  $program: INSPECT (no decisive CCVS summary)"
-                ;;
-        esac
+        verdict_output="$(judge_ccvs_result "$src" "$result_file" "$compile_log")"
     fi
+    verdict_status="${verdict_output%%|*}"
+    verdict_message="${verdict_output#*|}"
+    echo "$verdict_status" > "$status_file"
+    if [ "$verdict_status" = "FAIL" ]; then
+        printf '%s\n' "$(inspect_reason_for_program "$src" "$result_file")" > "$reason_file"
+    fi
+    echo "  $program: $verdict_status ($verdict_message)"
 }
 
 run_compile_phase() {

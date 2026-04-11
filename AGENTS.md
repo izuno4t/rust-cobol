@@ -56,6 +56,8 @@ After any implementation change or test expectation change, run the
 directly affected test target immediately, then run the full test suite
 for the affected crate before reporting completion unless that is
 impossible.
+Once work has started, continue until the requested completion condition
+is met unless a hard blocker or explicit user redirect requires stopping.
 After applying a fix, always run `make clean test lint` before reporting
 completion.
 

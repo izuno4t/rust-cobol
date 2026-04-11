@@ -10,7 +10,6 @@ NIST_COBOLC ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR)/release/cobol-driver
 
 NIST_ENV_ROOT ?= $(CURDIR)/target/nist
 NIST_JOBS ?= 3
-NIST_TIMEOUT_MANUAL_REPORT ?= 5
 NIST_SOURCE_VAL ?=
 RUNTIME_X86_IMAGE := rust-cobol-runtime-x86
 RUNTIME_X86_TARGET := /workspace/target/runtime-x86-linux-amd64
@@ -97,7 +96,6 @@ nist-run:
 		  exit 1 )
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
 	NIST_JOBS="$(NIST_JOBS)" \
-	NIST_TIMEOUT_MANUAL_REPORT="$(NIST_TIMEOUT_MANUAL_REPORT)" \
 	COBOLC="$(NIST_COBOLC)" \
 	bash tests/nist/run_nist.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
