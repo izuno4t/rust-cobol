@@ -5025,10 +5025,24 @@ fn emit_optional_comm_area_layout(
     data_items: &[HirDataItem],
 ) -> CommAreaLayoutArg {
     name.map(|name| {
-        (
-            format!("(uint8_t*){}", c_ptr_expr(name, data_items)),
-            find_data_item_layout(name, data_items).area_len.to_string(),
-        )
+        let item_len = find_data_item_element_size(name, data_items);
+        let stride = find_data_item_stride(name, data_items);
+        let count = find_data_item_occurs_count(name, data_items);
+        let area_len = find_data_item_area_size(name, data_items);
+        CommAreaLayoutArg {
+            ptr: c_ptr_expr(name, data_items),
+            item_len: item_len.to_string(),
+            stride: stride.to_string(),
+            count: count.to_string(),
+            area_len: area_len.to_string(),
+        }
+    })
+    .unwrap_or_else(|| CommAreaLayoutArg {
+        ptr: "NULL".to_string(),
+        item_len: "0".to_string(),
+        stride: "0".to_string(),
+        count: "0".to_string(),
+        area_len: "0".to_string(),
     })
 }
 

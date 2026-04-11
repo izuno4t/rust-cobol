@@ -403,6 +403,15 @@ unsafe fn validate_output_destinations(
         );
         return 20;
     }
+    if dest_item_len == 0 || dest_stride == 0 || dest_area_len == 0 {
+        return 30;
+    }
+    if dest_area_count != 0 {
+        let max_offset = (dest_area_count as usize - 1) * dest_stride as usize;
+        if max_offset + dest_item_len as usize > dest_area_len as usize {
+            return 30;
+        }
+    }
     for idx in 0..dest_count as usize {
         let offset = idx * dest_stride as usize;
         if offset + dest_item_len as usize > dest_area_len as usize {
