@@ -1300,15 +1300,27 @@ pub(crate) fn find_data_item_by_c_name<'a>(
     c_name: &str,
     data_items: &'a [HirDataItem],
 ) -> Option<&'a HirDataItem> {
-    if let Some(pos) = c_name.find("__") {
-        let group_c = &c_name[..pos];
-        let member_c = extract_leaf_member(c_name);
-        for item in data_items {
-            if sanitize_name(&item.name) == group_c {
-                if let HirType::Group { members, .. } = &item.data_type {
-                    return find_data_item_by_sanitized_name(member_c, members);
+    if c_name.contains("__") {
+        let path: Vec<&str> = c_name
+            .split("__")
+            .map(|part| part.split('[').next().unwrap_or(part))
+            .collect();
+        let mut current_items = data_items;
+        let mut found: Option<&HirDataItem> = None;
+        for (idx, segment) in path.iter().enumerate() {
+            let item = current_items
+                .iter()
+                .find(|item| sanitize_name(&item.name) == *segment)?;
+            found = Some(item);
+            if idx + 1 < path.len() {
+                match &item.data_type {
+                    HirType::Group { members, .. } => current_items = members,
+                    _ => return found,
                 }
             }
+        }
+        if found.is_some() {
+            return found;
         }
     }
 
@@ -3014,6 +3026,12 @@ pub(crate) fn find_data_item_size(c_name: &str, data_items: &[HirDataItem]) -> u
         return size;
     }
 
+    if let Some(item) = find_data_item_by_c_name(lookup_name, data_items)
+        .or_else(|| find_data_item_by_c_name(c_name, data_items))
+    {
+        return data_item_byte_size(&item.data_type);
+    }
+
     // Handle qualified C names like "WS_DST__FIELD_B"
     if lookup_name.contains("__") {
         if let Some(pos) = lookup_name.find("__") {
@@ -3112,6 +3130,16 @@ impl Layout {
 }
 
 pub(crate) fn find_data_item_layout(c_name: &str, data_items: &[HirDataItem]) -> Layout {
+    if let Some(item) = find_data_item_by_c_name(c_name, data_items) {
+        let item_len = data_item_byte_size(&item.data_type);
+        let count = item.occurs.unwrap_or(1);
+        return Layout {
+            item_len,
+            stride: item_len,
+            count,
+            area_len: item_len.saturating_mul(count),
+        };
+    }
     let lookup = extract_leaf_member(c_name);
     if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {
         let item_len = data_item_byte_size(&item.data_type);

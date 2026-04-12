@@ -1041,7 +1041,7 @@ fn lower_procedure_division(
                     name: plan.name.clone(),
                     kind: plan.kind,
                     section_id: plan.section_id,
-                    body: stmts,
+                    body: stmts.clone(),
                     span: plan.span,
                 });
                 body.push(HirStatement::Label {
@@ -1050,16 +1050,7 @@ fn lower_procedure_division(
                         name: plan.name.clone(),
                     },
                 });
-                body.push(HirStatement::Perform {
-                    kind: HirPerformKind::ProcedureName {
-                        target: HirTransferTarget::Paragraph {
-                            id: plan.id,
-                            name: plan.name.clone(),
-                        },
-                        through: None,
-                    },
-                    span: para.span,
-                });
+                body.extend(stmts.clone());
             } else {
                 body.extend(stmts);
             }
@@ -1073,6 +1064,14 @@ fn lower_procedure_division(
                     name: plan.entry.name.clone(),
                 },
             });
+            paragraphs.push(HirParagraph {
+                id: plan.entry.id,
+                name: plan.entry.name.clone(),
+                kind: plan.entry.kind,
+                section_id: None,
+                body: Vec::new(),
+                span: plan.entry.span,
+            });
             for (para, para_plan) in section.paragraphs.iter().zip(plan.paragraphs.iter()) {
                 let stmts = lower_paragraph(para, condition_names);
                 body.push(HirStatement::Label {
@@ -1081,15 +1080,12 @@ fn lower_procedure_division(
                         name: para_plan.name.clone(),
                     },
                 });
-                body.push(HirStatement::Perform {
-                    kind: HirPerformKind::ProcedureName {
-                        target: HirTransferTarget::Paragraph {
-                            id: para_plan.id,
-                            name: para_plan.name.clone(),
-                        },
-                        through: None,
+                body.extend(stmts.clone());
+                section_stmts.push(HirStatement::Label {
+                    target: HirTransferTarget::Paragraph {
+                        id: para_plan.id,
+                        name: para_plan.name.clone(),
                     },
-                    span: para.span,
                 });
                 section_stmts.extend(stmts.clone());
                 paragraphs.push(HirParagraph {
@@ -1101,14 +1097,12 @@ fn lower_procedure_division(
                     span: para_plan.span,
                 });
             }
-            paragraphs.push(HirParagraph {
-                id: plan.entry.id,
-                name: plan.entry.name.clone(),
-                kind: plan.entry.kind,
-                section_id: None,
-                body: section_stmts,
-                span: plan.entry.span,
-            });
+            if let Some(entry) = paragraphs
+                .iter_mut()
+                .find(|paragraph| paragraph.id == plan.entry.id)
+            {
+                entry.body = section_stmts;
+            }
         }
     });
 

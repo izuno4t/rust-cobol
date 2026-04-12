@@ -116,7 +116,24 @@ compute_compiler_signature() {
         return
     fi
     if [ -x "$COBOLC" ] && [ "${COBOLC#* }" = "$COBOLC" ]; then
-        COMPILER_SIGNATURE="bin:$(sha256_of_file "$COBOLC")"
+        local compiler_hash runtime_hash deps_dir runtime_inputs=""
+        compiler_hash="$(sha256_of_file "$COBOLC")"
+        deps_dir="$(dirname "$COBOLC")/deps"
+        if [ -d "$deps_dir" ]; then
+            runtime_inputs="$(
+                find "$deps_dir" -maxdepth 1 -type f \
+                    \( -name 'libcobol_runtime-*.a' -o -name 'libcobol_runtime-*.rlib' -o -name 'libcobol_runtime-*.dylib' -o -name 'libcobol_runtime-*.so' \) \
+                    | LC_ALL=C sort | while IFS= read -r file; do
+                        printf '%s  %s\n' "$(sha256_of_file "$file")" "$(basename "$file")"
+                    done
+            )"
+        fi
+        if [ -n "$runtime_inputs" ]; then
+            runtime_hash="$(printf '%s\n' "$runtime_inputs" | sha256_of_stdin)"
+            COMPILER_SIGNATURE="bin:${compiler_hash}|runtime:${runtime_hash}"
+        else
+            COMPILER_SIGNATURE="bin:${compiler_hash}"
+        fi
     else
         COMPILER_SIGNATURE="cmd:$(printf '%s' "$COBOLC" | sha256_of_stdin)"
     fi
@@ -789,9 +806,13 @@ run_program() {
         # Check for custom judge first — some tests legitimately time out
         # (e.g., communication tests, subprogram tests) but should be PASS.
         local judge_output judge_status
+        local timeout_result_file="$log"
+        if [ -f "$print_file" ] && [ -s "$print_file" ]; then
+            timeout_result_file="$print_file"
+        fi
         if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
-            judge_output="$(run_program_verifier "$module" "$program" "$src" "$log" "$compile_log" 2>/dev/null)" || \
-            judge_output="$(run_common_judge "$module" "$program" "$src" "$log" 2>/dev/null)"; then
+            judge_output="$(run_program_verifier "$module" "$program" "$src" "$timeout_result_file" "$compile_log" 2>/dev/null)" || \
+            judge_output="$(run_common_judge "$module" "$program" "$src" "$timeout_result_file" 2>/dev/null)"; then
             judge_status="${judge_output%%|*}"
             case "$judge_status" in
                 PASS|FAIL)
@@ -816,9 +837,13 @@ run_program() {
     elif [ "$exit_code" -ne 0 ]; then
         # Check for custom judge first for runtime errors too
         local judge_output judge_status
+        local runtime_result_file="$log"
+        if [ -f "$print_file" ] && [ -s "$print_file" ]; then
+            runtime_result_file="$print_file"
+        fi
         if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
-            judge_output="$(run_program_verifier "$module" "$program" "$src" "$log" "$compile_log" 2>/dev/null)" || \
-            judge_output="$(run_common_judge "$module" "$program" "$src" "$log" 2>/dev/null)"; then
+            judge_output="$(run_program_verifier "$module" "$program" "$src" "$runtime_result_file" "$compile_log" 2>/dev/null)" || \
+            judge_output="$(run_common_judge "$module" "$program" "$src" "$runtime_result_file" 2>/dev/null)"; then
             judge_status="${judge_output%%|*}"
             case "$judge_status" in
                 PASS|FAIL)

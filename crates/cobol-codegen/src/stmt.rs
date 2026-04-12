@@ -4048,15 +4048,23 @@ pub(crate) fn emit_move_to(
                 let numval_expr = format!("cobol_func_numval({c_src}, {src_size})");
                 emit_store_int(out, c_target, &numval_expr, data_items, pad);
             } else if is_target_alpha && is_source_group_var {
-                // Group variable → alphanumeric: copy bytes with & prefix (group is a C union)
-                if let HirExpr::Variable(name) = from {
-                    let c_src = data_name_to_c_name(name);
-                    let src_size = find_data_item_layout(&c_src, data_items).item_len;
-                    let tgt_size = find_data_item_layout(c_target, data_items).item_len;
-                    out.push_str(&format!(
-                        "{pad}{move_fn}((const uint8_t*)&{c_src}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
-                    ));
-                }
+                // Group source → alphanumeric: copy the backing bytes even when the
+                // source is a qualified DataRef instead of a bare variable.
+                let c_src = match from {
+                    HirExpr::Variable(name) => data_name_to_c_name(name),
+                    HirExpr::DataRef(data_ref) => emit_data_ref_expr(data_ref),
+                    _ => emit_expr(from),
+                };
+                let src_size = alphanumeric_expr_len(from, data_items).unwrap_or_else(|| {
+                    expr_data_name(from)
+                        .map(|name| find_data_item_layout(&data_name_to_c_name(name), data_items).item_len)
+                        .unwrap_or_else(|| find_data_item_layout(&c_src, data_items).item_len)
+                });
+                let src_ptr = format!("(const uint8_t*)&{c_src}");
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
+                out.push_str(&format!(
+                    "{pad}{move_fn}({src_ptr}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
+                ));
             } else if is_target_alpha {
                 // Alphanumeric → alphanumeric: use cobol_move_string
                 if let HirExpr::Variable(name) = from {
@@ -4539,6 +4547,8 @@ pub(crate) fn emit_perform(
                                 out.push_str(&format!(
                                     "{pad}if (_goto_target) goto _goto_dispatch;\n"
                                 ));
+                            } else if has_labels {
+                                out.push_str(&format!("{pad}_goto_target = 0;\n"));
                             }
                         }
                     }
@@ -4547,6 +4557,8 @@ pub(crate) fn emit_perform(
                     out.push_str(&format!("{pad}para_{c_name}();\n"));
                     if need_body_dispatch {
                         out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
+                    } else if has_labels {
+                        out.push_str(&format!("{pad}_goto_target = 0;\n"));
                     }
                 }
             } else {
@@ -4554,11 +4566,10 @@ pub(crate) fn emit_perform(
                 if need_body_dispatch {
                     out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
                 } else if has_labels {
-                    // In a paragraph function with local labels, consume nested
-                    // paragraph GO TO targets through this function's own
-                    // dispatch table instead of leaking them to the caller's
-                    // label space.
-                    out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
+                    // Direct PERFORM in a paragraph/section function is
+                    // already expanded at the call site, so nested control
+                    // transfers must not leak into the caller's dispatch loop.
+                    out.push_str(&format!("{pad}_goto_target = 0;\n"));
                 }
             }
         }

@@ -622,7 +622,9 @@ pub unsafe extern "C" fn cobol_file_write(
                 if file.org == FileOrganization::LineSequential {
                     // Trim trailing spaces and write as a line.
                     let trimmed = trim_trailing_spaces(data);
-                    w.write_all(trimmed).and_then(|()| w.write_all(b"\n"))
+                    w.write_all(trimmed)
+                        .and_then(|()| w.write_all(b"\n"))
+                        .and_then(|()| w.flush())
                 } else {
                     w.write_all(data)
                 }

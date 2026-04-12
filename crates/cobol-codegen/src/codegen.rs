@@ -277,20 +277,26 @@ pub fn generate_c(program: &HirProgram) -> String {
 
         let has_decl = !program.declaratives.is_empty();
 
-        // Emit body statements (with GO TO -> C goto support)
+        // Emit only the top-level paragraph/section entry flow for the main
+        // entry point. Fine-grained transfers continue through _goto_target.
         let t_body = std::time::Instant::now();
-        with_active_context(|ctx| ctx.set_in_body_context(true));
-        for stmt in &program.body {
-            let env = StmtEmitEnv {
-                data_items: &program.data_items,
-                paragraphs: &program.paragraphs,
-                fs_map: &fs_map,
-                has_declaratives: has_decl,
-                ctx: &ctx,
-            };
-            emit_statement_with_ctx(&mut out, stmt, &env, 1);
+        let use_top_level_entry_flow = !program.paragraphs.is_empty();
+        if !use_top_level_entry_flow {
+            with_active_context(|ctx| ctx.set_in_body_context(true));
+            for stmt in &program.body {
+                let env = StmtEmitEnv {
+                    data_items: &program.data_items,
+                    paragraphs: &program.paragraphs,
+                    fs_map: &fs_map,
+                    has_declaratives: has_decl,
+                    ctx: &ctx,
+                };
+                emit_statement_with_ctx(&mut out, stmt, &env, 1);
+            }
+            with_active_context(|ctx| ctx.set_in_body_context(false));
+        } else {
+            emit_top_level_entry_flow(&mut out, &program.paragraphs, &label_map);
         }
-        with_active_context(|ctx| ctx.set_in_body_context(false));
         cg_timing!("emit_body_statements", t_body);
 
         // Falling off the main procedure should behave like STOP RUN so that
@@ -298,18 +304,20 @@ pub fn generate_c(program: &HirProgram) -> String {
         out.push_str("    cobol_stop_run();\n");
 
         // Emit goto dispatch table if labels exist
-        if has_labels {
+        if has_labels && !use_top_level_entry_flow {
             out.push_str("_goto_dispatch:\n");
-            out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
-            out.push_str("      switch(_t) {\n");
+            out.push_str("    while (_goto_target) {\n");
+            out.push_str("        int _t = _goto_target;\n");
+            out.push_str("        _goto_target = 0;\n");
+            out.push_str("        switch(_t) {\n");
             for paragraph in &program.paragraphs {
                 if let Some(id) = label_map.get(&paragraph.id) {
                     let c_name = sanitize_name(&paragraph.name);
-                    out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
+                    out.push_str(&format!("        case {id}: para_{c_name}(); break;\n"));
                 }
             }
             out.push_str("        default: cobol_stop_run();\n");
-            out.push_str("      }\n");
+            out.push_str("        }\n");
             out.push_str("    }\n");
         }
 
@@ -350,31 +358,38 @@ pub fn generate_c(program: &HirProgram) -> String {
             if has_labels {
                 with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
             }
-            with_active_context(|ctx| ctx.set_in_body_context(true));
-            for stmt in &program.body {
-                let env = StmtEmitEnv {
-                    data_items: &program.data_items,
-                    paragraphs: &program.paragraphs,
-                    fs_map: &fs_map,
-                    has_declaratives: has_decl,
-                    ctx: &ctx,
-                };
-                emit_statement_with_ctx(&mut out, stmt, &env, 1);
+            let use_top_level_entry_flow = !program.paragraphs.is_empty();
+            if !use_top_level_entry_flow {
+                with_active_context(|ctx| ctx.set_in_body_context(true));
+                for stmt in &program.body {
+                    let env = StmtEmitEnv {
+                        data_items: &program.data_items,
+                        paragraphs: &program.paragraphs,
+                        fs_map: &fs_map,
+                        has_declaratives: has_decl,
+                        ctx: &ctx,
+                    };
+                    emit_statement_with_ctx(&mut out, stmt, &env, 1);
+                }
+                with_active_context(|ctx| ctx.set_in_body_context(false));
+            } else {
+                emit_top_level_entry_flow(&mut out, &program.paragraphs, &label_map);
             }
-            with_active_context(|ctx| ctx.set_in_body_context(false));
             // Emit goto dispatch table for sub-program if labels exist
-            if has_labels {
+            if has_labels && !use_top_level_entry_flow {
                 out.push_str("_goto_dispatch:\n");
-                out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
-                out.push_str("      switch(_t) {\n");
+                out.push_str("    while (_goto_target) {\n");
+                out.push_str("        int _t = _goto_target;\n");
+                out.push_str("        _goto_target = 0;\n");
+                out.push_str("        switch(_t) {\n");
                 for paragraph in &program.paragraphs {
                     if let Some(id) = label_map.get(&paragraph.id) {
                         let c_name = sanitize_name(&paragraph.name);
-                        out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
+                        out.push_str(&format!("        case {id}: para_{c_name}(); break;\n"));
                     }
                 }
                 out.push_str("        default: return;\n");
-                out.push_str("      }\n");
+                out.push_str("        }\n");
                 out.push_str("    }\n");
             }
             out.push_str("}\n");
@@ -534,20 +549,8 @@ fn emit_program_paragraph_definitions(
         let mut i = 0;
         while i < paragraphs.len() {
             let c_name = sanitize_name(&paragraphs[i].name);
-            let is_section_header = matches!(paragraphs[i].kind, HirParagraphKind::Section);
-
             let section_start = i;
-            let mut section_end = i + 1;
-            if is_section_header {
-                while section_end < paragraphs.len() {
-                    if paragraphs[section_end].section_id == Some(paragraphs[i].id) {
-                        section_end += 1;
-                        continue;
-                    }
-                    break;
-                }
-            }
-
+            let section_end = paragraph_group_end(paragraphs, i);
             let section_paras = &paragraphs[section_start..section_end];
             let section_len = section_end - section_start;
 
@@ -590,9 +593,10 @@ fn emit_program_paragraph_definitions(
                     }
                     ctx.set_in_body_context(false);
                 }
+                out.push_str("_goto_dispatch:\n");
+                out.push_str("    while (_goto_target) {\n");
+                out.push_str("      int _t = _goto_target; _goto_target = 0;\n");
                 if !merged_label_map.is_empty() {
-                    out.push_str("_goto_dispatch:\n");
-                    out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
                     out.push_str("      switch(_t) {\n");
                     for paragraph in section_paras {
                         if let Some(id) = merged_label_map.get(&paragraph.id) {
@@ -604,8 +608,9 @@ fn emit_program_paragraph_definitions(
                     }
                     out.push_str("        default: _goto_target = _t; return;\n");
                     out.push_str("      }\n");
-                    out.push_str("    }\n");
                 }
+                out.push_str("      return;\n");
+                out.push_str("    }\n");
                 out.push_str("}\n");
 
                 for paragraph in &section_paras[1..] {
@@ -631,17 +636,24 @@ fn emit_program_paragraph_definitions(
                     };
                     emit_statement_with_ctx(out, stmt, &env, 1);
                 }
+                out.push_str("_goto_dispatch:\n");
+                out.push_str("    while (_goto_target) {\n");
+                out.push_str("      int _t = _goto_target; _goto_target = 0;\n");
                 if !para_label_map.is_empty() {
-                    out.push_str("_goto_dispatch:\n");
-                    out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
                     out.push_str("      switch(_t) {\n");
-                    if let Some(id) = para_label_map.get(&paragraphs[i].id) {
-                        out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
+                    for paragraph in paragraphs {
+                        if let Some(id) = para_label_map.get(&paragraph.id) {
+                            let paragraph_c_name = sanitize_name(&paragraph.name);
+                            out.push_str(&format!(
+                                "        case {id}: goto lbl_{paragraph_c_name};\n"
+                            ));
+                        }
                     }
                     out.push_str("        default: _goto_target = _t; return;\n");
                     out.push_str("      }\n");
-                    out.push_str("    }\n");
                 }
+                out.push_str("      return;\n");
+                out.push_str("    }\n");
                 out.push_str("}\n");
             }
 
@@ -690,6 +702,111 @@ pub(crate) fn transfer_target_c_name(
     }
 }
 
+fn emit_inline_dispatch_loop(
+    out: &mut String,
+    paragraphs: &[HirParagraph],
+    label_map: &HashMap<HirParagraphId, usize>,
+    next_override_map: Option<&HashMap<HirParagraphId, usize>>,
+    handled_ids: Option<&HashSet<HirParagraphId>>,
+) {
+    if label_map.is_empty() {
+        return;
+    }
+    out.push_str("    while (_goto_target) {\n");
+    out.push_str("        int _t = _goto_target;\n");
+    out.push_str("        _goto_target = 0;\n");
+    out.push_str("        switch(_t) {\n");
+    let next_label_map = build_next_label_map(paragraphs, label_map);
+    for paragraph in paragraphs {
+        if handled_ids.is_some_and(|ids| !ids.contains(&paragraph.id)) {
+            continue;
+        }
+        if let Some(id) = label_map.get(&paragraph.id) {
+            let c_name = sanitize_name(&paragraph.name);
+            let next_id = next_override_map
+                .and_then(|map| map.get(&paragraph.id).copied())
+                .or_else(|| next_label_map.get(&paragraph.id).copied());
+            if let Some(next_id) = next_id {
+                out.push_str(&format!(
+                    "        case {id}: para_{c_name}(); if (!_goto_target) _goto_target = {next_id}; break;\n"
+                ));
+            } else {
+                out.push_str(&format!("        case {id}: para_{c_name}(); break;\n"));
+            }
+        }
+    }
+    out.push_str("        default: cobol_stop_run();\n");
+    out.push_str("        }\n");
+    out.push_str("    }\n");
+}
+
+fn emit_top_level_entry_flow(
+    out: &mut String,
+    paragraphs: &[HirParagraph],
+    label_map: &HashMap<HirParagraphId, usize>,
+) {
+    let top_level_next_map = build_top_level_next_label_map(paragraphs, label_map);
+    let top_level_ids: HashSet<_> = top_level_group_entry_ids(paragraphs, label_map)
+        .into_iter()
+        .collect();
+    if let Some(first_id) = top_level_group_entry_ids(paragraphs, label_map).first().copied() {
+        let paragraph = paragraphs
+            .iter()
+            .find(|paragraph| paragraph.id == first_id)
+            .expect("top-level paragraph group entry must exist");
+        let c_name = sanitize_name(&paragraph.name);
+        out.push_str(&format!("    para_{c_name}();\n"));
+        emit_inline_dispatch_loop(
+            out,
+            paragraphs,
+            label_map,
+            Some(&top_level_next_map),
+            Some(&top_level_ids),
+        );
+    }
+}
+
+fn build_top_level_next_label_map(
+    paragraphs: &[HirParagraph],
+    label_map: &HashMap<HirParagraphId, usize>,
+) -> HashMap<HirParagraphId, usize> {
+    let top_level = top_level_group_entry_ids(paragraphs, label_map);
+
+    let mut next_map = HashMap::new();
+    for pair in top_level.windows(2) {
+        let current = pair[0];
+        let next = pair[1];
+        if let Some(next_id) = label_map.get(&next) {
+            next_map.insert(current, *next_id);
+        }
+    }
+    next_map
+}
+
+fn build_next_label_map(
+    paragraphs: &[HirParagraph],
+    label_map: &HashMap<HirParagraphId, usize>,
+) -> HashMap<HirParagraphId, usize> {
+    let mut next_map = HashMap::new();
+    let mut id_to_paragraph = HashMap::new();
+    for paragraph in paragraphs {
+        if label_map.contains_key(&paragraph.id) {
+            id_to_paragraph.insert(paragraph.id, paragraph);
+        }
+    }
+
+    let mut ordered: Vec<_> = label_map.iter().map(|(pid, id)| (*id, *pid)).collect();
+    ordered.sort_unstable_by_key(|(id, _)| *id);
+    for pair in ordered.windows(2) {
+        let (_current_id, current_pid) = pair[0];
+        let (next_id, _next_pid) = pair[1];
+        if id_to_paragraph.contains_key(&current_pid) {
+            next_map.insert(current_pid, next_id);
+        }
+    }
+    next_map
+}
+
 /// Collect all Label statements from the body and assign each a unique integer ID.
 fn build_body_label_map(body: &[HirStatement]) -> HashMap<HirParagraphId, usize> {
     let mut map = HashMap::new();
@@ -711,8 +828,6 @@ fn build_body_label_map(body: &[HirStatement]) -> HashMap<HirParagraphId, usize>
 fn build_paragraph_label_map(paragraph: &HirParagraph) -> HashMap<HirParagraphId, usize> {
     let mut map = HashMap::new();
     let mut id = 1usize;
-    map.insert(paragraph.id, id);
-    id += 1;
     for stmt in &paragraph.body {
         if let HirStatement::Label { target } = stmt {
             if let Some(paragraph_id) = target.paragraph_id() {
@@ -725,6 +840,51 @@ fn build_paragraph_label_map(paragraph: &HirParagraph) -> HashMap<HirParagraphId
         }
     }
     map
+}
+
+fn paragraph_group_end(paragraphs: &[HirParagraph], start: usize) -> usize {
+    let paragraph = &paragraphs[start];
+    let mut end = start + 1;
+
+    if matches!(paragraph.kind, HirParagraphKind::Section) {
+        while end < paragraphs.len() {
+            if paragraphs[end].section_id == Some(paragraph.id) {
+                end += 1;
+                continue;
+            }
+            break;
+        }
+        return end;
+    }
+
+    if paragraph.section_id.is_none() {
+        while end < paragraphs.len() {
+            let next = &paragraphs[end];
+            if next.section_id.is_none() && matches!(next.kind, HirParagraphKind::Paragraph) {
+                end += 1;
+                continue;
+            }
+            break;
+        }
+    }
+
+    end
+}
+
+fn top_level_group_entry_ids(
+    paragraphs: &[HirParagraph],
+    label_map: &HashMap<HirParagraphId, usize>,
+) -> Vec<HirParagraphId> {
+    let mut ids = Vec::new();
+    let mut i = 0usize;
+    while i < paragraphs.len() {
+        let paragraph = &paragraphs[i];
+        if paragraph.section_id.is_none() && label_map.contains_key(&paragraph.id) {
+            ids.push(paragraph.id);
+        }
+        i = paragraph_group_end(paragraphs, i);
+    }
+    ids
 }
 
 fn emit_header(out: &mut String) {
