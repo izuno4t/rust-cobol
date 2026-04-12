@@ -17,14 +17,16 @@ VERIFIER_OVERRIDES_DIR="$VERIFIERS_DIR/overrides"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 NIST_WORK_ROOT="$ENV_ROOT/work/run"
 NIST_TMP_ROOT="/tmp/nc85"
+NIST_TOOLCHAIN_ROOT="$ENV_ROOT/toolchain"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-60}"
 NIST_JOBS="${NIST_JOBS:-3}"
 NIST_COMPILE_CACHE="${NIST_COMPILE_CACHE:-1}"
 CURRENT_RUN_PID=""
 COMPILER_SIGNATURE=""
 COPYLIB_SIGNATURE=""
+SNAPSHOT_COBOLC=""
 
-mkdir -p "$RESULTS_DIR" "$NIST_WORK_ROOT" "$NIST_TMP_ROOT"
+mkdir -p "$RESULTS_DIR" "$NIST_WORK_ROOT" "$NIST_TMP_ROOT" "$NIST_TOOLCHAIN_ROOT"
 
 cleanup_running_job() {
     if [ -n "${CURRENT_RUN_PID:-}" ] && kill -0 "$CURRENT_RUN_PID" 2>/dev/null; then
@@ -47,6 +49,87 @@ trap cleanup_running_job EXIT
 list_modules() {
     find "$PROGRAMS_DIR" -mindepth 1 -maxdepth 1 -type d \
         ! -name COPYLIB -exec basename {} \; | sort
+}
+
+list_module_programs() {
+    local module="$1"
+    local mod_dir="$PROGRAMS_DIR/$module"
+    [ -d "$mod_dir" ] || return 0
+    find "$mod_dir" -maxdepth 1 -type f -name '*.cob' -exec basename {} .cob \; | sort
+}
+
+build_task_file() {
+    local outfile="$1"
+    shift
+    local modules=("$@")
+    : > "$outfile"
+    local module program
+    for module in "${modules[@]}"; do
+        while IFS= read -r program; do
+            [ -n "$program" ] || continue
+            printf '%s|%s\n' "$module" "$program" >> "$outfile"
+        done < <(list_module_programs "$module")
+    done
+}
+
+reset_module_results() {
+    local module="$1"
+    rm -rf "$RESULTS_DIR/$module"
+    mkdir -p "$RESULTS_DIR/$module"
+}
+
+reset_modules_results() {
+    local module
+    for module in "$@"; do
+        reset_module_results "$module"
+    done
+}
+
+count_task_file() {
+    local task_file="$1"
+    if [ ! -f "$task_file" ]; then
+        printf '0\n'
+        return
+    fi
+    awk 'END { print NR + 0 }' "$task_file"
+}
+
+module_index() {
+    local wanted="$1"
+    shift
+    local modules=("$@")
+    local idx
+    for idx in "${!modules[@]}"; do
+        if [ "${modules[$idx]}" = "$wanted" ]; then
+            printf '%s\n' "$idx"
+            return 0
+        fi
+    done
+    return 1
+}
+
+snapshot_compiler_if_needed() {
+    local snapshot="$NIST_TOOLCHAIN_ROOT/cobol-driver"
+    if [ -n "$SNAPSHOT_COBOLC" ]; then
+        printf '%s\n' "$SNAPSHOT_COBOLC"
+        return
+    fi
+
+    if [ -x "$COBOLC" ] && [ "${COBOLC#* }" = "$COBOLC" ]; then
+        if [ "$COBOLC" = "$snapshot" ]; then
+            SNAPSHOT_COBOLC="$snapshot"
+        else
+            cp "$COBOLC" "$snapshot"
+            chmod +x "$snapshot"
+            SNAPSHOT_COBOLC="$snapshot"
+        fi
+    else
+        SNAPSHOT_COBOLC="$COBOLC"
+    fi
+
+    COBOLC="$SNAPSHOT_COBOLC"
+    export COBOLC
+    printf '%s\n' "$SNAPSHOT_COBOLC"
 }
 
 inspect_reason_for_program() {
@@ -86,13 +169,6 @@ program_timeout_seconds() {
             printf '%s\n' "$TIMEOUT_SECONDS"
             ;;
     esac
-}
-
-program_parallel_mode() {
-    local _module="$1"
-    local _program="$2"
-    local _src="$3"
-    printf 'parallel\n'
 }
 
 prepare_print_file() {
@@ -564,9 +640,41 @@ module_has_status() {
 summarize_module() {
     local module="$1"
     local mod_dir="$PROGRAMS_DIR/$module"
-    local total=0 pass=0 fail=0 compile_ready=0 compile_err=0 runtime_err=0 timeout_count=0 skip=0
+    local total pass fail compile_ready compile_err runtime_err timeout_count skip tested pass_rate
+    read -r total pass fail compile_ready compile_err runtime_err timeout_count skip tested pass_rate <<EOF
+$(module_summary_values "$module")
+EOF
     [ -d "$mod_dir" ] || {
         echo "Module $module: no programs found in $mod_dir"
+        return
+    }
+    echo ""
+    echo "--- $module Summary ---"
+    echo "  Total: $total | Tested: $tested | Pass: $pass | Fail: $fail"
+    echo "  Compile Ready: $compile_ready | Compile Error: $compile_err | Runtime Error: $runtime_err | Timeout: $timeout_count"
+    echo "  Pass Rate: ${pass_rate}%"
+    print_module_diagnostics "$module"
+    echo ""
+    cat > "$RESULTS_DIR/${module}/summary.txt" <<EOF
+Module: $module
+Total: $total
+Tested: $tested
+Pass: $pass
+Fail: $fail
+Compile Ready: $compile_ready
+Compile Error: $compile_err
+Runtime Error: $runtime_err
+Timeout: $timeout_count
+Pass Rate: ${pass_rate}%
+EOF
+}
+
+module_summary_values() {
+    local module="$1"
+    local mod_dir="$PROGRAMS_DIR/$module"
+    local total=0 pass=0 fail=0 compile_ready=0 compile_err=0 runtime_err=0 timeout_count=0 skip=0
+    [ -d "$mod_dir" ] || {
+        printf '0 0 0 0 0 0 0 0 0 0\n'
         return
     }
     for src in "$mod_dir"/*.cob; do
@@ -589,25 +697,9 @@ summarize_module() {
     if [ "$tested" -gt 0 ]; then
         pass_rate=$((pass * 100 / tested))
     fi
-    echo ""
-    echo "--- $module Summary ---"
-    echo "  Total: $total | Tested: $tested | Pass: $pass | Fail: $fail"
-    echo "  Compile Ready: $compile_ready | Compile Error: $compile_err | Runtime Error: $runtime_err | Timeout: $timeout_count"
-    echo "  Pass Rate: ${pass_rate}%"
-    print_module_diagnostics "$module"
-    echo ""
-    cat > "$RESULTS_DIR/${module}/summary.txt" <<EOF
-Module: $module
-Total: $total
-Tested: $tested
-Pass: $pass
-Fail: $fail
-Compile Ready: $compile_ready
-Compile Error: $compile_err
-Runtime Error: $runtime_err
-Timeout: $timeout_count
-Pass Rate: ${pass_rate}%
-EOF
+    printf '%s %s %s %s %s %s %s %s %s %s\n' \
+        "$total" "$pass" "$fail" "$compile_ready" "$compile_err" \
+        "$runtime_err" "$timeout_count" "$skip" "$tested" "$pass_rate"
 }
 
 print_single_result_summary() {
@@ -634,145 +726,127 @@ print_single_result_summary() {
     fi
 }
 
-run_program() {
+compile_program_artifacts() {
     local module="$1"
     local program="$2"
-    local mode="${3:-full}"
-    local src="$PROGRAMS_DIR/$module/$program.cob"
-    local module_workdir="$NIST_WORK_ROOT/$module"
-    local program_workdir="$module_workdir/$program"
-    local bin="$program_workdir/nist_${program}"
-    local log="$RESULTS_DIR/${module}/${program}.log"
-    local status_file="$RESULTS_DIR/${module}/${program}.status"
-    local reason_file="$RESULTS_DIR/${module}/${program}.reason"
-    local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
-    local compile_meta="$RESULTS_DIR/${module}/${program}.compile.meta"
-    local preprocess_meta="$RESULTS_DIR/${module}/${program}.preprocess.meta"
-    local fixture_meta="$RESULTS_DIR/${module}/${program}.fixture.meta"
-    local fixture_result="$RESULTS_DIR/${module}/${program}.fixture.result"
-    local program_tmpdir="$NIST_TMP_ROOT/${module}/${program}"
-    local print_file="$program_tmpdir/P"
-    local preprocessed="$program_workdir/nist_preproc_${program}.cob"
-    local comm_script="$COMM_FIXTURES_DIR/${program}.comm"
-    local runtime_timeout="$TIMEOUT_SECONDS"
+    local src="$3"
+    local program_tmpdir="$4"
+    local preprocessed="$5"
+    local preprocess_meta="$6"
+    local fixture_meta="$7"
+    local fixture_result="$8"
+    local bin="$9"
+    local compile_log="${10}"
+    local compile_meta="${11}"
+    local status_file="${12}"
 
-    mkdir -p "$RESULTS_DIR/$module"
-    mkdir -p "$module_workdir"
-    mkdir -p "$program_workdir"
-    if [ "$mode" != "run_only" ]; then
-        rm -f "$status_file" "$reason_file" "$log"
-    else
-        rm -f "$reason_file" "$log"
+    rm -rf "$program_tmpdir"
+    mkdir -p "$program_tmpdir"
+
+    local preprocess_key
+    preprocess_key="$(compute_preprocess_signature "$src")"
+    if [ ! -f "$preprocessed" ] || [ ! -f "$preprocess_meta" ] || \
+        [ "$(cat "$preprocess_meta")" != "$preprocess_key" ]; then
+        rm -f "$preprocessed" "$preprocess_meta" "$fixture_meta" "$fixture_result"
+        NIST_TMPDIR="$program_tmpdir" "$PREPROCESS" "$src" "$preprocessed"
+        printf '%s\n' "$preprocess_key" > "$preprocess_meta"
     fi
 
-    if [ ! -f "$src" ]; then
-        echo "SKIP" > "$status_file"
-        if [ "$mode" != "compile_only" ]; then
-            echo "  $program: SKIP (source not found)"
+    local compile_cache_key=""
+    local compile_cache_hit=0
+    if [ "$NIST_COMPILE_CACHE" != "0" ]; then
+        compile_cache_key="$(
+            printf 'source:%s\ncompiler:%s\n%s\nformat:fixed\n' \
+                "$(sha256_of_file "$preprocessed")" \
+                "$(compute_compiler_signature)" \
+                "$(compute_copylib_signature)"
+        )"
+        if [ -x "$bin" ] && [ -f "$compile_meta" ] && \
+            [ "$(cat "$compile_meta")" = "$compile_cache_key" ]; then
+            compile_cache_hit=1
+            if [ ! -f "$compile_log" ]; then
+                printf 'compile cache hit\n' > "$compile_log"
+            fi
         fi
-        return
     fi
 
-    if [ "$mode" != "run_only" ]; then
-        rm -rf "$program_tmpdir"
-        mkdir -p "$program_tmpdir"
-        local preprocess_key
-        preprocess_key="$(compute_preprocess_signature "$src")"
-        if [ ! -f "$preprocessed" ] || [ ! -f "$preprocess_meta" ] || \
-            [ "$(cat "$preprocess_meta")" != "$preprocess_key" ]; then
-            rm -f "$preprocessed" "$preprocess_meta" "$fixture_meta" "$fixture_result"
-            NIST_TMPDIR="$program_tmpdir" "$PREPROCESS" "$src" "$preprocessed"
-            printf '%s\n' "$preprocess_key" > "$preprocess_meta"
-        fi
-        stage_nist_aliases "$program_tmpdir"
-        prepare_print_file "$print_file"
-
-        local missing_fixture=""
-        local fixture_key
-        fixture_key="preprocessed:$(sha256_of_file "$preprocessed")"
-        if [ -f "$fixture_meta" ] && [ -f "$fixture_result" ] && \
-            [ "$(cat "$fixture_meta")" = "$fixture_key" ]; then
-            missing_fixture="$(cat "$fixture_result")"
-        else
-            missing_fixture="$(find_missing_input_fixture "$preprocessed" || true)"
-            printf '%s\n' "$fixture_key" > "$fixture_meta"
-            printf '%s\n' "$missing_fixture" > "$fixture_result"
-        fi
-        if [ -n "$missing_fixture" ]; then
-            echo "FAIL" > "$status_file"
-            printf '%s\n' "missing-fixture" > "$reason_file"
-            if [ "$mode" != "compile_only" ]; then
-                echo "  $program: FAIL (missing input fixture: ${missing_fixture#*|})"
-            fi
-            return
-        fi
-
-        local compile_cache_key=""
-        local compile_cache_hit=0
-        if [ "$NIST_COMPILE_CACHE" != "0" ]; then
-            compile_cache_key="$(
-                printf 'source:%s\ncompiler:%s\n%s\nformat:fixed\n' \
-                    "$(sha256_of_file "$preprocessed")" \
-                    "$(compute_compiler_signature)" \
-                    "$(compute_copylib_signature)"
-            )"
-            if [ -x "$bin" ] && [ -f "$compile_meta" ] && \
-                [ "$(cat "$compile_meta")" = "$compile_cache_key" ]; then
-                compile_cache_hit=1
-                if [ ! -f "$compile_log" ]; then
-                    printf 'compile cache hit\n' > "$compile_log"
-                fi
-            fi
-        fi
-
-        if [ "$compile_cache_hit" -eq 0 ]; then
-            rm -f "$bin" "$compile_log" "$compile_meta"
-            if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
-                2>"$compile_log" || grep -q 'COB[C]-E' "$compile_log"; then
-                # Check if binary was still created (non-fatal errors) and judge exists
-                if [ -x "$bin" ]; then
-                    local judge_output judge_status
-                    if judge_output="$(run_custom_judge "$module" "$program" "$compile_log" 2>/dev/null)"; then
-                        judge_status="${judge_output%%|*}"
-                        if [ "$judge_status" != "PASS" ] && [ "$judge_status" != "FAIL" ]; then
-                            echo "COMPILE_ERROR" > "$status_file"
-                            echo "  $program: COMPILE ERROR"
-                            return
-                        fi
+    if [ "$compile_cache_hit" -eq 0 ]; then
+        rm -f "$bin" "$compile_log" "$compile_meta"
+        if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
+            2>"$compile_log" || grep -q 'COB[C]-E' "$compile_log"; then
+            if [ -x "$bin" ]; then
+                local judge_output judge_status
+                if judge_output="$(run_custom_judge "$module" "$program" "$compile_log" 2>/dev/null)"; then
+                    judge_status="${judge_output%%|*}"
+                    if [ "$judge_status" = "PASS" ] || [ "$judge_status" = "FAIL" ]; then
+                        :
                     else
                         echo "COMPILE_ERROR" > "$status_file"
                         echo "  $program: COMPILE ERROR"
-                        return
+                        return 1
                     fi
                 else
                     echo "COMPILE_ERROR" > "$status_file"
                     echo "  $program: COMPILE ERROR"
-                    return
+                    return 1
                 fi
-            fi
-            if [ -n "$compile_cache_key" ]; then
-                printf '%s\n' "$compile_cache_key" > "$compile_meta"
+            else
+                echo "COMPILE_ERROR" > "$status_file"
+                echo "  $program: COMPILE ERROR"
+                return 1
             fi
         fi
-
-        if [ "$mode" = "compile_only" ]; then
-            echo "COMPILED" > "$status_file"
-            return
+        if [ -n "$compile_cache_key" ]; then
+            printf '%s\n' "$compile_cache_key" > "$compile_meta"
         fi
-    elif [ ! -x "$bin" ]; then
-        echo "COMPILE_ERROR" > "$status_file"
-        echo "  $program: COMPILE ERROR (missing compiled binary)"
-        return
     fi
 
-    if [ "$mode" = "run_only" ]; then
-        rm -rf "$program_tmpdir"
-        mkdir -p "$program_tmpdir"
-        stage_nist_aliases "$program_tmpdir"
-        prepare_print_file "$print_file"
+    return 0
+}
+
+prepare_runtime_artifacts() {
+    local program="$1"
+    local program_tmpdir="$2"
+    local print_file="$3"
+    local preprocessed="$4"
+    local fixture_meta="$5"
+    local fixture_result="$6"
+    local status_file="$7"
+    local reason_file="$8"
+
+    rm -rf "$program_tmpdir"
+    mkdir -p "$program_tmpdir"
+    stage_nist_aliases "$program_tmpdir"
+    prepare_print_file "$print_file"
+
+    local missing_fixture=""
+    local fixture_key
+    fixture_key="preprocessed:$(sha256_of_file "$preprocessed")"
+    if [ -f "$fixture_meta" ] && [ -f "$fixture_result" ] && \
+        [ "$(cat "$fixture_meta")" = "$fixture_key" ]; then
+        missing_fixture="$(cat "$fixture_result")"
+    else
+        missing_fixture="$(find_missing_input_fixture "$preprocessed" || true)"
+        printf '%s\n' "$fixture_key" > "$fixture_meta"
+        printf '%s\n' "$missing_fixture" > "$fixture_result"
+    fi
+    if [ -n "$missing_fixture" ]; then
+        echo "FAIL" > "$status_file"
+        printf '%s\n' "missing-fixture" > "$reason_file"
+        echo "  $program: FAIL (missing input fixture: ${missing_fixture#*|})"
+        return 1
     fi
 
-    runtime_timeout="$(program_timeout_seconds "$module" "$program" "$src")"
+    return 0
+}
+
+execute_program_binary() {
+    local module="$1"
+    local program_tmpdir="$2"
+    local bin="$3"
+    local log="$4"
+    local comm_script="$5"
+    local runtime_timeout="$6"
 
     local exit_code=0
     (
@@ -801,100 +875,117 @@ run_program() {
     CURRENT_RUN_PID=$!
     wait "$CURRENT_RUN_PID" || exit_code=$?
     CURRENT_RUN_PID=""
+    return "$exit_code"
+}
+
+apply_judge_verdict() {
+    local program="$1"
+    local status_file="$2"
+    local reason_file="$3"
+    local judge_output="$4"
+    local suffix="${5:-}"
+    local judge_status
+
+    judge_status="${judge_output%%|*}"
+    case "$judge_status" in
+        PASS|FAIL)
+            echo "$judge_status" > "$status_file"
+            if [ "$judge_status" = "FAIL" ] && [ "$judge_output" != "$judge_status" ]; then
+                printf '%s\n' "${judge_output#*|}" > "$reason_file"
+            fi
+            if [ -n "$suffix" ]; then
+                echo "  $program: $judge_status ($suffix)"
+            elif [ "$judge_output" = "$judge_status" ]; then
+                echo "  $program: $judge_status"
+            else
+                echo "  $program: $judge_status (${judge_output#*|})"
+            fi
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+handle_abnormal_program_exit() {
+    local module="$1"
+    local program="$2"
+    local src="$3"
+    local compile_log="$4"
+    local log="$5"
+    local print_file="$6"
+    local status_file="$7"
+    local reason_file="$8"
+    local exit_code="$9"
+    local runtime_timeout="${10}"
+
+    local result_file="$log"
+    local judge_output=""
 
     if [ -f "$print_file" ] && [ -s "$print_file" ]; then
-        cp "$print_file" "$log" || true
+        result_file="$print_file"
+    fi
+
+    if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
+        judge_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)" || \
+        judge_output="$(run_common_judge "$module" "$program" "$src" "$result_file" 2>/dev/null)"; then
+        case "$exit_code" in
+            124)
+                apply_judge_verdict "$program" "$status_file" "$reason_file" "$judge_output" \
+                    "judge override for timeout"
+                return $?
+                ;;
+            *)
+                apply_judge_verdict "$program" "$status_file" "$reason_file" "$judge_output" \
+                    "judge override for exit $exit_code"
+                return $?
+                ;;
+        esac
     fi
 
     if [ "$exit_code" -eq 124 ]; then
-        # Check for custom judge first — some tests legitimately time out
-        # (e.g., communication tests, subprogram tests) but should be PASS.
-        local judge_output judge_status
-        local timeout_result_file="$log"
-        if [ -f "$print_file" ] && [ -s "$print_file" ]; then
-            timeout_result_file="$print_file"
-        fi
-        if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
-            judge_output="$(run_program_verifier "$module" "$program" "$src" "$timeout_result_file" "$compile_log" 2>/dev/null)" || \
-            judge_output="$(run_common_judge "$module" "$program" "$src" "$timeout_result_file" 2>/dev/null)"; then
-            judge_status="${judge_output%%|*}"
-            case "$judge_status" in
-                PASS|FAIL)
-                    echo "$judge_status" > "$status_file"
-                    if [ "$judge_status" = "FAIL" ] && [ "$judge_output" != "$judge_status" ]; then
-                        printf '%s\n' "${judge_output#*|}" > "$reason_file"
-                    fi
-                    echo "  $program: $judge_status (judge override for timeout)"
-                    return
-                    ;;
-            esac
-        fi
         if [ -f "$print_file" ] && ! file_has_non_whitespace "$print_file"; then
             echo "FAIL" > "$status_file"
             printf '%s\n' "blank-output-timeout" > "$reason_file"
             echo "  $program: FAIL (timed out with blank report output)"
-            return
+            return 0
         fi
         echo "TIMEOUT" > "$status_file"
         echo "  $program: TIMEOUT (exceeded ${runtime_timeout}s)"
-        return
-    elif [ "$exit_code" -ne 0 ]; then
-        # Check for custom judge first for runtime errors too
-        local judge_output judge_status
-        local runtime_result_file="$log"
-        if [ -f "$print_file" ] && [ -s "$print_file" ]; then
-            runtime_result_file="$print_file"
-        fi
-        if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
-            judge_output="$(run_program_verifier "$module" "$program" "$src" "$runtime_result_file" "$compile_log" 2>/dev/null)" || \
-            judge_output="$(run_common_judge "$module" "$program" "$src" "$runtime_result_file" 2>/dev/null)"; then
-            judge_status="${judge_output%%|*}"
-            case "$judge_status" in
-                PASS|FAIL)
-                    echo "$judge_status" > "$status_file"
-                    if [ "$judge_status" = "FAIL" ] && [ "$judge_output" != "$judge_status" ]; then
-                        printf '%s\n' "${judge_output#*|}" > "$reason_file"
-                    fi
-                    echo "  $program: $judge_status (judge override for exit $exit_code)"
-                    return
-                    ;;
-            esac
-        fi
-        echo "RUNTIME_ERROR" > "$status_file"
-        echo "  $program: RUNTIME ERROR (exit $exit_code)"
-        return
+        return 0
     fi
 
-    # Copy print file to log first so judges and CCVS parsing see the same data.
+    echo "RUNTIME_ERROR" > "$status_file"
+    echo "  $program: RUNTIME ERROR (exit $exit_code)"
+    return 0
+}
+
+judge_successful_program_run() {
+    local module="$1"
+    local program="$2"
+    local src="$3"
+    local compile_log="$4"
+    local log="$5"
+    local print_file="$6"
+    local status_file="$7"
+    local reason_file="$8"
+
     local result_file="$log"
+    local judge_output=""
+    local verdict_output verdict_status verdict_message
+
     if [ -f "$print_file" ] && [ -s "$print_file" ]; then
         result_file="$print_file"
         cp "$print_file" "$log" || true
     fi
 
-    # Check for custom judge.
-    local judge_output judge_status
     if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
         judge_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)" || \
         judge_output="$(run_common_judge "$module" "$program" "$src" "$log" 2>/dev/null)"; then
-        judge_status="${judge_output%%|*}"
-        case "$judge_status" in
-            PASS|FAIL)
-                echo "$judge_status" > "$status_file"
-                if [ "$judge_status" = "FAIL" ] && [ "$judge_output" != "$judge_status" ]; then
-                    printf '%s\n' "${judge_output#*|}" > "$reason_file"
-                fi
-                if [ "$judge_output" = "$judge_status" ]; then
-                    echo "  $program: $judge_status"
-                else
-                    echo "  $program: $judge_status (${judge_output#*|})"
-                fi
-                return
-                ;;
-        esac
+        apply_judge_verdict "$program" "$status_file" "$reason_file" "$judge_output"
+        return
     fi
 
-    local verdict_output verdict_status verdict_message
     if verdict_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)"; then
         :
     else
@@ -909,144 +1000,318 @@ run_program() {
     echo "  $program: $verdict_status ($verdict_message)"
 }
 
-run_compile_phase() {
-    local jobs="$1"
-    shift
-    local modules=("$@")
-    local module
-    local batch_pids=()
-    local batch_logs=()
+run_program() {
+    local module="$1"
+    local program="$2"
+    local mode="${3:-full}"
+    local src="$PROGRAMS_DIR/$module/$program.cob"
+    local module_workdir="$NIST_WORK_ROOT/$module"
+    local program_workdir="$module_workdir/$program"
+    local bin="$program_workdir/nist_${program}"
+    local log="$RESULTS_DIR/${module}/${program}.log"
+    local status_file="$RESULTS_DIR/${module}/${program}.status"
+    local reason_file="$RESULTS_DIR/${module}/${program}.reason"
+    local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
+    local compile_meta="$RESULTS_DIR/${module}/${program}.compile.meta"
+    local preprocess_meta="$RESULTS_DIR/${module}/${program}.preprocess.meta"
+    local fixture_meta="$RESULTS_DIR/${module}/${program}.fixture.meta"
+    local fixture_result="$RESULTS_DIR/${module}/${program}.fixture.result"
+    local program_tmpdir="$NIST_TMP_ROOT/${module}/${program}"
+    local print_file="$program_tmpdir/P"
+    local preprocessed="$program_workdir/nist_preproc_${program}.cob"
+    local comm_script="$COMM_FIXTURES_DIR/${program}.comm"
+    local runtime_timeout="$TIMEOUT_SECONDS"
+    local exit_code=0
 
-    flush_compile_batch() {
-        local i
-        for i in "${!batch_pids[@]}"; do
-            wait "${batch_pids[$i]}"
-        done
-        for i in "${!batch_logs[@]}"; do
-            if [ -s "${batch_logs[$i]}" ]; then
-                cat "${batch_logs[$i]}"
-            fi
-            rm -f "${batch_logs[$i]}"
-        done
-        batch_pids=()
-        batch_logs=()
-    }
-
-    for module in "${modules[@]}"; do
-        echo "=== Module: $module (compile) ==="
-        if [ "$jobs" -le 1 ]; then
-            compile_module "$module"
-            continue
-        fi
-        local module_log="$RESULTS_DIR/.compile_${module}.out"
-        rm -f "$module_log"
-        (
-            compile_module "$module"
-        ) >"$module_log" 2>&1 &
-        batch_pids+=("$!")
-        batch_logs+=("$module_log")
-        if [ "${#batch_pids[@]}" -ge "$jobs" ]; then
-            flush_compile_batch
-        fi
-    done
-
-    if [ "${#batch_pids[@]}" -gt 0 ]; then
-        flush_compile_batch
+    mkdir -p "$RESULTS_DIR/$module" "$module_workdir" "$program_workdir"
+    if [ "$mode" != "run_only" ]; then
+        rm -f "$status_file" "$reason_file" "$log"
+    else
+        rm -f "$reason_file" "$log"
     fi
-}
 
-run_execute_phase() {
-    local jobs="$1"
-    shift
-    local modules=("$@")
-    local module
-    local execute_pids=()
-    local execute_logs=()
-
-    flush_execute_batch() {
-        local i
-        for i in "${!execute_pids[@]}"; do
-            wait "${execute_pids[$i]}"
-        done
-        for i in "${!execute_logs[@]}"; do
-            if [ -s "${execute_logs[$i]}" ]; then
-                cat "${execute_logs[$i]}"
-            fi
-            rm -f "${execute_logs[$i]}"
-        done
-        execute_pids=()
-        execute_logs=()
-    }
-
-    for module in "${modules[@]}"; do
-        echo "=== Module: $module (execute) ==="
-    done
-
-    for module in "${modules[@]}"; do
-        local mod_dir="$PROGRAMS_DIR/$module"
-        local src program program_log
-        [ -d "$mod_dir" ] || continue
-        for src in "$mod_dir"/*.cob; do
-            [ -f "$src" ] || continue
-            program="$(basename "$src" .cob)"
-            if [ "$(cat "$RESULTS_DIR/$module/${program}.status" 2>/dev/null || printf 'SKIP')" != "COMPILED" ]; then
-                continue
-            fi
-            if [ "$jobs" -le 1 ]; then
-                run_program "$module" "$program" "run_only"
-                continue
-            fi
-            program_log="$(mktemp "$NIST_TMP_ROOT/${module}_${program}.execute.XXXXXX")"
-            (
-                run_program "$module" "$program" "run_only"
-            ) >"$program_log" 2>&1 &
-            execute_pids+=("$!")
-            execute_logs+=("$program_log")
-            if [ "${#execute_pids[@]}" -ge "$jobs" ]; then
-                flush_execute_batch
-            fi
-        done
-    done
-
-    if [ "${#execute_pids[@]}" -gt 0 ]; then
-        flush_execute_batch
+    if [ ! -f "$src" ]; then
+        echo "SKIP" > "$status_file"
+        if [ "$mode" != "compile_only" ]; then
+            echo "  $program: SKIP (source not found)"
+        fi
+        return
     fi
+
+    if [ "$mode" != "run_only" ]; then
+        if ! compile_program_artifacts \
+            "$module" "$program" "$src" "$program_tmpdir" "$preprocessed" "$preprocess_meta" \
+            "$fixture_meta" "$fixture_result" "$bin" "$compile_log" "$compile_meta" "$status_file"; then
+            return
+        fi
+        if [ "$mode" = "compile_only" ]; then
+            echo "COMPILED" > "$status_file"
+            return
+        fi
+    elif [ ! -x "$bin" ]; then
+        echo "COMPILE_ERROR" > "$status_file"
+        echo "  $program: COMPILE ERROR (missing compiled binary)"
+        return
+    fi
+
+    if ! prepare_runtime_artifacts \
+        "$program" "$program_tmpdir" "$print_file" "$preprocessed" "$fixture_meta" "$fixture_result" \
+        "$status_file" "$reason_file"; then
+        return
+    fi
+
+    runtime_timeout="$(program_timeout_seconds "$module" "$program" "$src")"
+    execute_program_binary "$module" "$program_tmpdir" "$bin" "$log" "$comm_script" "$runtime_timeout" || \
+        exit_code=$?
+
+    if [ -f "$print_file" ] && [ -s "$print_file" ]; then
+        cp "$print_file" "$log" || true
+    fi
+
+    if [ "$exit_code" -ne 0 ]; then
+        handle_abnormal_program_exit \
+            "$module" "$program" "$src" "$compile_log" "$log" "$print_file" \
+            "$status_file" "$reason_file" "$exit_code" "$runtime_timeout"
+        return
+    fi
+
+    judge_successful_program_run \
+        "$module" "$program" "$src" "$compile_log" "$log" "$print_file" \
+        "$status_file" "$reason_file"
 }
 
 run_collect_phase() {
     local modules=("$@")
     local module
+    echo "=== Phase: collect ==="
     for module in "${modules[@]}"; do
         summarize_module "$module"
     done
 }
 
-run_all_modules() {
-    local jobs="$1"
-    local module
-    local modules=()
-    local had_compile_error=0
-    while IFS= read -r module; do
-        modules+=("$module")
-    done < <(list_modules)
+phase_worker_command() {
+    local phase="$1"
+    local module="$2"
+    local program="$3"
+    case "$phase" in
+        compile)
+            bash "$0" __compile_one "$module" "$program"
+            ;;
+        execute)
+            bash "$0" __execute_one "$module" "$program"
+            ;;
+        *)
+            echo "Unknown phase: $phase" >&2
+            return 1
+            ;;
+    esac
+}
 
-    run_compile_phase "$jobs" "${modules[@]}"
+phase_status_counts_as_failure() {
+    local phase="$1"
+    local status_line="$2"
+    case "$phase:$status_line" in
+        compile:COMPILED|execute:PASS|execute:FAIL|execute:RUNTIME_ERROR|execute:TIMEOUT)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
 
-    for module in "${modules[@]}"; do
-        if module_has_status "$module" "COMPILE_ERROR"; then
-            had_compile_error=1
+print_phase_progress() {
+    local phase="$1"
+    local module="$2"
+    local module_done="$3"
+    local module_total="$4"
+    local completed="$5"
+    local total="$6"
+    local program="$7"
+    local status_line="$8"
+
+    printf '[%s] %s %d/%d total %d/%d %s %s\n' \
+        "$phase" \
+        "$module" \
+        "$module_done" \
+        "$module_total" \
+        "$completed" \
+        "$total" \
+        "$program" \
+        "$status_line"
+}
+
+flush_phase_batch() {
+    local phase="$1"
+    local total="$2"
+    local modules_name="$3"
+    local module_totals_name="$4"
+    local module_done_name="$5"
+    local completed_name="$6"
+    local failures_name="$7"
+    local batch_pids_name="$8"
+    local batch_logs_name="$9"
+    local batch_modules_name="${10}"
+    local batch_programs_name="${11}"
+
+    local -n modules_ref="$modules_name"
+    local -n module_totals_ref="$module_totals_name"
+    local -n module_done_ref="$module_done_name"
+    local -n completed_ref="$completed_name"
+    local -n failures_ref="$failures_name"
+    local -n batch_pids_ref="$batch_pids_name"
+    local -n batch_logs_ref="$batch_logs_name"
+    local -n batch_modules_ref="$batch_modules_name"
+    local -n batch_programs_ref="$batch_programs_name"
+
+    local i module_idx status_file current_done current_total status_line
+    for i in "${!batch_pids_ref[@]}"; do
+        wait "${batch_pids_ref[$i]}" || true
+        completed_ref=$((completed_ref + 1))
+        module_idx="$(module_index "${batch_modules_ref[$i]}" "${modules_ref[@]}")"
+        current_done="${module_done_ref[$module_idx]}"
+        current_total="${module_totals_ref[$module_idx]}"
+        current_done=$((current_done + 1))
+        module_done_ref[$module_idx]="$current_done"
+
+        status_file="$RESULTS_DIR/${batch_modules_ref[$i]}/${batch_programs_ref[$i]}.status"
+        status_line="$(cat "$status_file" 2>/dev/null || printf 'UNKNOWN')"
+        if phase_status_counts_as_failure "$phase" "$status_line"; then
+            failures_ref=$((failures_ref + 1))
         fi
+
+        print_phase_progress \
+            "$phase" \
+            "${batch_modules_ref[$i]}" \
+            "$current_done" \
+            "$current_total" \
+            "$completed_ref" \
+            "$total" \
+            "${batch_programs_ref[$i]}" \
+            "$status_line"
+
+        if [ -s "${batch_logs_ref[$i]}" ]; then
+            cat "${batch_logs_ref[$i]}"
+        fi
+        rm -f "${batch_logs_ref[$i]}"
     done
 
-    if [ "$had_compile_error" -ne 0 ]; then
+    batch_pids_ref=()
+    batch_logs_ref=()
+    batch_modules_ref=()
+    batch_programs_ref=()
+}
+
+enqueue_phase_worker() {
+    local phase="$1"
+    local module="$2"
+    local program="$3"
+    local batch_pids_name="$4"
+    local batch_logs_name="$5"
+    local batch_modules_name="$6"
+    local batch_programs_name="$7"
+
+    local -n batch_pids_ref="$batch_pids_name"
+    local -n batch_logs_ref="$batch_logs_name"
+    local -n batch_modules_ref="$batch_modules_name"
+    local -n batch_programs_ref="$batch_programs_name"
+
+    local worker_log
+    worker_log="$(mktemp "$NIST_TMP_ROOT/${phase}_${module}_${program}.XXXXXX")"
+    phase_worker_command "$phase" "$module" "$program" >"$worker_log" 2>&1 &
+    batch_pids_ref+=("$!")
+    batch_logs_ref+=("$worker_log")
+    batch_modules_ref+=("$module")
+    batch_programs_ref+=("$program")
+}
+
+run_phase_workers() {
+    local phase="$1"
+    local jobs="$2"
+    local task_file="$3"
+    shift 3
+    local modules=("$@")
+    local total completed failures
+    local -a module_totals=()
+    local -a module_done=()
+    local -a batch_pids=()
+    local -a batch_logs=()
+    local -a batch_modules=()
+    local -a batch_programs=()
+    local module program
+
+    total="$(count_task_file "$task_file")"
+    completed=0
+    failures=0
+
+    for module in "${modules[@]}"; do
+        module_totals+=("$(list_module_programs "$module" | awk 'END { print NR + 0 }')")
+        module_done+=(0)
+    done
+
+    echo "=== Phase: $phase ==="
+
+    while IFS='|' read -r module program; do
+        [ -n "$module" ] || continue
+        enqueue_phase_worker \
+            "$phase" "$module" "$program" \
+            batch_pids batch_logs batch_modules batch_programs
+        if [ "${#batch_pids[@]}" -ge "$jobs" ]; then
+            flush_phase_batch \
+                "$phase" "$total" \
+                modules module_totals module_done completed failures \
+                batch_pids batch_logs batch_modules batch_programs
+        fi
+    done < "$task_file"
+
+    if [ "${#batch_pids[@]}" -gt 0 ]; then
+        flush_phase_batch \
+            "$phase" "$total" \
+            modules module_totals module_done completed failures \
+            batch_pids batch_logs batch_modules batch_programs
+    fi
+
+    return "$failures"
+}
+
+run_pipeline() {
+    local jobs="$1"
+    shift
+    local modules=("$@")
+    local compile_tasks execute_tasks
+
+    snapshot_compiler_if_needed >/dev/null
+    reset_modules_results "${modules[@]}"
+
+    compile_tasks="$(mktemp "$NIST_TMP_ROOT/compile_tasks.XXXXXX")"
+    execute_tasks="$(mktemp "$NIST_TMP_ROOT/execute_tasks.XXXXXX")"
+    build_task_file "$compile_tasks" "${modules[@]}"
+
+    if ! run_phase_workers compile "$jobs" "$compile_tasks" "${modules[@]}"; then
         echo ""
-        echo "Compile phase failed. Execution phase skipped."
+        if [ "${#modules[@]}" -eq 1 ]; then
+            echo "Compile phase failed. Execution phase skipped for module ${modules[0]}."
+        else
+            echo "Compile phase failed. Execution phase skipped."
+        fi
         run_collect_phase "${modules[@]}"
+        rm -f "$compile_tasks" "$execute_tasks"
         return
     fi
 
-    run_execute_phase "$jobs" "${modules[@]}"
+    cp "$compile_tasks" "$execute_tasks"
+    run_phase_workers execute "$jobs" "$execute_tasks" "${modules[@]}" || true
     run_collect_phase "${modules[@]}"
+    rm -f "$compile_tasks" "$execute_tasks"
+}
+
+run_all_modules() {
+    local module
+    local modules=()
+    while IFS= read -r module; do
+        modules+=("$module")
+    done < <(list_modules)
+    run_pipeline "$NIST_JOBS" "${modules[@]}"
 }
 
 run_module() {
@@ -1056,74 +1321,7 @@ run_module() {
         echo "Module $module: no programs found in $mod_dir"
         return
     }
-    run_compile_phase "$NIST_JOBS" "$module"
-    if module_has_status "$module" "COMPILE_ERROR"; then
-        echo ""
-        echo "Compile phase failed. Execution phase skipped for module $module."
-        run_collect_phase "$module"
-        return
-    fi
-    run_execute_phase "$NIST_JOBS" "$module"
-    run_collect_phase "$module"
-}
-
-compile_module() {
-    local module="$1"
-    local mod_dir="$PROGRAMS_DIR/$module"
-    [ -d "$mod_dir" ] || return
-    for src in "$mod_dir"/*.cob; do
-        [ -f "$src" ] || continue
-        local program
-        program="$(basename "$src" .cob)"
-        run_program "$module" "$program" "compile_only"
-    done
-}
-
-execute_module() {
-    local module="$1"
-    local mod_dir="$PROGRAMS_DIR/$module"
-    local jobs="$NIST_JOBS"
-    local -a batch_pids=()
-    local -a batch_logs=()
-    [ -d "$mod_dir" ] || return
-
-    flush_execute_batch() {
-        local idx pid program_log
-        for idx in "${!batch_pids[@]}"; do
-            pid="${batch_pids[$idx]}"
-            program_log="${batch_logs[$idx]}"
-            wait "$pid"
-            cat "$program_log"
-            rm -f "$program_log"
-        done
-        batch_pids=()
-        batch_logs=()
-    }
-
-    for src in "$mod_dir"/*.cob; do
-        [ -f "$src" ] || continue
-        local program parallel_mode program_log
-        program="$(basename "$src" .cob)"
-        if [ "$(cat "$RESULTS_DIR/$module/${program}.status" 2>/dev/null || printf 'SKIP')" != "COMPILED" ]; then
-            continue
-        fi
-        parallel_mode="$(program_parallel_mode "$module" "$program" "$src")"
-        if [ "$jobs" -le 1 ] || [ "$parallel_mode" != "parallel" ]; then
-            flush_execute_batch
-            run_program "$module" "$program" "run_only"
-            continue
-        fi
-        program_log="$(mktemp "$NIST_TMP_ROOT/${module}_${program}.execute.XXXXXX")"
-        (
-            run_program "$module" "$program" "run_only"
-        ) >"$program_log" 2>&1 &
-        batch_pids+=("$!")
-        batch_logs+=("$program_log")
-        if [ "${#batch_pids[@]}" -ge "$jobs" ]; then
-            flush_execute_batch
-        fi
-    done
-    flush_execute_batch
+    run_pipeline "$NIST_JOBS" "$module"
 }
 
 show_summary() {
@@ -1134,19 +1332,13 @@ show_summary() {
     printf "%-6s %6s %6s %6s %6s %6s %8s\n" \
         "------" "------" "------" "------" "------" "------" "--------"
     local grand_total=0 grand_pass=0 grand_fail=0 grand_cerr=0 grand_rerr=0
-    local module
+    local module total pass fail compile_ready cerr rerr timeout_count skip tested rate
     while IFS= read -r module; do
-        local summary="$RESULTS_DIR/$module/summary.txt"
-        [ -f "$summary" ] || continue
-        local total pass fail cerr rerr rate
-        total="$(summary_value "$summary" 'Total:')"
-        pass="$(summary_value "$summary" 'Pass:')"
-        fail="$(summary_value "$summary" 'Fail:')"
-        cerr="$(summary_value "$summary" 'Compile Error:')"
-        rerr="$(summary_value "$summary" 'Runtime Error:')"
-        rate="$(summary_value "$summary" 'Pass Rate:')"
+        read -r total pass fail compile_ready cerr rerr timeout_count skip tested rate <<EOF
+$(module_summary_values "$module")
+EOF
         printf "%-6s %6s %6s %6s %6s %6s %8s\n" \
-            "$module" "$total" "$pass" "$fail" "$cerr" "$rerr" "$rate"
+            "$module" "$total" "$pass" "$fail" "$cerr" "$rerr" "${rate}%"
         grand_total=$((grand_total + total))
         grand_pass=$((grand_pass + pass))
         grand_fail=$((grand_fail + fail))
@@ -1174,6 +1366,14 @@ case "${1:-}" in
     --all)
         run_all_modules "$NIST_JOBS"
         show_summary
+        ;;
+    __compile_one)
+        snapshot_compiler_if_needed >/dev/null
+        run_program "$2" "$3" "compile_only"
+        ;;
+    __execute_one)
+        snapshot_compiler_if_needed >/dev/null
+        run_program "$2" "$3" "run_only"
         ;;
     --summary)
         show_summary
