@@ -28,7 +28,16 @@ fn alphanumeric_operand_ptr_expr(expr: &HirExpr, c_expr: &str, data_items: &[Hir
     if let Some(item) = expr_data_name(expr).and_then(|name| find_data_item_by_name(name, data_items)) {
         return match item.data_type {
             HirType::Numeric { .. } => display_numeric_const_ptr(c_expr),
-            _ => format!("(const uint8_t*){c_expr}"),
+            _ => {
+                let is_qualified = expr_data_name(expr).is_some_and(|name| !name.qualifiers.is_empty());
+                if item.renames.is_some() {
+                    format!("(const uint8_t*){c_expr}")
+                } else if is_qualified || matches!(expr, HirExpr::Subscript { .. }) {
+                    format!("(const uint8_t*)&({c_expr})")
+                } else {
+                    format!("(const uint8_t*){c_expr}")
+                }
+            }
         };
     }
     format!("(const uint8_t*){c_expr}")
@@ -923,10 +932,10 @@ pub(crate) fn emit_store_int_op(
 /// Returns true if the given expression refers to a CobolDecimal variable.
 pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
+        HirExpr::DataRef(data_ref) => find_data_item(&data_ref.name, data_items)
             .is_some_and(|i| needs_decimal(&i.data_type)),
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
-            find_data_item_by_name(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+            find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
         }
         _ => false,
     }
@@ -935,10 +944,10 @@ pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> boo
 /// Check whether an expression refers to a group variable (emitted as a C union).
 pub(crate) fn is_group_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
+        HirExpr::DataRef(data_ref) => find_data_item(&data_ref.name, data_items)
             .is_some_and(|i| matches!(i.data_type, HirType::Group { .. })),
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
-            find_data_item_by_name(name, data_items)
+            find_data_item(name, data_items)
                 .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
         }
         _ => false,
@@ -948,10 +957,10 @@ pub(crate) fn is_group_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool 
 /// Check whether an expression refers to an alphanumeric variable (emitted as `char[]`).
 pub(crate) fn is_alpha_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
+        HirExpr::DataRef(data_ref) => find_data_item(&data_ref.name, data_items)
             .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. })),
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
-            find_data_item_by_name(name, data_items)
+            find_data_item(name, data_items)
                 .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }))
         }
         _ => false,
@@ -1273,6 +1282,8 @@ pub(crate) fn c_ptr_expr(c_name: &str, data_items: &[HirDataItem]) -> String {
             c_name.to_string()
         } else if is_group_item_c(c_name, data_items) || is_numeric_item_c(c_name, data_items) {
             format!("&{c_name}")
+        } else if c_name.contains('[') || c_name.contains(".members.") {
+            format!("&({c_name})")
         } else {
             c_name.to_string()
         }
@@ -1765,7 +1776,7 @@ pub(crate) fn emit_decimal_giving_add(
         if first {
             let c_t = emit_expr(t);
             let t_is_decimal = expr_data_name(t)
-                .and_then(|name| find_data_item_by_name(name, data_items))
+                .and_then(|name| find_data_item(name, data_items))
                 .is_some_and(|i| needs_decimal(&i.data_type));
             if t_is_decimal {
                 out.push_str(&format!("{pad}{c_target} = {c_t};\n"));
@@ -2158,7 +2169,7 @@ pub(crate) fn emit_string_source_delimiter(
 pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
         HirExpr::DataRef(data_ref) => {
-            if let Some(item) = find_data_item_by_name(&data_ref.name, data_items) {
+            if let Some(item) = find_data_item(&data_ref.name, data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
@@ -2168,7 +2179,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
             }
         }
         HirExpr::Variable(name) => {
-            if let Some(item) = find_data_item_by_name(name, data_items) {
+            if let Some(item) = find_data_item(name, data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
@@ -2178,7 +2189,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
             }
         }
         HirExpr::Subscript { variable, .. } => {
-            if let Some(item) = find_data_item_by_name(variable, data_items) {
+            if let Some(item) = find_data_item(variable, data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
@@ -2193,7 +2204,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
         | HirExpr::Literal(HirLiteral::LowValue)
         | HirExpr::Literal(HirLiteral::Quote) => true,
         HirExpr::ReferenceModification { variable, .. } => {
-            if let Some(item) = find_data_item_by_name(variable, data_items) {
+            if let Some(item) = find_data_item(variable, data_items) {
                 matches!(item.data_type, HirType::Alphanumeric { .. })
             } else {
                 false
@@ -2213,7 +2224,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
 pub(crate) fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
     match expr {
         HirExpr::DataRef(data_ref) => {
-            find_data_item_by_name(&data_ref.name, data_items).and_then(|item| {
+            find_data_item(&data_ref.name, data_items).and_then(|item| {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
@@ -2225,7 +2236,7 @@ pub(crate) fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) 
             })
         }
         HirExpr::Variable(name) => {
-            find_data_item_by_name(name, data_items).and_then(|item| {
+            find_data_item(name, data_items).and_then(|item| {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
@@ -2237,7 +2248,7 @@ pub(crate) fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) 
             })
         }
         HirExpr::Subscript { variable, .. } => {
-            find_data_item_by_name(variable, data_items).and_then(|item| {
+            find_data_item(variable, data_items).and_then(|item| {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }

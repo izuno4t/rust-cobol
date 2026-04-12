@@ -77,9 +77,10 @@ impl Lexer {
 
         for (i, seg) in segments.iter().enumerate() {
             if i > 0 {
-                // Insert a space between lines to separate tokens
-                content.push(' ');
-                // The inter-line space maps to the end of the previous segment's
+                // Preserve logical line boundaries so unterminated literals
+                // cannot swallow following divisions or statements.
+                content.push('\n');
+                // The inter-line separator maps to the end of the previous segment's
                 // original content (before any continuation was merged).
                 let prev = &segments[i - 1];
                 let prev_end = if let Some(&(start_in_text, base_global)) = prev.cont_offsets.last()
@@ -607,6 +608,13 @@ impl Lexer {
 
         while self.pos < self.content.len() {
             let ch = self.content.as_bytes()[self.pos];
+            if ch == b'\n' {
+                // In fixed/variable formats only explicit continuation lines
+                // may continue a literal. If we hit a logical line boundary
+                // here, terminate recovery at the newline instead of
+                // swallowing subsequent divisions/statements.
+                return self.make_token(TokenKind::Error, start, self.pos);
+            }
             if ch == quote {
                 self.pos += 1;
                 // Check for doubled quote (escape): "" or ''
@@ -635,6 +643,9 @@ impl Lexer {
 
         while self.pos < self.content.len() {
             let ch = self.content.as_bytes()[self.pos];
+            if ch == b'\n' {
+                return self.make_token(TokenKind::Error, start, self.pos);
+            }
             if ch == quote {
                 self.pos += 1;
                 // Check for doubled quote
@@ -1413,5 +1424,28 @@ mod tests {
             .find(|t| t.kind == TokenKind::StringLiteral)
             .expect("should have a closed string literal");
         assert_eq!(str_tok.text, r#""LITERAL ENDS AT 72""#);
+    }
+
+    #[test]
+    fn test_unterminated_quote_does_not_swallow_next_division_header() {
+        let src = concat!(
+            "000100 IDENTIFICATION DIVISION.                                          \n",
+            "000200 PROGRAM-ID. SG104A.                                                \n",
+            "000300 SECURITY.                                                          \n",
+            "000400     THIS PROGRAM CHECKS THE COMPILER\"S ABILITY.                    \n",
+            "000500 ENVIRONMENT DIVISION.                                              \n",
+            "000600 DATA DIVISION.                                                     \n",
+            "000700 PROCEDURE DIVISION.                                                \n",
+        );
+        let tokens = lex(src);
+
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::Environment),
+            "unterminated quote on one line must not swallow ENVIRONMENT DIVISION"
+        );
+        assert!(
+            tokens.iter().any(|t| t.kind == TokenKind::Procedure),
+            "unterminated quote on one line must not swallow PROCEDURE DIVISION"
+        );
     }
 }

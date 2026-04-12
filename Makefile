@@ -6,7 +6,7 @@ BINARY := cobolc
 INSTALL_DIR := $(HOME)/.cargo/bin
 NIST_COBOLC ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR)/release/cobol-driver,$(CURDIR)/target/release/cobol-driver)
 
-.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
+.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary nist-audit-codegen nist-compare-codegen runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
 
 NIST_ENV_ROOT ?= $(CURDIR)/target/nist
 NIST_JOBS ?= 3
@@ -103,6 +103,28 @@ nist-run:
 nist-summary:
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/run_nist.sh --summary
 
+## NIST 全件の HIR/C 生成監査
+nist-audit-codegen:
+	@test -x "$(NIST_COBOLC)" || $(MAKE) release
+	@test -d "$(NIST_ENV_ROOT)/programs" || \
+		( echo "NIST programs are not prepared in $(NIST_ENV_ROOT)/programs"; \
+		  echo "Run 'make nist-prepare' first."; \
+		  exit 1 )
+	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
+	NIST_JOBS="$(NIST_JOBS)" \
+	COBOLC="$(NIST_COBOLC)" \
+	bash tests/nist/audit_codegen.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
+
+## NIST 全件の COBOL/C 構造比較
+nist-compare-codegen:
+	@test -d "$(NIST_ENV_ROOT)/audit/codegen" || \
+		( echo "Audit results are not prepared in $(NIST_ENV_ROOT)/audit/codegen"; \
+		  echo "Run 'make nist-audit-codegen' first."; \
+		  exit 1 )
+	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
+	NIST_JOBS="$(NIST_JOBS)" \
+	bash tests/nist/compare_codegen.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
+
 ## x86 ランタイム検証環境のビルド
 runtime-x86-build:
 	$(EMPTY_PROXY_ENV) docker build -f docker/runtime-x86.Dockerfile -t $(RUNTIME_X86_IMAGE) .
@@ -156,6 +178,8 @@ help:
 	@echo "  make nist-prepare - NIST 資材を target/nist/programs に展開"
 	@echo "  make nist-run     - NIST CCVS 85 全モジュール実行"
 	@echo "  make nist-run NIST_JOBS=4 - NIST 全フェーズを4並列で実行"
+	@echo "  make nist-audit-codegen - NIST 全件の HIR/C 生成物を監査出力"
+	@echo "  make nist-compare-codegen - NIST 全件の COBOL/C 構造差分を比較"
 	@echo "  make nist-run MODULE=NC - NIST 特定モジュール実行"
 	@echo "  make nist-run MODULE=NC PROGRAM=NC101A - NIST 単一プログラム実行"
 	@echo "  make nist-summary - NIST 結果サマリー表示"

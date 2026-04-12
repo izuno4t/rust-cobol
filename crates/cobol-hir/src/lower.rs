@@ -164,6 +164,36 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         }
     }
 
+    if let Some(proc) = &program.procedure {
+        let has_debugging_use = proc
+            .declaratives
+            .iter()
+            .any(|decl| matches!(decl.use_statement, UseStatement::ForDebugging { .. }));
+        if has_debugging_use {
+            for name in [
+                "DEBUG-LINE",
+                "DEBUG-NAME",
+                "DEBUG-CONTENTS",
+                "DEBUG-SUB-1",
+                "DEBUG-SUB-2",
+                "DEBUG-SUB-3",
+            ] {
+                data_items.push(HirDataItem {
+                    name: SmolStr::new(name),
+                    data_type: HirType::Alphanumeric { size: 80 },
+                    initial_value: None,
+                    redefines: None,
+                    renames: None,
+                    occurs: None,
+                    indexed_by: Vec::new(),
+                    screen_info: None,
+                    justified: false,
+                    span: program.span,
+                });
+            }
+        }
+    }
+
     let data_catalog = build_resolved_data_catalog(&data_items);
 
     let (body, mut paragraphs, next_paragraph_id) =
@@ -1030,18 +1060,31 @@ fn lower_procedure_division(
         }
     }
 
+    let named_paragraph_ids: HashSet<HirParagraphId> = top_level_plans
+        .iter()
+        .flatten()
+        .map(|plan| plan.id)
+        .chain(section_plans.iter().map(|section| section.entry.id))
+        .chain(
+            section_plans
+                .iter()
+                .flat_map(|section| section.paragraphs.iter().map(|plan| plan.id)),
+        )
+        .collect();
+
     let mut body = Vec::new();
     let mut paragraphs = Vec::new();
     with_transfer_targets(transfer_targets, || {
         for (para, plan) in proc.paragraphs.iter().zip(top_level_plans.iter()) {
             let stmts = lower_paragraph(para, condition_names);
             if let Some(plan) = plan {
+                let local_stmts = truncate_paragraph_body(&stmts, plan.id, &named_paragraph_ids);
                 paragraphs.push(HirParagraph {
                     id: plan.id,
                     name: plan.name.clone(),
                     kind: plan.kind,
                     section_id: plan.section_id,
-                    body: stmts.clone(),
+                    body: local_stmts.clone(),
                     span: plan.span,
                 });
                 body.push(HirStatement::Label {
@@ -1050,14 +1093,13 @@ fn lower_procedure_division(
                         name: plan.name.clone(),
                     },
                 });
-                body.extend(stmts.clone());
+                body.extend(local_stmts);
             } else {
                 body.extend(stmts);
             }
         }
 
         for (section, plan) in proc.sections.iter().zip(section_plans.iter()) {
-            let mut section_stmts = Vec::new();
             body.push(HirStatement::Label {
                 target: HirTransferTarget::Paragraph {
                     id: plan.entry.id,
@@ -1074,39 +1116,47 @@ fn lower_procedure_division(
             });
             for (para, para_plan) in section.paragraphs.iter().zip(plan.paragraphs.iter()) {
                 let stmts = lower_paragraph(para, condition_names);
+                let local_stmts =
+                    truncate_paragraph_body(&stmts, para_plan.id, &named_paragraph_ids);
                 body.push(HirStatement::Label {
                     target: HirTransferTarget::Paragraph {
                         id: para_plan.id,
                         name: para_plan.name.clone(),
                     },
                 });
-                body.extend(stmts.clone());
-                section_stmts.push(HirStatement::Label {
-                    target: HirTransferTarget::Paragraph {
-                        id: para_plan.id,
-                        name: para_plan.name.clone(),
-                    },
-                });
-                section_stmts.extend(stmts.clone());
+                body.extend(local_stmts.clone());
                 paragraphs.push(HirParagraph {
                     id: para_plan.id,
                     name: para_plan.name.clone(),
                     kind: para_plan.kind,
                     section_id: para_plan.section_id,
-                    body: stmts,
+                    body: local_stmts,
                     span: para_plan.span,
                 });
-            }
-            if let Some(entry) = paragraphs
-                .iter_mut()
-                .find(|paragraph| paragraph.id == plan.entry.id)
-            {
-                entry.body = section_stmts;
             }
         }
     });
 
     (body, paragraphs, next_paragraph_id)
+}
+
+fn truncate_paragraph_body(
+    stmts: &[HirStatement],
+    current_id: HirParagraphId,
+    named_paragraph_ids: &HashSet<HirParagraphId>,
+) -> Vec<HirStatement> {
+    let mut body = Vec::new();
+    for stmt in stmts {
+        if let HirStatement::Label { target } = stmt {
+            if let Some(id) = target.paragraph_id() {
+                if id != current_id && named_paragraph_ids.contains(&id) {
+                    break;
+                }
+            }
+        }
+        body.push(stmt.clone());
+    }
+    body
 }
 
 fn lower_paragraph(
@@ -2926,9 +2976,10 @@ fn extract_file_organizations(program: &CobolProgram) -> HashMap<SmolStr, u32> {
 /// Only USE AFTER EXCEPTION sections are lowered; other USE types are ignored.
 ///
 /// Returns `(declaratives, extra_paragraphs)` where `extra_paragraphs` are the
-/// individual paragraphs defined inside each declarative section.  These must be
-/// appended to the program's `paragraphs` list so that PERFORM references from
-/// the declarative body (e.g. `PERFORM DECL-PASS`) can be resolved at C level.
+/// section entries and individual paragraphs defined inside each declarative
+/// section. These must be appended to the program's `paragraphs` list so that
+/// declarative section names and PERFORM references from the declarative body
+/// (e.g. `PERFORM DECL-PASS`) are preserved in generated C.
 fn lower_declaratives(
     program: &CobolProgram,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
@@ -2939,30 +2990,93 @@ fn lower_declaratives(
     };
     let mut decls = Vec::new();
     let mut extra_paras = Vec::new();
-    let mut seen_para_names = std::collections::HashSet::new();
     let mut next_paragraph_id = next_paragraph_id_start;
+    let mut seen_decl_para_names = std::collections::HashSet::new();
+    let mut seen_effective_names = std::collections::HashSet::new();
+    let mut section_plans = Vec::new();
     let mut transfer_targets = HashMap::new();
+
     for decl in &proc.declaratives {
-        if let UseStatement::AfterException { .. } = &decl.use_statement {
-            for para in &decl.paragraphs {
-                if !para.name.is_empty() && !seen_para_names.contains(&para.name) {
-                    seen_para_names.insert(para.name.clone());
-                    let id = HirParagraphId(next_paragraph_id);
-                    next_paragraph_id += 1;
-                    transfer_targets.insert(
-                        para.name.clone(),
-                        HirTransferTarget::Paragraph {
-                            id,
-                            name: para.name.clone(),
-                        },
-                    );
-                }
+        let section_id = HirParagraphId(next_paragraph_id);
+        next_paragraph_id += 1;
+        let entry = ParagraphPlan {
+            id: section_id,
+            name: decl.name.clone(),
+            kind: HirParagraphKind::Section,
+            section_id: None,
+            span: decl.span,
+        };
+        transfer_targets.insert(
+            entry.name.clone(),
+            HirTransferTarget::Paragraph {
+                id: entry.id,
+                name: entry.name.clone(),
+            },
+        );
+
+        let mut paragraph_plans = Vec::with_capacity(decl.paragraphs.len());
+        for para in &decl.paragraphs {
+            if para.name.is_empty() {
+                continue;
             }
+
+            let effective_name = if seen_decl_para_names.contains(&para.name) {
+                let base: SmolStr = format!("{}--{}", decl.name, para.name).into();
+                if seen_effective_names.insert(base.clone()) {
+                    base
+                } else {
+                    let mut counter = 2usize;
+                    loop {
+                        let candidate: SmolStr =
+                            format!("{}--{}--{}", decl.name, para.name, counter).into();
+                        if seen_effective_names.insert(candidate.clone()) {
+                            break candidate;
+                        }
+                        counter += 1;
+                    }
+                }
+            } else {
+                seen_decl_para_names.insert(para.name.clone());
+                let base = para.name.clone();
+                seen_effective_names.insert(base.clone());
+                base
+            };
+
+            let id = HirParagraphId(next_paragraph_id);
+            next_paragraph_id += 1;
+            transfer_targets.insert(
+                effective_name.clone(),
+                HirTransferTarget::Paragraph {
+                    id,
+                    name: effective_name.clone(),
+                },
+            );
+            paragraph_plans.push(ParagraphPlan {
+                id,
+                name: effective_name,
+                kind: HirParagraphKind::Paragraph,
+                section_id: Some(section_id),
+                span: para.span,
+            });
         }
+
+        section_plans.push(SectionPlan {
+            entry,
+            paragraphs: paragraph_plans,
+        });
     }
-    let mut seen_para_names = std::collections::HashSet::new();
+
     with_transfer_targets(transfer_targets.clone(), || {
-        for decl in &proc.declaratives {
+        for (decl, plan) in proc.declaratives.iter().zip(section_plans.iter()) {
+            extra_paras.push(HirParagraph {
+                id: plan.entry.id,
+                name: plan.entry.name.clone(),
+                kind: plan.entry.kind,
+                section_id: None,
+                body: Vec::new(),
+                span: plan.entry.span,
+            });
+
             if let UseStatement::AfterException { file_names } = &decl.use_statement {
                 let body: Vec<HirStatement> = decl
                     .paragraphs
@@ -2974,25 +3088,18 @@ fn lower_declaratives(
                     file_names: file_names.clone(),
                     body,
                 });
-                for para in &decl.paragraphs {
-                    if !para.name.is_empty() && !seen_para_names.contains(&para.name) {
-                        seen_para_names.insert(para.name.clone());
-                        let target = transfer_targets
-                            .get(&para.name)
-                            .cloned()
-                            .unwrap_or_else(|| resolve_transfer_target(&para.name));
-                        let id = target.paragraph_id().unwrap_or(HirParagraphId(u32::MAX));
-                        let stmts = lower_paragraph(para, condition_names);
-                        extra_paras.push(HirParagraph {
-                            id,
-                            name: para.name.clone(),
-                            kind: HirParagraphKind::Paragraph,
-                            section_id: None,
-                            body: stmts,
-                            span: para.span,
-                        });
-                    }
-                }
+            }
+
+            for (para, para_plan) in decl.paragraphs.iter().zip(plan.paragraphs.iter()) {
+                let stmts = lower_paragraph(para, condition_names);
+                extra_paras.push(HirParagraph {
+                    id: para_plan.id,
+                    name: para_plan.name.clone(),
+                    kind: para_plan.kind,
+                    section_id: para_plan.section_id,
+                    body: stmts,
+                    span: para_plan.span,
+                });
             }
         }
     });

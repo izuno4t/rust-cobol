@@ -1444,8 +1444,33 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}switch ((int){c_dep}) {{\n"));
                 for (i, target) in targets.iter().enumerate() {
                     let c_target = transfer_target_c_name(target, paragraphs);
+                    let local_label_id = target
+                        .paragraph_id()
+                        .and_then(|id| with_active_context(|ctx| ctx.label_id(id)));
                     if in_body {
-                        out.push_str(&format!("{pad}    case {}: goto lbl_{c_target};\n", i + 1));
+                        if local_label_id.is_some() {
+                            out.push_str(&format!(
+                                "{pad}    case {}: goto lbl_{c_target};\n",
+                                i + 1
+                            ));
+                        } else {
+                            let label_id = target.paragraph_id().and_then(|id| {
+                                with_active_context(|ctx| {
+                                    ctx.label_id(id).or_else(|| ctx.body_label_id(id))
+                                })
+                            });
+                            if let Some(id) = label_id {
+                                out.push_str(&format!(
+                                    "{pad}    case {}: _goto_target = {id}; goto _goto_dispatch;\n",
+                                    i + 1
+                                ));
+                            } else {
+                                out.push_str(&format!(
+                                    "{pad}    case {}: para_{c_target}(); return;\n",
+                                    i + 1
+                                ));
+                            }
+                        }
                     } else {
                         let label_id = target.paragraph_id().and_then(|id| {
                             with_active_context(|ctx| {
@@ -1469,8 +1494,24 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}}}\n"));
             } else if let Some(target) = targets.first() {
                 let c_target = transfer_target_c_name(target, paragraphs);
+                let local_label_id = target
+                    .paragraph_id()
+                    .and_then(|id| with_active_context(|ctx| ctx.label_id(id)));
                 if in_body {
-                    out.push_str(&format!("{pad}goto lbl_{c_target};\n"));
+                    if local_label_id.is_some() {
+                        out.push_str(&format!("{pad}goto lbl_{c_target};\n"));
+                    } else {
+                        let label_id = target.paragraph_id().and_then(|id| {
+                            with_active_context(|ctx| {
+                                ctx.label_id(id).or_else(|| ctx.body_label_id(id))
+                            })
+                        });
+                        if let Some(id) = label_id {
+                            out.push_str(&format!("{pad}_goto_target = {id}; goto _goto_dispatch;\n"));
+                        } else {
+                            out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
+                        }
+                    }
                 } else {
                     let label_id = target.paragraph_id().and_then(|id| {
                         with_active_context(|ctx| {
@@ -3458,8 +3499,7 @@ pub(crate) fn emit_move_to(
             }
             HirExpr::DataRef(data_ref) => {
                 let c_src = emit_data_ref_expr(data_ref);
-                let src_item =
-                    find_data_item_by_name(&data_ref.name, data_items).map(|i| &i.data_type);
+                let src_item = find_data_item(&data_ref.name, data_items).map(|i| &i.data_type);
                 if matches!(src_item, Some(HirType::National { .. })) {
                     let src_size = match src_item {
                         Some(HirType::National { size }) => *size,
@@ -3481,7 +3521,7 @@ pub(crate) fn emit_move_to(
             }
             HirExpr::Variable(src_name) => {
                 let c_src = data_name_to_c_name(src_name);
-                let src_item = find_data_item_by_name(src_name, data_items).map(|i| &i.data_type);
+                let src_item = find_data_item(src_name, data_items).map(|i| &i.data_type);
                 if matches!(src_item, Some(HirType::National { .. })) {
                     let src_size = match src_item {
                         Some(HirType::National { size }) => *size,
@@ -3514,7 +3554,7 @@ pub(crate) fn emit_move_to(
     if is_target_group {
         if let HirExpr::Variable(src_name) = from {
             let c_src = data_name_to_c_name(src_name);
-            let src_item = find_data_item_by_name(src_name, data_items);
+            let src_item = find_data_item(src_name, data_items);
             let is_source_group =
                 src_item.is_some_and(|item| matches!(item.data_type, HirType::Group { .. }));
             let is_source_alpha_like = src_item.is_some_and(|item| {
@@ -3574,7 +3614,7 @@ pub(crate) fn emit_move_to(
         } else if let HirExpr::Subscript { variable, .. } = from {
             // Subscripted source to group target: check type and use memcpy
             let c_src = emit_expr(from);
-            let src_item = find_data_item_by_name(variable, data_items);
+            let src_item = find_data_item(variable, data_items);
             let is_src_alpha =
                 src_item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
             let is_src_group =
@@ -3744,7 +3784,7 @@ pub(crate) fn emit_move_to(
     let src_data_name = expr_data_name(from);
     let src_var_name = src_data_name.map(HirDataName::as_str).unwrap_or("");
     let src_type = src_data_name
-        .and_then(|name| find_data_item_by_name(name, data_items))
+        .and_then(|name| find_data_item(name, data_items))
         .map(|i| &i.data_type);
     let is_source_index =
         src_data_name.is_some() && src_type.is_none() && is_index_name(src_var_name, data_items);
@@ -3759,9 +3799,12 @@ pub(crate) fn emit_move_to(
             )
         );
     let is_source_decimal_var = src_type.is_some_and(needs_decimal);
-    let is_source_alpha_var = matches!(src_type, Some(HirType::Alphanumeric { .. }));
-    let is_source_group_var = matches!(src_type, Some(HirType::Group { .. }));
-    let is_source_national_var = matches!(src_type, Some(HirType::National { .. }));
+    let is_source_alpha_var =
+        matches!(src_type, Some(HirType::Alphanumeric { .. })) || is_alpha_expr(from, data_items);
+    let is_source_group_var =
+        matches!(src_type, Some(HirType::Group { .. })) || is_group_expr(from, data_items);
+    let is_source_national_var = matches!(src_type, Some(HirType::National { .. }))
+        || src_type.is_some_and(|ty| matches!(ty, HirType::National { .. }));
 
     // National source -> alphanumeric target: use DISPLAY-OF conversion
     if is_target_alpha && is_source_national_var {
@@ -4017,7 +4060,7 @@ pub(crate) fn emit_move_to(
                 if let Some(name) = expr_data_name(from) {
                     let c_src = emit_expr(from);
                     let tgt_size = find_data_item_layout(c_target, data_items).item_len;
-                    let src_type = find_data_item_by_name(name, data_items).map(|i| &i.data_type);
+                    let src_type = find_data_item(name, data_items).map(|i| &i.data_type);
                     let pic_str = src_type
                         .map(generate_pic_string)
                         .unwrap_or_else(|| "9".to_string());
@@ -4469,8 +4512,8 @@ pub(crate) fn emit_perform(
         HirPerformKind::ProcedureName { target, through } => {
             let c_name = transfer_target_c_name(target, paragraphs);
             let in_body = with_active_context(|ctx| ctx.in_body_context());
-            let has_labels = with_active_context(|ctx| ctx.has_labels());
-            let need_body_dispatch = in_body && has_labels;
+            let has_local_labels = with_active_context(|ctx| ctx.has_labels());
+            let need_body_dispatch = in_body && has_local_labels;
             if let Some(thru) = through {
                 // PERFORM name THRU through: call all paragraphs from name to through
                 let c_thru = transfer_target_c_name(thru, paragraphs);
@@ -4484,20 +4527,21 @@ pub(crate) fn emit_perform(
                 if let (Some(si), Some(ei)) = (start_idx, end_idx) {
                     let (lo, hi) = if si <= ei { (si, ei) } else { (ei, si) };
                     let thru_paras: Vec<_> = paragraphs[lo..=hi].iter().collect();
+                    let thru_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
+                        thru_paras
+                            .iter()
+                            .filter_map(|paragraph| {
+                                ctx.label_id(paragraph.id)
+                                    .or_else(|| ctx.body_label_id(paragraph.id))
+                                    .map(|id| (paragraph.id, id))
+                            })
+                            .collect()
+                    });
 
-                    if has_labels && thru_paras.len() > 1 {
+                    if !thru_ids.is_empty() && thru_paras.len() > 1 {
                         // Generate unique label suffix for this PERFORM THRU
                         let pt_id = with_active_context(|ctx| ctx.next_perform_thru_id());
                         let suffix = format!("pt{pt_id}");
-                        // Collect label IDs for paragraphs in the THRU range
-                        let thru_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
-                            thru_paras
-                                .iter()
-                                .filter_map(|paragraph| {
-                                    ctx.label_id(paragraph.id).map(|id| (paragraph.id, id))
-                                })
-                                .collect()
-                        });
 
                         // Emit each paragraph call with goto dispatch
                         for (idx, paragraph) in thru_paras.iter().enumerate() {
@@ -4511,11 +4555,9 @@ pub(crate) fn emit_perform(
                                 ));
                             } else {
                                 // After last call, check for out-of-range goto
-                                if has_labels {
-                                    out.push_str(&format!(
-                                        "{pad}if (_goto_target) goto _pt_disp_{suffix};\n"
-                                    ));
-                                }
+                                out.push_str(&format!(
+                                    "{pad}if (_goto_target) goto _pt_disp_{suffix};\n"
+                                ));
                             }
                         }
                         out.push_str(&format!("{pad}goto _pt_end_{suffix};\n"));
@@ -4547,7 +4589,7 @@ pub(crate) fn emit_perform(
                                 out.push_str(&format!(
                                     "{pad}if (_goto_target) goto _goto_dispatch;\n"
                                 ));
-                            } else if has_labels {
+                            } else if has_local_labels {
                                 out.push_str(&format!("{pad}_goto_target = 0;\n"));
                             }
                         }
@@ -4557,7 +4599,7 @@ pub(crate) fn emit_perform(
                     out.push_str(&format!("{pad}para_{c_name}();\n"));
                     if need_body_dispatch {
                         out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
-                    } else if has_labels {
+                    } else if has_local_labels {
                         out.push_str(&format!("{pad}_goto_target = 0;\n"));
                     }
                 }
@@ -4565,7 +4607,7 @@ pub(crate) fn emit_perform(
                 out.push_str(&format!("{pad}para_{c_name}();\n"));
                 if need_body_dispatch {
                     out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
-                } else if has_labels {
+                } else if has_local_labels {
                     // Direct PERFORM in a paragraph/section function is
                     // already expanded at the call site, so nested control
                     // transfers must not leak into the caller's dispatch loop.

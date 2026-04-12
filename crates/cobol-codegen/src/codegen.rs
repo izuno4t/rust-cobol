@@ -103,6 +103,7 @@ pub fn generate_c(program: &HirProgram) -> String {
             &top_level_fd_aliases,
             &program.fd_record_aliases,
         );
+        emit_debug_special_registers(&mut out, program);
         emit_fd_alias_macros(&mut out, &program.data_items, &program.fd_record_aliases);
         cg_timing!("emit_data_items", t_data);
 
@@ -404,6 +405,34 @@ pub fn generate_c(program: &HirProgram) -> String {
     })
 }
 
+fn emit_debug_special_registers(out: &mut String, program: &HirProgram) {
+    let hir_dump = format!("{program:#?}");
+    let declared: HashSet<String> = program.data_items.iter().map(|item| sanitize_name(&item.name)).collect();
+    let mut emitted_any = false;
+
+    for (c_name, original_name) in [
+        ("DEBUG_LINE", "DEBUG-LINE"),
+        ("DEBUG_NAME", "DEBUG-NAME"),
+        ("DEBUG_CONTENTS", "DEBUG-CONTENTS"),
+        ("DEBUG_SUB_1", "DEBUG-SUB-1"),
+        ("DEBUG_SUB_2", "DEBUG-SUB-2"),
+        ("DEBUG_SUB_3", "DEBUG-SUB-3"),
+    ] {
+        if declared.contains(c_name) || !hir_dump.contains(original_name) {
+            continue;
+        }
+        if !emitted_any {
+            out.push_str("/* Debug special registers */\n");
+            emitted_any = true;
+        }
+        out.push_str(&format!("static char {c_name}[81];\n"));
+    }
+
+    if emitted_any {
+        out.push('\n');
+    }
+}
+
 /// Emit a nested (contained) program as a callable C function.
 fn emit_nested_program(out: &mut String, program: &HirProgram) {
     let prog_name = sanitize_name(&program.name);
@@ -614,52 +643,78 @@ fn emit_program_paragraph_definitions(
                 out.push_str("}\n");
 
                 for paragraph in &section_paras[1..] {
-                    let paragraph_c_name = sanitize_name(&paragraph.name);
-                    if let Some(id) = merged_label_map.get(&paragraph.id) {
-                        out.push_str(&format!(
-                            "\nstatic void para_{paragraph_c_name}(void) {{ _goto_target = {id}; para_{c_name}(); }}\n"
-                        ));
-                    }
+                    emit_isolated_paragraph_definition(
+                        out,
+                        paragraph,
+                        paragraphs,
+                        &program.data_items,
+                        fs_map,
+                        has_decl,
+                        ctx,
+                    );
                 }
             } else {
-                let para_label_map = build_paragraph_label_map(&paragraphs[i]);
-                ctx.set_label_map(para_label_map.clone());
-                out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
-                out.push_str(&format!("lbl_{c_name}:;\n"));
-                for stmt in &paragraphs[i].body {
-                    let env = StmtEmitEnv {
-                        data_items: &program.data_items,
-                        paragraphs,
-                        fs_map,
-                        has_declaratives: has_decl,
-                        ctx,
-                    };
-                    emit_statement_with_ctx(out, stmt, &env, 1);
-                }
-                out.push_str("_goto_dispatch:\n");
-                out.push_str("    while (_goto_target) {\n");
-                out.push_str("      int _t = _goto_target; _goto_target = 0;\n");
-                if !para_label_map.is_empty() {
-                    out.push_str("      switch(_t) {\n");
-                    for paragraph in paragraphs {
-                        if let Some(id) = para_label_map.get(&paragraph.id) {
-                            let paragraph_c_name = sanitize_name(&paragraph.name);
-                            out.push_str(&format!(
-                                "        case {id}: goto lbl_{paragraph_c_name};\n"
-                            ));
-                        }
-                    }
-                    out.push_str("        default: _goto_target = _t; return;\n");
-                    out.push_str("      }\n");
-                }
-                out.push_str("      return;\n");
-                out.push_str("    }\n");
-                out.push_str("}\n");
+                emit_isolated_paragraph_definition(
+                    out,
+                    &paragraphs[i],
+                    paragraphs,
+                    &program.data_items,
+                    fs_map,
+                    has_decl,
+                    ctx,
+                );
             }
 
             i = section_end;
         }
     });
+}
+
+fn emit_isolated_paragraph_definition(
+    out: &mut String,
+    paragraph: &HirParagraph,
+    paragraphs: &[HirParagraph],
+    data_items: &[HirDataItem],
+    fs_map: &FileStatusMap,
+    has_decl: bool,
+    ctx: &CodegenContext,
+) {
+    let c_name = sanitize_name(&paragraph.name);
+    let para_label_map = build_paragraph_label_map(paragraph);
+    ctx.set_label_map(para_label_map.clone());
+    out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+    out.push_str(&format!("lbl_{c_name}:;\n"));
+    for stmt in &paragraph.body {
+        let env = StmtEmitEnv {
+            data_items,
+            paragraphs,
+            fs_map,
+            has_declaratives: has_decl,
+            ctx,
+        };
+        emit_statement_with_ctx(out, stmt, &env, 1);
+    }
+    out.push_str("_goto_dispatch:\n");
+    if para_label_map.is_empty() {
+        out.push_str("    while (_goto_target) {\n");
+        out.push_str("      return;\n");
+        out.push_str("    }\n");
+    } else {
+        out.push_str("    while (_goto_target) {\n");
+        out.push_str("      int _t = _goto_target; _goto_target = 0;\n");
+        out.push_str("      switch(_t) {\n");
+        for paragraph in paragraphs {
+            if let Some(id) = para_label_map.get(&paragraph.id) {
+                let paragraph_c_name = sanitize_name(&paragraph.name);
+                out.push_str(&format!("        case {id}: goto lbl_{paragraph_c_name};\n"));
+            }
+        }
+        out.push_str("        default: _goto_target = _t; return;\n");
+        out.push_str("      }\n");
+        out.push_str("      return;\n");
+        out.push_str("    }\n");
+    }
+    out.push_str("}\n");
 }
 
 fn collect_top_level_data_item_c_names(program: &HirProgram) -> Vec<String> {
@@ -746,16 +801,12 @@ fn emit_top_level_entry_flow(
     label_map: &HashMap<HirParagraphId, usize>,
 ) {
     let top_level_next_map = build_top_level_next_label_map(paragraphs, label_map);
-    let top_level_ids: HashSet<_> = top_level_group_entry_ids(paragraphs, label_map)
-        .into_iter()
-        .collect();
-    if let Some(first_id) = top_level_group_entry_ids(paragraphs, label_map).first().copied() {
-        let paragraph = paragraphs
-            .iter()
-            .find(|paragraph| paragraph.id == first_id)
-            .expect("top-level paragraph group entry must exist");
-        let c_name = sanitize_name(&paragraph.name);
-        out.push_str(&format!("    para_{c_name}();\n"));
+    let top_level_entry_ids = top_level_group_entry_ids(paragraphs, label_map);
+    let top_level_ids: HashSet<_> = top_level_entry_ids.iter().copied().collect();
+    if let Some(first_id) = top_level_entry_ids.first().copied() {
+        if let Some(first_label_id) = label_map.get(&first_id) {
+            out.push_str(&format!("    _goto_target = {first_label_id};\n"));
+        }
         emit_inline_dispatch_loop(
             out,
             paragraphs,

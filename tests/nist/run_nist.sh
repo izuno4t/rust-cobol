@@ -992,7 +992,7 @@ run_execute_phase() {
                 run_program "$module" "$program" "run_only"
                 continue
             fi
-            program_log="$(mktemp "$NIST_TMP_ROOT/${module}_${program}.execute.XXXXXX.log")"
+            program_log="$(mktemp "$NIST_TMP_ROOT/${module}_${program}.execute.XXXXXX")"
             (
                 run_program "$module" "$program" "run_only"
             ) >"$program_log" 2>&1 &
@@ -1109,7 +1109,7 @@ execute_module() {
             run_program "$module" "$program" "run_only"
             continue
         fi
-        program_log="$(mktemp "$NIST_TMP_ROOT/${module}_${program}.execute.XXXXXX.log")"
+        program_log="$(mktemp "$NIST_TMP_ROOT/${module}_${program}.execute.XXXXXX")"
         (
             run_program "$module" "$program" "run_only"
         ) >"$program_log" 2>&1 &

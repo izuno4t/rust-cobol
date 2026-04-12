@@ -38,6 +38,13 @@ mod tests {
         parser.parse_program()
     }
 
+    fn parse_fixed(source: &str) -> Result<CobolProgram, ()> {
+        let mut lexer = Lexer::new(source, FileId(0), SourceFormat::Fixed);
+        let tokens = lexer.lex_all();
+        let mut parser = Parser::new(tokens, FileId(0));
+        parser.parse_program()
+    }
+
     #[test]
     fn test_parse_minimal_program() {
         let src = "\
@@ -88,6 +95,36 @@ mod tests {
         let program = parse(src).unwrap();
         let data = program.data.unwrap();
         assert_eq!(data.working_storage.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_fixed_working_storage_with_integer_literal_level_after_header() {
+        let src = "\
+000100 IDENTIFICATION DIVISION.
+000200 PROGRAM-ID. TEST-DATA.
+000300 DATA DIVISION.
+000400 WORKING-STORAGE SECTION.
+000500 01  HEADER-GROUP.
+000600                                                                02
+000700     ITEM-A                    PIC X(4) VALUE \"ABCD\".
+000800 01  TEST-RESULTS.
+000900     02 P-OR-F                 PIC X(5).
+001000 PROCEDURE DIVISION.
+001100     MOVE SPACE TO TEST-RESULTS.
+001200     MOVE \"PASS \" TO P-OR-F.
+001300     STOP RUN.
+";
+        let program = parse_fixed(src).unwrap();
+        let data = program.data.unwrap();
+        assert_eq!(data.working_storage.len(), 2);
+        assert_eq!(
+            data.working_storage[0].children[0].name.as_deref(),
+            Some("ITEM-A")
+        );
+        assert_eq!(
+            data.working_storage[1].children[0].name.as_deref(),
+            Some("P-OR-F")
+        );
     }
 
     #[test]

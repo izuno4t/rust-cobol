@@ -8,6 +8,19 @@ use smol_str::SmolStr;
 use crate::parser::Parser;
 
 impl Parser {
+    fn at_data_item_start(&self) -> bool {
+        matches!(self.current().kind, TokenKind::LevelNumber | TokenKind::IntegerLiteral)
+    }
+
+    fn consume_data_level_number(&mut self) -> Result<u8, ()> {
+        let tok = if self.check(TokenKind::LevelNumber) || self.check(TokenKind::IntegerLiteral) {
+            self.advance()
+        } else {
+            return Err(());
+        };
+        Ok(tok.text.parse().unwrap_or(1))
+    }
+
     /// Parse the DATA DIVISION.
     pub fn parse_data_division(&mut self) -> Result<DataDivision, ()> {
         let start_span = self.span();
@@ -601,7 +614,7 @@ impl Parser {
     pub(crate) fn parse_data_items(&mut self) -> Result<Vec<DataItem>, ()> {
         let mut items = Vec::new();
 
-        while self.check(TokenKind::LevelNumber) && !self.at_division_header() && !self.at_eof() {
+        while self.at_data_item_start() && !self.at_division_header() && !self.at_eof() {
             if self.at_data_section_header() {
                 break;
             }
@@ -619,8 +632,7 @@ impl Parser {
     fn parse_data_item(&mut self) -> Result<DataItem, ()> {
         let start_span = self.span();
 
-        let level_tok = self.expect(TokenKind::LevelNumber)?;
-        let level: u8 = level_tok.text.parse().unwrap_or(1);
+        let level = self.consume_data_level_number()?;
 
         let name = if self.check(TokenKind::Filler) {
             self.advance();
