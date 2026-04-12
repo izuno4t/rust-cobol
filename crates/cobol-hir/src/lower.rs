@@ -1574,7 +1574,7 @@ fn lower_evaluate(
     } else {
         // Wrap in an inline PERFORM if multiple statements
         HirStatement::Perform {
-            kind: HirPerformKind::Inline { body: else_body },
+            kind: Box::new(HirPerformKind::Inline { body: else_body }),
             span: eval.span,
         }
     }
@@ -1756,7 +1756,7 @@ fn lower_perform(
         }
     };
     HirStatement::Perform {
-        kind,
+        kind: Box::new(kind),
         span: perform.span,
     }
 }
@@ -2936,7 +2936,7 @@ fn patch_write_file_names(stmts: &mut [HirStatement], rec_map: &HashMap<SmolStr,
                 patch_write_file_names(else_body, rec_map);
             }
             HirStatement::Perform { kind, .. } => {
-                let body = match kind {
+                let body = match kind.as_mut() {
                     HirPerformKind::Inline { body } => body.as_mut_slice(),
                     HirPerformKind::Times { body, .. } => body.as_mut_slice(),
                     HirPerformKind::Until { body, .. } => body.as_mut_slice(),
@@ -4112,7 +4112,7 @@ PARA-3.
             .find(|paragraph| paragraph.name.as_str() == "PARA-1")
             .expect("expected PARA-1 paragraph");
         match &para_1.body[0] {
-            HirStatement::Perform { kind, .. } => match kind {
+            HirStatement::Perform { kind, .. } => match kind.as_ref() {
                 HirPerformKind::ProcedureName { target, through } => {
                     match target {
                         HirTransferTarget::Paragraph { id, name } => {

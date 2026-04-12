@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SOURCE_VAL="${1:-$REPO_ROOT/tests/nist/newcob.val}"
-ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
+ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/.nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 EXTRACTOR="$REPO_ROOT/tests/nist/extract.pl"
 TMP_PROGRAMS_DIR=""

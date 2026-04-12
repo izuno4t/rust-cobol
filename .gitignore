@@ -1,4 +1,5 @@
 /target
+/.nist
 **/*.rs.bk
 
 # NIST CCVS 85 test artifacts

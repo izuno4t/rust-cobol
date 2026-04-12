@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
+ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/.nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 RESULTS_DIR="$ENV_ROOT/results"
 COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
@@ -103,7 +103,8 @@ prepare_print_file() {
 }
 
 sha256_of_file() {
-    shasum -a 256 "$1" | perl -ne 'if (/^([0-9a-fA-F]+)/) { print "$1\n"; exit }'
+    [ -f "$1" ] || return 1
+    shasum -a 256 "$1" 2>/dev/null | perl -ne 'if (/^([0-9a-fA-F]+)/) { print "$1\n"; exit }'
 }
 
 sha256_of_stdin() {
@@ -124,7 +125,10 @@ compute_compiler_signature() {
                 find "$deps_dir" -maxdepth 1 -type f \
                     \( -name 'libcobol_runtime-*.a' -o -name 'libcobol_runtime-*.rlib' -o -name 'libcobol_runtime-*.dylib' -o -name 'libcobol_runtime-*.so' \) \
                     | LC_ALL=C sort | while IFS= read -r file; do
-                        printf '%s  %s\n' "$(sha256_of_file "$file")" "$(basename "$file")"
+                        local file_hash
+                        file_hash="$(sha256_of_file "$file" || true)"
+                        [ -n "$file_hash" ] || continue
+                        printf '%s  %s\n' "$file_hash" "$(basename "$file")"
                     done
             )"
         fi

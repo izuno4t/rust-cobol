@@ -519,7 +519,7 @@ pub enum HirStatement {
         span: Span,
     },
     Perform {
-        kind: HirPerformKind,
+        kind: Box<HirPerformKind>,
         span: Span,
     },
     Call {
@@ -1360,7 +1360,7 @@ fn write_stmt(
             writeln!(f, "{pad}END-IF")
         }
         HirStatement::Perform { kind, .. } => {
-            writeln!(f, "{pad}PERFORM {:?}", std::mem::discriminant(kind))
+            writeln!(f, "{pad}PERFORM {:?}", std::mem::discriminant(kind.as_ref()))
         }
         HirStatement::Call { program, .. } => {
             writeln!(f, "{pad}CALL {}", format_expr(program))

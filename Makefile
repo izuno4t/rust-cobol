@@ -8,7 +8,7 @@ NIST_COBOLC ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR)/release/cobol-driver
 
 .PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary nist-audit-codegen nist-compare-codegen runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
 
-NIST_ENV_ROOT ?= $(CURDIR)/target/nist
+NIST_ENV_ROOT ?= $(CURDIR)/.nist
 NIST_JOBS ?= 3
 NIST_SOURCE_VAL ?=
 RUNTIME_X86_IMAGE := rust-cobol-runtime-x86
@@ -22,10 +22,12 @@ all: release
 
 ## デバッグビルド
 build:
+	mkdir -p target/debug/deps target/debug/build target/debug/examples target/debug/incremental
 	$(CARGO) build
 
 ## リリースビルド
 release:
+	mkdir -p target/release/deps target/release/build target/release/examples target/release/incremental
 	$(CARGO) build --release
 
 ## 全テスト実行
@@ -45,6 +47,7 @@ lint: clippy fmt-check spellcheck
 
 ## clippy
 clippy:
+	mkdir -p target/debug/deps target/debug/build target/debug/examples target/debug/incremental
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
 ## フォーマットチェック
@@ -175,7 +178,7 @@ help:
 	@echo "  make install     - cobolc を ~/.cargo/bin にインストール"
 	@echo "  make uninstall   - cobolc をアンインストール"
 	@echo "  make example     - examples/hello.cob をコンパイル・実行"
-	@echo "  make nist-prepare - NIST 資材を target/nist/programs に展開"
+	@echo "  make nist-prepare - NIST 資材を .nist/programs に展開"
 	@echo "  make nist-run     - NIST CCVS 85 全モジュール実行"
 	@echo "  make nist-run NIST_JOBS=4 - NIST 全フェーズを4並列で実行"
 	@echo "  make nist-audit-codegen - NIST 全件の HIR/C 生成物を監査出力"

@@ -170,8 +170,14 @@ PROCEDURE DIVISION.
     STOP RUN.
 ";
         let c_code = parse_lower_generate(src);
-        assert!(c_code.contains("static char WS_NAME"));
-        assert!(c_code.contains("static int64_t WS_COUNT"));
+        assert!(
+            c_code.contains("static char WS_NAME"),
+            "expected WS_NAME storage declaration in generated C: {c_code}"
+        );
+        assert!(
+            c_code.contains("static int64_t WS_COUNT"),
+            "expected WS_COUNT storage declaration in generated C: {c_code}"
+        );
     }
 
     #[test]
@@ -211,8 +217,38 @@ PROCEDURE DIVISION.
     STOP RUN.
 ";
         let c_code = parse_lower_generate(src);
-        assert!(c_code.contains("if ("));
-        assert!(c_code.contains("} else {"));
+        assert!(c_code.contains("if ("), "expected if statement in generated C: {c_code}");
+        assert!(
+            c_code.contains("} else {"),
+            "expected else block in generated C: {c_code}"
+        );
+    }
+
+    #[test]
+    fn test_generate_move_from_reference_modification_uses_slice_length() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-REFMOD-SRC-MOVE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-SOURCE PIC X(10) VALUE 'ABCDEFGHIJ'.
+01  WS-TARGET PIC X(5) VALUE SPACES.
+PROCEDURE DIVISION.
+    MOVE WS-SOURCE(3:5) TO WS-TARGET.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("WS_SOURCE + (((int64_t)3) - 1)")
+                || c_code.contains("WS_SOURCE + ((((int64_t)3)) - 1)")
+                || c_code.contains("WS_SOURCE + (((3) - 1))"),
+            "reference modification source should apply pointer offset: {c_code}"
+        );
+        assert!(
+            c_code.contains(", ((int64_t)5), (uint8_t*)WS_TARGET, 5")
+                || c_code.contains(", 5, (uint8_t*)WS_TARGET, 5"),
+            "reference modification source should use slice length, not full source length: {c_code}"
+        );
     }
 
     #[test]
@@ -391,11 +427,11 @@ PROCEDURE DIVISION.
         let c_code = parse_lower_generate(src);
         assert!(
             c_code.contains("cobol_invoke"),
-            "Generated C should contain cobol_invoke call"
+            "Generated C should contain cobol_invoke call: {c_code}"
         );
         assert!(
             c_code.contains("DO-SOMETHING"),
-            "Generated C should reference the method name"
+            "Generated C should reference the method name: {c_code}"
         );
     }
 
@@ -888,7 +924,7 @@ PROCEDURE DIVISION.
         let c_code = parse_lower_generate(src);
         assert!(
             c_code.contains("CobolStringSource _sources[1];"),
-            "STRING should use named runtime descriptor"
+            "STRING should use named runtime descriptor: {c_code}"
         );
     }
 
@@ -909,7 +945,7 @@ PROCEDURE DIVISION.
         let c_code = parse_lower_generate(src);
         assert!(
             c_code.contains("CobolUnstringTarget _targets[1];"),
-            "UNSTRING should use named runtime descriptor"
+            "UNSTRING should use named runtime descriptor: {c_code}"
         );
     }
 

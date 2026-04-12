@@ -4574,11 +4574,7 @@ pub(crate) fn emit_perform(
                             ));
                         }
                         // Not in range: propagate
-                        if need_body_dispatch {
-                            out.push_str(&format!("{pad}  goto _goto_dispatch;\n"));
-                        } else {
-                            out.push_str(&format!("{pad}  return;\n"));
-                        }
+                        out.push_str(&format!("{pad}  goto _goto_dispatch;\n"));
                         out.push_str(&format!("{pad}}}\n"));
                         out.push_str(&format!("_pt_end_{suffix}:;\n"));
                     } else {

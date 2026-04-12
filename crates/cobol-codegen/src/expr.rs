@@ -22,6 +22,12 @@ pub(crate) fn display_numeric_const_ptr(expr: &str) -> String {
 }
 
 fn alphanumeric_operand_ptr_expr(expr: &HirExpr, c_expr: &str, data_items: &[HirDataItem]) -> String {
+    let is_pointer_like_expr = matches!(expr, HirExpr::ReferenceModification { .. })
+        || matches!(expr, HirExpr::DataRef(data_ref) if data_ref.refmod.is_some())
+        || c_expr.starts_with('(');
+    let is_renames_macro = find_data_item_by_c_name(c_expr, data_items)
+        .or_else(|| find_original_data_item_by_sanitized_name(extract_leaf_member(c_expr), data_items))
+        .is_some_and(|item| item.renames.is_some() || item.redefines.is_some());
     if is_group_expr(expr, data_items) {
         return format!("(const uint8_t*)&({c_expr})");
     }
@@ -30,7 +36,11 @@ fn alphanumeric_operand_ptr_expr(expr: &HirExpr, c_expr: &str, data_items: &[Hir
             HirType::Numeric { .. } => display_numeric_const_ptr(c_expr),
             _ => {
                 let is_qualified = expr_data_name(expr).is_some_and(|name| !name.qualifiers.is_empty());
-                if item.renames.is_some() {
+                if item.renames.is_some()
+                    || item.redefines.is_some()
+                    || is_renames_macro
+                    || is_pointer_like_expr
+                {
                     format!("(const uint8_t*){c_expr}")
                 } else if is_qualified || matches!(expr, HirExpr::Subscript { .. }) {
                     format!("(const uint8_t*)&({c_expr})")
@@ -2231,7 +2241,24 @@ pub(crate) fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) 
                 )
                 .then(|| {
                     let c_name = data_name_to_c_name(&data_ref.name);
-                    find_data_item_size(&c_name, data_items)
+                    let full_size = find_data_item_size(&c_name, data_items);
+                    if let Some(refmod) = &data_ref.refmod {
+                        if let Some(length) = &refmod.length {
+                            if let HirExpr::Literal(HirLiteral::Integer(n)) = length.as_ref() {
+                                (*n).max(0) as u32
+                            } else {
+                                full_size
+                            }
+                        } else if let HirExpr::Literal(HirLiteral::Integer(start)) =
+                            refmod.start.as_ref()
+                        {
+                            full_size.saturating_sub((*start).saturating_sub(1) as u32)
+                        } else {
+                            full_size
+                        }
+                    } else {
+                        full_size
+                    }
                 })
             })
         }
@@ -2306,9 +2333,19 @@ pub(crate) fn emit_alphanumeric_operand(
         HirExpr::DataRef(data_ref) => {
             let c_name = emit_data_ref_expr(data_ref);
             let base_name = data_name_to_c_name(&data_ref.name);
-            let size = find_data_item_size(&base_name, data_items);
+            let full_size = find_data_item_size(&base_name, data_items);
+            let size = if let Some(refmod) = &data_ref.refmod {
+                if let Some(length) = &refmod.length {
+                    emit_expr_as_numeric(length)
+                } else {
+                    let start = emit_expr_as_numeric(&refmod.start);
+                    format!("(({full_size}) - ({start}) + 1)")
+                }
+            } else {
+                format!("{full_size}")
+            };
             let ptr = alphanumeric_operand_ptr_expr(expr, &c_name, data_items);
-            (ptr, format!("{size}"))
+            (ptr, size)
         }
         HirExpr::Variable(name) => {
             let c_name = data_name_to_c_name(name);
@@ -2702,16 +2739,15 @@ pub(crate) fn collect_call_targets_stmt(stmt: &HirStatement, targets: &mut BTree
                 collect_call_targets_stmt(s, targets);
             }
         }
-        HirStatement::Perform {
-            kind:
-                HirPerformKind::Inline { body }
-                | HirPerformKind::Times { body, .. }
-                | HirPerformKind::Until { body, .. }
-                | HirPerformKind::Varying { body, .. },
-            ..
-        } => {
-            for s in body {
-                collect_call_targets_stmt(s, targets);
+        HirStatement::Perform { kind, .. } => {
+            if let HirPerformKind::Inline { body }
+            | HirPerformKind::Times { body, .. }
+            | HirPerformKind::Until { body, .. }
+            | HirPerformKind::Varying { body, .. } = kind.as_ref()
+            {
+                for s in body {
+                    collect_call_targets_stmt(s, targets);
+                }
             }
         }
         _ => {}
@@ -2829,7 +2865,7 @@ pub(crate) fn collect_file_names_stmt(stmt: &HirStatement, names: &mut BTreeSet<
             }
         }
         HirStatement::Perform { kind, .. } => {
-            let body = match kind {
+            let body = match kind.as_ref() {
                 HirPerformKind::Inline { body } => body.as_slice(),
                 HirPerformKind::Times { body, .. } => body.as_slice(),
                 HirPerformKind::Until { body, .. } => body.as_slice(),
@@ -2924,7 +2960,7 @@ pub(crate) fn collect_xml_parse_stmt(stmt: &HirStatement, procs: &mut BTreeSet<S
             }
         }
         HirStatement::Perform { kind, .. } => {
-            let body = match kind {
+            let body = match kind.as_ref() {
                 HirPerformKind::Inline { body } => body.as_slice(),
                 HirPerformKind::Times { body, .. } => body.as_slice(),
                 HirPerformKind::Until { body, .. } => body.as_slice(),

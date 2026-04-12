@@ -155,7 +155,7 @@ impl Lexer {
                 let after_is = &self.content[self.pos + 2..];
                 if after_is.starts_with(' ') || after_is.starts_with('\t') {
                     self.pos += 2;
-                    self.skip_whitespace();
+                    self.skip_horizontal_whitespace();
                 }
             }
             return self.lex_picture_string();
@@ -348,8 +348,20 @@ impl Lexer {
         remaining[..target.len()].eq_ignore_ascii_case(target)
     }
 
-    /// Skips whitespace characters (spaces, tabs).
+    /// Skips whitespace characters, including logical line boundaries.
     fn skip_whitespace(&mut self) {
+        while self.pos < self.content.len() {
+            let ch = self.content.as_bytes()[self.pos];
+            if ch.is_ascii_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Skips horizontal whitespace but not logical line boundaries.
+    fn skip_horizontal_whitespace(&mut self) {
         while self.pos < self.content.len() {
             let ch = self.content.as_bytes()[self.pos];
             if ch == b' ' || ch == b'\t' {
@@ -673,7 +685,7 @@ impl Lexer {
     /// A picture string consists of characters like S, 9, X, A, V, P, Z,
     /// along with parenthesized repeat counts and special editing chars.
     fn lex_picture_string(&mut self) -> Token {
-        self.skip_whitespace();
+        self.skip_horizontal_whitespace();
 
         if self.pos >= self.content.len() {
             return self.make_eof();
@@ -682,23 +694,23 @@ impl Lexer {
         let start = self.pos;
 
         // Picture string continues until we hit whitespace, period followed
-        // by space/end, or end of content
+        // by whitespace/end, or end of content.
         while self.pos < self.content.len() {
             let ch = self.content.as_bytes()[self.pos];
 
-            if ch == b' ' || ch == b'\t' {
+            if ch.is_ascii_whitespace() {
                 break;
             }
 
-            // Period handling: a period followed by space or end-of-content
-            // is a sentence terminator, not part of the picture string.
+            // Period handling: a period followed by whitespace or
+            // end-of-content is a sentence terminator, not part of the
+            // picture string.
             // But a period within the picture (like in Z,ZZZ.99) should be
             // included.
             if ch == b'.' {
                 let next_pos = self.pos + 1;
                 if next_pos >= self.content.len()
-                    || self.content.as_bytes()[next_pos] == b' '
-                    || self.content.as_bytes()[next_pos] == b'\t'
+                    || self.content.as_bytes()[next_pos].is_ascii_whitespace()
                 {
                     break;
                 }
@@ -1102,6 +1114,19 @@ mod tests {
             .unwrap();
         assert_eq!(tokens[pic_idx + 1].kind, TokenKind::PictureString);
         assert_eq!(tokens[pic_idx + 1].text.as_str(), "X(10)");
+    }
+
+    #[test]
+    fn test_lex_picture_stops_at_newline() {
+        let src = "       01  WS-NAME PIC X(20).\n       01  WS-COUNT PIC 9(5).\n";
+        let tokens = lex_free(src);
+        let pic_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.kind == TokenKind::PictureString)
+            .collect();
+        assert_eq!(pic_tokens.len(), 2);
+        assert_eq!(pic_tokens[0].text.as_str(), "X(20)");
+        assert_eq!(pic_tokens[1].text.as_str(), "9(5)");
     }
 
     #[test]

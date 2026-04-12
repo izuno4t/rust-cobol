@@ -282,9 +282,24 @@ pub fn generate_c(program: &HirProgram) -> String {
         // entry point. Fine-grained transfers continue through _goto_target.
         let t_body = std::time::Instant::now();
         let use_top_level_entry_flow = !program.paragraphs.is_empty();
+        let body_prefix = top_level_body_prefix(&program.body);
+        if !body_prefix.is_empty() {
+            with_active_context(|ctx| ctx.set_in_body_context(!use_top_level_entry_flow));
+            for stmt in body_prefix {
+                let env = StmtEmitEnv {
+                    data_items: &program.data_items,
+                    paragraphs: &program.paragraphs,
+                    fs_map: &fs_map,
+                    has_declaratives: has_decl,
+                    ctx: &ctx,
+                };
+                emit_statement_with_ctx(&mut out, stmt, &env, 1);
+            }
+            with_active_context(|ctx| ctx.set_in_body_context(false));
+        }
         if !use_top_level_entry_flow {
             with_active_context(|ctx| ctx.set_in_body_context(true));
-            for stmt in &program.body {
+            for stmt in &program.body[body_prefix.len()..] {
                 let env = StmtEmitEnv {
                     data_items: &program.data_items,
                     paragraphs: &program.paragraphs,
@@ -360,9 +375,24 @@ pub fn generate_c(program: &HirProgram) -> String {
                 with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
             }
             let use_top_level_entry_flow = !program.paragraphs.is_empty();
+            let body_prefix = top_level_body_prefix(&program.body);
+            if !body_prefix.is_empty() {
+                with_active_context(|ctx| ctx.set_in_body_context(!use_top_level_entry_flow));
+                for stmt in body_prefix {
+                    let env = StmtEmitEnv {
+                        data_items: &program.data_items,
+                        paragraphs: &program.paragraphs,
+                        fs_map: &fs_map,
+                        has_declaratives: has_decl,
+                        ctx: &ctx,
+                    };
+                    emit_statement_with_ctx(&mut out, stmt, &env, 1);
+                }
+                with_active_context(|ctx| ctx.set_in_body_context(false));
+            }
             if !use_top_level_entry_flow {
                 with_active_context(|ctx| ctx.set_in_body_context(true));
-                for stmt in &program.body {
+                for stmt in &program.body[body_prefix.len()..] {
                     let env = StmtEmitEnv {
                         data_items: &program.data_items,
                         paragraphs: &program.paragraphs,
@@ -684,6 +714,7 @@ fn emit_isolated_paragraph_definition(
     ctx.set_label_map(para_label_map.clone());
     out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
     out.push_str(&format!("lbl_{c_name}:;\n"));
+    ctx.set_in_body_context(true);
     for stmt in &paragraph.body {
         let env = StmtEmitEnv {
             data_items,
@@ -694,6 +725,7 @@ fn emit_isolated_paragraph_definition(
         };
         emit_statement_with_ctx(out, stmt, &env, 1);
     }
+    ctx.set_in_body_context(false);
     out.push_str("_goto_dispatch:\n");
     if para_label_map.is_empty() {
         out.push_str("    while (_goto_target) {\n");
@@ -804,8 +836,11 @@ fn emit_top_level_entry_flow(
     let top_level_entry_ids = top_level_group_entry_ids(paragraphs, label_map);
     let top_level_ids: HashSet<_> = top_level_entry_ids.iter().copied().collect();
     if let Some(first_id) = top_level_entry_ids.first().copied() {
+        out.push_str("_goto_dispatch:\n");
         if let Some(first_label_id) = label_map.get(&first_id) {
-            out.push_str(&format!("    _goto_target = {first_label_id};\n"));
+            out.push_str(&format!(
+                "    if (!_goto_target) _goto_target = {first_label_id};\n"
+            ));
         }
         emit_inline_dispatch_loop(
             out,
@@ -815,6 +850,14 @@ fn emit_top_level_entry_flow(
             Some(&top_level_ids),
         );
     }
+}
+
+fn top_level_body_prefix(body: &[HirStatement]) -> &[HirStatement] {
+    let label_start = body
+        .iter()
+        .position(|stmt| matches!(stmt, HirStatement::Label { .. }))
+        .unwrap_or(body.len());
+    &body[..label_start]
 }
 
 fn build_top_level_next_label_map(
@@ -895,9 +938,8 @@ fn build_paragraph_label_map(paragraph: &HirParagraph) -> HashMap<HirParagraphId
 
 fn paragraph_group_end(paragraphs: &[HirParagraph], start: usize) -> usize {
     let paragraph = &paragraphs[start];
-    let mut end = start + 1;
-
     if matches!(paragraph.kind, HirParagraphKind::Section) {
+        let mut end = start + 1;
         while end < paragraphs.len() {
             if paragraphs[end].section_id == Some(paragraph.id) {
                 end += 1;
@@ -908,18 +950,7 @@ fn paragraph_group_end(paragraphs: &[HirParagraph], start: usize) -> usize {
         return end;
     }
 
-    if paragraph.section_id.is_none() {
-        while end < paragraphs.len() {
-            let next = &paragraphs[end];
-            if next.section_id.is_none() && matches!(next.kind, HirParagraphKind::Paragraph) {
-                end += 1;
-                continue;
-            }
-            break;
-        }
-    }
-
-    end
+    start + 1
 }
 
 fn top_level_group_entry_ids(

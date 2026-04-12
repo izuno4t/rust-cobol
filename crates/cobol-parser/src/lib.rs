@@ -94,7 +94,12 @@ mod tests {
            STOP RUN.                                                     ";
         let program = parse(src).unwrap();
         let data = program.data.unwrap();
-        assert_eq!(data.working_storage.len(), 2);
+        assert_eq!(
+            data.working_storage.len(),
+            2,
+            "unexpected working_storage AST: {:#?}",
+            data.working_storage
+        );
     }
 
     #[test]
@@ -143,7 +148,11 @@ mod tests {
            END-IF.
            STOP RUN.                                                     ";
         let program = parse(src).unwrap();
-        let proc = program.procedure.unwrap();
+        let proc = if let Some(proc) = program.procedure {
+            proc
+        } else {
+            panic!("expected procedure division, got AST: {:#?}", program);
+        };
         let stmts: Vec<_> = proc
             .paragraphs
             .iter()
