@@ -68,6 +68,9 @@ relevant to the user's requested completion criteria.
 
 - Do not pad reports with self-justification, excuses, or progress that
   does not materially advance the requested goal.
+- Do not return pointless comments, low-value rebuttals, or explanatory
+  pushback when the user has explicitly said such commentary is
+  unnecessary.
 - Do not present partial symptom movement, such as `COMPILE_ERROR ->
   FAIL`, as meaningful completion when the user asked for full
   completion.

@@ -150,12 +150,19 @@ impl Lexer {
         // If we're in picture mode, lex a picture string
         if self.picture_mode {
             self.picture_mode = false;
+            self.skip_whitespace();
+
             // Skip optional IS keyword
             if self.remaining_starts_with_ignore_case("IS") {
-                let after_is = &self.content[self.pos + 2..];
-                if after_is.starts_with(' ') || after_is.starts_with('\t') {
-                    self.pos += 2;
-                    self.skip_horizontal_whitespace();
+                let after_is_pos = self.pos + 2;
+                let has_separator = self
+                    .content
+                    .as_bytes()
+                    .get(after_is_pos)
+                    .is_none_or(|b| b.is_ascii_whitespace());
+                if has_separator {
+                    self.pos = after_is_pos;
+                    self.skip_whitespace();
                 }
             }
             return self.lex_picture_string();
@@ -1449,6 +1456,20 @@ mod tests {
             .find(|t| t.kind == TokenKind::StringLiteral)
             .expect("should have a closed string literal");
         assert_eq!(str_tok.text, r#""LITERAL ENDS AT 72""#);
+    }
+
+    #[test]
+    fn test_picture_string_can_start_on_next_logical_line_after_is() {
+        let line1 = fixed_line("013500", ' ', "01  LONG-PICTURE                       PICTURE IS");
+        let line2 = fixed_line("013600", ' ', "    XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.");
+        let src = format!("{}{}", line1, line2);
+        let tokens = lex(&src);
+
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::PictureString)
+            .expect("should have a picture string token");
+        assert_eq!(str_tok.text, "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
     }
 
     #[test]
