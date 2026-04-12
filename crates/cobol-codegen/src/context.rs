@@ -30,6 +30,13 @@ pub(crate) struct SubscriptPathInfo {
     pub(crate) root: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AlterableParagraphInfo {
+    pub(crate) dispatch_var: String,
+    pub(crate) default_target: HirTransferTarget,
+    pub(crate) targets: Vec<HirTransferTarget>,
+}
+
 /// Shared code-generation context built per HIR program.
 ///
 /// Static lookups are precomputed once, while mutable emission state is kept
@@ -50,10 +57,12 @@ pub(crate) struct CodegenContext {
     /// buffer size for file I/O operations.
     fd_max_record_sizes: HashMap<String, u32>,
     in_body_context: Cell<bool>,
+    in_debug_declarative: Cell<bool>,
     goto_label_map: RefCell<HashMap<HirParagraphId, usize>>,
     body_goto_label_map: RefCell<HashMap<HirParagraphId, usize>>,
     perform_thru_counter: Cell<usize>,
     emitted_labels: RefCell<HashSet<String>>,
+    alterable_paragraphs: HashMap<HirParagraphId, AlterableParagraphInfo>,
 }
 
 thread_local! {
@@ -62,12 +71,14 @@ thread_local! {
 
 impl CodegenContext {
     pub(crate) fn from_program(program: &HirProgram) -> Self {
-        Self::new(
+        let mut ctx = Self::new(
             &program.data_items,
             &program.file_records,
             &program.communication_descriptions,
             &program.fd_record_aliases,
-        )
+        );
+        ctx.alterable_paragraphs = collect_alterable_paragraphs(program);
+        ctx
     }
 
     pub(crate) fn merged_with_program(parent: &CodegenContext, program: &HirProgram) -> Self {
@@ -125,10 +136,12 @@ impl CodegenContext {
             data_item_size_cache,
             fd_max_record_sizes,
             in_body_context: Cell::new(false),
+            in_debug_declarative: Cell::new(false),
             goto_label_map: RefCell::new(HashMap::new()),
             body_goto_label_map: RefCell::new(HashMap::new()),
             perform_thru_counter: Cell::new(0),
             emitted_labels: RefCell::new(HashSet::new()),
+            alterable_paragraphs: collect_alterable_paragraphs(program),
         }
     }
 
@@ -154,10 +167,12 @@ impl CodegenContext {
             data_item_size_cache: build_data_item_size_cache(data_items),
             fd_max_record_sizes: build_fd_max_record_sizes(data_items, fd_record_aliases),
             in_body_context: Cell::new(false),
+            in_debug_declarative: Cell::new(false),
             goto_label_map: RefCell::new(HashMap::new()),
             body_goto_label_map: RefCell::new(HashMap::new()),
             perform_thru_counter: Cell::new(0),
             emitted_labels: RefCell::new(HashSet::new()),
+            alterable_paragraphs: HashMap::new(),
         }
     }
 
@@ -167,6 +182,14 @@ impl CodegenContext {
 
     pub(crate) fn in_body_context(&self) -> bool {
         self.in_body_context.get()
+    }
+
+    pub(crate) fn set_in_debug_declarative(&self, value: bool) {
+        self.in_debug_declarative.set(value);
+    }
+
+    pub(crate) fn in_debug_declarative(&self) -> bool {
+        self.in_debug_declarative.get()
     }
 
     pub(crate) fn set_label_map(&self, map: HashMap<HirParagraphId, usize>) {
@@ -255,6 +278,83 @@ impl CodegenContext {
     /// exceeds the primary record's own size.
     pub(crate) fn fd_max_record_size(&self, c_name: &str) -> Option<u32> {
         self.fd_max_record_sizes.get(c_name).copied()
+    }
+
+    pub(crate) fn alterable_paragraph(&self, id: HirParagraphId) -> Option<AlterableParagraphInfo> {
+        self.alterable_paragraphs.get(&id).cloned()
+    }
+
+    pub(crate) fn alterable_paragraphs(&self) -> Vec<AlterableParagraphInfo> {
+        self.alterable_paragraphs.values().cloned().collect()
+    }
+}
+
+fn collect_alterable_paragraphs(
+    program: &HirProgram,
+) -> HashMap<HirParagraphId, AlterableParagraphInfo> {
+    let mut altered_targets: HashMap<HirParagraphId, Vec<HirTransferTarget>> = HashMap::new();
+    collect_alter_targets_from_block(&program.body, &mut altered_targets);
+    for paragraph in &program.paragraphs {
+        collect_alter_targets_from_block(&paragraph.body, &mut altered_targets);
+    }
+    for decl in &program.declaratives {
+        collect_alter_targets_from_block(&decl.body, &mut altered_targets);
+    }
+
+    let mut paragraphs_by_id = HashMap::new();
+    for paragraph in &program.paragraphs {
+        paragraphs_by_id.insert(paragraph.id, paragraph);
+    }
+
+    let mut out = HashMap::new();
+    for (paragraph_id, alter_targets) in altered_targets {
+        let Some(paragraph) = paragraphs_by_id.get(&paragraph_id) else {
+            continue;
+        };
+        let Some(default_target) = paragraph.body.iter().find_map(|stmt| match stmt {
+            HirStatement::GoTo {
+                targets,
+                depending_on: None,
+                ..
+            } if !targets.is_empty() => Some(targets[0].clone()),
+            _ => None,
+        }) else {
+            continue;
+        };
+
+        let dispatch_var = format!("_alter_target_{}", sanitize_name(&paragraph.name));
+        let mut targets = vec![default_target.clone()];
+        for target in alter_targets {
+            if !targets.iter().any(|existing| existing == &target) {
+                targets.push(target);
+            }
+        }
+        out.insert(
+            paragraph_id,
+            AlterableParagraphInfo {
+                dispatch_var,
+                default_target,
+                targets,
+            },
+        );
+    }
+
+    out
+}
+
+fn collect_alter_targets_from_block(
+    stmts: &[HirStatement],
+    altered_targets: &mut HashMap<HirParagraphId, Vec<HirTransferTarget>>,
+) {
+    for stmt in stmts {
+        if let HirStatement::Alter { from, to, .. } = stmt {
+            if let Some(paragraph_id) = from.paragraph_id() {
+                altered_targets
+                    .entry(paragraph_id)
+                    .or_default()
+                    .push(to.clone());
+            }
+        }
     }
 }
 

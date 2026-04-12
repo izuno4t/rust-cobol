@@ -1460,7 +1460,11 @@ mod tests {
 
     #[test]
     fn test_picture_string_can_start_on_next_logical_line_after_is() {
-        let line1 = fixed_line("013500", ' ', "01  LONG-PICTURE                       PICTURE IS");
+        let line1 = fixed_line(
+            "013500",
+            ' ',
+            "01  LONG-PICTURE                       PICTURE IS",
+        );
         let line2 = fixed_line("013600", ' ', "    XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.");
         let src = format!("{}{}", line1, line2);
         let tokens = lex(&src);

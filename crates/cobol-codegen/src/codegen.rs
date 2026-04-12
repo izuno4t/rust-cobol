@@ -19,9 +19,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use cobol_hir::{
-    HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem, HirExpr,
-    HirFileInfo, HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph, HirParagraphId,
-    HirParagraphKind, HirPerformKind, HirProgram, HirStartRelation, HirStatement,
+    HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem,
+    HirDeclarativeUse, HirExpr, HirFileInfo, HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph,
+    HirParagraphId, HirParagraphKind, HirPerformKind, HirProgram, HirStartRelation, HirStatement,
     HirTransferTarget, HirType, HirUnaryOp,
 };
 
@@ -220,6 +220,8 @@ pub fn generate_c(program: &HirProgram) -> String {
             out.push_str("}\n\n");
         }
 
+        emit_debug_declarative_support(&mut out, program);
+
         // XML PARSE support: emit special registers and callback functions
         let xml_procs = collect_xml_parse_procedures(program);
         if !xml_procs.is_empty() {
@@ -267,6 +269,7 @@ pub fn generate_c(program: &HirProgram) -> String {
         if has_labels {
             out.push_str("static int _goto_target = 0;\n\n");
         }
+        emit_alterable_paragraph_state(&mut out, &ctx);
 
         // Main function
         out.push_str("int main(int argc, char** argv) {\n");
@@ -292,6 +295,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                     fs_map: &fs_map,
                     has_declaratives: has_decl,
                     ctx: &ctx,
+                    current_paragraph: None,
                 };
                 emit_statement_with_ctx(&mut out, stmt, &env, 1);
             }
@@ -306,6 +310,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                     fs_map: &fs_map,
                     has_declaratives: has_decl,
                     ctx: &ctx,
+                    current_paragraph: None,
                 };
                 emit_statement_with_ctx(&mut out, stmt, &env, 1);
             }
@@ -351,6 +356,9 @@ pub fn generate_c(program: &HirProgram) -> String {
             let c_name = sanitize_name(&decl.name);
             with_active_context(|ctx| ctx.set_label_map(HashMap::new()));
             out.push_str(&format!("\nstatic void decl_{c_name}(void) {{\n"));
+            out.push_str("    int _prev_suppress_debug_event = _suppress_debug_event;\n");
+            out.push_str("    _suppress_debug_event = 1;\n");
+            with_active_context(|ctx| ctx.set_in_debug_declarative(true));
             for stmt in &decl.body {
                 let env = StmtEmitEnv {
                     data_items: &program.data_items,
@@ -358,9 +366,12 @@ pub fn generate_c(program: &HirProgram) -> String {
                     fs_map: &fs_map,
                     has_declaratives: has_decl,
                     ctx: &ctx,
+                    current_paragraph: None,
                 };
                 emit_statement_with_ctx(&mut out, stmt, &env, 1);
             }
+            with_active_context(|ctx| ctx.set_in_debug_declarative(false));
+            out.push_str("    _suppress_debug_event = _prev_suppress_debug_event;\n");
             out.push_str("}\n");
         }
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
@@ -385,6 +396,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                         fs_map: &fs_map,
                         has_declaratives: has_decl,
                         ctx: &ctx,
+                        current_paragraph: None,
                     };
                     emit_statement_with_ctx(&mut out, stmt, &env, 1);
                 }
@@ -399,6 +411,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                         fs_map: &fs_map,
                         has_declaratives: has_decl,
                         ctx: &ctx,
+                        current_paragraph: None,
                     };
                     emit_statement_with_ctx(&mut out, stmt, &env, 1);
                 }
@@ -436,7 +449,7 @@ pub fn generate_c(program: &HirProgram) -> String {
 }
 
 fn emit_debug_special_registers(out: &mut String, program: &HirProgram) {
-    let hir_dump = format!("{program:#?}");
+    let needs = collect_debug_register_needs(program);
     let declared: HashSet<String> = program
         .data_items
         .iter()
@@ -444,15 +457,15 @@ fn emit_debug_special_registers(out: &mut String, program: &HirProgram) {
         .collect();
     let mut emitted_any = false;
 
-    for (c_name, original_name) in [
-        ("DEBUG_LINE", "DEBUG-LINE"),
-        ("DEBUG_NAME", "DEBUG-NAME"),
-        ("DEBUG_CONTENTS", "DEBUG-CONTENTS"),
-        ("DEBUG_SUB_1", "DEBUG-SUB-1"),
-        ("DEBUG_SUB_2", "DEBUG-SUB-2"),
-        ("DEBUG_SUB_3", "DEBUG-SUB-3"),
+    for (c_name, needed) in [
+        ("DEBUG_LINE", needs.line),
+        ("DEBUG_NAME", needs.name),
+        ("DEBUG_CONTENTS", needs.contents),
+        ("DEBUG_SUB_1", needs.sub_1),
+        ("DEBUG_SUB_2", needs.sub_2),
+        ("DEBUG_SUB_3", needs.sub_3),
     ] {
-        if declared.contains(c_name) || !hir_dump.contains(original_name) {
+        if declared.contains(c_name) || !needed {
             continue;
         }
         if !emitted_any {
@@ -465,6 +478,145 @@ fn emit_debug_special_registers(out: &mut String, program: &HirProgram) {
     if emitted_any {
         out.push('\n');
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct DebugRegisterNeeds {
+    line: bool,
+    name: bool,
+    contents: bool,
+    sub_1: bool,
+    sub_2: bool,
+    sub_3: bool,
+}
+
+fn has_debug_declaratives(program: &HirProgram) -> bool {
+    program
+        .declaratives
+        .iter()
+        .any(|decl| decl.use_kind == HirDeclarativeUse::ForDebugging)
+}
+
+fn collect_debug_register_needs(program: &HirProgram) -> DebugRegisterNeeds {
+    let hir_dump = format!("{program:#?}");
+    let has_debug_decl = has_debug_declaratives(program);
+    DebugRegisterNeeds {
+        line: has_debug_decl || hir_dump.contains("DEBUG-LINE"),
+        name: has_debug_decl || hir_dump.contains("DEBUG-NAME"),
+        contents: has_debug_decl || hir_dump.contains("DEBUG-CONTENTS"),
+        sub_1: hir_dump.contains("DEBUG-SUB-1"),
+        sub_2: hir_dump.contains("DEBUG-SUB-2"),
+        sub_3: hir_dump.contains("DEBUG-SUB-3"),
+    }
+}
+
+fn is_all_procedures_debug_decl(debug_items: &[smol_str::SmolStr]) -> bool {
+    debug_items.len() >= 2
+        && debug_items[0].eq_ignore_ascii_case("ALL")
+        && debug_items[1].eq_ignore_ascii_case("PROCEDURES")
+}
+
+fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
+    if !has_debug_declaratives(program) {
+        out.push_str("static void _set_debug_event(const char* name, const char* contents, const char* line) {\n");
+        out.push_str("    (void)name;\n");
+        out.push_str("    (void)contents;\n");
+        out.push_str("    (void)line;\n");
+        out.push_str("}\n");
+        out.push_str("static void _set_fallthrough_debug_event(const char* name, const char* contents, const char* line) {\n");
+        out.push_str("    (void)name;\n");
+        out.push_str("    (void)contents;\n");
+        out.push_str("    (void)line;\n");
+        out.push_str("}\n");
+        out.push_str("static void _dispatch_debug_declarative(const char* paragraph_name) {\n");
+        out.push_str("    (void)paragraph_name;\n");
+        out.push_str("}\n\n");
+        return;
+    }
+
+    let needs = collect_debug_register_needs(program);
+    out.push_str("/* Debug declarative dispatch support */\n");
+    out.push_str("static char _debug_event_name[81];\n");
+    out.push_str("static char _debug_event_contents[81];\n");
+    out.push_str("static char _debug_event_line[81];\n");
+    out.push_str("static int _suppress_debug_event = 0;\n");
+    out.push_str("static int _debug_event_explicit = 0;\n");
+    out.push_str(
+        "static void _debug_copy_text_field(char* dst, size_t dst_size, const char* src) {\n",
+    );
+    out.push_str("    if (!dst || dst_size == 0) return;\n");
+    out.push_str("    memset(dst, ' ', dst_size);\n");
+    out.push_str("    if (!src) return;\n");
+    out.push_str("    size_t n = strlen(src);\n");
+    out.push_str("    if (n > dst_size) n = dst_size;\n");
+    out.push_str("    memcpy(dst, src, n);\n");
+    out.push_str("}\n");
+    out.push_str(
+        "static void _set_debug_event(const char* name, const char* contents, const char* line) {\n",
+    );
+    out.push_str("    if (_suppress_debug_event) return;\n");
+    out.push_str("    _debug_event_explicit = 1;\n");
+    out.push_str("    _debug_copy_text_field(_debug_event_name, sizeof(_debug_event_name), name ? name : \"\");\n");
+    out.push_str("    _debug_copy_text_field(_debug_event_contents, sizeof(_debug_event_contents), contents ? contents : \"\");\n");
+    out.push_str("    _debug_copy_text_field(_debug_event_line, sizeof(_debug_event_line), line ? line : \"\");\n");
+    out.push_str("}\n");
+    out.push_str(
+        "static void _set_fallthrough_debug_event(const char* name, const char* contents, const char* line) {\n",
+    );
+    out.push_str("    if (_suppress_debug_event || _debug_event_explicit) return;\n");
+    out.push_str("    _debug_copy_text_field(_debug_event_name, sizeof(_debug_event_name), name ? name : \"\");\n");
+    out.push_str("    _debug_copy_text_field(_debug_event_contents, sizeof(_debug_event_contents), contents ? contents : \"\");\n");
+    out.push_str("    _debug_copy_text_field(_debug_event_line, sizeof(_debug_event_line), line ? line : \"\");\n");
+    out.push_str("}\n");
+    out.push_str("static void _dispatch_debug_declarative(const char* paragraph_name) {\n");
+    out.push_str("    if (!paragraph_name || paragraph_name[0] == '\\0') return;\n");
+    for decl in &program.declaratives {
+        if decl.use_kind != HirDeclarativeUse::ForDebugging {
+            continue;
+        }
+        let c_decl = sanitize_name(&decl.name);
+        if is_all_procedures_debug_decl(&decl.debug_items) {
+            emit_debug_declarative_dispatch_call(out, &c_decl, needs);
+            continue;
+        }
+        for debug_item in &decl.debug_items {
+            let upper = debug_item.to_uppercase();
+            if matches!(
+                upper.as_str(),
+                "ALL" | "PROCEDURES" | "REFERENCES" | "OF" | "IN"
+            ) {
+                continue;
+            }
+            let escaped = escape_c_string(debug_item);
+            out.push_str(&format!(
+                "    if (strcmp(paragraph_name, \"{escaped}\") == 0) {{\n"
+            ));
+            emit_debug_declarative_dispatch_call(out, &c_decl, needs);
+            out.push_str("    }\n");
+        }
+    }
+    out.push_str("    _debug_event_explicit = 0;\n");
+    out.push_str("}\n\n");
+}
+
+fn emit_debug_declarative_dispatch_call(out: &mut String, c_decl: &str, needs: DebugRegisterNeeds) {
+    if needs.line {
+        out.push_str(
+            "        _debug_copy_text_field(DEBUG_LINE, sizeof(DEBUG_LINE), _debug_event_line);\n",
+        );
+    }
+    if needs.name {
+        out.push_str(
+            "        _debug_copy_text_field(DEBUG_NAME, sizeof(DEBUG_NAME), _debug_event_name);\n",
+        );
+    }
+    if needs.contents {
+        out.push_str(
+            "        _debug_copy_text_field(DEBUG_CONTENTS, sizeof(DEBUG_CONTENTS), _debug_event_contents);\n",
+        );
+    }
+    out.push_str(&format!("        decl_{c_decl}();\n"));
+    out.push_str("        return;\n");
 }
 
 /// Emit a nested (contained) program as a callable C function.
@@ -532,6 +684,7 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
             with_active_context(|ctx| ctx.set_body_label_map(label_map.clone()));
             with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
         }
+        emit_alterable_paragraph_state(out, &ctx);
 
         // Generate the param signature based on USING params
         let param_sig = if program.using_params.is_empty() {
@@ -558,6 +711,7 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
                 fs_map: &fs_map,
                 has_declaratives: has_decl,
                 ctx: &ctx,
+                current_paragraph: None,
             };
             emit_statement_with_ctx(out, stmt, &env, 1);
         }
@@ -639,10 +793,31 @@ fn emit_program_paragraph_definitions(
                 ctx.set_label_map(merged_label_map.clone());
 
                 out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+                out.push_str(&format!(
+                    "    _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\");\n",
+                    escape_c_string(&section_paras[0].name)
+                ));
+                out.push_str(&format!(
+                    "    _dispatch_debug_declarative(\"{}\");\n",
+                    escape_c_string(&section_paras[0].name)
+                ));
+                out.push_str(&format!(
+                    "    cobol_trace_paragraph(\"{}\", \"{}\");\n",
+                    sanitize_name(&program.name),
+                    section_paras[0].name
+                ));
                 out.push_str("    if (_goto_target) goto _goto_dispatch;\n");
                 for paragraph in section_paras {
                     let paragraph_c_name = sanitize_name(&paragraph.name);
+                    out.push_str(&format!(
+                        "    _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\");\n",
+                        escape_c_string(&paragraph.name)
+                    ));
                     out.push_str(&format!("lbl_{paragraph_c_name}:;\n"));
+                    out.push_str(&format!(
+                        "    _dispatch_debug_declarative(\"{}\");\n",
+                        escape_c_string(&paragraph.name)
+                    ));
                     ctx.set_in_body_context(true);
                     for stmt in &paragraph.body {
                         let env = StmtEmitEnv {
@@ -651,6 +826,7 @@ fn emit_program_paragraph_definitions(
                             fs_map,
                             has_declaratives: has_decl,
                             ctx,
+                            current_paragraph: Some(paragraph.id),
                         };
                         emit_statement_with_ctx(out, stmt, &env, 1);
                     }
@@ -680,6 +856,7 @@ fn emit_program_paragraph_definitions(
                     emit_isolated_paragraph_definition(
                         out,
                         paragraph,
+                        &program.name,
                         paragraphs,
                         &program.data_items,
                         fs_map,
@@ -691,6 +868,7 @@ fn emit_program_paragraph_definitions(
                 emit_isolated_paragraph_definition(
                     out,
                     &paragraphs[i],
+                    &program.name,
                     paragraphs,
                     &program.data_items,
                     fs_map,
@@ -704,9 +882,11 @@ fn emit_program_paragraph_definitions(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_isolated_paragraph_definition(
     out: &mut String,
     paragraph: &HirParagraph,
+    program_name: &str,
     paragraphs: &[HirParagraph],
     data_items: &[HirDataItem],
     fs_map: &FileStatusMap,
@@ -717,6 +897,19 @@ fn emit_isolated_paragraph_definition(
     let para_label_map = build_paragraph_label_map(paragraph);
     ctx.set_label_map(para_label_map.clone());
     out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
+    out.push_str(&format!(
+        "    _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\");\n",
+        escape_c_string(&paragraph.name)
+    ));
+    out.push_str(&format!(
+        "    _dispatch_debug_declarative(\"{}\");\n",
+        escape_c_string(&paragraph.name)
+    ));
+    out.push_str(&format!(
+        "    cobol_trace_paragraph(\"{}\", \"{}\");\n",
+        sanitize_name(program_name),
+        paragraph.name
+    ));
     out.push_str(&format!("lbl_{c_name}:;\n"));
     ctx.set_in_body_context(true);
     for stmt in &paragraph.body {
@@ -726,6 +919,7 @@ fn emit_isolated_paragraph_definition(
             fs_map,
             has_declaratives: has_decl,
             ctx,
+            current_paragraph: Some(paragraph.id),
         };
         emit_statement_with_ctx(out, stmt, &env, 1);
     }
@@ -795,6 +989,24 @@ pub(crate) fn transfer_target_c_name(
     }
 }
 
+fn emit_alterable_paragraph_state(out: &mut String, ctx: &CodegenContext) {
+    let alterable_paragraphs = ctx.alterable_paragraphs();
+    if alterable_paragraphs.is_empty() {
+        return;
+    }
+    out.push_str("/* ALTER paragraph dispatch state */\n");
+    for info in alterable_paragraphs {
+        let Some(default_target_id) = info.default_target.paragraph_id() else {
+            continue;
+        };
+        out.push_str(&format!(
+            "static uint32_t {} = {};\n",
+            info.dispatch_var, default_target_id.0
+        ));
+    }
+    out.push('\n');
+}
+
 fn emit_inline_dispatch_loop(
     out: &mut String,
     paragraphs: &[HirParagraph],
@@ -821,7 +1033,8 @@ fn emit_inline_dispatch_loop(
                 .or_else(|| next_label_map.get(&paragraph.id).copied());
             if let Some(next_id) = next_id {
                 out.push_str(&format!(
-                    "        case {id}: para_{c_name}(); if (!_goto_target) _goto_target = {next_id}; break;\n"
+                    "        case {id}: para_{c_name}(); if (!_goto_target) {{ _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\"); _goto_target = {next_id}; }} break;\n",
+                    escape_c_string(&paragraph.name)
                 ));
             } else {
                 out.push_str(&format!("        case {id}: para_{c_name}(); break;\n"));
@@ -842,6 +1055,15 @@ fn emit_top_level_entry_flow(
     let top_level_entry_ids = top_level_group_entry_ids(paragraphs, label_map);
     let top_level_ids: HashSet<_> = top_level_entry_ids.iter().copied().collect();
     if let Some(first_id) = top_level_entry_ids.first().copied() {
+        if let Some(first_name) = paragraphs
+            .iter()
+            .find(|paragraph| paragraph.id == first_id)
+            .map(|paragraph| escape_c_string(&paragraph.name))
+        {
+            out.push_str(&format!(
+                "    _set_debug_event(\"{first_name}\", \"START PROGRAM\", \"\");\n"
+            ));
+        }
         out.push_str("_goto_dispatch:\n");
         if let Some(first_label_id) = label_map.get(&first_id) {
             out.push_str(&format!(
@@ -996,6 +1218,24 @@ fn emit_header(out: &mut String) {
     out.push_str("    }\n");
     out.push_str("    dst[j] = '\\0';\n");
     out.push_str("}\n\n");
+    out.push_str(
+        "static void cobol_trace_paragraph(const char* program, const char* paragraph) {\n",
+    );
+    out.push_str("    const char* enabled = getenv(\"COBOL_TRACE_PARAGRAPHS\");\n");
+    out.push_str(
+        "    if (!enabled || enabled[0] == '\\0' || strcmp(enabled, \"0\") == 0) return;\n",
+    );
+    out.push_str("    const char* trace_file = getenv(\"COBOL_TRACE_PARAGRAPHS_FILE\");\n");
+    out.push_str("    if (trace_file && trace_file[0] != '\\0') {\n");
+    out.push_str("        FILE* fp = fopen(trace_file, \"a\");\n");
+    out.push_str("        if (fp) {\n");
+    out.push_str("            fprintf(fp, \"[COBOL-TRACE] %s::%s\\n\", program, paragraph);\n");
+    out.push_str("            fclose(fp);\n");
+    out.push_str("        }\n");
+    out.push_str("        return;\n");
+    out.push_str("    }\n");
+    out.push_str("    fprintf(stderr, \"[COBOL-TRACE] %s::%s\\n\", program, paragraph);\n");
+    out.push_str("}\n\n");
 }
 
 fn emit_runtime_declarations(out: &mut String) {
@@ -1054,6 +1294,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
                     fs_map: &empty_fs_map,
                     has_declaratives: false,
                     ctx: &ctx,
+                    current_paragraph: None,
                 };
                 emit_statement_with_ctx(out, stmt, &env, 1);
             }
@@ -1094,6 +1335,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
                     fs_map: &empty_fs_map,
                     has_declaratives: false,
                     ctx: &ctx,
+                    current_paragraph: None,
                 };
                 emit_statement_with_ctx(out, stmt, &env, 1);
             }
@@ -1167,6 +1409,7 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
                 fs_map: &empty_fs_map,
                 has_declaratives: false,
                 ctx: &ctx,
+                current_paragraph: None,
             };
             emit_statement_with_ctx(out, stmt, &env, 1);
         }

@@ -953,6 +953,28 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_generate_paragraph_trace_helper() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TRACE-PARA.
+PROCEDURE DIVISION.
+    PERFORM PARA-1.
+    STOP RUN.
+PARA-1.
+    DISPLAY 'X'.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("static void cobol_trace_paragraph"),
+            "generated C should contain paragraph trace helper: {c_code}"
+        );
+        assert!(
+            c_code.contains("cobol_trace_paragraph("),
+            "paragraph definitions should call trace helper: {c_code}"
+        );
+    }
+
+    #[test]
     fn test_generate_xml_generate_statement() {
         use cobol_common::Span;
 

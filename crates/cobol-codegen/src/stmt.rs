@@ -7,6 +7,7 @@ pub(crate) struct StmtEmitEnv<'a> {
     pub(crate) fs_map: &'a FileStatusMap,
     pub(crate) has_declaratives: bool,
     pub(crate) ctx: &'a CodegenContext,
+    pub(crate) current_paragraph: Option<HirParagraphId>,
 }
 
 pub(crate) fn emit_statement(
@@ -25,6 +26,7 @@ pub(crate) fn emit_statement(
             fs_map,
             has_declaratives,
             ctx,
+            current_paragraph: None,
         };
         emit_statement_with_ctx(out, stmt, &env, indent)
     })
@@ -41,6 +43,7 @@ pub(crate) fn emit_statement_with_ctx(
     let fs_map = env.fs_map;
     let has_declaratives = env.has_declaratives;
     let ctx = env.ctx;
+    let current_paragraph = env.current_paragraph;
     let emit_expr = |expr| super::emit_expr_with_ctx(expr, ctx);
     let emit_condition = |cond, items| super::emit_condition_with_ctx(cond, items, ctx);
     let pad = "    ".repeat(indent);
@@ -1439,98 +1442,56 @@ pub(crate) fn emit_statement_with_ctx(
             ..
         } => {
             let in_body = with_active_context(|ctx| ctx.in_body_context());
+            let alter_info = current_paragraph.and_then(|id| ctx.alterable_paragraph(id));
             if let Some(dep) = depending_on {
                 let c_dep = data_name_to_c_name(dep);
                 out.push_str(&format!("{pad}switch ((int){c_dep}) {{\n"));
                 for (i, target) in targets.iter().enumerate() {
-                    let c_target = transfer_target_c_name(target, paragraphs);
-                    let local_label_id = target
-                        .paragraph_id()
-                        .and_then(|id| with_active_context(|ctx| ctx.label_id(id)));
-                    if in_body {
-                        if local_label_id.is_some() {
-                            out.push_str(&format!(
-                                "{pad}    case {}: goto lbl_{c_target};\n",
-                                i + 1
-                            ));
-                        } else {
-                            let label_id = target.paragraph_id().and_then(|id| {
-                                with_active_context(|ctx| {
-                                    ctx.label_id(id).or_else(|| ctx.body_label_id(id))
-                                })
-                            });
-                            if let Some(id) = label_id {
-                                out.push_str(&format!(
-                                    "{pad}    case {}: _goto_target = {id}; goto _goto_dispatch;\n",
-                                    i + 1
-                                ));
-                            } else {
-                                out.push_str(&format!(
-                                    "{pad}    case {}: para_{c_target}(); return;\n",
-                                    i + 1
-                                ));
-                            }
-                        }
-                    } else {
-                        let label_id = target.paragraph_id().and_then(|id| {
-                            with_active_context(|ctx| {
-                                ctx.label_id(id).or_else(|| ctx.body_label_id(id))
-                            })
-                        });
-                        if let Some(id) = label_id {
-                            out.push_str(&format!(
-                                "{pad}    case {}: _goto_target = {id}; goto _goto_dispatch;\n",
-                                i + 1
-                            ));
-                        } else {
-                            out.push_str(&format!(
-                                "{pad}    case {}: para_{c_target}(); return;\n",
-                                i + 1
-                            ));
-                        }
-                    }
+                    out.push_str(&format!("{pad}    case {}:\n", i + 1));
+                    emit_transfer_to_target(
+                        out,
+                        target,
+                        paragraphs,
+                        &format!("{pad}        "),
+                        in_body,
+                    );
+                    out.push_str(&format!("{pad}        break;\n"));
                 }
                 out.push_str(&format!("{pad}    default: break;\n"));
                 out.push_str(&format!("{pad}}}\n"));
             } else if let Some(target) = targets.first() {
-                let c_target = transfer_target_c_name(target, paragraphs);
-                let local_label_id = target
-                    .paragraph_id()
-                    .and_then(|id| with_active_context(|ctx| ctx.label_id(id)));
-                if in_body {
-                    if local_label_id.is_some() {
-                        out.push_str(&format!("{pad}goto lbl_{c_target};\n"));
+                if let Some(info) = alter_info {
+                    if info.default_target == *target {
+                        emit_alterable_goto_dispatch(out, &info, paragraphs, &pad, in_body);
                     } else {
-                        let label_id = target.paragraph_id().and_then(|id| {
-                            with_active_context(|ctx| {
-                                ctx.label_id(id).or_else(|| ctx.body_label_id(id))
-                            })
-                        });
-                        if let Some(id) = label_id {
-                            out.push_str(&format!(
-                                "{pad}_goto_target = {id}; goto _goto_dispatch;\n"
-                            ));
-                        } else {
-                            out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
-                        }
+                        emit_transfer_to_target(out, target, paragraphs, &pad, in_body);
                     }
                 } else {
-                    let label_id = target.paragraph_id().and_then(|id| {
-                        with_active_context(|ctx| {
-                            ctx.label_id(id).or_else(|| ctx.body_label_id(id))
-                        })
-                    });
-                    if let Some(id) = label_id {
-                        out.push_str(&format!("{pad}_goto_target = {id}; goto _goto_dispatch;\n"));
-                    } else {
-                        out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
-                    }
+                    emit_transfer_to_target(out, target, paragraphs, &pad, in_body);
                 }
             } else {
                 // GO TO. (no target) - alterable GO TO without ALTER applied.
                 // Fall through to the next statement (no-op).
                 out.push_str(&format!("{pad}/* GO TO (no target - alterable) */\n"));
             }
+        }
+        HirStatement::Alter { from, to, .. } => {
+            let from_name = escape_c_string(from.name());
+            let to_name = escape_c_string(to.name());
+            if let Some(info) = from
+                .paragraph_id()
+                .and_then(|id| ctx.alterable_paragraph(id))
+            {
+                if let Some(target_id) = to.paragraph_id() {
+                    out.push_str(&format!("{pad}{} = {};\n", info.dispatch_var, target_id.0));
+                }
+            }
+            out.push_str(&format!(
+                "{pad}_set_debug_event(\"{from_name}\", \"{to_name}\", \"\");\n"
+            ));
+            out.push_str(&format!(
+                "{pad}_dispatch_debug_declarative(\"{from_name}\");\n"
+            ));
         }
         HirStatement::Initialize { targets, .. } => {
             for target in targets {
@@ -2560,9 +2521,11 @@ pub(crate) fn emit_statement_with_ctx(
         }
         HirStatement::Label { target } => {
             let c_name = transfer_target_c_name(target, paragraphs);
+            let target_name = escape_c_string(target.name());
             let label = format!("lbl_{c_name}");
             let is_new = with_active_context(|ctx| ctx.mark_label_emitted(label.clone()));
             if is_new {
+                emit_fallthrough_debug_event(out, &pad, &target_name, "FALL THROUGH");
                 out.push_str(&format!("{label}:;\n"));
             }
         }
@@ -3019,6 +2982,74 @@ pub(crate) fn emit_statement_with_ctx(
             }
         }
     }
+}
+
+fn emit_transfer_to_target(
+    out: &mut String,
+    target: &HirTransferTarget,
+    paragraphs: &[HirParagraph],
+    pad: &str,
+    in_body: bool,
+) {
+    let c_target = transfer_target_c_name(target, paragraphs);
+    let target_name = escape_c_string(target.name());
+    let local_label_id = target
+        .paragraph_id()
+        .and_then(|id| with_active_context(|ctx| ctx.label_id(id)));
+    if in_body && local_label_id.is_some() {
+        emit_optional_debug_event(out, pad, &target_name, "");
+        out.push_str(&format!("{pad}goto lbl_{c_target};\n"));
+        return;
+    }
+
+    let label_id = target.paragraph_id().and_then(|id| {
+        with_active_context(|ctx| ctx.label_id(id).or_else(|| ctx.body_label_id(id)))
+    });
+    if let Some(id) = label_id {
+        emit_optional_debug_event(out, pad, &target_name, "");
+        out.push_str(&format!("{pad}_goto_target = {id}; goto _goto_dispatch;\n"));
+    } else {
+        emit_optional_debug_event(out, pad, &target_name, "");
+        out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
+    }
+}
+
+fn emit_alterable_goto_dispatch(
+    out: &mut String,
+    info: &AlterableParagraphInfo,
+    paragraphs: &[HirParagraph],
+    pad: &str,
+    in_body: bool,
+) {
+    out.push_str(&format!("{pad}switch ({}) {{\n", info.dispatch_var));
+    for target in &info.targets {
+        let Some(target_id) = target.paragraph_id() else {
+            continue;
+        };
+        out.push_str(&format!("{pad}    case {}:\n", target_id.0));
+        emit_transfer_to_target(out, target, paragraphs, &format!("{pad}        "), in_body);
+        out.push_str(&format!("{pad}        break;\n"));
+    }
+    out.push_str(&format!("{pad}    default: break;\n"));
+    out.push_str(&format!("{pad}}}\n"));
+}
+
+fn emit_optional_debug_event(out: &mut String, pad: &str, name: &str, contents: &str) {
+    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+        return;
+    }
+    out.push_str(&format!(
+        "{pad}_set_debug_event(\"{name}\", \"{contents}\", \"\");\n"
+    ));
+}
+
+fn emit_fallthrough_debug_event(out: &mut String, pad: &str, name: &str, contents: &str) {
+    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+        return;
+    }
+    out.push_str(&format!(
+        "{pad}_set_fallthrough_debug_event(\"{name}\", \"{contents}\", \"\");\n"
+    ));
 }
 
 pub(crate) fn emit_display_operand(
@@ -4550,7 +4581,14 @@ pub(crate) fn emit_perform(
                         // Emit each paragraph call with goto dispatch
                         for (idx, paragraph) in thru_paras.iter().enumerate() {
                             let pn = sanitize_name(&paragraph.name);
+                            let debug_name = escape_c_string(&paragraph.name);
+                            let debug_contents = if idx == 0 {
+                                "PERFORM LOOP"
+                            } else {
+                                "FALL THROUGH"
+                            };
                             out.push_str(&format!("_pt_{suffix}_{pn}:\n"));
+                            emit_optional_debug_event(out, &pad, &debug_name, debug_contents);
                             out.push_str(&format!("{pad}para_{pn}();\n"));
                             if idx < thru_paras.len() - 1 {
                                 // After each call (except last), check _goto_target
@@ -4584,6 +4622,13 @@ pub(crate) fn emit_perform(
                     } else {
                         for paragraph in &thru_paras {
                             let pn = sanitize_name(&paragraph.name);
+                            let debug_name = escape_c_string(&paragraph.name);
+                            let debug_contents = if pn == c_name {
+                                "PERFORM LOOP"
+                            } else {
+                                "FALL THROUGH"
+                            };
+                            emit_optional_debug_event(out, &pad, &debug_name, debug_contents);
                             out.push_str(&format!("{pad}para_{pn}();\n"));
                             if need_body_dispatch {
                                 out.push_str(&format!(
@@ -4596,6 +4641,8 @@ pub(crate) fn emit_perform(
                     }
                 } else {
                     // Fallback: just call the named paragraph
+                    let debug_name = escape_c_string(target.name());
+                    emit_optional_debug_event(out, &pad, &debug_name, "PERFORM LOOP");
                     out.push_str(&format!("{pad}para_{c_name}();\n"));
                     if need_body_dispatch {
                         out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
@@ -4604,6 +4651,8 @@ pub(crate) fn emit_perform(
                     }
                 }
             } else {
+                let debug_name = escape_c_string(target.name());
+                emit_optional_debug_event(out, &pad, &debug_name, "PERFORM LOOP");
                 out.push_str(&format!("{pad}para_{c_name}();\n"));
                 if need_body_dispatch {
                     out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));

@@ -147,10 +147,76 @@ verifier_count_feature_rows() {
     fi
 }
 
+verifier_count_detail_paragraphs() {
+    local file="$1"
+    local count
+    count="$(
+        perl -ne '
+            next unless /^\s*\S.*\s+(?:PASS|FAIL\*|INSPT|\*{5})\s+[A-Z0-9-]+(?:\.[0-9]+)?\s+/;
+            if (/^\s*\S.*\s+(?:PASS|FAIL\*|INSPT|\*{5})\s+([A-Z0-9-]+(?:\.[0-9]+)?)\s+/) {
+                next if $1 eq "PARAGRAPH-NAME";
+                $seen{$1} = 1;
+            }
+            END {
+                print((scalar(keys %seen) || 0) . "\n");
+            }
+        ' "$file" 2>/dev/null | tail -n 1
+    )"
+    if [ -n "$count" ]; then
+        printf '%s\n' "$count"
+    else
+        printf '0\n'
+    fi
+}
+
 verifier_has_non_whitespace() {
     local file="$1"
     [ -s "$file" ] || return 1
     grep -q '[^[:space:]]' "$file" 2>/dev/null
+}
+
+verifier_first_fail_details() {
+    local file="$1"
+    perl -ne '
+        sub trim {
+            my ($v) = @_;
+            $v =~ s/^\s+//;
+            $v =~ s/\s+$//;
+            return $v;
+        }
+
+        if (!$seen && /FAIL\*\s+([A-Z0-9-]+(?:\.[0-9]+)?)/) {
+            $paragraph = $1;
+            $line = $_;
+            $line =~ s/\s+/ /g;
+            $line = trim($line);
+            $seen = 1;
+            next;
+        }
+
+        if ($seen && !defined $computed && /COMPUTED\s*=\s*(.*)$/) {
+            $computed = trim($1);
+            next;
+        }
+
+        if ($seen && !defined $correct && /CORRECT\s*=\s*(.*)$/) {
+            $correct = trim($1);
+            print "paragraph=$paragraph";
+            print "|line=$line" if defined $line && $line ne "";
+            print "|computed=$computed" if defined $computed && $computed ne "";
+            print "|correct=$correct" if defined $correct && $correct ne "";
+            print "\n";
+            exit 0;
+        }
+
+        END {
+            if ($seen) {
+                print "paragraph=$paragraph";
+                print "|line=$line" if defined $line && $line ne "";
+                print "\n";
+            }
+        }
+    ' "$file" 2>/dev/null | head -n 1
 }
 
 verifier_standard_ccvs() {
@@ -158,7 +224,8 @@ verifier_standard_ccvs() {
     local result_file="$2"
     local compile_log="$3"
     local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors
-    local expected_flags warning_count expected_cases feature_name feature_rows
+    local expected_flags warning_count expected_cases feature_name feature_rows detail_paragraphs
+    local first_fail_details
 
     if [ ! -f "$result_file" ] || ! verifier_has_non_whitespace "$result_file"; then
         printf 'FAIL|blank-or-empty-report\n'
@@ -174,9 +241,15 @@ verifier_standard_ccvs() {
     expected_cases="$(verifier_expected_case_count "$src")"
     feature_name="$(verifier_expected_feature_name "$src")"
     feature_rows="$(verifier_count_feature_rows "$result_file" "$feature_name")"
+    detail_paragraphs="$(verifier_count_detail_paragraphs "$result_file")"
+    first_fail_details="$(verifier_first_fail_details "$result_file")"
 
     if [ "$ccvs_failed" -gt 0 ] || [ "$fail" -gt 0 ]; then
-        printf 'FAIL|%s passed, %s failed\n' "$ccvs_pass" "$ccvs_failed"
+        if [ -n "$first_fail_details" ]; then
+            printf 'FAIL|ccvs-first-fail|%s passed, %s failed|%s\n' "$ccvs_pass" "$ccvs_failed" "$first_fail_details"
+        else
+            printf 'FAIL|ccvs-fail-summary|%s passed, %s failed\n' "$ccvs_pass" "$ccvs_failed"
+        fi
         return 0
     fi
 
@@ -195,13 +268,18 @@ verifier_standard_ccvs() {
         return 0
     fi
 
-    if [ "$expected_cases" -gt 0 ] && [ "$feature_rows" -gt 0 ] && [ "$feature_rows" -ne "$expected_cases" ]; then
-        printf 'FAIL|expected %s detail row(s), got %s\n' "$expected_cases" "$feature_rows"
+    if [ "$expected_cases" -gt 0 ] && [ "$detail_paragraphs" -gt 0 ] && [ "$detail_paragraphs" -ne "$expected_cases" ]; then
+        printf 'FAIL|detail-paragraph-mismatch|expected %s paragraph case(s), got %s\n' "$expected_cases" "$detail_paragraphs"
+        return 0
+    fi
+
+    if [ "$expected_cases" -gt 0 ] && [ "$detail_paragraphs" -eq 0 ] && [ "$feature_rows" -gt 0 ] && [ "$feature_rows" -ne "$expected_cases" ]; then
+        printf 'FAIL|detail-row-mismatch|expected %s detail row(s), got %s\n' "$expected_cases" "$feature_rows"
         return 0
     fi
 
     if [ "$expected_cases" -gt 0 ] && [ "$ccvs_pass" -gt 0 ] && [ "$ccvs_pass" -ne "$expected_cases" ]; then
-        printf 'FAIL|expected %s passed case(s), got %s\n' "$expected_cases" "$ccvs_pass"
+        printf 'FAIL|passed-case-mismatch|expected %s passed case(s), got %s\n' "$expected_cases" "$ccvs_pass"
         return 0
     fi
 
@@ -215,8 +293,10 @@ verifier_standard_ccvs() {
     fi
 
     if [ "$pass" -gt 0 ] && [ "$fail" -eq 0 ]; then
-        if [ "$expected_cases" -gt 0 ] && [ "$pass" -ne "$expected_cases" ]; then
-            printf 'FAIL|expected %s passed line(s), got %s\n' "$expected_cases" "$pass"
+        if [ "$expected_cases" -gt 0 ] && [ "$detail_paragraphs" -gt 0 ] && [ "$detail_paragraphs" -eq "$expected_cases" ]; then
+            printf 'PASS|%s paragraph case(s) passed\n' "$detail_paragraphs"
+        elif [ "$expected_cases" -gt 0 ] && [ "$pass" -ne "$expected_cases" ]; then
+            printf 'FAIL|passed-line-mismatch|expected %s passed line(s), got %s\n' "$expected_cases" "$pass"
         else
             printf 'PASS|%s passed\n' "$pass"
         fi
@@ -229,7 +309,7 @@ verifier_standard_ccvs() {
         if [ "$warning_count" -eq "$expected_flags" ]; then
             printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
         else
-            printf 'FAIL|expected %s warning flag(s), got %s\n' "$expected_flags" "$warning_count"
+            printf 'FAIL|warning-flags-missing|expected %s warning flag(s), got %s\n' "$expected_flags" "$warning_count"
         fi
         return 0
     fi

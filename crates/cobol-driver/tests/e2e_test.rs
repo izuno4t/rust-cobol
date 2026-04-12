@@ -5,7 +5,7 @@
 use cobol_codegen::generate_c;
 use cobol_common::{FileId, SourceFormat, Span};
 use cobol_hir::lower_to_hir;
-use cobol_hir::{HirDeclarative, HirStatement, HirType};
+use cobol_hir::{HirDeclarative, HirDeclarativeUse, HirStatement, HirType};
 use cobol_lexer::Lexer;
 use cobol_parser::Parser;
 use cobol_sema::SemanticAnalyzer;
@@ -2430,7 +2430,9 @@ PROCEDURE DIVISION.
     // Inject a declarative handler for a file named "MY-FILE"
     hir.declaratives.push(HirDeclarative {
         name: "FILE-ERR-SECTION".into(),
+        use_kind: HirDeclarativeUse::AfterException,
         file_names: vec!["MY-FILE".into()],
+        debug_items: vec![],
         body: vec![HirStatement::Display {
             operands: vec![cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::String(
                 "FILE ERROR HANDLER".into(),
@@ -4619,7 +4621,9 @@ PROCEDURE DIVISION.
 
     hir.declaratives.push(HirDeclarative {
         name: "ERR-SECTION".into(),
+        use_kind: HirDeclarativeUse::AfterException,
         file_names: vec!["TEST-FILE".into()],
+        debug_items: vec![],
         body: vec![HirStatement::Display {
             operands: vec![cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::String(
                 "FILE ERROR".into(),
@@ -4633,6 +4637,259 @@ PROCEDURE DIVISION.
     assert!(
         c_code.contains("FILE ERROR") || c_code.contains("DECL") || c_code.contains("decl"),
         "should generate declaratives code"
+    );
+}
+
+#[test]
+fn test_use_for_debugging_is_lowered_into_hir_declaratives() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DEBUG-DECL.
+PROCEDURE DIVISION.
+DECLARATIVES.
+GO-TO SECTION.
+    USE FOR DEBUGGING ON GO-TO-TEST.
+DBG-PARA.
+    DISPLAY \"DBG\".
+END DECLARATIVES.
+GO-TO-TEST.
+    DISPLAY \"MAIN\".
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    assert_eq!(
+        hir.declaratives.len(),
+        1,
+        "expected one debugging declarative"
+    );
+    let decl = &hir.declaratives[0];
+    assert_eq!(decl.use_kind, HirDeclarativeUse::ForDebugging);
+    assert_eq!(
+        decl.debug_items
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
+        vec!["GO-TO-TEST"]
+    );
+    assert!(
+        decl.body
+            .iter()
+            .any(|stmt| matches!(stmt, HirStatement::Display { .. })),
+        "debugging declarative body should be lowered"
+    );
+}
+
+#[test]
+fn test_native_use_for_debugging_start_program_sets_debug_registers() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-START.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SECTION SECTION.
+    USE FOR DEBUGGING ON MAIN-SECTION.
+DBG-PARA.
+    DISPLAY DEBUG-NAME.
+    DISPLAY DEBUG-CONTENTS.
+END DECLARATIVES.
+MAIN-SECTION SECTION.
+MAIN-PARA.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<_> = stdout.lines().collect();
+    assert!(
+        lines.iter().any(|line| line.trim() == "MAIN-SECTION"),
+        "stdout should include DEBUG-NAME, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| line.trim() == "START PROGRAM"),
+        "stdout should include DEBUG-CONTENTS, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_use_for_debugging_perform_sets_debug_context() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-PERFORM.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SECTION SECTION.
+    USE FOR DEBUGGING ON TARGET-PARA.
+DBG-PARA.
+    DISPLAY DEBUG-NAME.
+    DISPLAY DEBUG-CONTENTS.
+END DECLARATIVES.
+MAIN-SECTION SECTION.
+START-PARA.
+    PERFORM TARGET-PARA.
+    STOP RUN.
+TARGET-PARA.
+    EXIT.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<_> = stdout.lines().collect();
+    assert!(
+        lines.iter().any(|line| line.trim() == "TARGET-PARA"),
+        "stdout should include DEBUG-NAME, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| line.trim() == "PERFORM LOOP"),
+        "stdout should include PERFORM debug contents, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_use_for_debugging_go_to_sets_debug_context() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-GOTO.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SECTION SECTION.
+    USE FOR DEBUGGING ON TARGET-PARA.
+DBG-PARA.
+    DISPLAY DEBUG-NAME.
+    DISPLAY \"[\".
+    DISPLAY DEBUG-CONTENTS.
+    DISPLAY \"]\".
+END DECLARATIVES.
+MAIN-SECTION SECTION.
+START-PARA.
+    GO TO TARGET-PARA.
+TARGET-PARA.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<_> = stdout.lines().collect();
+    assert!(
+        lines.iter().any(|line| line.trim() == "TARGET-PARA"),
+        "stdout should include DEBUG-NAME, got:\n{stdout}"
+    );
+    let open_idx = lines.iter().position(|line| line.trim() == "[");
+    let close_idx = lines.iter().position(|line| line.trim() == "]");
+    assert!(
+        open_idx.is_some() && close_idx.is_some() && close_idx.unwrap() > open_idx.unwrap(),
+        "stdout should include bracketed DEBUG-CONTENTS markers, got:\n{stdout}"
+    );
+    assert!(
+        lines[open_idx.unwrap() + 1].trim().is_empty(),
+        "DEBUG-CONTENTS for GO TO should be blank, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_use_for_debugging_fallthrough_sets_debug_context() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-FALLTHROUGH.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SECTION SECTION.
+    USE FOR DEBUGGING ON TARGET-PARA.
+DBG-PARA.
+    DISPLAY DEBUG-NAME.
+    DISPLAY DEBUG-CONTENTS.
+END DECLARATIVES.
+MAIN-SECTION SECTION.
+START-PARA.
+    DISPLAY \"START\".
+TARGET-PARA.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<_> = stdout.lines().collect();
+    assert!(
+        lines.iter().any(|line| line.trim() == "TARGET-PARA"),
+        "stdout should include DEBUG-NAME, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| line.trim() == "FALL THROUGH"),
+        "stdout should include FALL THROUGH debug contents, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_alter_redirects_go_to_target() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-ALTER.
+PROCEDURE DIVISION.
+    GO TO ALTER-INIT.
+ALTERABLE-PARA.
+    GO TO ORIGINAL-TARGET.
+ORIGINAL-TARGET.
+    DISPLAY \"ORIGINAL\".
+    STOP RUN.
+ALTER-INIT.
+    ALTER ALTERABLE-PARA TO PROCEED TO ALTERED-TARGET.
+    GO TO ALTERABLE-PARA.
+ALTERED-TARGET.
+    DISPLAY \"ALTERED\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "ALTERED"),
+        "stdout should include ALTERED target output, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.lines().any(|line| line.trim() == "ORIGINAL"),
+        "stdout should not include original target output, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_use_for_debugging_alter_sets_debug_context() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-ALTER.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
+OBJECT-COMPUTER. TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 RESULT PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SECTION SECTION.
+    USE FOR DEBUGGING ON ALTERABLE-PARA.
+DBG-PARA.
+    MOVE 7 TO RESULT.
+    DISPLAY DEBUG-NAME.
+    DISPLAY DEBUG-CONTENTS.
+END DECLARATIVES.
+    ALTER ALTERABLE-PARA TO PROCEED TO ALTERED-TARGET.
+    DISPLAY RESULT.
+    STOP RUN.
+ALTERABLE-PARA.
+    GO TO ORIGINAL-TARGET.
+ORIGINAL-TARGET.
+    STOP RUN.
+ALTERED-TARGET.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<_> = stdout.lines().collect();
+    assert!(
+        lines.iter().any(|line| line.trim() == "7"),
+        "stdout should include declarative result marker, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| line.trim() == "ALTERABLE-PARA"),
+        "stdout should include DEBUG-NAME for ALTER, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| line.trim() == "ALTERED-TARGET"),
+        "stdout should include DEBUG-CONTENTS for ALTER, got:\n{stdout}"
     );
 }
 

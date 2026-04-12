@@ -6,7 +6,7 @@ BINARY := cobolc
 INSTALL_DIR := $(HOME)/.cargo/bin
 NIST_COBOLC ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR)/release/cobol-driver,$(CURDIR)/target/release/cobol-driver)
 
-.PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary nist-audit-codegen nist-compare-codegen runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
+.PHONY: all build release test lint fmt check audit verify clean install uninstall example nist-prepare nist-run nist-summary nist-audit-codegen nist-compare-codegen runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
 
 NIST_ENV_ROOT ?= $(CURDIR)/.nist
 NIST_JOBS ?= 5
@@ -30,41 +30,35 @@ release:
 	mkdir -p target/release/deps target/release/build target/release/examples target/release/incremental
 	$(CARGO) build --release
 
-## 全テスト実行
+## ワークスペース全体のテスト実行
 test:
 	$(CARGO) test --workspace
 
-## ユニットテストのみ
-test-unit:
-	$(CARGO) test --workspace --lib
-
-## E2Eテストのみ
-test-e2e:
-	$(CARGO) test --package cobol-driver --test e2e_test
-
-## リント (clippy + fmt check + spellcheck)
-lint: clippy fmt-check spellcheck
-
-## clippy
-clippy:
+## コード品質チェック (clippy + fmt check + spellcheck)
+lint:
 	mkdir -p target/debug/deps target/debug/build target/debug/examples target/debug/incremental
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
-
-## フォーマットチェック
-fmt-check:
 	$(CARGO) fmt --all -- --check
+	cspell "crates/**/*.rs" "docs/**/*.md" "CLAUDE.md"
 
 ## フォーマット適用
 fmt:
 	$(CARGO) fmt --all
 
-## スペルチェック
-spellcheck:
-	cspell "crates/**/*.rs" "docs/**/*.md" "CLAUDE.md"
-
 ## 型チェック (コンパイルなし)
 check:
 	$(CARGO) check --workspace
+
+## 通常開発向けの監査 (型チェック + lint)
+audit:
+	$(MAKE) check
+	$(MAKE) lint
+
+## コード変更後の標準検証
+verify:
+	$(MAKE) clean
+	$(MAKE) audit
+	$(MAKE) test
 
 ## ビルド成果物のクリーン
 clean:
@@ -165,15 +159,12 @@ help:
 	@echo "使用可能なターゲット:"
 	@echo "  make build       - デバッグビルド"
 	@echo "  make release     - リリースビルド (デフォルト)"
-	@echo "  make test        - 全テスト実行"
-	@echo "  make test-unit   - ユニットテストのみ"
-	@echo "  make test-e2e    - E2Eテストのみ"
+	@echo "  make test        - ワークスペース全体のテスト実行"
 	@echo "  make lint        - clippy + フォーマットチェック + スペルチェック"
-	@echo "  make clippy      - clippy のみ"
-	@echo "  make fmt-check   - フォーマットチェックのみ"
-	@echo "  make spellcheck  - スペルチェック"
 	@echo "  make fmt         - フォーマット適用"
 	@echo "  make check       - 型チェック (コンパイルなし)"
+	@echo "  make audit       - check + lint による通常開発向け監査"
+	@echo "  make verify      - clean + audit + test を順に実行"
 	@echo "  make clean       - ビルド成果物のクリーン"
 	@echo "  make install     - cobolc を ~/.cargo/bin にインストール"
 	@echo "  make uninstall   - cobolc をアンインストール"

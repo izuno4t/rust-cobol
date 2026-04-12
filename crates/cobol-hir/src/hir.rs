@@ -154,12 +154,21 @@ pub struct HirCommunicationDescription {
     pub destination_table_count: Option<u32>,
 }
 
-/// A USE AFTER EXCEPTION declarative section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HirDeclarativeUse {
+    AfterException,
+    ForDebugging,
+}
+
+/// A lowered DECLARATIVES section.
 #[derive(Debug, Clone)]
 pub struct HirDeclarative {
     pub name: SmolStr,
+    pub use_kind: HirDeclarativeUse,
     /// File names this declarative applies to.
     pub file_names: Vec<SmolStr>,
+    /// Debug items this declarative applies to.
+    pub debug_items: Vec<SmolStr>,
     /// Statements in the declarative body.
     pub body: Vec<HirStatement>,
 }
@@ -540,6 +549,11 @@ pub enum HirStatement {
         span: Span,
     },
     Goback {
+        span: Span,
+    },
+    Alter {
+        from: HirTransferTarget,
+        to: HirTransferTarget,
         span: Span,
     },
     Continue {
@@ -1373,6 +1387,9 @@ fn write_stmt(
         HirStatement::ExitProgram { .. } => writeln!(f, "{pad}EXIT PROGRAM"),
         HirStatement::ExitParagraph { .. } => writeln!(f, "{pad}EXIT PARAGRAPH"),
         HirStatement::Goback { .. } => writeln!(f, "{pad}GOBACK"),
+        HirStatement::Alter { from, to, .. } => {
+            writeln!(f, "{pad}ALTER {} TO {}", from.name(), to.name())
+        }
         HirStatement::Continue { .. } => writeln!(f, "{pad}CONTINUE"),
         HirStatement::Label { target } => writeln!(f, "{pad}{}.", target.name()),
         HirStatement::Open { entries, .. } => {

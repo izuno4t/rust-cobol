@@ -28,13 +28,14 @@ use smol_str::SmolStr;
 
 use crate::hir::{
     HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCommunicationMode,
-    HirCompareOp, HirCondition, HirDataItem, HirDataName, HirDataRef, HirDeclarative, HirExpr,
-    HirFileInfo, HirInspectKind, HirInspectReplacing, HirInspectTallying, HirItemId, HirLiteral,
-    HirMoveTarget, HirOpenEntry, HirOpenMode, HirParagraph, HirParagraphId, HirParagraphKind,
-    HirParam, HirParamMode, HirPerformKind, HirPerformTest, HirProgram, HirReceiveMode, HirRefMod,
-    HirReplacingKind, HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder,
-    HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirTransferTarget, HirType,
-    HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
+    HirCompareOp, HirCondition, HirDataItem, HirDataName, HirDataRef, HirDeclarative,
+    HirDeclarativeUse, HirExpr, HirFileInfo, HirInspectKind, HirInspectReplacing,
+    HirInspectTallying, HirItemId, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
+    HirParagraph, HirParagraphId, HirParagraphKind, HirParam, HirParamMode, HirPerformKind,
+    HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind, HirScreenInfo,
+    HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
+    HirStringSource, HirTallyingKind, HirTransferTarget, HirType, HirUnaryOp, HirUnstringDelimiter,
+    HirVaryingAfter,
 };
 
 #[derive(Debug, Clone)]
@@ -1284,11 +1285,11 @@ fn lower_statement(
                 span: Span::new(0, 0, cobol_common::FileId(0)),
             })
         }
-        Statement::Alter(_) => {
-            // ALTER changes a GO TO target at runtime; not supported in HIR.
-            // Emit nothing; the codegen cannot implement this obsolete feature.
-            None
-        }
+        Statement::Alter(alter) => Some(HirStatement::Alter {
+            from: resolve_transfer_target(&alter.from),
+            to: resolve_transfer_target(&alter.to),
+            span: alter.span,
+        }),
         Statement::NextSentence => {
             // NEXT SENTENCE is an obsolete COBOL-85 construct.
             // Lower to CONTINUE (no-op) as an approximation.
@@ -2973,7 +2974,6 @@ fn extract_file_organizations(program: &CobolProgram) -> HashMap<SmolStr, u32> {
 }
 
 /// Lower DECLARATIVES sections from the PROCEDURE DIVISION.
-/// Only USE AFTER EXCEPTION sections are lowered; other USE types are ignored.
 ///
 /// Returns `(declaratives, extra_paragraphs)` where `extra_paragraphs` are the
 /// section entries and individual paragraphs defined inside each declarative
@@ -3077,17 +3077,31 @@ fn lower_declaratives(
                 span: plan.entry.span,
             });
 
-            if let UseStatement::AfterException { file_names } = &decl.use_statement {
-                let body: Vec<HirStatement> = decl
-                    .paragraphs
-                    .iter()
-                    .flat_map(|para| lower_paragraph(para, condition_names))
-                    .collect();
-                decls.push(HirDeclarative {
-                    name: decl.name.clone(),
-                    file_names: file_names.clone(),
-                    body,
-                });
+            let body: Vec<HirStatement> = decl
+                .paragraphs
+                .iter()
+                .flat_map(|para| lower_paragraph(para, condition_names))
+                .collect();
+            match &decl.use_statement {
+                UseStatement::AfterException { file_names } => {
+                    decls.push(HirDeclarative {
+                        name: decl.name.clone(),
+                        use_kind: HirDeclarativeUse::AfterException,
+                        file_names: file_names.clone(),
+                        debug_items: Vec::new(),
+                        body,
+                    });
+                }
+                UseStatement::ForDebugging { debug_items } => {
+                    decls.push(HirDeclarative {
+                        name: decl.name.clone(),
+                        use_kind: HirDeclarativeUse::ForDebugging,
+                        file_names: Vec::new(),
+                        debug_items: debug_items.clone(),
+                        body,
+                    });
+                }
+                UseStatement::BeforeReporting { .. } => {}
             }
 
             for (para, para_plan) in decl.paragraphs.iter().zip(plan.paragraphs.iter()) {

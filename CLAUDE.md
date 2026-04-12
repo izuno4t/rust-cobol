@@ -7,12 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 make build          # Debug build
 make release        # Release build (default target)
-make test           # All tests (unit + E2E)
-make test-unit      # Unit tests only (--lib)
-make test-e2e       # E2E tests only (cobol-driver package)
-make lint           # clippy (-D warnings) + rustfmt check
+make test           # Full workspace test suite
+make lint           # clippy (-D warnings) + rustfmt check + cspell
 make fmt            # Apply rustfmt
 make check          # Type-check without codegen
+make audit          # check + lint
+make verify         # clean + audit + test
 make example        # Compile & run examples/hello.cob
 make install        # Install cobolc to ~/.cargo/bin
 ```

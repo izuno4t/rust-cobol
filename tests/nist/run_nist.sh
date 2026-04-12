@@ -20,6 +20,7 @@ NIST_TOOLCHAIN_ROOT="$ENV_ROOT/toolchain"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-60}"
 NIST_JOBS="${NIST_JOBS:-5}"
 NIST_COMPILE_CACHE="${NIST_COMPILE_CACHE:-1}"
+NIST_TRACE_PARAGRAPHS="${NIST_TRACE_PARAGRAPHS:-0}"
 CURRENT_RUN_PID=""
 COMPILER_SIGNATURE=""
 COPYLIB_SIGNATURE=""
@@ -191,6 +192,7 @@ compute_compiler_signature() {
         printf '%s\n' "$COMPILER_SIGNATURE"
         return
     fi
+    local default_release_driver="$REPO_ROOT/target/release/cobol-driver"
     if [ -x "$COBOLC" ] && [ "${COBOLC#* }" = "$COBOLC" ]; then
         local compiler_hash runtime_hash deps_dir runtime_inputs=""
         compiler_hash="$(sha256_of_file "$COBOLC")"
@@ -214,7 +216,11 @@ compute_compiler_signature() {
             COMPILER_SIGNATURE="bin:${compiler_hash}"
         fi
     else
-        COMPILER_SIGNATURE="cmd:$(printf '%s' "$COBOLC" | sha256_of_stdin)"
+        if [ -x "$default_release_driver" ]; then
+            COMPILER_SIGNATURE="cmd:$(printf '%s' "$COBOLC" | sha256_of_stdin)|bin:$(sha256_of_file "$default_release_driver")"
+        else
+            COMPILER_SIGNATURE="cmd:$(printf '%s' "$COBOLC" | sha256_of_stdin)"
+        fi
     fi
     printf '%s\n' "$COMPILER_SIGNATURE"
 }
@@ -468,12 +474,13 @@ print_inspect_groups() {
 stage_nist_aliases() {
     local dst_dir="$1"
     mkdir -p "$dst_dir"
-    local code src dst
+    local code src dst raw
     for code in \
         001 002 003 004 005 006 007 008 009 014 015 016 017 018 019 020 027 \
         051 052 053 054 055 056 057 058 059 060 063 064 068 069
     do
         src="$ENV_ROOT/XXXXX${code}"
+        raw="$dst_dir/XXXXX${code}"
         case "$code" in
             001) dst="$dst_dir/D1" ;;
             002) dst="$dst_dir/D2" ;;
@@ -508,9 +515,12 @@ stage_nist_aliases() {
             069) dst="$dst_dir/O69" ;;
             *) continue ;;
         esac
-        rm -f "$dst"
+        rm -f "$dst" "$raw"
         if [ -e "$src" ]; then
-            ln -s "$src" "$dst"
+            ln -s "$src" "$raw"
+        fi
+        if [ "$dst" != "$raw" ]; then
+            ln -s "$raw" "$dst"
         fi
     done
 }
@@ -697,6 +707,7 @@ print_single_result_summary() {
     local program="$2"
     local status_file="$RESULTS_DIR/${module}/${program}.status"
     local log_file="$RESULTS_DIR/${module}/${program}.log"
+    local trace_log="$RESULTS_DIR/${module}/${program}.trace.log"
     local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
     local reason_file="$RESULTS_DIR/${module}/${program}.reason"
     [ -f "$status_file" ] || return 0
@@ -710,6 +721,9 @@ print_single_result_summary() {
     fi
     if [ -f "$log_file" ] && [ -s "$log_file" ]; then
         echo "  Output Log: $log_file"
+    fi
+    if [ -f "$trace_log" ] && [ -s "$trace_log" ]; then
+        echo "  Trace Log: $trace_log"
     fi
     if [ -f "$compile_log" ] && [ -s "$compile_log" ]; then
         echo "  Compile Log: $compile_log"
@@ -823,6 +837,7 @@ execute_program_binary() {
     local log="$4"
     local comm_script="$5"
     local runtime_timeout="$6"
+    local trace_log="${7:-}"
 
     local exit_code=0
     (
@@ -830,6 +845,17 @@ execute_program_binary() {
             export COBOL_COMM_SCRIPT="$comm_script"
         else
             unset COBOL_COMM_SCRIPT || true
+        fi
+        if [ "$NIST_TRACE_PARAGRAPHS" != "0" ]; then
+            export COBOL_TRACE_PARAGRAPHS="$NIST_TRACE_PARAGRAPHS"
+            if [ -n "$trace_log" ]; then
+                export COBOL_TRACE_PARAGRAPHS_FILE="$trace_log"
+            else
+                unset COBOL_TRACE_PARAGRAPHS_FILE || true
+            fi
+        else
+            unset COBOL_TRACE_PARAGRAPHS || true
+            unset COBOL_TRACE_PARAGRAPHS_FILE || true
         fi
         if [ "$module" = "CM" ]; then
             export COBOL_TEST_FAST_TIME_SCALE="${COBOL_TEST_FAST_TIME_SCALE:-100000}"
@@ -983,6 +1009,7 @@ run_program() {
     local program_workdir="$module_workdir/$program"
     local bin="$program_workdir/nist_${program}"
     local log="$RESULTS_DIR/${module}/${program}.log"
+    local trace_log="$RESULTS_DIR/${module}/${program}.trace.log"
     local status_file="$RESULTS_DIR/${module}/${program}.status"
     local reason_file="$RESULTS_DIR/${module}/${program}.reason"
     local compile_log="$RESULTS_DIR/${module}/${program}.compile.log"
@@ -999,9 +1026,9 @@ run_program() {
 
     mkdir -p "$RESULTS_DIR/$module" "$module_workdir" "$program_workdir"
     if [ "$mode" != "run_only" ]; then
-        rm -f "$status_file" "$reason_file" "$log"
+        rm -f "$status_file" "$reason_file" "$log" "$trace_log"
     else
-        rm -f "$reason_file" "$log"
+        rm -f "$reason_file" "$log" "$trace_log"
     fi
 
     if [ ! -f "$src" ]; then
@@ -1035,7 +1062,7 @@ run_program() {
     fi
 
     runtime_timeout="$(program_timeout_seconds "$module" "$program" "$src")"
-    execute_program_binary "$module" "$program_tmpdir" "$bin" "$log" "$comm_script" "$runtime_timeout" || \
+    execute_program_binary "$module" "$program_tmpdir" "$bin" "$log" "$comm_script" "$runtime_timeout" "$trace_log" || \
         exit_code=$?
 
     if [ -f "$print_file" ] && [ -s "$print_file" ]; then

@@ -200,9 +200,10 @@ Use the repository `Makefile` for common workflows.
 make build
 make release
 make test
-make test-e2e
 make lint
 make check
+make audit
+make verify
 make example
 ```
 

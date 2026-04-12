@@ -411,3 +411,227 @@ NIST CCVS は重要な外部検証資産だが、目的そのものではない�
 make clean test lint
 bash tests/nist/run_nist.sh --all
 ```
+
+---
+
+## Current NIST Failure Taxonomy and Remediation Order
+
+As of 2026-04-12, the dominant NIST outcome is no longer `COMPILE_ERROR`.
+The current problem is that the compiler and runtime now execute most programs,
+but large groups still fail with shared semantic defects.
+
+The current fail population is not a set of 351 unrelated bugs.
+It clusters into a small number of cross-cutting failure classes:
+
+- `ccvs_no_case_progress` (`0 passed, 0 failed`): 228
+- `value_or_iteration_mismatch` (`expected N ..., got M`): 90
+- `blank_report` (`blank-or-empty-report`): 19
+- `warning_flags_missing` (`expected N warning flag(s), got 0`): 10
+- `runtime_footer_error`: 2
+- `no_decisive_summary`: 2
+
+These classes map to a smaller number of root subsystems:
+
+1. control-flow semantics
+2. file runtime semantics
+3. decimal arithmetic and intrinsic semantics
+4. diagnostics / warning emission
+5. output routing and observability
+6. verifier granularity
+
+The work below must be executed in this order.
+Do not fix individual programs first unless they are explicitly being used
+as reduced reproductions for one of these subsystems.
+
+### Remediation Stream 1: Control-Flow Semantics
+
+Target symptoms:
+
+- large portions of `IF`, `NC`, `RL`, `RW`, `SM`, `SQ`, `OB`
+- many cases currently classified as `0 passed, 0 failed`
+- programs where test paragraphs are not reached, or exception paths do not fire
+- `USE PROCEDURE NOT EXECUTED`
+- `ON SIZE ERROR NOT EXECUTED`
+- `WRONGLY AFFECTED BY SIZE ERROR`
+
+Likely root causes:
+
+- CFG lowering is still incomplete for COBOL-specific transfer rules
+- exceptional paths are not represented explicitly enough
+- `DECLARATIVES`, `USE`, `AT END`, `INVALID KEY`, `ON SIZE ERROR`,
+  `ALTER`, `GO TO`, and `PERFORM THRU` are not unified in one transfer model
+
+Required response:
+
+1. introduce traceable paragraph/section execution observation in runtime
+2. emit explicit control-flow edges for normal and exceptional exits
+3. validate `PERFORM`, `GO TO`, `ALTER`, declaratives, and exception handlers
+   with reduced reproductions before re-running wide NIST groups
+4. convert representative `IF/NC/DB` failures into reduced e2e tests
+
+Completion signal:
+
+- the majority of `0 passed, 0 failed` failures in `IF`, `NC`, `RL`, `SQ`
+  move either to PASS or to concrete paragraph-level mismatches
+
+### Remediation Stream 2: File Runtime State Machine
+
+Target symptoms:
+
+- `IX`, `RL`, `SQ`, `ST`, `SG`, `OB`, and parts of `NC`
+- wrong detail-row counts
+- wrong read/update/delete sequencing
+- invalid-key / at-end paths not matching CCVS expectations
+- sort/merge outputs being empty or all-zero
+
+Likely root causes:
+
+- file organization state is not modeled as an explicit runtime state machine
+- indexed / relative / sequential semantics are leaking into ad-hoc code paths
+- `OPEN/CLOSE/READ/WRITE/REWRITE/DELETE/START` cursor rules are incomplete
+- `SORT` / `MERGE` behavior is not aligned with the data movement contract
+
+Required response:
+
+1. define per-organization runtime state transitions
+2. formalize file-status behavior and cursor updates
+3. isolate `SORT` and `MERGE` into explicit runtime-backed semantics
+4. add reduced tests for sequential, indexed, relative, and sort behavior
+5. re-run `IX`, `RL`, `SQ`, `ST`, `SG` after each subsystem-level fix
+
+Completion signal:
+
+- detail-row mismatch failures shrink materially across `IX/RL/SQ/ST`
+- blank sort outputs disappear
+
+### Remediation Stream 3: Decimal Arithmetic and Intrinsic Semantics
+
+Target symptoms:
+
+- `NC`, `IF`, `IC`, and parts of `CM`
+- `MULTIPLY BY` mismatches
+- `ROUNDED` / `ON SIZE ERROR` incorrect behavior
+- intrinsic boundary mismatches such as `ACOS`
+
+Likely root causes:
+
+- decimal operation semantics are not consistently centralized
+- overflow, size error, and category conversion rules diverge across operations
+- intrinsic functions do not share a common coercion and boundary-handling model
+
+Required response:
+
+1. centralize decimal operation semantics in runtime-facing helpers
+2. define one policy for overflow, rounding, truncation, and size error
+3. make intrinsic evaluation use one shared typed conversion path
+4. validate with reduced arithmetic and intrinsic cases before broad NIST runs
+
+Completion signal:
+
+- `NC` arithmetic failures collapse into a much smaller residual set
+- `IF` failures stop being dominated by arithmetic/intrinsic mismatches
+
+### Remediation Stream 4: Diagnostics and Warning Emission
+
+Target symptoms:
+
+- `expected N warning flag(s), got 0`
+
+Likely root causes:
+
+- warning-triggering semantic checks are missing or incomplete
+- NIST warning programs are executing successfully but compiler diagnostics
+  are not emitted at compile time
+
+Required response:
+
+1. inventory all warning-driven NIST programs
+2. map each one to a semantic rule and warning category
+3. implement diagnostics in sema, not in ad-hoc verifier logic
+4. add compile-only regression tests for each warning family
+
+Completion signal:
+
+- warning-flag mismatch failures are reduced by semantic rule family,
+  not by per-program exceptions
+
+### Remediation Stream 5: Output Routing and Observability
+
+Target symptoms:
+
+- `blank-or-empty-report`
+- `no-decisive-ccvs-summary`
+- cases where a program runs but expected report output is not observed
+
+Likely root causes:
+
+- the runtime may be writing to a location other than the verifier-visible output
+- some report/printer paths are not captured consistently
+- verifier diagnostics are too weak to distinguish no-output vs wrong-output-path
+
+Required response:
+
+1. standardize runtime output capture for `stdout`, printer file `P`,
+   report files, and file-backed outputs
+2. emit a per-test output manifest showing which artifacts were produced
+3. upgrade verifier diagnostics to distinguish:
+   - no output produced
+   - output produced on wrong channel
+   - output produced but malformed
+
+Completion signal:
+
+- blank-report cases are reduced to explicit semantic failures or PASS
+
+### Remediation Stream 6: Verifier Normalization
+
+Target symptoms:
+
+- too many failures collapse into `0 passed, 0 failed`
+
+Likely root causes:
+
+- the current common parser extracts too little structure from CCVS output
+- verifier failures are under-classified, which hides the real subsystem defect
+
+Required response:
+
+1. build one common CCVS parser for:
+   - pass count
+   - fail count
+   - first failing paragraph
+   - computed/correct snippets
+   - footer error summary
+2. have verifiers return structured failure classes instead of generic text
+3. use this parser to feed prioritization and reduced-test extraction
+
+Completion signal:
+
+- the majority of current `0 passed, 0 failed` reasons become more specific
+
+## Execution Rules for the Remediation Work
+
+The remediation work must follow these rules.
+
+- Do not chase one NIST program at a time unless it is a deliberate reduced reproduction
+  for one failure class.
+- Each fix must name its target subsystem and failure class.
+- Each subsystem fix must add at least one reduced regression test outside the full NIST suite.
+- Re-run the smallest affected NIST module set first, then broader modules.
+- Only after a subsystem-level fix is validated should full-suite re-runs be used.
+
+## Immediate Next Work
+
+The next concrete implementation work should start with:
+
+1. verifier normalization for CCVS output structure
+2. execution tracing for control-flow observation
+3. reduced reproductions for:
+   - `DB101A` (`USE PROCEDURE NOT EXECUTED`)
+   - `NC101A` (`MULTIPLY BY` / `ON SIZE ERROR`)
+   - `IX101A` (indexed read/delete semantics)
+   - `ST103A` / `ST101A` chain (sort output contract)
+
+This order is intentional.
+It improves observability first, then control-flow correctness, then
+arithmetic and file semantics.

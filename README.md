@@ -96,12 +96,12 @@ cobolc myprogram.cob -o myprogram --source-format free
 | --- | --- |
 | `make build` | Debug build |
 | `make release` | Release build (default) |
-| `make test` | All tests (unit + E2E) |
-| `make test-unit` | Unit tests only |
-| `make test-e2e` | E2E tests only |
-| `make lint` | clippy + rustfmt check |
+| `make test` | Run the full workspace test suite |
+| `make lint` | Run clippy, rustfmt check, and cspell |
 | `make fmt` | Apply rustfmt |
 | `make check` | Type-check without codegen |
+| `make audit` | Run the standard non-NIST audit (`check` + `lint`) |
+| `make verify` | Run `clean`, `audit`, and `test` as the standard post-change verification |
 | `make install` | Install cobolc to ~/.cargo/bin |
 
 ## Crate Structure
