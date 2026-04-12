@@ -21,21 +21,30 @@ pub(crate) fn display_numeric_const_ptr(expr: &str) -> String {
     }
 }
 
-fn alphanumeric_operand_ptr_expr(expr: &HirExpr, c_expr: &str, data_items: &[HirDataItem]) -> String {
+fn alphanumeric_operand_ptr_expr(
+    expr: &HirExpr,
+    c_expr: &str,
+    data_items: &[HirDataItem],
+) -> String {
     let is_pointer_like_expr = matches!(expr, HirExpr::ReferenceModification { .. })
         || matches!(expr, HirExpr::DataRef(data_ref) if data_ref.refmod.is_some())
         || c_expr.starts_with('(');
     let is_renames_macro = find_data_item_by_c_name(c_expr, data_items)
-        .or_else(|| find_original_data_item_by_sanitized_name(extract_leaf_member(c_expr), data_items))
+        .or_else(|| {
+            find_original_data_item_by_sanitized_name(extract_leaf_member(c_expr), data_items)
+        })
         .is_some_and(|item| item.renames.is_some() || item.redefines.is_some());
     if is_group_expr(expr, data_items) {
         return format!("(const uint8_t*)&({c_expr})");
     }
-    if let Some(item) = expr_data_name(expr).and_then(|name| find_data_item_by_name(name, data_items)) {
+    if let Some(item) =
+        expr_data_name(expr).and_then(|name| find_data_item_by_name(name, data_items))
+    {
         return match item.data_type {
             HirType::Numeric { .. } => display_numeric_const_ptr(c_expr),
             _ => {
-                let is_qualified = expr_data_name(expr).is_some_and(|name| !name.qualifiers.is_empty());
+                let is_qualified =
+                    expr_data_name(expr).is_some_and(|name| !name.qualifiers.is_empty());
                 if item.renames.is_some()
                     || item.redefines.is_some()
                     || is_renames_macro
@@ -942,8 +951,9 @@ pub(crate) fn emit_store_int_op(
 /// Returns true if the given expression refers to a CobolDecimal variable.
 pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::DataRef(data_ref) => find_data_item(&data_ref.name, data_items)
-            .is_some_and(|i| needs_decimal(&i.data_type)),
+        HirExpr::DataRef(data_ref) => {
+            find_data_item(&data_ref.name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+        }
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
             find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
         }
@@ -2233,47 +2243,43 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
 
 pub(crate) fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
     match expr {
-        HirExpr::DataRef(data_ref) => {
-            find_data_item(&data_ref.name, data_items).and_then(|item| {
-                matches!(
-                    item.data_type,
-                    HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
-                )
-                .then(|| {
-                    let c_name = data_name_to_c_name(&data_ref.name);
-                    let full_size = find_data_item_size(&c_name, data_items);
-                    if let Some(refmod) = &data_ref.refmod {
-                        if let Some(length) = &refmod.length {
-                            if let HirExpr::Literal(HirLiteral::Integer(n)) = length.as_ref() {
-                                (*n).max(0) as u32
-                            } else {
-                                full_size
-                            }
-                        } else if let HirExpr::Literal(HirLiteral::Integer(start)) =
-                            refmod.start.as_ref()
-                        {
-                            full_size.saturating_sub((*start).saturating_sub(1) as u32)
+        HirExpr::DataRef(data_ref) => find_data_item(&data_ref.name, data_items).and_then(|item| {
+            matches!(
+                item.data_type,
+                HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
+            )
+            .then(|| {
+                let c_name = data_name_to_c_name(&data_ref.name);
+                let full_size = find_data_item_size(&c_name, data_items);
+                if let Some(refmod) = &data_ref.refmod {
+                    if let Some(length) = &refmod.length {
+                        if let HirExpr::Literal(HirLiteral::Integer(n)) = length.as_ref() {
+                            (*n).max(0) as u32
                         } else {
                             full_size
                         }
+                    } else if let HirExpr::Literal(HirLiteral::Integer(start)) =
+                        refmod.start.as_ref()
+                    {
+                        full_size.saturating_sub((*start).saturating_sub(1) as u32)
                     } else {
                         full_size
                     }
-                })
+                } else {
+                    full_size
+                }
             })
-        }
-        HirExpr::Variable(name) => {
-            find_data_item(name, data_items).and_then(|item| {
-                matches!(
-                    item.data_type,
-                    HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
-                )
-                .then(|| {
-                    let c_name = data_name_to_c_name(name);
-                    find_data_item_size(&c_name, data_items)
-                })
+        }),
+        HirExpr::Variable(name) => find_data_item(name, data_items).and_then(|item| {
+            matches!(
+                item.data_type,
+                HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
+            )
+            .then(|| {
+                let c_name = data_name_to_c_name(name);
+                find_data_item_size(&c_name, data_items)
             })
-        }
+        }),
         HirExpr::Subscript { variable, .. } => {
             find_data_item(variable, data_items).and_then(|item| {
                 matches!(

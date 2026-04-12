@@ -437,7 +437,11 @@ pub fn generate_c(program: &HirProgram) -> String {
 
 fn emit_debug_special_registers(out: &mut String, program: &HirProgram) {
     let hir_dump = format!("{program:#?}");
-    let declared: HashSet<String> = program.data_items.iter().map(|item| sanitize_name(&item.name)).collect();
+    let declared: HashSet<String> = program
+        .data_items
+        .iter()
+        .map(|item| sanitize_name(&item.name))
+        .collect();
     let mut emitted_any = false;
 
     for (c_name, original_name) in [
@@ -738,7 +742,9 @@ fn emit_isolated_paragraph_definition(
         for paragraph in paragraphs {
             if let Some(id) = para_label_map.get(&paragraph.id) {
                 let paragraph_c_name = sanitize_name(&paragraph.name);
-                out.push_str(&format!("        case {id}: goto lbl_{paragraph_c_name};\n"));
+                out.push_str(&format!(
+                    "        case {id}: goto lbl_{paragraph_c_name};\n"
+                ));
             }
         }
         out.push_str("        default: _goto_target = _t; return;\n");

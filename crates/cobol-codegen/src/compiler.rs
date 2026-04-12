@@ -217,7 +217,10 @@ PROCEDURE DIVISION.
     STOP RUN.
 ";
         let c_code = parse_lower_generate(src);
-        assert!(c_code.contains("if ("), "expected if statement in generated C: {c_code}");
+        assert!(
+            c_code.contains("if ("),
+            "expected if statement in generated C: {c_code}"
+        );
         assert!(
             c_code.contains("} else {"),
             "expected else block in generated C: {c_code}"

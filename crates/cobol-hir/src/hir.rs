@@ -1360,7 +1360,11 @@ fn write_stmt(
             writeln!(f, "{pad}END-IF")
         }
         HirStatement::Perform { kind, .. } => {
-            writeln!(f, "{pad}PERFORM {:?}", std::mem::discriminant(kind.as_ref()))
+            writeln!(
+                f,
+                "{pad}PERFORM {:?}",
+                std::mem::discriminant(kind.as_ref())
+            )
         }
         HirStatement::Call { program, .. } => {
             writeln!(f, "{pad}CALL {}", format_expr(program))

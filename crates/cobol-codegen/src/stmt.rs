@@ -1507,7 +1507,9 @@ pub(crate) fn emit_statement_with_ctx(
                             })
                         });
                         if let Some(id) = label_id {
-                            out.push_str(&format!("{pad}_goto_target = {id}; goto _goto_dispatch;\n"));
+                            out.push_str(&format!(
+                                "{pad}_goto_target = {id}; goto _goto_dispatch;\n"
+                            ));
                         } else {
                             out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
                         }
@@ -4100,7 +4102,9 @@ pub(crate) fn emit_move_to(
                 };
                 let src_size = alphanumeric_expr_len(from, data_items).unwrap_or_else(|| {
                     expr_data_name(from)
-                        .map(|name| find_data_item_layout(&data_name_to_c_name(name), data_items).item_len)
+                        .map(|name| {
+                            find_data_item_layout(&data_name_to_c_name(name), data_items).item_len
+                        })
                         .unwrap_or_else(|| find_data_item_layout(&c_src, data_items).item_len)
                 });
                 let src_ptr = format!("(const uint8_t*)&{c_src}");

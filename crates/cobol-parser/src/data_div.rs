@@ -9,7 +9,10 @@ use crate::parser::Parser;
 
 impl Parser {
     fn at_data_item_start(&self) -> bool {
-        matches!(self.current().kind, TokenKind::LevelNumber | TokenKind::IntegerLiteral)
+        matches!(
+            self.current().kind,
+            TokenKind::LevelNumber | TokenKind::IntegerLiteral
+        )
     }
 
     fn consume_data_level_number(&mut self) -> Result<u8, ()> {
