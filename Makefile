@@ -9,7 +9,7 @@ NIST_COBOLC ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR)/release/cobol-driver
 .PHONY: all build release test test-unit test-e2e lint fmt check clippy clean install uninstall example spellcheck nist-prepare nist-run nist-summary nist-audit-codegen nist-compare-codegen runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
 
 NIST_ENV_ROOT ?= $(CURDIR)/.nist
-NIST_JOBS ?= 3
+NIST_JOBS ?= 5
 NIST_SOURCE_VAL ?=
 RUNTIME_X86_IMAGE := rust-cobol-runtime-x86
 RUNTIME_X86_TARGET := /workspace/target/runtime-x86-linux-amd64

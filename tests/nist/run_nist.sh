@@ -11,7 +11,6 @@ RESULTS_DIR="$ENV_ROOT/results"
 COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
 PREPROCESS="$SCRIPT_DIR/preprocess.sh"
 COMM_FIXTURES_DIR="$SCRIPT_DIR/fixtures/comm"
-JUDGES_DIR="$SCRIPT_DIR/judges"
 VERIFIERS_DIR="$SCRIPT_DIR/verifiers"
 VERIFIER_OVERRIDES_DIR="$VERIFIERS_DIR/overrides"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
@@ -19,7 +18,7 @@ NIST_WORK_ROOT="$ENV_ROOT/work/run"
 NIST_TMP_ROOT="/tmp/nc85"
 NIST_TOOLCHAIN_ROOT="$ENV_ROOT/toolchain"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-60}"
-NIST_JOBS="${NIST_JOBS:-3}"
+NIST_JOBS="${NIST_JOBS:-5}"
 NIST_COMPILE_CACHE="${NIST_COMPILE_CACHE:-1}"
 CURRENT_RUN_PID=""
 COMPILER_SIGNATURE=""
@@ -338,15 +337,6 @@ compile_warning_count() {
     else
         printf '0\n'
     fi
-}
-
-run_custom_judge() {
-    local module="$1"
-    local program="$2"
-    local result_file="$3"
-    local judge="$JUDGES_DIR/${program}.sh"
-    [ -x "$judge" ] || return 1
-    "$judge" "$module" "$program" "$result_file"
 }
 
 run_common_judge() {
@@ -775,21 +765,7 @@ compile_program_artifacts() {
         if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
             2>"$compile_log" || grep -q 'COB[C]-E' "$compile_log"; then
             if [ -x "$bin" ]; then
-                local judge_output judge_status
-                if judge_output="$(run_custom_judge "$module" "$program" "$compile_log" 2>/dev/null)"; then
-                    judge_status="${judge_output%%|*}"
-                    if [ "$judge_status" = "PASS" ] || [ "$judge_status" = "FAIL" ]; then
-                        :
-                    else
-                        echo "COMPILE_ERROR" > "$status_file"
-                        echo "  $program: COMPILE ERROR"
-                        return 1
-                    fi
-                else
-                    echo "COMPILE_ERROR" > "$status_file"
-                    echo "  $program: COMPILE ERROR"
-                    return 1
-                fi
+                :
             else
                 echo "COMPILE_ERROR" > "$status_file"
                 echo "  $program: COMPILE ERROR"
@@ -926,8 +902,7 @@ handle_abnormal_program_exit() {
         result_file="$print_file"
     fi
 
-    if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
-        judge_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)" || \
+    if judge_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)" || \
         judge_output="$(run_common_judge "$module" "$program" "$src" "$result_file" 2>/dev/null)"; then
         case "$exit_code" in
             124)
@@ -979,8 +954,7 @@ judge_successful_program_run() {
         cp "$print_file" "$log" || true
     fi
 
-    if judge_output="$(run_custom_judge "$module" "$program" "$log" 2>/dev/null)" || \
-        judge_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)" || \
+    if judge_output="$(run_program_verifier "$module" "$program" "$src" "$result_file" "$compile_log" 2>/dev/null)" || \
         judge_output="$(run_common_judge "$module" "$program" "$src" "$log" 2>/dev/null)"; then
         apply_judge_verdict "$program" "$status_file" "$reason_file" "$judge_output"
         return
@@ -1122,21 +1096,25 @@ phase_status_counts_as_failure() {
 
 print_phase_progress() {
     local phase="$1"
-    local module="$2"
-    local module_done="$3"
-    local module_total="$4"
-    local completed="$5"
-    local total="$6"
-    local program="$7"
-    local status_line="$8"
+    local completed="$2"
+    local total="$3"
+    local active="$4"
+    local queued="$5"
+    local module="$6"
+    local module_done="$7"
+    local module_total="$8"
+    local program="$9"
+    local status_line="${10}"
 
-    printf '[%s] %s %d/%d total %d/%d %s %s\n' \
+    printf '[%s %d/%d active=%d queued=%d] %s %d/%d %s %s\n' \
         "$phase" \
+        "$completed" \
+        "$total" \
+        "$active" \
+        "$queued" \
         "$module" \
         "$module_done" \
         "$module_total" \
-        "$completed" \
-        "$total" \
         "$program" \
         "$status_line"
 }
@@ -1225,6 +1203,136 @@ enqueue_phase_worker() {
     batch_programs_ref+=("$program")
 }
 
+collect_completed_phase_workers() {
+    local phase="$1"
+    local total="$2"
+    local modules_name="$3"
+    local module_totals_name="$4"
+    local module_done_name="$5"
+    local completed_name="$6"
+    local failures_name="$7"
+    local batch_pids_name="$8"
+    local batch_logs_name="$9"
+    local batch_modules_name="${10}"
+    local batch_programs_name="${11}"
+
+    local -n modules_ref="$modules_name"
+    local -n module_totals_ref="$module_totals_name"
+    local -n module_done_ref="$module_done_name"
+    local -n completed_ref="$completed_name"
+    local -n failures_ref="$failures_name"
+    local -n batch_pids_ref="$batch_pids_name"
+    local -n batch_logs_ref="$batch_logs_name"
+    local -n batch_modules_ref="$batch_modules_name"
+    local -n batch_programs_ref="$batch_programs_name"
+
+    local i pid module_idx status_file current_done current_total status_line active_count queued_count
+    local done_module done_program
+    local collected=1
+
+    for i in "${!batch_pids_ref[@]}"; do
+        pid="${batch_pids_ref[$i]}"
+        if kill -0 "$pid" 2>/dev/null; then
+            continue
+        fi
+
+        wait "$pid" || true
+        completed_ref=$((completed_ref + 1))
+        module_idx="$(module_index "${batch_modules_ref[$i]}" "${modules_ref[@]}")"
+        current_done="${module_done_ref[$module_idx]}"
+        current_total="${module_totals_ref[$module_idx]}"
+        current_done=$((current_done + 1))
+        module_done_ref[$module_idx]="$current_done"
+
+        status_file="$RESULTS_DIR/${batch_modules_ref[$i]}/${batch_programs_ref[$i]}.status"
+        status_line="$(cat "$status_file" 2>/dev/null || printf 'UNKNOWN')"
+        if phase_status_counts_as_failure "$phase" "$status_line"; then
+            failures_ref=$((failures_ref + 1))
+        fi
+
+        done_module="${batch_modules_ref[$i]}"
+        done_program="${batch_programs_ref[$i]}"
+        rm -f "${batch_logs_ref[$i]}"
+
+        unset 'batch_pids_ref[$i]'
+        unset 'batch_logs_ref[$i]'
+        unset 'batch_modules_ref[$i]'
+        unset 'batch_programs_ref[$i]'
+        active_count="${#batch_pids_ref[@]}"
+        queued_count=$((total - completed_ref - active_count))
+        if [ "$queued_count" -lt 0 ]; then
+            queued_count=0
+        fi
+        print_phase_progress \
+            "$phase" \
+            "$completed_ref" \
+            "$total" \
+            "$active_count" \
+            "$queued_count" \
+            "$done_module" \
+            "$current_done" \
+            "$current_total" \
+            "$done_program" \
+            "$status_line"
+        collected=0
+    done
+
+    return "$collected"
+}
+
+wait_for_phase_slot() {
+    local jobs="$1"
+    local phase="$2"
+    local total="$3"
+    local modules_name="$4"
+    local module_totals_name="$5"
+    local module_done_name="$6"
+    local completed_name="$7"
+    local failures_name="$8"
+    local batch_pids_name="$9"
+    local batch_logs_name="${10}"
+    local batch_modules_name="${11}"
+    local batch_programs_name="${12}"
+
+    local -n batch_pids_ref="$batch_pids_name"
+
+    while [ "${#batch_pids_ref[@]}" -ge "$jobs" ]; do
+        if ! collect_completed_phase_workers \
+            "$phase" "$total" \
+            "$modules_name" "$module_totals_name" "$module_done_name" \
+            "$completed_name" "$failures_name" \
+            "$batch_pids_name" "$batch_logs_name" "$batch_modules_name" "$batch_programs_name"; then
+            sleep 0.05
+        fi
+    done
+}
+
+drain_phase_workers() {
+    local phase="$1"
+    local total="$2"
+    local modules_name="$3"
+    local module_totals_name="$4"
+    local module_done_name="$5"
+    local completed_name="$6"
+    local failures_name="$7"
+    local batch_pids_name="$8"
+    local batch_logs_name="$9"
+    local batch_modules_name="${10}"
+    local batch_programs_name="${11}"
+
+    local -n batch_pids_ref="$batch_pids_name"
+
+    while [ "${#batch_pids_ref[@]}" -gt 0 ]; do
+        if ! collect_completed_phase_workers \
+            "$phase" "$total" \
+            "$modules_name" "$module_totals_name" "$module_done_name" \
+            "$completed_name" "$failures_name" \
+            "$batch_pids_name" "$batch_logs_name" "$batch_modules_name" "$batch_programs_name"; then
+            sleep 0.05
+        fi
+    done
+}
+
 run_phase_workers() {
     local phase="$1"
     local jobs="$2"
@@ -1240,6 +1348,10 @@ run_phase_workers() {
     local -a batch_programs=()
     local module program
 
+    if [ "$jobs" -lt 1 ]; then
+        jobs=1
+    fi
+
     total="$(count_task_file "$task_file")"
     completed=0
     failures=0
@@ -1253,23 +1365,19 @@ run_phase_workers() {
 
     while IFS='|' read -r module program; do
         [ -n "$module" ] || continue
+        wait_for_phase_slot \
+            "$jobs" "$phase" "$total" \
+            modules module_totals module_done completed failures \
+            batch_pids batch_logs batch_modules batch_programs
         enqueue_phase_worker \
             "$phase" "$module" "$program" \
             batch_pids batch_logs batch_modules batch_programs
-        if [ "${#batch_pids[@]}" -ge "$jobs" ]; then
-            flush_phase_batch \
-                "$phase" "$total" \
-                modules module_totals module_done completed failures \
-                batch_pids batch_logs batch_modules batch_programs
-        fi
     done < "$task_file"
 
-    if [ "${#batch_pids[@]}" -gt 0 ]; then
-        flush_phase_batch \
-            "$phase" "$total" \
-            modules module_totals module_done completed failures \
-            batch_pids batch_logs batch_modules batch_programs
-    fi
+    drain_phase_workers \
+        "$phase" "$total" \
+        modules module_totals module_done completed failures \
+        batch_pids batch_logs batch_modules batch_programs
 
     return "$failures"
 }
