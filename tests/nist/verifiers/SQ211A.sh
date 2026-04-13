@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: SQ211A
 # Source: .nist/programs/SQ/SQ211A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 3
+# Expected Cases: 4
 # Expected Feature: OPEN OUTPUT - NEW FILE
 # Purpose: VALIDATION FOR:-
 

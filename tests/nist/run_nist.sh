@@ -148,9 +148,39 @@ inspect_reason_for_program() {
 
 source_reason_for_program() {
     local src="$1"
-    if [ -f "$src" ] && grep -Eq '^[0-9[:space:]]*PROCEDURE DIVISION USING' "$src"; then
+    if [ -f "$src" ] && perl -ne '
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+        next unless $started;
+        if (/^[0-9[:space:]]*PROCEDURE DIVISION USING/) {
+            exit 10;
+        }
+    ' "$src"; then
+        :
+    elif [ "$?" -eq 10 ]; then
         printf 'subprogram-only\n'
-    elif [ -f "$src" ] && grep -Eq 'DUMMY PROCEDURE|DUMMY PARAGRAPH' "$src"; then
+    elif [ -f "$src" ] && perl -ne '
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+        next unless $started;
+        if (/DUMMY PROCEDURE|DUMMY PARAGRAPH/) {
+            exit 11;
+        }
+    ' "$src"; then
+        :
+    elif [ "$?" -eq 11 ]; then
         printf 'dummy-display\n'
     else
         printf '%s\n' ""
@@ -548,6 +578,12 @@ find_missing_input_fixture() {
         my $trimmed = $_;
         $trimmed =~ s/\r?\n$//;
         $trimmed =~ s/^[0-9[:space:]]*//;
+        if ($trimmed =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+        next unless $started;
         next if $trimmed eq "" || $trimmed =~ /^\*/;
 
         if ($trimmed =~ /^SELECT /) {

@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: IX101A
 # Source: .nist/programs/IX/IX101A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 20
+# Expected Cases: 2
 # Expected Feature: FILE CREATE IX-FS1
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

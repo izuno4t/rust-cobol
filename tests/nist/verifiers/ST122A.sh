@@ -4,8 +4,7 @@ set -euo pipefail
 # Program: ST122A
 # Source: .nist/programs/ST/ST122A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 8
-# Expected Feature: SORT VARIABLE RECORD
+# Expected Cases: 0
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

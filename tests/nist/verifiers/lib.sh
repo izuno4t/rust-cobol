@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+verifier_primary_program_stream() {
+    local src="$1"
+    perl -ne '
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+        print if $started;
+    ' "$src"
+}
+
 verifier_count_summary() {
     local file="$1"
     local pattern="$2"
@@ -57,6 +72,15 @@ verifier_expected_flags() {
     local value
     value="$(
         perl -ne '
+            my $normalized = $_;
+            $normalized =~ s/\r?\n$//;
+            $normalized =~ s/^[0-9[:space:]]*//;
+            if ($normalized =~ /^PROGRAM-ID\./) {
+                $program_count++;
+                exit 0 if $program_count > 1;
+                $started = 1;
+            }
+            next unless $started;
             next unless /TOTAL NUMBER OF FLAGS EXPECTED\s*=/;
             my @fields = split " ", $_;
             for my $field (@fields) {
@@ -95,7 +119,16 @@ verifier_expected_case_count() {
     local count
     count="$(
         perl -ne '
-            if (/MOVE\s+"[^"]+"\s+TO\s+PAR-NAME\./) {
+            my $normalized = $_;
+            $normalized =~ s/\r?\n$//;
+            $normalized =~ s/^[0-9[:space:]]*//;
+            if ($normalized =~ /^PROGRAM-ID\./) {
+                $program_count++;
+                exit 0 if $program_count > 1;
+                $started = 1;
+            }
+            next unless $started;
+            if (/MOVE\s+"[^"]+"\s+TO\s+PAR-NAME\b/) {
                 $count++;
             }
             END {
@@ -115,11 +148,20 @@ verifier_expected_feature_name() {
     local value
     value="$(
         perl -ne '
+            my $normalized = $_;
+            $normalized =~ s/\r?\n$//;
+            $normalized =~ s/^[0-9[:space:]]*//;
+            if ($normalized =~ /^PROGRAM-ID\./) {
+                $program_count++;
+                exit 0 if $program_count > 1;
+                $started = 1;
+            }
+            next unless $started;
             if (/MOVE\s+"([^"]+)"\s+TO\s+FEATURE\./) {
                 print "$1\n";
                 exit;
             }
-        ' "$src" 2>/dev/null | head -n 1
+        ' "$src" 2>/dev/null
     )"
     printf '%s\n' "$value"
 }

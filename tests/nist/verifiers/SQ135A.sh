@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: SQ135A
 # Source: .nist/programs/SQ/SQ135A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 0
+# Expected Cases: 1
 # Expected Feature: CLOSE OF CLOSED FILE
 # Purpose: VALIDATION FOR:-
 

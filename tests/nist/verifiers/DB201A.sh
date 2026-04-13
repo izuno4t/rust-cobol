@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: DB201A
 # Source: .nist/programs/DB/DB201A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 116
+# Expected Cases: 117
 # Expected Feature: GO TO DEP/ALL REF
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

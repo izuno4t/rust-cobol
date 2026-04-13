@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: SQ225A
 # Source: .nist/programs/SQ/SQ225A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 2
+# Expected Cases: 3
 # Expected Feature: EXEC USE ON OPEN FAILURE
 # Purpose: VALIDATION FOR:-
 

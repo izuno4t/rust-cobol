@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: SM201A
 # Source: .nist/programs/SM/SM201A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 19
+# Expected Cases: 11
 # Expected Feature: COPY 01 LEVEL --- 
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: ST115A
 # Source: .nist/programs/ST/ST115A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 2
+# Expected Cases: 1
 # Expected Feature: CREATE FILE SQ-FS1
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

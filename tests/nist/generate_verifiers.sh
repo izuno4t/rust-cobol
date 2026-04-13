@@ -10,10 +10,46 @@ VERIFIER_OVERRIDES_DIR="$VERIFIERS_DIR/overrides"
 mkdir -p "$VERIFIERS_DIR"
 mkdir -p "$VERIFIER_OVERRIDES_DIR"
 
+primary_program_stream() {
+    local src="$1"
+    perl -ne '
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+        print if $started;
+    ' "$src"
+}
+
+primary_program_matches() {
+    local src="$1"
+    local pattern="$2"
+    perl -ne '
+        our ($pat, $program_count, $started);
+        BEGIN { $pat = shift @ARGV; }
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 1 if $program_count > 1;
+            $started = 1;
+        }
+        next unless $started;
+        exit 0 if /$pat/;
+        END { exit 1; }
+    ' "$pattern" "$src"
+}
+
 extract_program_purpose() {
     local src="$1"
     perl -ne '
         our $carry = "";
+        our $emitted = 0;
         if (/^\d{6}\*\s*(.+?)\s*\*?\s*$/) {
             my $line = $1;
             $line =~ s/\s+[A-Z]{2,}[0-9A-Z]{2,}\.?[0-9]*\s*$//;
@@ -24,6 +60,8 @@ extract_program_purpose() {
             next if $line eq "" || $line =~ /^[*]+$/;
             if ($carry ne "") {
                 print "$carry $line\n";
+                $emitted++;
+                exit if $emitted >= 4;
                 $carry = "";
                 next;
             }
@@ -33,18 +71,20 @@ extract_program_purpose() {
             }
             if ($line =~ /This program is intended|Intrinsic Function|VALIDATION FOR|THE SUBPROGRAM|called by the main program/i) {
                 print "$line\n";
+                $emitted++;
+                exit if $emitted >= 4;
             }
         }
-    ' "$src" | head -n 4
+    ' "$src"
 }
 
 select_verifier_fn() {
     local src="$1"
-    if rg -q '^[0-9[:space:]]*PROCEDURE DIVISION USING' "$src"; then
+    if primary_program_matches "$src" '^[0-9[:space:]]*PROCEDURE DIVISION USING'; then
         printf 'verifier_subprogram_standalone\n'
-    elif rg -q 'DUMMY PROCEDURE|DUMMY PARAGRAPH' "$src"; then
+    elif primary_program_matches "$src" 'DUMMY PROCEDURE|DUMMY PARAGRAPH'; then
         printf 'verifier_dummy_display\n'
-    elif rg -q 'Intrinsic Function' "$src"; then
+    elif primary_program_matches "$src" 'Intrinsic Function'; then
         printf 'verifier_intrinsic_function\n'
     else
         printf 'verifier_standard_ccvs\n'
@@ -54,23 +94,41 @@ select_verifier_fn() {
 extract_expected_case_count() {
     local src="$1"
     perl -ne '
-        if (/MOVE\s+"[^"]+"\s+TO\s+PAR-NAME\./) {
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+        next unless $started;
+        if (/MOVE\s+"[^"]+"\s+TO\s+PAR-NAME\b/) {
             $count++;
         }
         END {
             print(($count || 0) . "\n");
         }
-    ' "$src" | tail -n 1
+    ' "$src"
 }
 
 extract_expected_feature_name() {
     local src="$1"
     perl -ne '
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+        next unless $started;
         if (/MOVE\s+"([^"]+)"\s+TO\s+FEATURE\./) {
             print "$1\n";
-            exit;
+            exit 0;
         }
-    ' "$src" | head -n 1
+    ' "$src"
 }
 
 find "$PROGRAMS_DIR" -path '*/COPYLIB' -prune -o -name '*.cob' -print | while IFS= read -r src; do

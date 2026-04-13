@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Program: RL302M
 # Source: .nist/programs/RL/RL302M.cob
-# Verifier: verifier_dummy_display
+# Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,4 +15,4 @@ src="$3"
 result_file="$4"
 compile_log="$5"
 
-verifier_dummy_display "$src" "$result_file" "$compile_log"
+verifier_standard_ccvs "$src" "$result_file" "$compile_log"

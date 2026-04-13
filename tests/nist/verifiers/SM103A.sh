@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: SM103A
 # Source: .nist/programs/SM/SM103A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 15
+# Expected Cases: 7
 # Expected Feature: COPY ---
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

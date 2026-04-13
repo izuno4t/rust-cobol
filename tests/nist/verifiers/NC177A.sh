@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: NC177A
 # Source: .nist/programs/NC/NC177A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 108
+# Expected Cases: 110
 # Expected Feature: ADD GIVING
 # Purpose: VALIDATION FOR:-
 

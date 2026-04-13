@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: SM203A
 # Source: .nist/programs/SM/SM203A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 6
+# Expected Cases: 1
 # Expected Feature: COPY ENV DIV REPLAC
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

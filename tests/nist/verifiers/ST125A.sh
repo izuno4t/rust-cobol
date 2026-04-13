@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: ST125A
 # Source: .nist/programs/ST/ST125A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 40
+# Expected Cases: 1
 # Expected Feature: CREATE A FILE
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

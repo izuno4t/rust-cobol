@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: SQ125A
 # Source: .nist/programs/SQ/SQ125A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 1
+# Expected Cases: 3
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

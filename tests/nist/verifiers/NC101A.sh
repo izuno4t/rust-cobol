@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: NC101A
 # Source: .nist/programs/NC/NC101A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 58
+# Expected Cases: 64
 # Expected Feature: MULTIPLY BY
 # Purpose: VALIDATION FOR:-
 

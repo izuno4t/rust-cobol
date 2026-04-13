@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: OBSQ3A
 # Source: .nist/programs/OB/OBSQ3A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 17
+# Expected Cases: 8
 # Expected Feature: CREATE FILE SQ-FS1
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

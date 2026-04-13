@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: NC201A
 # Source: .nist/programs/NC/NC201A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 73
+# Expected Cases: 74
 # Expected Feature: PERFORM UNTIL
 # Purpose: VALIDATION FOR:-
 

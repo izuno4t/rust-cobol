@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: ST101A
 # Source: .nist/programs/ST/ST101A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 20
+# Expected Cases: 10
 # Expected Feature: SORT --- FIVE KEYS
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

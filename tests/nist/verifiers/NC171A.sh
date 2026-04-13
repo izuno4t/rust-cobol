@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: NC171A
 # Source: .nist/programs/NC/NC171A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 42
+# Expected Cases: 45
 # Expected Feature: DIVIDE INTO
 # Purpose: VALIDATION FOR:-
 

@@ -4,8 +4,7 @@ set -euo pipefail
 # Program: ST112M
 # Source: .nist/programs/ST/ST112M.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 11
-# Expected Feature: SORT, MULTIPLE REEL
+# Expected Cases: 0
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

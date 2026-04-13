@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: NC207A
 # Source: .nist/programs/NC/NC207A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 69
+# Expected Cases: 85
 # Expected Feature: QUALIFIED ADDITION
 # Purpose: VALIDATION FOR:-
 

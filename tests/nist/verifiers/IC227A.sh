@@ -3,13 +3,14 @@ set -euo pipefail
 
 # Program: IC227A
 # Source: .nist/programs/IC/IC227A.cob
-# Verifier: verifier_subprogram_standalone
+# Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: EXTERNAL FILE RECORD
 # Purpose: VALIDATION FOR:-
 # Purpose: * CLOSE THE FILE THROUGH THE SUBPROGRAM
 # Purpose: * THE SUBPROGRAM
 # Purpose: * FILE THROUGH THE SUBPROGRAM. THIS SHOULD
+# Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"
@@ -20,4 +21,4 @@ src="$3"
 result_file="$4"
 compile_log="$5"
 
-verifier_subprogram_standalone "$src" "$result_file" "$compile_log"
+verifier_standard_ccvs "$src" "$result_file" "$compile_log"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Program: IF112A
 # Source: .nist/programs/IF/IF112A.cob
-# Verifier: verifier_intrinsic_function
+# Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: INTEGER-OF-DATE
 # Purpose: It contains tests for the Intrinsic Function
@@ -19,4 +19,4 @@ src="$3"
 result_file="$4"
 compile_log="$5"
 
-verifier_intrinsic_function "$src" "$result_file" "$compile_log"
+verifier_standard_ccvs "$src" "$result_file" "$compile_log"

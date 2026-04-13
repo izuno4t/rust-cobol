@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: ST119A
 # Source: .nist/programs/ST/ST119A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 38
+# Expected Cases: 28
 # Expected Feature: INTNL CODE PERFORMED
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

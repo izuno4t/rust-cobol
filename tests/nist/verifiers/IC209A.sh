@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Program: IC209A
 # Source: .nist/programs/IC/IC209A.cob
-# Verifier: verifier_subprogram_standalone
+# Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-
 
@@ -16,4 +16,4 @@ src="$3"
 result_file="$4"
 compile_log="$5"
 
-verifier_subprogram_standalone "$src" "$result_file" "$compile_log"
+verifier_standard_ccvs "$src" "$result_file" "$compile_log"

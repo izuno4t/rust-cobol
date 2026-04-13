@@ -4,8 +4,12 @@ set -euo pipefail
 # Program: IX113A
 # Source: .nist/programs/IX/IX113A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 25
+# Expected Cases: 5
 # Expected Feature: OPEN OUTPUT: 00 EXP.
+# Purpose: VALIDATION FOR:-
+# Purpose: VALIDATION FOR:-
+# Purpose: VALIDATION FOR:-
+# Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-

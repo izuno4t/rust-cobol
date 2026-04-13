@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: NC205A
 # Source: .nist/programs/NC/NC205A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 9
+# Expected Cases: 10
 # Expected Feature: CONTINUATION ---
 # Purpose: VALIDATION FOR:-
 

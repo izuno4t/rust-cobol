@@ -4,7 +4,7 @@ set -euo pipefail
 # Program: ST104A
 # Source: .nist/programs/ST/ST104A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 4
+# Expected Cases: 1
 # Expected Feature: TAPE BEING BUILT
 # Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
