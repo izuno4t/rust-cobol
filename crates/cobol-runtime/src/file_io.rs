@@ -128,11 +128,13 @@ where
 
 const FS_OK: u32 = 0; // "00"
 const FS_AT_END: u32 = 10;
+const FS_DUPLICATE_KEY: u32 = 22;
 const FS_REC_NOT_FOUND: u32 = 23;
 const FS_IO_ERROR: u32 = 30;
 const FS_NOT_FOUND: u32 = 35;
 const FS_ALREADY_OPEN: u32 = 41;
 const FS_NOT_OPEN: u32 = 42;
+const FS_READ_NOT_PERMITTED: u32 = 47;
 const FS_WRITE_NOT_PERMITTED: u32 = 48;
 const FS_IO_MODE_REQUIRED: u32 = 49;
 
@@ -190,7 +192,7 @@ pub unsafe extern "C" fn cobol_file_open(
             FileOpenMode::IoMode => OpenOptions::new()
                 .read(true)
                 .write(true)
-                .create(true)
+                .create(false)
                 .truncate(false)
                 .open(path)
                 .map(CobolFileInner::ReadWrite),
@@ -265,8 +267,10 @@ fn build_index(file: &mut CobolFile, key_offset: u32, key_len: u32) {
     file.index.clear();
 
     while f.read_exact(&mut buf).is_ok() {
-        let key = buf[key_off..key_off + key_length].to_vec();
-        file.index.push((key, offset));
+        if !is_deleted_record(&buf) {
+            let key = buf[key_off..key_off + key_length].to_vec();
+            file.index.push((key, offset));
+        }
         offset += rec_len as u64;
     }
 
@@ -364,11 +368,16 @@ pub unsafe extern "C" fn cobol_file_read_next(
             Some(f) => f,
             None => {
                 file_debug_log(&format!(
-                    "write id={file_id} len={record_len} rc={FS_NOT_OPEN}"
+                    "read-next id={file_id} len={record_len} rc={FS_READ_NOT_PERMITTED}"
                 ));
-                return FS_NOT_OPEN;
+                return FS_READ_NOT_PERMITTED;
             }
         };
+
+        match file.mode {
+            FileOpenMode::Input | FileOpenMode::IoMode => {}
+            _ => return FS_READ_NOT_PERMITTED,
+        }
 
         match file.org {
             FileOrganization::LineSequential => {
@@ -407,7 +416,7 @@ pub unsafe extern "C" fn cobol_file_read_next(
                         file.current_record += 1;
                         return FS_OK;
                     }
-                    _ => return FS_WRITE_NOT_PERMITTED,
+                    _ => return FS_READ_NOT_PERMITTED,
                 };
 
                 let mut line = String::new();
@@ -431,7 +440,7 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 let reader = match &mut file.inner {
                     CobolFileInner::Reader(r) => r as &mut dyn Read,
                     CobolFileInner::ReadWrite(f) => f as &mut dyn Read,
-                    _ => return FS_WRITE_NOT_PERMITTED,
+                    _ => return FS_READ_NOT_PERMITTED,
                 };
 
                 match reader.read_exact(buf) {
@@ -444,20 +453,27 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 }
             }
             FileOrganization::Relative => {
-                // Sequential read of relative file: read the next record-sized block.
+                // Sequential read of relative file skips deleted slots.
                 let reader = match &mut file.inner {
                     CobolFileInner::Reader(r) => r as &mut dyn Read,
                     CobolFileInner::ReadWrite(f) => f as &mut dyn Read,
-                    _ => return FS_WRITE_NOT_PERMITTED,
+                    _ => return FS_READ_NOT_PERMITTED,
                 };
 
-                match reader.read_exact(buf) {
-                    Ok(()) => {
-                        file.current_record += 1;
-                        FS_OK
+                loop {
+                    match reader.read_exact(buf) {
+                        Ok(()) => {
+                            file.current_record += 1;
+                            if is_deleted_record(buf) {
+                                continue;
+                            }
+                            return FS_OK;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                            return FS_AT_END;
+                        }
+                        Err(_) => return FS_IO_ERROR,
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => FS_AT_END,
-                    Err(_) => FS_IO_ERROR,
                 }
             }
             FileOrganization::Indexed => {
@@ -471,7 +487,7 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 let f = match &mut file.inner {
                     CobolFileInner::Reader(r) => r.get_mut(),
                     CobolFileInner::ReadWrite(f) => f,
-                    _ => return FS_WRITE_NOT_PERMITTED,
+                    _ => return FS_READ_NOT_PERMITTED,
                 };
 
                 if f.seek(SeekFrom::Start(offset)).is_err() {
@@ -514,8 +530,13 @@ pub unsafe extern "C" fn cobol_file_read_key(
     with_file_table(|table| {
         let file = match table.get_mut(&file_id) {
             Some(f) => f,
-            None => return FS_NOT_OPEN,
+            None => return FS_READ_NOT_PERMITTED,
         };
+
+        match file.mode {
+            FileOpenMode::Input | FileOpenMode::IoMode => {}
+            _ => return FS_READ_NOT_PERMITTED,
+        }
 
         match file.org {
             FileOrganization::Relative => {
@@ -538,6 +559,9 @@ pub unsafe extern "C" fn cobol_file_read_key(
                 }
                 match f.read_exact(buf) {
                     Ok(()) => {
+                        if is_deleted_record(buf) {
+                            return FS_REC_NOT_FOUND;
+                        }
                         file.current_record = rec_num;
                         FS_OK
                     }
@@ -604,7 +628,7 @@ pub unsafe extern "C" fn cobol_file_write(
     with_file_table(|table| {
         let file = match table.get_mut(&file_id) {
             Some(f) => f,
-            None => return FS_NOT_OPEN,
+            None => return FS_WRITE_NOT_PERMITTED,
         };
 
         match file.mode {
@@ -704,7 +728,7 @@ pub unsafe extern "C" fn cobol_file_write_indexed(
             .index
             .partition_point(|(k, _)| k.as_slice() < key.as_slice());
         if insert_pos < file.index.len() && file.index[insert_pos].0 == key {
-            return 22; // FS_DUPLICATE_KEY
+            return FS_DUPLICATE_KEY;
         }
 
         // Get current write position.
@@ -761,7 +785,7 @@ pub unsafe extern "C" fn cobol_file_rewrite(
     with_file_table(|table| {
         let file = match table.get_mut(&file_id) {
             Some(f) => f,
-            None => return FS_NOT_OPEN,
+            None => return FS_IO_MODE_REQUIRED,
         };
 
         if file.mode != FileOpenMode::IoMode {
@@ -792,7 +816,7 @@ pub extern "C" fn cobol_file_delete(file_id: u32) -> u32 {
     with_file_table(|table| {
         let file = match table.get_mut(&file_id) {
             Some(f) => f,
-            None => return FS_NOT_OPEN,
+            None => return FS_IO_MODE_REQUIRED,
         };
 
         if file.mode != FileOpenMode::IoMode {
@@ -821,8 +845,19 @@ pub extern "C" fn cobol_file_delete(file_id: u32) -> u32 {
                 // Remove from the index.
                 let idx = file.current_record.saturating_sub(1) as usize;
                 if idx < file.index.len() {
-                    file.index.remove(idx);
-                    FS_OK
+                    let (_key, offset) = file.index.remove(idx);
+                    let f = match &mut file.inner {
+                        CobolFileInner::ReadWrite(f) => f,
+                        _ => return FS_IO_MODE_REQUIRED,
+                    };
+                    if f.seek(SeekFrom::Start(offset)).is_err() {
+                        return FS_IO_ERROR;
+                    }
+                    let zeros = vec![0u8; file.record_len as usize];
+                    match f.write_all(&zeros) {
+                        Ok(()) => FS_OK,
+                        Err(_) => FS_IO_ERROR,
+                    }
                 } else {
                     FS_REC_NOT_FOUND
                 }
@@ -964,6 +999,10 @@ fn trim_trailing_spaces(data: &[u8]) -> &[u8] {
         end -= 1;
     }
     &data[..end]
+}
+
+fn is_deleted_record(data: &[u8]) -> bool {
+    data.iter().all(|&b| b == 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1299,5 +1338,158 @@ mod tests {
 
         let _ = cobol_file_close(fid);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_io_mode_open_missing_file_returns_35() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.dat");
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let rc = unsafe {
+            cobol_file_open(
+                700,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Sequential,
+                FileAccessMode::Sequential,
+                FileOpenMode::IoMode,
+                8,
+            )
+        };
+        assert_eq!(rc, FS_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_read_on_output_file_returns_47() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output_only.dat");
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 701;
+        let rc = unsafe {
+            cobol_file_open(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Sequential,
+                FileAccessMode::Sequential,
+                FileOpenMode::Output,
+                8,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        let mut buf = [0u8; 8];
+        let rc = unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), buf.len() as u32) };
+        assert_eq!(rc, FS_READ_NOT_PERMITTED);
+
+        let _ = cobol_file_close(fid);
+    }
+
+    #[test]
+    fn test_write_on_closed_file_returns_48() {
+        let buf = *b"12345678";
+        let rc = unsafe { cobol_file_write(702, buf.as_ptr(), buf.len() as u32) };
+        assert_eq!(rc, FS_WRITE_NOT_PERMITTED);
+    }
+
+    #[test]
+    fn test_rewrite_on_closed_file_returns_49() {
+        let buf = *b"12345678";
+        let rc = unsafe { cobol_file_rewrite(703, buf.as_ptr(), buf.len() as u32) };
+        assert_eq!(rc, FS_IO_MODE_REQUIRED);
+    }
+
+    #[test]
+    fn test_relative_sequential_read_skips_deleted_slots() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relative_deleted.dat");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"REC1xxxx").unwrap();
+            f.write_all(&[0u8; 8]).unwrap();
+            f.write_all(b"REC3xxxx").unwrap();
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 704u32;
+        let rc = unsafe {
+            cobol_file_open(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Relative,
+                FileAccessMode::Sequential,
+                FileOpenMode::Input,
+                8,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        let mut buf = [0u8; 8];
+        let rc = unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(&buf, b"REC1xxxx");
+
+        let rc = unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(&buf, b"REC3xxxx");
+
+        let rc = unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) };
+        assert_eq!(rc, FS_AT_END);
+
+        let _ = cobol_file_close(fid);
+    }
+
+    #[test]
+    fn test_indexed_delete_is_persisted_across_reopen() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("indexed_delete.dat");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"AAAfirst ").unwrap();
+            f.write_all(b"BBBsecond").unwrap();
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 705u32;
+        let rc = unsafe {
+            cobol_file_open_indexed(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileAccessMode::Dynamic,
+                FileOpenMode::IoMode,
+                9,
+                0,
+                3,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        let key = b"AAA";
+        let mut buf = [0u8; 9];
+        let rc = unsafe { cobol_file_read_key(fid, key.as_ptr(), 3, buf.as_mut_ptr(), 9) };
+        assert_eq!(rc, FS_OK);
+        let rc = cobol_file_delete(fid);
+        assert_eq!(rc, FS_OK);
+        let _ = cobol_file_close(fid);
+
+        let fid = 706u32;
+        let rc = unsafe {
+            cobol_file_open_indexed(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileAccessMode::Random,
+                FileOpenMode::Input,
+                9,
+                0,
+                3,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+        let rc = unsafe { cobol_file_read_key(fid, key.as_ptr(), 3, buf.as_mut_ptr(), 9) };
+        assert_eq!(rc, FS_REC_NOT_FOUND);
+        let _ = cobol_file_close(fid);
     }
 }

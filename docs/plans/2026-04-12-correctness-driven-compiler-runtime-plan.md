@@ -458,6 +458,24 @@ These classes map to a smaller number of root subsystems:
 5. output routing and observability
 6. verifier granularity
 
+Additional root-cause findings from the current runtime investigation:
+
+- `READ ... KEY` and `INVALID KEY` information was parsed in AST but dropped in
+  HIR lowering, so indexed / relative random reads were code-generated as
+  unconditional `READ NEXT`.
+- operation-specific file status contracts were collapsed in runtime:
+  `READ` on output / closed files, `WRITE` on closed files, and `OPEN I-O` on
+  missing files returned the wrong status classes.
+- deleted record handling was not preserved as a runtime invariant:
+  relative deleted slots were not skipped consistently and indexed deletes were
+  not persisted across reopen.
+- `FILE-CONTROL` metadata propagation is incomplete:
+  `RECORD KEY` does not reach runtime-oriented lowering/codegen metadata, and
+  `RELATIVE KEY` is not represented in AST/HIR at all.
+- as a result, indexed / relative modules (`IX`, `RL`, large parts of `SQ`)
+  are not failing because of isolated case bugs; they are failing because the
+  compiler currently erases the keying contract that those modules depend on.
+
 The work below must be executed in this order.
 Do not fix individual programs first unless they are explicitly being used
 as reduced reproductions for one of these subsystems.

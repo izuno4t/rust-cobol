@@ -1236,8 +1236,11 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::Read {
             file_name,
             into,
+            key,
             at_end,
             not_at_end,
+            invalid_key,
+            not_invalid_key,
             ..
         } => {
             let c_name = sanitize_name(file_name);
@@ -1260,9 +1263,21 @@ pub(crate) fn emit_statement_with_ctx(
             };
             let rec_len = find_record_len(&target_name, data_items);
             out.push_str(&format!("{pad}/* READ {c_name} */\n"));
-            out.push_str(&format!(
-                "{pad}{{\n{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{target}, {rec_len});\n"
-            ));
+            out.push_str(&format!("{pad}{{\n"));
+            if let Some(key_name) = key {
+                let c_key = sanitize_name(key_name);
+                let key_size = find_data_item_size(&c_key, data_items);
+                let is_key_group = find_data_item(key_name.as_str(), data_items)
+                    .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
+                let addr_prefix = if is_key_group { "&" } else { "" };
+                out.push_str(&format!(
+                    "{pad}    uint32_t _fs = cobol_file_read_key(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, (uint8_t*)&{target}, {rec_len});\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{target}, {rec_len});\n"
+                ));
+            }
             emit_file_status_update(
                 out,
                 &c_name,
@@ -1271,6 +1286,38 @@ pub(crate) fn emit_statement_with_ctx(
                 has_declaratives,
                 &format!("{pad}    "),
             );
+            if !invalid_key.is_empty() || !not_invalid_key.is_empty() {
+                if !invalid_key.is_empty() {
+                    out.push_str(&format!("{pad}    if (_fs != 0) {{\n"));
+                    for s in invalid_key {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 2,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+                if !not_invalid_key.is_empty() {
+                    out.push_str(&format!("{pad}    if (_fs == 0) {{\n"));
+                    for s in not_invalid_key {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 2,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+            }
             if !at_end.is_empty() || !not_at_end.is_empty() {
                 out.push_str(&format!("{pad}    if (_fs == 10) {{\n"));
                 out.push_str(&format!("{pad}        /* AT END */\n"));

@@ -4530,6 +4530,51 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_read_with_key_codegen_uses_read_key_runtime() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. READKEY.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_read_key.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS RANDOM
+        RECORD KEY IS IX-KEY
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 IX-RECORD.
+   05 IX-KEY PIC 9(5).
+   05 IX-DATA PIC X(15).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    OPEN INPUT IX-FILE.
+    MOVE 00010 TO IX-KEY.
+    READ IX-FILE KEY IS IX-KEY
+        INVALID KEY DISPLAY "MISS"
+        NOT INVALID KEY DISPLAY "HIT"
+    END-READ.
+    CLOSE IX-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_file_read_key("),
+        "READ ... KEY should call cobol_file_read_key, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("MISS") && c_code.contains("HIT"),
+        "READ INVALID KEY / NOT INVALID KEY branches should be preserved, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
 fn test_delete_statement_codegen() {
     let src = r#"
 IDENTIFICATION DIVISION.

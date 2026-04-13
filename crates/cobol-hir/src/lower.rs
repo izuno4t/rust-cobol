@@ -2038,6 +2038,7 @@ fn lower_read(
         let subs: Vec<_> = q.subscripts.iter().map(lower_expr).collect();
         (q.name.clone(), subs)
     });
+    let key = read.key.as_ref().map(|q| q.name.clone());
     let at_end: Vec<_> = read
         .at_end
         .iter()
@@ -2048,11 +2049,16 @@ fn lower_read(
         .iter()
         .filter_map(|s| lower_statement(s, condition_names))
         .collect();
+    let invalid_key = lower_statements(&read.invalid_key, condition_names);
+    let not_invalid_key = lower_statements(&read.not_invalid_key, condition_names);
     HirStatement::Read {
         file_name: read.file_name.clone(),
         into,
+        key,
         at_end,
         not_at_end,
+        invalid_key,
+        not_invalid_key,
         span: read.span,
     }
 }

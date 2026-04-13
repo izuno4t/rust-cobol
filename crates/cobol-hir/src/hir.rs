@@ -580,8 +580,12 @@ pub enum HirStatement {
         file_name: SmolStr,
         /// INTO target: (variable_name, subscripts).
         into: Option<(SmolStr, Vec<HirExpr>)>,
+        /// Optional key for random/dynamic READ.
+        key: Option<SmolStr>,
         at_end: Vec<HirStatement>,
         not_at_end: Vec<HirStatement>,
+        invalid_key: Vec<HirStatement>,
+        not_invalid_key: Vec<HirStatement>,
         span: Span,
     },
     /// WRITE statement.
