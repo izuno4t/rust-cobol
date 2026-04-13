@@ -535,6 +535,19 @@ pub(crate) fn emit_group_struct_member(
     }
 }
 
+fn emit_fully_qualified_macro(
+    out: &mut String,
+    qualifier_names: &[String],
+    c_name: &str,
+    expr: &str,
+) {
+    if qualifier_names.is_empty() {
+        return;
+    }
+    let chain = qualifier_names.join("__");
+    out.push_str(&format!("#define {chain}__{c_name} {expr}\n"));
+}
+
 /// Emit #define macros for all elementary members in a group.
 pub(crate) fn emit_group_macros(
     out: &mut String,
@@ -564,17 +577,12 @@ pub(crate) fn emit_group_macros(
                     "#define {c_name} {alias_expr} /* RENAMES {c_from} */\n"
                 ));
             }
-            for qualifier in qualifier_names {
-                out.push_str(&format!(
-                    "#define {qualifier}__{c_name} {alias_expr} /* RENAMES {c_from} */\n"
-                ));
-            }
-            if qualifier_names.len() > 1 {
-                let chain = qualifier_names.join("__");
-                out.push_str(&format!(
-                    "#define {chain}__{c_name} {alias_expr} /* RENAMES {c_from} */\n"
-                ));
-            }
+            emit_fully_qualified_macro(
+                out,
+                qualifier_names,
+                &c_name,
+                &format!("{alias_expr} /* RENAMES {c_from} */"),
+            );
             continue;
         }
         if member.redefines.is_some() {
@@ -592,16 +600,11 @@ pub(crate) fn emit_group_macros(
         if member.name != "FILLER" && member.name != "PIC" && !duplicate_names.contains(&c_name) {
             out.push_str(&format!("#define {c_name} {access_path}\n"));
         }
-        // Qualified macros: QUALIFIER__FIELD for each ancestor group name.
-        // This supports COBOL qualified references like FIELD OF GROUP-A,
-        // FIELD OF GROUP-B, etc.
-        for qualifier in qualifier_names {
-            out.push_str(&format!("#define {qualifier}__{c_name} {access_path}\n"));
-        }
-        if qualifier_names.len() > 1 {
-            let chain = qualifier_names.join("__");
-            out.push_str(&format!("#define {chain}__{c_name} {access_path}\n"));
-        }
+        // Qualified names in codegen are always emitted as the full chain used
+        // by expr::data_name_to_c_name (for example WS_DST__ITEM_GRP__FIELD_A).
+        // Partial aliases like ITEM_GRP__FIELD_A are ambiguous across distinct
+        // parent records and can cause duplicate macro definitions.
+        emit_fully_qualified_macro(out, qualifier_names, &c_name, &access_path);
         if let HirType::Group {
             members: sub_members,
             ..
@@ -659,13 +662,7 @@ pub(crate) fn emit_group_redefines(
                     if emit_aliases && !duplicate_names.contains(&c_name) {
                         out.push_str(&format!("#define {c_name} {alias_expr}\n"));
                     }
-                    for qualifier in qualifier_names {
-                        out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
-                    }
-                    if qualifier_names.len() > 1 {
-                        let chain = qualifier_names.join("__");
-                        out.push_str(&format!("#define {chain}__{c_name} {alias_expr}\n"));
-                    }
+                    emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                 }
                 HirType::Group {
                     members: grp_members,
@@ -678,13 +675,7 @@ pub(crate) fn emit_group_redefines(
                     if emit_aliases && !duplicate_names.contains(&c_name) {
                         out.push_str(&format!("#define {c_name} {alias_expr}\n"));
                     }
-                    for qualifier in qualifier_names {
-                        out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
-                    }
-                    if qualifier_names.len() > 1 {
-                        let chain = qualifier_names.join("__");
-                        out.push_str(&format!("#define {chain}__{c_name} {alias_expr}\n"));
-                    }
+                    emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                     let mut child_qualifiers = qualifier_names.to_vec();
                     if member.name != "PIC" {
                         child_qualifiers.push(c_name.clone());
@@ -717,26 +708,14 @@ pub(crate) fn emit_group_redefines(
                         if emit_aliases && !duplicate_names.contains(&c_name) {
                             out.push_str(&format!("#define {c_name} {alias_expr}\n"));
                         }
-                        for qualifier in qualifier_names {
-                            out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
-                        }
-                        if qualifier_names.len() > 1 {
-                            let chain = qualifier_names.join("__");
-                            out.push_str(&format!("#define {chain}__{c_name} {alias_expr}\n"));
-                        }
+                        emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                     } else {
                         let alias_expr =
                             format!("(*({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */");
                         if emit_aliases && !duplicate_names.contains(&c_name) {
                             out.push_str(&format!("#define {c_name} {alias_expr}\n"));
                         }
-                        for qualifier in qualifier_names {
-                            out.push_str(&format!("#define {qualifier}__{c_name} {alias_expr}\n"));
-                        }
-                        if qualifier_names.len() > 1 {
-                            let chain = qualifier_names.join("__");
-                            out.push_str(&format!("#define {chain}__{c_name} {alias_expr}\n"));
-                        }
+                        emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                     }
                 }
             }

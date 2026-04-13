@@ -461,22 +461,22 @@ pub enum HirStatement {
     },
     /// MOVE CORRESPONDING: move matching fields from source group to target group.
     MoveCorresponding {
-        from: SmolStr,
-        to: SmolStr,
+        from: HirDataName,
+        to: HirDataName,
         span: Span,
     },
     /// ADD CORRESPONDING: add matching numeric fields from source to target group.
     AddCorresponding {
-        from: SmolStr,
-        to: SmolStr,
+        from: HirDataName,
+        to: HirDataName,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
     },
     /// SUBTRACT CORRESPONDING: subtract matching numeric fields from source to target.
     SubtractCorresponding {
-        from: SmolStr,
-        to: SmolStr,
+        from: HirDataName,
+        to: HirDataName,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
@@ -1306,13 +1306,28 @@ fn write_stmt(
             writeln!(f, "{pad}SET {}", rendered.join(" "))
         }
         HirStatement::MoveCorresponding { from, to, .. } => {
-            writeln!(f, "{pad}MOVE CORRESPONDING {from} TO {to}")
+            writeln!(
+                f,
+                "{pad}MOVE CORRESPONDING {} TO {}",
+                format_data_name(from),
+                format_data_name(to)
+            )
         }
         HirStatement::AddCorresponding { from, to, .. } => {
-            writeln!(f, "{pad}ADD CORRESPONDING {from} TO {to}")
+            writeln!(
+                f,
+                "{pad}ADD CORRESPONDING {} TO {}",
+                format_data_name(from),
+                format_data_name(to)
+            )
         }
         HirStatement::SubtractCorresponding { from, to, .. } => {
-            writeln!(f, "{pad}SUBTRACT CORRESPONDING {from} FROM {to}")
+            writeln!(
+                f,
+                "{pad}SUBTRACT CORRESPONDING {} FROM {}",
+                format_data_name(from),
+                format_data_name(to)
+            )
         }
         HirStatement::Compute { targets, expr, .. } => {
             let tgt_strs: Vec<_> = targets.iter().map(format_expr).collect();

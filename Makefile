@@ -6,7 +6,7 @@ BINARY := cobolc
 INSTALL_DIR := $(HOME)/.cargo/bin
 NIST_COBOLC ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR)/release/cobol-driver,$(CURDIR)/target/release/cobol-driver)
 
-.PHONY: all build release test lint fmt check audit verify clean install uninstall example nist-prepare nist-run nist-summary nist-audit-codegen nist-compare-codegen runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
+.PHONY: all build release test lint fmt check audit verify clean install uninstall example nist-prepare nist-compile nist-compile-errors nist-run nist-summary nist-audit-codegen nist-compare-codegen runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
 
 NIST_ENV_ROOT ?= $(CURDIR)/.nist
 NIST_JOBS ?= 5
@@ -96,9 +96,25 @@ nist-run:
 	COBOLC="$(NIST_COBOLC)" \
 	bash tests/nist/run_nist.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
+## NIST CCVS 85 compile phase のみ実行
+nist-compile:
+	@test -x "$(NIST_COBOLC)" || $(MAKE) release
+	@test -d "$(NIST_ENV_ROOT)/programs" || \
+		( echo "NIST programs are not prepared in $(NIST_ENV_ROOT)/programs"; \
+		  echo "Run 'make nist-prepare' first."; \
+		  exit 1 )
+	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
+	NIST_JOBS="$(NIST_JOBS)" \
+	COBOLC="$(NIST_COBOLC)" \
+	bash tests/nist/run_nist.sh --compile $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
+
 ## NIST 結果サマリー
 nist-summary:
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/run_nist.sh --summary
+
+## NIST compile error の性質別分類
+nist-compile-errors:
+	@python3 tests/nist/classify_compile_errors.py "$(NIST_ENV_ROOT)"
 
 ## NIST 全件の HIR/C 生成監査
 nist-audit-codegen:
@@ -170,6 +186,8 @@ help:
 	@echo "  make uninstall   - cobolc をアンインストール"
 	@echo "  make example     - examples/hello.cob をコンパイル・実行"
 	@echo "  make nist-prepare - NIST 資材を .nist/programs に展開"
+	@echo "  make nist-compile - NIST compile phase のみ実行"
+	@echo "  make nist-compile-errors - NIST compile error を性質別に分類"
 	@echo "  make nist-run     - NIST CCVS 85 全モジュール実行"
 	@echo "  make nist-run NIST_JOBS=4 - NIST 全フェーズを4並列で実行"
 	@echo "  make nist-audit-codegen - NIST 全件の HIR/C 生成物を監査出力"

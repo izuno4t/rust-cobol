@@ -1395,10 +1395,10 @@ pub(crate) fn find_data_item_by_sanitized_name<'a>(
 /// If it's a top-level variable, returns `sanitize_name(name)`.
 /// Get the group members of a data item by COBOL name.
 pub(crate) fn get_group_members<'a>(
-    name: &str,
+    name: &HirDataName,
     data_items: &'a [HirDataItem],
 ) -> &'a [HirDataItem] {
-    if let Some(item) = find_data_item(name, data_items) {
+    if let Some(item) = find_data_item_by_name(name, data_items) {
         if let HirType::Group { members, .. } = &item.data_type {
             return members;
         }
@@ -1406,29 +1406,34 @@ pub(crate) fn get_group_members<'a>(
     &[]
 }
 
+fn child_data_name(parent: &HirDataName, child: &HirDataItem) -> HirDataName {
+    let mut qualifiers = parent.qualifiers.clone();
+    qualifiers.insert(0, parent.name.clone());
+    HirDataName::new(child.name.clone(), qualifiers)
+}
+
 /// Emit MOVE CORRESPONDING: for each member name in `from` group that also
 /// exists in `to` group, generate a MOVE from from.member to to.member.
 pub(crate) fn emit_corresponding_move(
     out: &mut String,
-    from: &str,
-    to: &str,
+    from: &HirDataName,
+    to: &HirDataName,
     data_items: &[HirDataItem],
     pad: &str,
 ) {
     let from_members = get_group_members(from, data_items);
     let to_members = get_group_members(to, data_items);
-    let c_from = sanitize_name(from);
-    let c_to = sanitize_name(to);
+    let c_from = data_name_to_c_name(from);
+    let c_to = data_name_to_c_name(to);
     out.push_str(&format!(
         "{pad}/* MOVE CORRESPONDING {c_from} TO {c_to} */\n"
     ));
     for src_item in from_members {
         for tgt_item in to_members {
-            if src_item.name == tgt_item.name {
-                let member_c = sanitize_name(&src_item.name);
-                // Use qualified macros to avoid collision
-                let src_q = format!("{c_from}__{member_c}");
-                let tgt_q = format!("{c_to}__{member_c}");
+            if src_item.name == tgt_item.name && src_item.name != "FILLER" && src_item.name != "PIC"
+            {
+                let src_q = data_name_to_c_name(&child_data_name(from, src_item));
+                let tgt_q = data_name_to_c_name(&child_data_name(to, tgt_item));
                 let src_ptr = c_ptr_expr(&src_q, data_items);
                 let tgt_ptr = c_ptr_expr(&tgt_q, data_items);
                 // For OCCURS items, use memcpy instead of direct assignment
@@ -1503,33 +1508,34 @@ pub(crate) fn emit_corresponding_move(
 /// generate target.member = target.member op source.member.
 pub(crate) fn emit_corresponding_arith(
     out: &mut String,
-    from: &str,
-    to: &str,
+    from: &HirDataName,
+    to: &HirDataName,
     op: &str,
     data_items: &[HirDataItem],
     pad: &str,
 ) {
     let from_members = get_group_members(from, data_items);
     let to_members = get_group_members(to, data_items);
-    let c_from = sanitize_name(from);
-    let c_to = sanitize_name(to);
+    let c_from = data_name_to_c_name(from);
+    let c_to = data_name_to_c_name(to);
     let op_name = if op == "+" { "ADD" } else { "SUBTRACT" };
     out.push_str(&format!(
         "{pad}/* {op_name} CORRESPONDING {c_from} TO {c_to} */\n"
     ));
     for src_item in from_members {
         for tgt_item in to_members {
-            if src_item.name == tgt_item.name && is_numeric_type(&tgt_item.data_type) {
-                let member_c = sanitize_name(&src_item.name);
+            if src_item.name == tgt_item.name
+                && src_item.name != "FILLER"
+                && src_item.name != "PIC"
+                && is_numeric_type(&tgt_item.data_type)
+            {
                 // Use qualified member macros so nested members and REDEFINES
                 // are addressed through the same path resolution as MOVE CORR.
-                let src_ref = format!("{c_from}__{member_c}");
-                let tgt_ref = format!("{c_to}__{member_c}");
+                let src_ref = data_name_to_c_name(&child_data_name(from, src_item));
+                let tgt_ref = data_name_to_c_name(&child_data_name(to, tgt_item));
                 let src_value = if needs_decimal(&src_item.data_type) {
                     format!("cobol_decimal_to_int64(&{src_ref})")
-                } else if let Some(src_disp_size) =
-                    grp_display_size(&sanitize_name(&src_item.name), data_items)
-                {
+                } else if let Some(src_disp_size) = grp_display_size(&src_ref, data_items) {
                     let src_ref_ptr = display_numeric_const_ptr(&src_ref);
                     format!("cobol_display_to_int64({src_ref_ptr}, {src_disp_size})")
                 } else {
@@ -1545,7 +1551,7 @@ pub(crate) fn emit_corresponding_arith(
                     out.push_str(&format!(
                         "{pad}{func}(&{src_ref}, &{tgt_ref}, &{tgt_ref});\n"
                     ));
-                } else if let Some(disp_size) = grp_display_size(&member_c, data_items) {
+                } else if let Some(disp_size) = grp_display_size(&tgt_ref, data_items) {
                     let tgt_ref_const_ptr = display_numeric_const_ptr(&tgt_ref);
                     let tgt_ref_ptr = display_numeric_ptr(&tgt_ref);
                     out.push_str(&format!(

@@ -41,6 +41,25 @@
 4. NIST, e2e, crate 単位テストは、症状ではなく言語意味の検証として整備される
 5. NIST の compile error 解消は副産物として得られる
 
+## 2026-04-13 補足
+
+compile error の再発防止には、`cargo test` と縮小 e2e だけでは不十分であることが確認された。
+そのため、NIST 実プログラムに対する compile phase を直接監視するゲートを導入し、
+`make nist-compile` を correctness の一次評価関数として扱う。
+
+運用原則:
+
+- compile error を見つけたら、まず `make nist-compile-errors` で失敗をクラス化する
+- 最大クラスを根本修正し、そのクラスに対応する Rust 回帰テストを追加する
+- NIST 個別プログラム修正だけで終えず、縮小再現を Rust テストへ戻す
+
+2026-04-13 時点の改善:
+
+- `make nist-compile` を追加し、NIST compile phase を単独実行できるようにした
+- compile error 72 件を 8 件まで削減した
+- 最大クラスだった `debug-declarative helper undeclared in generated C` を
+  declarative 種別ごとの codegen 分岐で解消した
+
 ---
 
 ## 現状の本質的欠陥

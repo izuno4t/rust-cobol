@@ -3,7 +3,7 @@
 This directory provides the primary NIST CCVS 85 execution environment
 for `rust-cobol`.
 
-It keeps generated COBOL sources and test results under `target/nist`,
+It keeps generated COBOL sources and test results under `.nist`,
 not in this directory.
 
 ## Goal
@@ -30,12 +30,14 @@ make nist-prepare
 ```
 
 By default this reads `tests/nist/newcob.val` and extracts programs into
-`target/nist/programs`.
+`.nist/programs`.
 
 ## Usage
 
 ```bash
 make nist-prepare
+make nist-compile
+make nist-compile-errors
 make nist-run
 make nist-run NIST_JOBS=4
 make nist-run MODULE=NC
@@ -43,8 +45,16 @@ make nist-run MODULE=NC PROGRAM=NC101A
 make nist-summary
 ```
 
-The same `make nist-prepare` and `make nist-run` flow is intended for
+The same `make nist-prepare`, `make nist-compile`, and `make nist-run` flow is intended for
 both local execution and CI jobs.
+
+`make nist-compile` runs only the compile phase and then collects the
+module summaries. This is the primary gate for detecting NIST
+`COMPILE_ERROR` regressions before the full execution phase.
+
+`make nist-compile-errors` groups the current `COMPILE_ERROR` programs by
+root-cause-like compiler message classes. Use it after `make nist-compile`
+to decide which failures should become shared Rust regression tests.
 
 `NIST_JOBS` is optional and controls the global parallelism for all
 three phases: compile, execute, and collect. Each program runs in its
@@ -71,6 +81,6 @@ a more specific machine-readable cause.
 
 ## Output Location
 
-- extracted programs: `target/nist/programs`
-- run results: `target/nist/results`
-- compare results: `target/nist/results-compare`
+- extracted programs: `.nist/programs`
+- run results: `.nist/results`
+- compare results: `.nist/results-compare`

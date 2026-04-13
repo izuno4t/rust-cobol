@@ -356,9 +356,12 @@ pub fn generate_c(program: &HirProgram) -> String {
             let c_name = sanitize_name(&decl.name);
             with_active_context(|ctx| ctx.set_label_map(HashMap::new()));
             out.push_str(&format!("\nstatic void decl_{c_name}(void) {{\n"));
-            out.push_str("    int _prev_suppress_debug_event = _suppress_debug_event;\n");
-            out.push_str("    _suppress_debug_event = 1;\n");
-            with_active_context(|ctx| ctx.set_in_debug_declarative(true));
+            let is_debug_decl = decl.use_kind == HirDeclarativeUse::ForDebugging;
+            if is_debug_decl {
+                out.push_str("    int _prev_suppress_debug_event = _suppress_debug_event;\n");
+                out.push_str("    _suppress_debug_event = 1;\n");
+                with_active_context(|ctx| ctx.set_in_debug_declarative(true));
+            }
             for stmt in &decl.body {
                 let env = StmtEmitEnv {
                     data_items: &program.data_items,
@@ -370,8 +373,10 @@ pub fn generate_c(program: &HirProgram) -> String {
                 };
                 emit_statement_with_ctx(&mut out, stmt, &env, 1);
             }
-            with_active_context(|ctx| ctx.set_in_debug_declarative(false));
-            out.push_str("    _suppress_debug_event = _prev_suppress_debug_event;\n");
+            if is_debug_decl {
+                with_active_context(|ctx| ctx.set_in_debug_declarative(false));
+                out.push_str("    _suppress_debug_event = _prev_suppress_debug_event;\n");
+            }
             out.push_str("}\n");
         }
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));

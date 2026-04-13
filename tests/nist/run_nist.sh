@@ -1449,6 +1449,42 @@ run_all_modules() {
     run_pipeline "$NIST_JOBS" "${modules[@]}"
 }
 
+run_compile_pipeline() {
+    local jobs="$1"
+    shift
+    local modules=("$@")
+    local compile_tasks
+
+    snapshot_compiler_if_needed >/dev/null
+    reset_modules_results "${modules[@]}"
+
+    compile_tasks="$(mktemp "$NIST_TMP_ROOT/compile_tasks.XXXXXX")"
+    build_task_file "$compile_tasks" "${modules[@]}"
+
+    run_phase_workers compile "$jobs" "$compile_tasks" "${modules[@]}" || true
+    run_collect_phase "${modules[@]}"
+    rm -f "$compile_tasks"
+}
+
+run_compile_all_modules() {
+    local module
+    local modules=()
+    while IFS= read -r module; do
+        modules+=("$module")
+    done < <(list_modules)
+    run_compile_pipeline "$NIST_JOBS" "${modules[@]}"
+}
+
+run_compile_module() {
+    local module="$1"
+    local mod_dir="$PROGRAMS_DIR/$module"
+    [ -d "$mod_dir" ] || {
+        echo "Module $module: no programs found in $mod_dir"
+        return
+    }
+    run_compile_pipeline "$NIST_JOBS" "$module"
+}
+
 run_module() {
     local module="$1"
     local mod_dir="$PROGRAMS_DIR/$module"
@@ -1502,6 +1538,17 @@ case "${1:-}" in
         run_all_modules "$NIST_JOBS"
         show_summary
         ;;
+    --compile)
+        if [ "${2:-}" = "--all" ] || [ $# -eq 1 ]; then
+            run_compile_all_modules
+        elif [ -n "${3:-}" ]; then
+            run_program "$2" "$3" "compile_only"
+            print_single_result_summary "$2" "$3"
+        else
+            run_compile_module "$2"
+        fi
+        show_summary
+        ;;
     __compile_one)
         snapshot_compiler_if_needed >/dev/null
         run_program "$2" "$3" "compile_only"
@@ -1518,6 +1565,7 @@ case "${1:-}" in
         echo "  $0 <MODULE>"
         echo "  $0 <MODULE> <PROGRAM>"
         echo "  $0 --all"
+        echo "  $0 --compile [--all|<MODULE>|<MODULE> <PROGRAM>]"
         echo "  $0 --summary"
         ;;
     *)

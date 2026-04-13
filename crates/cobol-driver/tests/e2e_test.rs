@@ -2568,8 +2568,8 @@ fn test_c2_move_corresponding() {
         communication_descriptions: Vec::new(),
         paragraphs: Vec::new(),
         body: vec![HirStatement::MoveCorresponding {
-            from: "WS-SRC".into(),
-            to: "WS-DST".into(),
+            from: cobol_hir::HirDataName::simple("WS-SRC"),
+            to: cobol_hir::HirDataName::simple("WS-DST"),
             span: Span::dummy(),
         }],
         classes: Vec::new(),
@@ -2685,8 +2685,8 @@ fn test_c2_add_corresponding() {
         communication_descriptions: Vec::new(),
         paragraphs: Vec::new(),
         body: vec![HirStatement::AddCorresponding {
-            from: "GRP-A".into(),
-            to: "GRP-B".into(),
+            from: cobol_hir::HirDataName::simple("GRP-A"),
+            to: cobol_hir::HirDataName::simple("GRP-B"),
             on_size_error: Vec::new(),
             not_on_size_error: Vec::new(),
             span: Span::dummy(),
@@ -2715,6 +2715,66 @@ fn test_c2_add_corresponding() {
     assert!(
         c_code.contains("GRP_B.members._m_AMT") && c_code.contains("GRP_A.members._m_AMT"),
         "Should add matching AMT field via qualified member access, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_c2_move_corresponding_uses_fully_qualified_nested_names() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CORR-QUAL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC-ROOT.
+   05 SRC-GRP.
+      10 FIELD-A PIC 9(3) VALUE 111.
+01 DST-ROOT.
+   05 DST-GRP.
+      10 FIELD-A PIC 9(3) VALUE 222.
+PROCEDURE DIVISION.
+    MOVE CORRESPONDING SRC-GRP OF SRC-ROOT TO DST-GRP OF DST-ROOT.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("SRC_ROOT__SRC_GRP__FIELD_A"),
+        "nested corresponding should use fully qualified source name, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("DST_ROOT__DST_GRP__FIELD_A"),
+        "nested corresponding should use fully qualified destination name, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_c2_add_corresponding_skips_filler_members() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CORR-FILLER.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 GRP-SRC.
+   05 FILLER PIC 99 VALUE 11.
+   05 KEEP-A PIC 99 VALUE 22.
+01 GRP-DST.
+   05 FILLER PIC 99 VALUE 33.
+   05 KEEP-A PIC 99 VALUE 44.
+PROCEDURE DIVISION.
+    ADD CORRESPONDING GRP-SRC TO GRP-DST.
+    STOP RUN.
+";
+    let c_code = compile_to_c(src);
+    assert!(
+        !c_code.contains("GRP_DST__FILLER), 2) +") && !c_code.contains("GRP_SRC__FILLER), 2)"),
+        "corresponding arithmetic must not target filler members in emitted operation, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("GRP_DST__KEEP_A"),
+        "non-filler corresponding members should still be emitted, got:\n{}",
         c_code
     );
 }
@@ -3042,6 +3102,18 @@ PROCEDURE DIVISION.
     DISPLAY FIELD-A OF ITEM-GRP(1) OF WS-SRC.
     STOP RUN.
 ";
+    let c_code = compile_to_c(src);
+    assert!(
+        c_code.contains("WS_DST__ITEM_GRP__FIELD_A"),
+        "fully qualified nested macro should be emitted, got:\n{}",
+        c_code
+    );
+    assert!(
+        !c_code.contains("#define ITEM_GRP__FIELD_A "),
+        "ambiguous partial qualification should not be emitted, got:\n{}",
+        c_code
+    );
+
     let (stdout, _, code) = compile_and_run_no_sema(src);
     assert_eq!(code, 0);
     let lines: Vec<&str> = stdout.trim().lines().collect();
@@ -4638,6 +4710,10 @@ PROCEDURE DIVISION.
         c_code.contains("FILE ERROR") || c_code.contains("DECL") || c_code.contains("decl"),
         "should generate declaratives code"
     );
+    assert!(
+        !c_code.contains("_suppress_debug_event"),
+        "non-debug declaratives should not depend on debug helper globals:\n{c_code}"
+    );
 }
 
 #[test]
@@ -4676,6 +4752,34 @@ GO-TO-TEST.
             .iter()
             .any(|stmt| matches!(stmt, HirStatement::Display { .. })),
         "debugging declarative body should be lowered"
+    );
+}
+
+#[test]
+fn test_debug_declaratives_codegen_uses_debug_suppression_helper() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DEBUG-DECL.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SECTION SECTION.
+    USE FOR DEBUGGING ON TARGET-PARA.
+DBG-PARA.
+    DISPLAY \"DBG\".
+END DECLARATIVES.
+MAIN-SECTION SECTION.
+TARGET-PARA.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("static int _suppress_debug_event = 0;"),
+        "debug declaratives should declare suppression helper:\n{c_code}"
+    );
+    assert!(
+        c_code.contains("int _prev_suppress_debug_event = _suppress_debug_event;"),
+        "debug declaratives should save suppression helper state:\n{c_code}"
     );
 }
 

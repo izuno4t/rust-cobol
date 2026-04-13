@@ -1317,17 +1317,17 @@ fn lower_move(mv: &MoveStatement) -> HirStatement {
     if mv.corresponding {
         // MOVE CORRESPONDING: source and target are group names.
         let from_name = match &mv.from {
-            Expr::Identifier(qname) => qname.name.clone(),
-            _ => SmolStr::from("FILLER"),
+            Expr::Identifier(qname) => resolve_canonical_data_name(qname),
+            _ => HirDataName::simple("FILLER"),
         };
         let to_name = mv
             .to
             .first()
             .map(|e| match e {
-                Expr::Identifier(qname) => qname.name.clone(),
-                _ => SmolStr::from("FILLER"),
+                Expr::Identifier(qname) => resolve_canonical_data_name(qname),
+                _ => HirDataName::simple("FILLER"),
             })
-            .unwrap_or_else(|| SmolStr::from("FILLER"));
+            .unwrap_or_else(|| HirDataName::simple("FILLER"));
         return HirStatement::MoveCorresponding {
             from: from_name,
             to: to_name,
@@ -1420,14 +1420,14 @@ fn lower_add(
     if add.corresponding {
         // ADD CORRESPONDING: source is first operand (group), target is first TO (group).
         let from_name = match &add.operands[0] {
-            Expr::Identifier(qname) => qname.name.clone(),
-            _ => SmolStr::from("FILLER"),
+            Expr::Identifier(qname) => resolve_canonical_data_name(qname),
+            _ => HirDataName::simple("FILLER"),
         };
         let to_name = add
             .to
             .first()
-            .map(|t| t.target.name.clone())
-            .unwrap_or_else(|| SmolStr::from("FILLER"));
+            .map(|t| resolve_canonical_data_name(&t.target))
+            .unwrap_or_else(|| HirDataName::simple("FILLER"));
         let on_size_error = lower_statements(&add.on_size_error, condition_names);
         let not_on_size_error = lower_statements(&add.not_on_size_error, condition_names);
         return HirStatement::AddCorresponding {
@@ -1468,14 +1468,14 @@ fn lower_subtract(
     if sub.corresponding {
         // SUBTRACT CORRESPONDING: source is first operand (group), target is first FROM (group).
         let from_name = match &sub.operands[0] {
-            Expr::Identifier(qname) => qname.name.clone(),
-            _ => SmolStr::from("FILLER"),
+            Expr::Identifier(qname) => resolve_canonical_data_name(qname),
+            _ => HirDataName::simple("FILLER"),
         };
         let to_name = sub
             .from
             .first()
-            .map(|t| t.target.name.clone())
-            .unwrap_or_else(|| SmolStr::from("FILLER"));
+            .map(|t| resolve_canonical_data_name(&t.target))
+            .unwrap_or_else(|| HirDataName::simple("FILLER"));
         let on_size_error = lower_statements(&sub.on_size_error, condition_names);
         let not_on_size_error = lower_statements(&sub.not_on_size_error, condition_names);
         return HirStatement::SubtractCorresponding {
@@ -2560,6 +2560,13 @@ fn lower_xml_parse(xp: &cobol_ast::statement::XmlParseStatement) -> HirStatement
 /// Produce a structured data name from a `QualifiedName`.
 fn lower_data_name(qname: &cobol_ast::expr::QualifiedName) -> HirDataName {
     HirDataName::new(qname.name.clone(), qname.qualifiers.clone())
+}
+
+fn resolve_canonical_data_name(qname: &cobol_ast::expr::QualifiedName) -> HirDataName {
+    let name = lower_data_name(qname);
+    resolve_data_name(&name)
+        .map(|resolved| resolved.name)
+        .unwrap_or(name)
 }
 
 /// Lower a `QualifiedName` (used as an arithmetic target) to a `HirExpr`.
