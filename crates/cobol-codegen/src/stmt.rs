@@ -1186,12 +1186,38 @@ pub(crate) fn emit_statement_with_ctx(
                 let escaped_name = escape_c_string(file_path_str);
                 let name_len = file_path_str.len();
                 let org_val = entry.organization;
+                let access_val = entry.access_mode;
                 out.push_str(&format!("{pad}/* OPEN {mode_comment} {c_name} */\n"));
                 let has_fs = fs_map.contains_key(&c_name);
+                let open_call = if org_val == 3 {
+                    if let Some(record_key) = &entry.record_key {
+                        let record_var = resolve_file_record(&c_name);
+                        let rec_key_c = sanitize_name(record_key);
+                        if let Some((key_offset, key_len)) =
+                            find_field_offset_and_size(record_key, &record_var, data_items)
+                        {
+                            format!(
+                                "cobol_file_open_indexed(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {access_val}, {mode_val}, {rec_len}, {key_offset}, {key_len})"
+                            )
+                        } else {
+                            format!(
+                                "cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {org_val}, {access_val}, {mode_val}, {rec_len}) /* fallback: unresolved key {rec_key_c} */"
+                            )
+                        }
+                    } else {
+                        format!(
+                            "cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {org_val}, {access_val}, {mode_val}, {rec_len})"
+                        )
+                    }
+                } else {
+                    format!(
+                        "cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {org_val}, {access_val}, {mode_val}, {rec_len})"
+                    )
+                };
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {org_val}, 0, {mode_val}, {rec_len});\n"
+                        "{pad}    uint32_t _fs = {open_call};\n"
                     ));
                     emit_file_status_update(
                         out,
@@ -1203,9 +1229,7 @@ pub(crate) fn emit_statement_with_ctx(
                     );
                     out.push_str(&format!("{pad}}}\n"));
                 } else {
-                    out.push_str(&format!(
-                        "{pad}cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {org_val}, 0, {mode_val}, {rec_len});\n"
-                    ));
+                    out.push_str(&format!("{pad}{open_call};\n"));
                 }
             }
         }
@@ -1286,6 +1310,19 @@ pub(crate) fn emit_statement_with_ctx(
                 has_declaratives,
                 &format!("{pad}    "),
             );
+            if key.is_none() && ctx.file_organization(&c_name) == Some(2) {
+                if let Some(relative_key) = ctx.relative_key_for_file(&c_name) {
+                    out.push_str(&format!("{pad}    if (_fs == 0) {{\n"));
+                    emit_store_int(
+                        out,
+                        relative_key,
+                        &format!("(int64_t)cobol_file_current_record(FILE_ID_{c_name})"),
+                        data_items,
+                        &format!("{pad}        "),
+                    );
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+            }
             if !invalid_key.is_empty() || !not_invalid_key.is_empty() {
                 if !invalid_key.is_empty() {
                     out.push_str(&format!("{pad}    if (_fs != 0) {{\n"));

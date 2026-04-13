@@ -59,6 +59,12 @@ compile error の再発防止には、`cargo test` と縮小 e2e だけでは不
 - compile error 72 件を 8 件まで削減した
 - 最大クラスだった `debug-declarative helper undeclared in generated C` を
   declarative 種別ごとの codegen 分岐で解消した
+- NIST runner の `find_missing_input_fixture` が fixed-format の
+  `SELECT ... ASSIGN TO` と次行 bare token 形式を解釈できておらず、
+  `XXXXD021` / `XXXXD024` のような必須入力 fixture 欠落を
+  実装不具合由来の `FAIL` と誤分類していたことを特定した
+- runner 側の fixture 検出を修正し、少なくとも `RL101A` と `IX201A` は
+  `missing-fixture` として分離できる状態にした
 
 ---
 
@@ -99,6 +105,23 @@ HIR で構造化されず、codegen が label map と dispatch を後付けし�
 - runtime 側が期待するデータ表現を型として明示できない
 - codegen 変更が runtime 前提を壊しても検知しにくい
 - COBOL の実行意味よりも、たまたま動く C の都合が優先される
+
+## 4. NIST 実行環境の前提が runner に保持されていない
+
+現在の NIST 実行では、compiler/runtime の意味論不具合と、
+実行環境の fixture 不足が同じ `FAIL` として集計されうる。
+
+今回確認できた事実:
+
+- `RL101A` は入力 `XXXXD021` が存在しないと `open rc=35` の後に
+  `read-next rc=47` を繰り返す
+- `IX201A` は入力 `XXXXD024` が存在しないと同様に失敗する
+- しかし runner の fixture 検出が fixed-format の
+  `SELECT ... ASSIGN TO` + 次行 token 形式を読めず、
+  欠落を `missing-fixture` として止められていなかった
+
+この状態では、NIST の失敗件数から compiler/runtime の真の不具合件数を
+直接読むことができない。
 
 ---
 

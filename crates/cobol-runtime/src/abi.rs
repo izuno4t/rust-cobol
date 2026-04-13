@@ -74,6 +74,9 @@ pub fn emit_c_declarations(out: &mut String) {
     out.push_str(
         "extern uint32_t cobol_file_open(uint32_t file_id, const uint8_t* path_ptr, uint32_t path_len, uint32_t org, uint32_t access, uint32_t mode, uint32_t record_len);\n",
     );
+    out.push_str(
+        "extern uint32_t cobol_file_open_indexed(uint32_t file_id, const uint8_t* path_ptr, uint32_t path_len, uint32_t access, uint32_t mode, uint32_t record_len, uint32_t key_offset, uint32_t key_len);\n",
+    );
     out.push_str("extern uint32_t cobol_file_close(uint32_t file_id);\n");
     out.push_str(
         "extern uint32_t cobol_file_read_next(uint32_t file_id, uint8_t* record_ptr, uint32_t record_len);\n",
@@ -85,6 +88,7 @@ pub fn emit_c_declarations(out: &mut String) {
         "extern uint32_t cobol_file_rewrite(uint32_t file_id, const uint8_t* record_ptr, uint32_t record_len);\n",
     );
     out.push_str("extern uint32_t cobol_file_delete(uint32_t file_id);\n");
+    out.push_str("extern uint64_t cobol_file_current_record(uint32_t file_id);\n");
     out.push_str(
         "extern uint32_t cobol_file_start(uint32_t file_id, const uint8_t* key_ptr, uint32_t key_len, uint32_t mode);\n",
     );

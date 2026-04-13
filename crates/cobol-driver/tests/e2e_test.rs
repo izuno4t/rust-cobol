@@ -2615,6 +2615,7 @@ fn test_c2_move_corresponding() {
         using_params: Vec::new(),
         file_organizations: std::collections::HashMap::new(),
         file_assignments: std::collections::HashMap::new(),
+        file_relative_keys: std::collections::HashMap::new(),
         file_status_vars: Vec::new(),
         declaratives: Vec::new(),
         file_records: std::collections::HashMap::new(),
@@ -2738,6 +2739,7 @@ fn test_c2_add_corresponding() {
         using_params: Vec::new(),
         file_organizations: std::collections::HashMap::new(),
         file_assignments: std::collections::HashMap::new(),
+        file_relative_keys: std::collections::HashMap::new(),
         file_status_vars: Vec::new(),
         declaratives: Vec::new(),
         file_records: std::collections::HashMap::new(),
@@ -4441,8 +4443,8 @@ PROCEDURE DIVISION.
     let hir = parse_and_lower(src);
     let c_code = generate_c(&hir);
     assert!(
-        c_code.contains("cobol_file_open"),
-        "should generate file open call, got:\n{}",
+        c_code.contains("cobol_file_open_indexed"),
+        "indexed file should use cobol_file_open_indexed, got:\n{}",
         c_code
     );
     assert!(
@@ -4478,6 +4480,10 @@ PROCEDURE DIVISION.
     MOVE "RELATIVE RECORD 1" TO RL-RECORD.
     WRITE RL-RECORD.
     CLOSE RL-FILE.
+    OPEN INPUT RL-FILE.
+    MOVE 0 TO WS-REL-KEY.
+    READ RL-FILE.
+    CLOSE RL-FILE.
     STOP RUN.
 "#;
     let hir = parse_and_lower(src);
@@ -4485,6 +4491,11 @@ PROCEDURE DIVISION.
     assert!(
         c_code.contains("cobol_file_open"),
         "should generate file open call, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_file_current_record"),
+        "relative sequential read/update path should sync RELATIVE KEY, got:\n{}",
         c_code
     );
 }
@@ -5142,6 +5153,7 @@ fn test_typedef_codegen() {
             interfaces: vec![],
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: vec![],
             declaratives: vec![],
             file_records: std::collections::HashMap::new(),

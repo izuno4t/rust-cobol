@@ -44,6 +44,8 @@ pub(crate) struct AlterableParagraphInfo {
 pub(crate) struct CodegenContext {
     subscript_paths: HashMap<String, SubscriptPathInfo>,
     file_record_map: FileRecordMap,
+    file_organizations: HashMap<String, u32>,
+    file_relative_keys: HashMap<String, String>,
     file_declarative_dispatch_fn: String,
     communication_map: HashMap<String, CommunicationBinding>,
     nested_program_names: HashSet<String>,
@@ -77,6 +79,8 @@ impl CodegenContext {
         let mut ctx = Self::new(
             &program.data_items,
             &program.file_records,
+            &program.file_organizations,
+            &program.file_relative_keys,
             &program.communication_descriptions,
             &program.fd_record_aliases,
             "_check_file_declarative".to_string(),
@@ -101,6 +105,22 @@ impl CodegenContext {
                 .file_records
                 .iter()
                 .map(|(f, r)| (sanitize_name(f), sanitize_name(r))),
+        );
+
+        let mut file_organizations = parent.file_organizations.clone();
+        file_organizations.extend(
+            program
+                .file_organizations
+                .iter()
+                .map(|(f, org)| (sanitize_name(f), *org)),
+        );
+
+        let mut file_relative_keys = parent.file_relative_keys.clone();
+        file_relative_keys.extend(
+            program
+                .file_relative_keys
+                .iter()
+                .map(|(f, k)| (sanitize_name(f), sanitize_name(k))),
         );
 
         let mut communication_map = parent.communication_map.clone();
@@ -144,6 +164,8 @@ impl CodegenContext {
         Self {
             subscript_paths,
             file_record_map,
+            file_organizations,
+            file_relative_keys,
             file_declarative_dispatch_fn: format!(
                 "_check_file_declarative_{}",
                 sanitize_name(&program.name)
@@ -172,6 +194,8 @@ impl CodegenContext {
     pub(crate) fn new(
         data_items: &[HirDataItem],
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+        file_organizations_map: &HashMap<smol_str::SmolStr, u32>,
+        file_relative_keys_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         communication_descriptions: &[cobol_hir::HirCommunicationDescription],
         fd_record_aliases: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         file_declarative_dispatch_fn: String,
@@ -181,6 +205,14 @@ impl CodegenContext {
             file_record_map: file_records
                 .iter()
                 .map(|(f, r)| (sanitize_name(f), sanitize_name(r)))
+                .collect(),
+            file_organizations: file_organizations_map
+                .iter()
+                .map(|(f, org)| (sanitize_name(f), *org))
+                .collect(),
+            file_relative_keys: file_relative_keys_map
+                .iter()
+                .map(|(f, k)| (sanitize_name(f), sanitize_name(k)))
                 .collect(),
             file_declarative_dispatch_fn,
             communication_map: build_communication_map(communication_descriptions),
@@ -261,6 +293,16 @@ impl CodegenContext {
             .get(sanitized_file_name)
             .cloned()
             .unwrap_or_else(|| sanitized_file_name.to_string())
+    }
+
+    pub(crate) fn file_organization(&self, sanitized_file_name: &str) -> Option<u32> {
+        self.file_organizations.get(sanitized_file_name).copied()
+    }
+
+    pub(crate) fn relative_key_for_file(&self, sanitized_file_name: &str) -> Option<&str> {
+        self.file_relative_keys
+            .get(sanitized_file_name)
+            .map(String::as_str)
     }
 
     pub(crate) fn file_declarative_dispatch_fn(&self) -> &str {

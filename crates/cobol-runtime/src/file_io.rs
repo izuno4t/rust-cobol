@@ -414,6 +414,11 @@ pub unsafe extern "C" fn cobol_file_read_next(
                             *b = b' ';
                         }
                         file.current_record += 1;
+                        file_debug_log(&format!(
+                            "read-next id={file_id} org=line-sequential rec={} rc={FS_OK} preview={:?}",
+                            file.current_record,
+                            file_debug_preview(buf)
+                        ));
                         return FS_OK;
                     }
                     _ => return FS_READ_NOT_PERMITTED,
@@ -431,6 +436,11 @@ pub unsafe extern "C" fn cobol_file_read_next(
                             *b = b' ';
                         }
                         file.current_record += 1;
+                        file_debug_log(&format!(
+                            "read-next id={file_id} org=line-sequential rec={} rc={FS_OK} preview={:?}",
+                            file.current_record,
+                            file_debug_preview(buf)
+                        ));
                         FS_OK
                     }
                     Err(_) => FS_IO_ERROR,
@@ -446,6 +456,11 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 match reader.read_exact(buf) {
                     Ok(()) => {
                         file.current_record += 1;
+                        file_debug_log(&format!(
+                            "read-next id={file_id} org=sequential rec={} rc={FS_OK} preview={:?}",
+                            file.current_record,
+                            file_debug_preview(buf)
+                        ));
                         FS_OK
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => FS_AT_END,
@@ -465,8 +480,17 @@ pub unsafe extern "C" fn cobol_file_read_next(
                         Ok(()) => {
                             file.current_record += 1;
                             if is_deleted_record(buf) {
+                                file_debug_log(&format!(
+                                    "read-next id={file_id} org=relative rec={} rc=deleted-skip",
+                                    file.current_record
+                                ));
                                 continue;
                             }
+                            file_debug_log(&format!(
+                                "read-next id={file_id} org=relative rec={} rc={FS_OK} preview={:?}",
+                                file.current_record,
+                                file_debug_preview(buf)
+                            ));
                             return FS_OK;
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -496,6 +520,11 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 match f.read_exact(buf) {
                     Ok(()) => {
                         file.current_record += 1;
+                        file_debug_log(&format!(
+                            "read-next id={file_id} org=indexed idx={} rc={FS_OK} preview={:?}",
+                            file.current_record,
+                            file_debug_preview(buf)
+                        ));
                         FS_OK
                     }
                     Err(_) => FS_IO_ERROR,
@@ -855,7 +884,10 @@ pub extern "C" fn cobol_file_delete(file_id: u32) -> u32 {
                     }
                     let zeros = vec![0u8; file.record_len as usize];
                     match f.write_all(&zeros) {
-                        Ok(()) => FS_OK,
+                        Ok(()) => {
+                            file.current_record = idx as u64;
+                            FS_OK
+                        }
                         Err(_) => FS_IO_ERROR,
                     }
                 } else {
@@ -865,6 +897,11 @@ pub extern "C" fn cobol_file_delete(file_id: u32) -> u32 {
             _ => FS_IO_ERROR, // DELETE not meaningful for sequential.
         }
     })
+}
+
+#[no_mangle]
+pub extern "C" fn cobol_file_current_record(file_id: u32) -> u64 {
+    with_file_table(|table| table.get(&file_id).map(|file| file.current_record).unwrap_or(0))
 }
 
 /// START -- position the file for subsequent sequential reads.

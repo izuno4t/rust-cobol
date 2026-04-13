@@ -1599,11 +1599,16 @@ fn emit_runtime_declarations(out: &mut String) {
 
 fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
+    let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_aliases: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let ctx = CodegenContext::new(
         &[],
         &empty_records,
+        &empty_orgs,
+        &empty_relative_keys,
         &[],
-        &HashMap::new(),
+        &empty_aliases,
         "_check_file_declarative".to_string(),
     );
     for class in classes {
@@ -1728,11 +1733,16 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
 
 fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
+    let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_aliases: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let ctx = CodegenContext::new(
         &[],
         &empty_records,
+        &empty_orgs,
+        &empty_relative_keys,
         &[],
-        &HashMap::new(),
+        &empty_aliases,
         "_check_file_declarative".to_string(),
     );
     for func in functions {

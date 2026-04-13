@@ -219,6 +219,9 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Extract file assignment (ASSIGN TO) mappings.
     let file_assignments = extract_file_assignments(program);
 
+    // Extract relative key mappings.
+    let file_relative_keys = extract_relative_keys(program);
+
     // Lower DECLARATIVES sections (USE AFTER EXCEPTION handlers).
     // Also collect individual paragraphs defined inside declarative sections
     // so they get proper forward declarations and function definitions in codegen.
@@ -285,6 +288,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         interfaces: Vec::new(),
         file_organizations,
         file_assignments,
+        file_relative_keys,
         file_status_vars,
         declaratives,
         file_records,
@@ -296,12 +300,13 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Post-process: update Open statements with correct file organization and assign_to
     let org_map = hir.file_organizations.clone();
     let assign_map = hir.file_assignments.clone();
-    patch_open_entries(&mut hir.body, &org_map, &assign_map);
+    let open_meta_map = extract_open_metadata(program);
+    patch_open_entries(&mut hir.body, &org_map, &assign_map, &open_meta_map);
     for para in &mut hir.paragraphs {
-        patch_open_entries(&mut para.body, &org_map, &assign_map);
+        patch_open_entries(&mut para.body, &org_map, &assign_map, &open_meta_map);
     }
     for decl in &mut hir.declaratives {
-        patch_open_entries(&mut decl.body, &org_map, &assign_map);
+        patch_open_entries(&mut decl.body, &org_map, &assign_map, &open_meta_map);
     }
 
     // Post-process: resolve Write/Rewrite record_name → file_name
@@ -2013,6 +2018,9 @@ fn lower_open(open: &cobol_ast::statement::OpenStatement) -> HirStatement {
                 file_name: e.file_name.clone(),
                 assign_to: SmolStr::default(), // will be updated post-lowering
                 organization: 1,               // will be updated post-lowering
+                access_mode: 0,                // will be updated post-lowering
+                record_key: None,              // will be updated post-lowering
+                relative_key: None,            // will be updated post-lowering
             }
         })
         .collect();
@@ -2875,6 +2883,53 @@ fn extract_file_assignments(program: &CobolProgram) -> HashMap<SmolStr, SmolStr>
         .collect()
 }
 
+fn extract_open_metadata(
+    program: &CobolProgram,
+) -> HashMap<SmolStr, (u32, Option<SmolStr>, Option<SmolStr>)> {
+    use cobol_ast::AccessMode;
+    let Some(env) = &program.environment else {
+        return HashMap::new();
+    };
+    let Some(io) = &env.input_output else {
+        return HashMap::new();
+    };
+    io.file_controls
+        .iter()
+        .map(|fc| {
+            let access_mode = match fc.access_mode {
+                Some(AccessMode::Random) => 1,
+                Some(AccessMode::Dynamic) => 2,
+                Some(AccessMode::Sequential) | None => 0,
+            };
+            (
+                fc.file_name.clone(),
+                (
+                    access_mode,
+                    fc.record_key.as_ref().map(|q| q.name.clone()),
+                    fc.relative_key.as_ref().map(|q| q.name.clone()),
+                ),
+            )
+        })
+        .collect()
+}
+
+fn extract_relative_keys(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
+    let Some(env) = &program.environment else {
+        return HashMap::new();
+    };
+    let Some(io) = &env.input_output else {
+        return HashMap::new();
+    };
+    io.file_controls
+        .iter()
+        .filter_map(|fc| {
+            fc.relative_key
+                .as_ref()
+                .map(|q| (fc.file_name.clone(), q.name.clone()))
+        })
+        .collect()
+}
+
 /// Extract FD/SD file name → first record name mapping from the DATA DIVISION's
 /// FILE SECTION.  Each `FileDescription` contributes a mapping from its file name
 /// to the name of its first 01-level record entry.
@@ -2919,6 +2974,7 @@ fn patch_open_entries(
     stmts: &mut [HirStatement],
     org_map: &HashMap<SmolStr, u32>,
     assign_map: &HashMap<SmolStr, SmolStr>,
+    open_meta_map: &HashMap<SmolStr, (u32, Option<SmolStr>, Option<SmolStr>)>,
 ) {
     for stmt in stmts.iter_mut() {
         if let HirStatement::Open { entries, .. } = stmt {
@@ -2928,6 +2984,13 @@ fn patch_open_entries(
                 }
                 if let Some(path) = assign_map.get(&entry.file_name) {
                     entry.assign_to = path.clone();
+                }
+                if let Some((access_mode, record_key, relative_key)) =
+                    open_meta_map.get(&entry.file_name)
+                {
+                    entry.access_mode = *access_mode;
+                    entry.record_key = record_key.clone();
+                    entry.relative_key = relative_key.clone();
                 }
             }
         }
@@ -3007,8 +3070,8 @@ fn extract_file_organizations(program: &CobolProgram) -> HashMap<SmolStr, u32> {
             let org = match fc.organization {
                 Some(FileOrganization::Sequential) => 0,
                 Some(FileOrganization::LineSequential) | None => 1,
-                Some(FileOrganization::Indexed) => 2,
-                Some(FileOrganization::Relative) => 3,
+                Some(FileOrganization::Relative) => 2,
+                Some(FileOrganization::Indexed) => 3,
             };
             (fc.file_name.clone(), org)
         })
@@ -3652,6 +3715,41 @@ PROCEDURE DIVISION.
         } else {
             panic!("Expected DISPLAY statement");
         }
+    }
+
+    #[test]
+    fn test_lower_relative_key_metadata() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RLTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT RL-FS1 ASSIGN TO \"rl.dat\"
+        ORGANIZATION IS RELATIVE
+        ACCESS MODE IS SEQUENTIAL
+        RELATIVE KEY IS RL-FS1-KEY.
+DATA DIVISION.
+FILE SECTION.
+FD RL-FS1.
+01 RL-REC PIC X(10).
+WORKING-STORAGE SECTION.
+01 RL-FS1-KEY PIC 9(8) COMP.
+PROCEDURE DIVISION.
+    OPEN INPUT RL-FS1.
+    READ RL-FS1.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert_eq!(
+            hir.file_relative_keys.get("RL-FS1").map(SmolStr::as_str),
+            Some("RL-FS1-KEY")
+        );
+        let HirStatement::Open { entries, .. } = &hir.body[0] else {
+            panic!("Expected OPEN statement");
+        };
+        assert_eq!(entries[0].organization, 2);
+        assert_eq!(entries[0].relative_key.as_deref(), Some("RL-FS1-KEY"));
     }
 
     #[test]

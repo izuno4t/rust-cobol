@@ -121,6 +121,8 @@ pub struct HirProgram {
     pub file_organizations: std::collections::HashMap<SmolStr, u32>,
     /// File assignment mapping: file_name → ASSIGN TO path/name.
     pub file_assignments: std::collections::HashMap<SmolStr, SmolStr>,
+    /// Relative key mapping: file_name → RELATIVE KEY variable name.
+    pub file_relative_keys: std::collections::HashMap<SmolStr, SmolStr>,
     /// FILE STATUS variable mapping: file_name → status variable name.
     pub file_status_vars: Vec<HirFileInfo>,
     /// DECLARATIVES sections: USE AFTER EXCEPTION handlers for file I/O.
@@ -996,8 +998,14 @@ pub struct HirOpenEntry {
     pub file_name: SmolStr,
     /// ASSIGN TO path (physical file name or device).
     pub assign_to: SmolStr,
-    /// File organization: 0=Sequential, 1=LineSequential, 2=Indexed, 3=Relative.
+    /// File organization: 0=Sequential, 1=LineSequential, 2=Relative, 3=Indexed.
     pub organization: u32,
+    /// Access mode: 0=Sequential, 1=Random, 2=Dynamic.
+    pub access_mode: u32,
+    /// Primary record key variable for indexed files.
+    pub record_key: Option<SmolStr>,
+    /// Relative key variable for relative files.
+    pub relative_key: Option<SmolStr>,
 }
 
 /// File open modes.

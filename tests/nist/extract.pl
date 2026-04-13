@@ -28,40 +28,80 @@ my $current_fh;
 my $program_count  = 0;
 my $copylib_count  = 0;
 my %module_counts;
+my %seen_programs;
+my %seen_copylibs;
 my $in_program = 0;
+
+sub parse_header {
+    my ($line) = @_;
+    chomp $line;
+    return unless $line =~ /^\*HEADER,/;
+    my @parts = split(/,/, $line);
+    return if @parts < 3;
+    for my $part (@parts) {
+        $part =~ s/^\s+//;
+        $part =~ s/\s+$//;
+    }
+
+    my %header = (
+        type      => $parts[1],
+        root_name => $parts[2],
+        is_subprg => 0,
+    );
+
+    if (@parts >= 5 && $parts[3] eq 'SUBPRG') {
+        $header{is_subprg} = 1;
+        $header{sub_name}  = $parts[4];
+    }
+
+    return \%header;
+}
 
 while (my $line = <$fh>) {
     # Detect *HEADER lines
-    if ($line =~ /^\*HEADER,(\w+),(\w+)/) {
-        my $type = $1;
-        my $name = $2;
+    if (my $header = parse_header($line)) {
+        my $type = $header->{type};
+        my $root_name = $header->{root_name};
 
-        # Close previous file
+        # Close previous file unless this header continues the same
+        # top-level COBOL compile unit with a SUBPRG segment.
         if ($current_fh) {
-            close($current_fh);
-            $current_fh = undef;
+            my $same_cobol_unit =
+                $type eq "COBOL"
+                && $header->{is_subprg}
+                && $current_type eq "COBOL"
+                && $current_name eq $root_name;
+            if (!$same_cobol_unit) {
+                close($current_fh);
+                $current_fh = undef;
+            }
         }
 
         $current_type = $type;
-        $current_name = $name;
+        $current_name = $root_name;
 
         if ($type eq "CLBRY") {
-            # Copy library
             my $dir = "$outdir/COPYLIB";
             make_path($dir) unless -d $dir;
-            my $outfile = "$dir/$name.cpy";
+            my $outfile = "$dir/$root_name.cpy";
             open($current_fh, '>', $outfile) or die "Cannot create $outfile: $!\n";
-            $copylib_count++;
+            if (!$seen_copylibs{$root_name}++) {
+                $copylib_count++;
+            }
             $in_program = 1;
         } elsif ($type eq "COBOL") {
-            # Determine module from first 2 characters of name
-            $current_module = substr($name, 0, 2);
+            $current_module = substr($root_name, 0, 2);
             my $dir = "$outdir/$current_module";
             make_path($dir) unless -d $dir;
-            my $outfile = "$dir/$name.cob";
-            open($current_fh, '>', $outfile) or die "Cannot create $outfile: $!\n";
-            $program_count++;
-            $module_counts{$current_module}++;
+            my $outfile = "$dir/$root_name.cob";
+            if (!$current_fh) {
+                my $mode = $header->{is_subprg} ? '>>' : '>';
+                open($current_fh, $mode, $outfile) or die "Cannot create $outfile: $!\n";
+            }
+            if (!$seen_programs{$root_name}++) {
+                $program_count++;
+                $module_counts{$current_module}++;
+            }
             $in_program = 1;
         } else {
             $in_program = 0;

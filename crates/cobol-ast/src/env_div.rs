@@ -89,6 +89,8 @@ pub struct FileControlEntry {
     pub access_mode: Option<AccessMode>,
     /// RECORD KEY clause.
     pub record_key: Option<QualifiedName>,
+    /// RELATIVE KEY clause.
+    pub relative_key: Option<QualifiedName>,
     /// ALTERNATE RECORD KEY clauses.
     pub alternate_keys: Vec<QualifiedName>,
     /// FILE STATUS clause.

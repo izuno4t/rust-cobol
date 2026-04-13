@@ -135,6 +135,7 @@ impl Parser {
         let mut organization = None;
         let mut access_mode = None;
         let mut record_key = None;
+        let mut relative_key = None;
         let mut alternate_keys = Vec::new();
         let mut file_status = None;
 
@@ -157,6 +158,27 @@ impl Parser {
                 self.advance();
                 self.eat_is();
                 record_key = Some(self.parse_qualified_name()?);
+            } else if self.check(TokenKind::Record)
+                && self.peek(1).kind == TokenKind::Key
+            {
+                self.advance();
+                self.advance();
+                self.eat_is();
+                record_key = Some(self.parse_qualified_name()?);
+            } else if self.check(TokenKind::Record)
+                && self.peek(1).kind == TokenKind::Identifier
+            {
+                // NIST fixed-format sources sometimes use an abbreviated
+                // FILE-CONTROL form like `RECORD FOO-KEY.` for RECORD KEY.
+                self.advance();
+                record_key = Some(self.parse_qualified_name()?);
+            } else if self.check(TokenKind::Relative)
+                && self.peek(1).kind == TokenKind::Key
+            {
+                self.advance();
+                self.advance();
+                self.eat_is();
+                relative_key = Some(self.parse_qualified_name()?);
             } else if self.check(TokenKind::AlternateRecordKey) {
                 self.advance();
                 self.eat(TokenKind::Record);
@@ -196,6 +218,7 @@ impl Parser {
             organization,
             access_mode,
             record_key,
+            relative_key,
             alternate_keys,
             file_status,
             span: start_span.merge(&end_span),

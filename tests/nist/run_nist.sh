@@ -535,14 +535,28 @@ find_missing_input_fixture() {
         }
 
         my $trimmed = $_;
+        $trimmed =~ s/\r?\n$//;
         $trimmed =~ s/^[0-9[:space:]]*//;
         next if $trimmed eq "" || $trimmed =~ /^\*/;
 
         if ($trimmed =~ /^SELECT /) {
             $current_file = $trimmed;
             $current_file =~ s/^SELECT //;
-            $current_file =~ s/ .*//;
-            $awaiting_assign_value = 0;
+            $current_file =~ s/^\s+//;
+            $current_file =~ s/\s+.*//;
+            if ($trimmed =~ /\bASSIGN TO\b\s*$/) {
+                $awaiting_assign_value = 1;
+            } elsif ($trimmed =~ /\bASSIGN TO\s+([A-Z0-9-]+)\.?$/) {
+                $assign_map{$current_file} = $1;
+                $current_file = "";
+                $awaiting_assign_value = 0;
+            } elsif ($trimmed =~ /\bASSIGN TO\s+"([^"]+)"/) {
+                $assign_map{$current_file} = $1;
+                $current_file = "";
+                $awaiting_assign_value = 0;
+            } else {
+                $awaiting_assign_value = 0;
+            }
             next;
         }
 
@@ -563,6 +577,18 @@ find_missing_input_fixture() {
             next;
         }
 
+        if ($trimmed =~ /^ASSIGN TO [A-Z0-9-]+\.$/) {
+            if ($current_file ne "") {
+                my $path = $trimmed;
+                $path =~ s/^ASSIGN TO //;
+                $path =~ s/\.$//;
+                $assign_map{$current_file} = $path;
+                $current_file = "";
+            }
+            $awaiting_assign_value = 0;
+            next;
+        }
+
         if ($trimmed =~ /^".*"\.$/) {
             if ($awaiting_assign_value && $current_file ne "") {
                 my $path = $trimmed;
@@ -571,6 +597,15 @@ find_missing_input_fixture() {
                 $assign_map{$current_file} = $path;
                 $current_file = "";
             }
+            $awaiting_assign_value = 0;
+            next;
+        }
+
+        if ($awaiting_assign_value && $trimmed =~ /^[A-Z0-9-]+\s*$/ && $current_file ne "") {
+            my $path = $trimmed;
+            $path =~ s/\s+$//;
+            $assign_map{$current_file} = $path;
+            $current_file = "";
             $awaiting_assign_value = 0;
             next;
         }
