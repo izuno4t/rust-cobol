@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB204A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/DB/DB204A.cob
+# Source: .nist/programs/DB/DB204A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: MERGE OUTPUT PROC

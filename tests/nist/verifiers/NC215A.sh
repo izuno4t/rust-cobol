@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC215A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC215A.cob
+# Source: .nist/programs/NC/NC215A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: A = LOW-VALUE

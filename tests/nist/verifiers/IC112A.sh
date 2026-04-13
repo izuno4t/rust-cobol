@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC112A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC112A.cob
+# Source: .nist/programs/IC/IC112A.cob
 # Verifier: verifier_subprogram_standalone
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

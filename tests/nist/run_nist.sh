@@ -534,6 +534,17 @@ find_missing_input_fixture() {
             return $token;
         }
 
+        sub canonical_path {
+            my ($path) = @_;
+            if ($path =~ /^XXXX[DP]([0-9]{3})$/) {
+                return "slot:$1";
+            }
+            if ($path =~ /^XXXXX([0-9]{3})$/) {
+                return "slot:$1";
+            }
+            return "path:$path";
+        }
+
         my $trimmed = $_;
         $trimmed =~ s/\r?\n$//;
         $trimmed =~ s/^[0-9[:space:]]*//;
@@ -621,18 +632,33 @@ find_missing_input_fixture() {
                     next;
                 }
                 $token = clean_token($token);
-                if (($mode eq "INPUT" || $mode eq "I-O" || $mode eq "EXTEND")
-                    && exists $assign_map{$token}
-                    && $assign_map{$token} ne ""
-                    && !-e $assign_map{$token}) {
-                    print "$token|$assign_map{$token}\n";
-                    exit 0;
+                if ($mode eq "OUTPUT") {
+                    $produced_files{$token} = 1;
+                    if (exists $assign_map{$token} && $assign_map{$token} ne "") {
+                        $produced_paths{canonical_path($assign_map{$token})} = 1;
+                    }
+                    next;
                 }
+                next unless $mode eq "INPUT" || $mode eq "I-O" || $mode eq "EXTEND";
+                push @opens, [$mode, $token];
             }
             next;
         }
 
         $awaiting_assign_value = 0;
+        END {
+            for my $open (@opens) {
+                my ($mode, $token) = @$open;
+                next unless exists $assign_map{$token};
+                next if $assign_map{$token} eq "";
+                next if $produced_files{$token};
+                next if $produced_paths{canonical_path($assign_map{$token})};
+                if (!-e $assign_map{$token}) {
+                    print "$token|$assign_map{$token}\n";
+                    exit 0;
+                }
+            }
+        }
     ' "$preprocessed"
 }
 

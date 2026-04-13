@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Program: SQ218A
-# Source: .nist/programs/SQ/SQ218A.cob
+# Program: ST140A                                                    TES00010
+# Source: .nist/programs/ST/ST140A                                                    TES00010.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 10
-# Expected Feature: CREATE FILE SQ-VS6
+# Expected Cases: 12
+# Expected Feature: ERROR ON OUTPUT DECL.
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

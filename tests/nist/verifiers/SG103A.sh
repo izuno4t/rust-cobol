@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG103A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SG/SG103A.cob
+# Source: .nist/programs/SG/SG103A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: INITIAL STATE

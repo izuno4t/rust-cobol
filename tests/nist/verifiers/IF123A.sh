@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF123A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF123A.cob
+# Source: .nist/programs/IF/IF123A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 23
 # Expected Feature: MIN Function

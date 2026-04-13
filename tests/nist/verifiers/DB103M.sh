@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB103M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/DB/DB103M.cob
+# Source: .nist/programs/DB/DB103M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: DEBUG ON PROC-NAME

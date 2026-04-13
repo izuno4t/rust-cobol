@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC104A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC104A.cob
+# Source: .nist/programs/NC/NC104A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 142
 # Expected Feature: MOVE NUMERIC INTEGER

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SM205A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SM/SM205A.cob
+# Source: .nist/programs/SM/SM205A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 10
 # Expected Feature: COPY SD REPLACING

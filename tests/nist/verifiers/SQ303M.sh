@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ303M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ303M.cob
+# Source: .nist/programs/SQ/SQ303M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC401M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC401M.cob
+# Source: .nist/programs/IC/IC401M.cob
 # Verifier: verifier_subprogram_standalone
 # Expected Cases: 0
 

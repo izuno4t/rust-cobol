@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF131A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF131A.cob
+# Source: .nist/programs/IF/IF131A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 8
 # Expected Feature: RANDOM Function

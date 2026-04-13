@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ221A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ221A.cob
+# Source: .nist/programs/SQ/SQ221A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 10
 # Expected Feature: CREATE FILE SQ-VS7

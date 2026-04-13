@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST135A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/ST/ST135A.cob
+# Source: .nist/programs/ST/ST135A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 10
 # Expected Feature: TAPE BEING BUILT

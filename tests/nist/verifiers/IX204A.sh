@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX204A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX204A.cob
+# Source: .nist/programs/IX/IX204A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: WRITE  IX-FD2.

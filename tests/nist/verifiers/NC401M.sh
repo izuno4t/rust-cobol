@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC401M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC401M.cob
+# Source: .nist/programs/NC/NC401M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

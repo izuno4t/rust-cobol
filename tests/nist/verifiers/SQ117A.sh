@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ117A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ117A.cob
+# Source: .nist/programs/SQ/SQ117A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: WRITE...FROM EQUAL

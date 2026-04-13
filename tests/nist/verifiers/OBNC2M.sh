@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: OBNC2M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/OB/OBNC2M.cob
+# Source: .nist/programs/OB/OBNC2M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 17
 # Expected Feature: UNFINISHED GO TO

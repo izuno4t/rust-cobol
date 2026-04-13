@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ210M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ210M.cob
+# Source: .nist/programs/SQ/SQ210M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: LINAGE INT / D-N MIX

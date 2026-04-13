@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF127A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF127A.cob
+# Source: .nist/programs/IF/IF127A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 9
 # Expected Feature: ORD Function

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: OBIC1A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/OB/OBIC1A.cob
+# Source: .nist/programs/OB/OBIC1A.cob
 # Verifier: verifier_subprogram_standalone
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

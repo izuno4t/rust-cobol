@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ225A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ225A.cob
+# Source: .nist/programs/SQ/SQ225A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 2
 # Expected Feature: EXEC USE ON OPEN FAILURE

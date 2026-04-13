@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC224A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC224A.cob
+# Source: .nist/programs/IC/IC224A.cob
 # Verifier: verifier_subprogram_standalone
 # Expected Cases: 14
 # Expected Feature: LEV 2 CALL STATEMENT

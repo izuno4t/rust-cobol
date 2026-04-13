@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB105A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/DB/DB105A.cob
+# Source: .nist/programs/DB/DB105A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 28
 # Expected Feature: GO TO 

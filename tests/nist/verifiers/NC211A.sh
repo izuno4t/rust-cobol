@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC211A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC211A.cob
+# Source: .nist/programs/NC/NC211A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 51
 # Expected Feature: COMPOUND CONDITIONS

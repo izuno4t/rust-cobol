@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB205A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/DB/DB205A.cob
+# Source: .nist/programs/DB/DB205A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 24
 # Expected Feature: DISABLE CD-NAME

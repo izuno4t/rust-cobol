@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC242A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC242A.cob
+# Source: .nist/programs/NC/NC242A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: LEVEL 1 TBL SUBSCRPT

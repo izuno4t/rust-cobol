@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC243A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC243A.cob
+# Source: .nist/programs/NC/NC243A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: PERFORM VARYING LEV1

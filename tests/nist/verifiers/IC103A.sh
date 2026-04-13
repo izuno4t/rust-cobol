@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC103A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC103A.cob
+# Source: .nist/programs/IC/IC103A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

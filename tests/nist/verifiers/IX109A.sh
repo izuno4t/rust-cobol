@@ -2,10 +2,12 @@
 set -euo pipefail
 
 # Program: IX109A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX109A.cob
+# Source: .nist/programs/IX/IX109A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 1
-# Expected Feature: OPEN INPUT   35 EXP.
+# Expected Cases: 20
+# Expected Feature: READ.        46 EXP.
+# Purpose: VALIDATION FOR:-
+# Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

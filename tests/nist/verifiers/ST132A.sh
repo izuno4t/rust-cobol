@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST132A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/ST/ST132A.cob
+# Source: .nist/programs/ST/ST132A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: SORT, OUTPUT PROC

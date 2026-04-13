@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX211A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX211A.cob
+# Source: .nist/programs/IX/IX211A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: CREATE-FILE-FD1

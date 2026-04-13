@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RW102A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RW/RW102A.cob
+# Source: .nist/programs/RW/RW102A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 3
 # Expected Feature: INITIATE REPORT

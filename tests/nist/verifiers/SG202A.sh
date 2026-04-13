@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG202A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SG/SG202A.cob
+# Source: .nist/programs/SG/SG202A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 5
 # Expected Feature: LAST USED STATE

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SM208A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SM/SM208A.cob
+# Source: .nist/programs/SM/SM208A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Purpose: VALIDATION FOR:-

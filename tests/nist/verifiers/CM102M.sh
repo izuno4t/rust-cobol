@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: CM102M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/CM/CM102M.cob
+# Source: .nist/programs/CM/CM102M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: MCS STATUS WORD

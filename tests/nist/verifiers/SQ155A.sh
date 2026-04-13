@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ155A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ155A.cob
+# Source: .nist/programs/SQ/SQ155A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: WRITE TO INPUT FILE

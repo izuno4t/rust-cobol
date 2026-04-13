@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ132A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ132A.cob
+# Source: .nist/programs/SQ/SQ132A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: CLOSED UNOPENED FILE

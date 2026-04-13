@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF130A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF130A.cob
+# Source: .nist/programs/IF/IF130A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 21
 # Expected Feature: PRESENT-VALUE Function

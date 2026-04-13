@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ302M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ302M.cob
+# Source: .nist/programs/SQ/SQ302M.cob
 # Verifier: verifier_dummy_display
 # Expected Cases: 0
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL107A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RL/RL107A.cob
+# Source: .nist/programs/RL/RL107A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 27
 # Expected Feature: OPEN OUTPUT RL-FR7

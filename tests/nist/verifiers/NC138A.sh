@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC138A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC138A.cob
+# Source: .nist/programs/NC/NC138A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: LEFT PAREN SEPARATOR

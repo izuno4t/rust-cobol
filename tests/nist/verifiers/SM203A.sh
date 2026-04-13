@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Program: SM203A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SM/SM203A.cob
+# Source: .nist/programs/SM/SM203A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 5
+# Expected Cases: 6
 # Expected Feature: COPY ENV DIV REPLAC
+# Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

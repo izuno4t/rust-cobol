@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Program: ST106A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/ST/ST106A.cob
+# Source: .nist/programs/ST/ST106A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 13
-# Expected Feature: SORT, MIXED CLASSES
+# Expected Cases: 14
+# Expected Feature: CREATE A FILE
+# Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

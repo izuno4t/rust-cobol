@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC176A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC176A.cob
+# Source: .nist/programs/NC/NC176A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 132
 # Expected Feature: ADD

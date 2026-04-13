@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF110A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF110A.cob
+# Source: .nist/programs/IF/IF110A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 9
 # Expected Feature: FACTORIAL Function

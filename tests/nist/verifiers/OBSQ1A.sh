@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: OBSQ1A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/OB/OBSQ1A.cob
+# Source: .nist/programs/OB/OBSQ1A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: CREATE FILE SQ-FS1

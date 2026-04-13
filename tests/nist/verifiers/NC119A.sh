@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC119A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC119A.cob
+# Source: .nist/programs/NC/NC119A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 36
 # Expected Feature: SUBTRACT

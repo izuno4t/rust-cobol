@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST136A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/ST/ST136A.cob
+# Source: .nist/programs/ST/ST136A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 5
 # Expected Feature: RELEASE FROM

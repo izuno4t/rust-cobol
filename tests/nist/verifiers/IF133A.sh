@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF133A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF133A.cob
+# Source: .nist/programs/IF/IF133A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 17
 # Expected Feature: REM Function

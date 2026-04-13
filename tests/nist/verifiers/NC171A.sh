@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC171A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC171A.cob
+# Source: .nist/programs/NC/NC171A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 42
 # Expected Feature: DIVIDE INTO

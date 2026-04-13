@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC226A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC226A.cob
+# Source: .nist/programs/IC/IC226A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: EXTERNAL CLAUSE

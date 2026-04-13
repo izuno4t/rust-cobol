@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG303M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SG/SG303M.cob
+# Source: .nist/programs/SG/SG303M.cob
 # Verifier: verifier_dummy_display
 # Expected Cases: 0
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG203A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SG/SG203A.cob
+# Source: .nist/programs/SG/SG203A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 18
 # Expected Feature: FALL THRU IND SEG

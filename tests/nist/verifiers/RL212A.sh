@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Program: RL212A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RL/RL212A.cob
+# Source: .nist/programs/RL/RL212A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 3
-# Expected Feature: EXTEND FILE RL-FS1
+# Expected Cases: 4
+# Expected Feature: FILE CREATE RL-FS1
+# Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

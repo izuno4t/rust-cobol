@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC227A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC227A.cob
+# Source: .nist/programs/IC/IC227A.cob
 # Verifier: verifier_subprogram_standalone
 # Expected Cases: 9
 # Expected Feature: EXTERNAL FILE RECORD

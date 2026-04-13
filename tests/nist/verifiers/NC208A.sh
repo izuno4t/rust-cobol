@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC208A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC208A.cob
+# Source: .nist/programs/NC/NC208A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 25
 # Expected Feature: DATA-NAME QUAL      

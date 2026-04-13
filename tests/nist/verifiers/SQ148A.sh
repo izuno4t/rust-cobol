@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ148A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ148A.cob
+# Source: .nist/programs/SQ/SQ148A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 2
 # Expected Feature: OPEN, CREATE FILE

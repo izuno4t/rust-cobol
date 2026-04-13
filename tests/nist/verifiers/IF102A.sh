@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF102A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF102A.cob
+# Source: .nist/programs/IF/IF102A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 13
 # Expected Feature: ANNUITY Function

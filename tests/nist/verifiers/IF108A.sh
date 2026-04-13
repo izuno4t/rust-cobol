@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF108A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF108A.cob
+# Source: .nist/programs/IF/IF108A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 10
 # Expected Feature: DATE-OF-INTEGER

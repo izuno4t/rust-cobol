@@ -2,10 +2,12 @@
 set -euo pipefail
 
 # Program: ST115A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/ST/ST115A.cob
+# Source: .nist/programs/ST/ST115A.cob
 # Verifier: verifier_standard_ccvs
-# Expected Cases: 1
-# Expected Feature: NATIVE COLL.SEQUENCE 
+# Expected Cases: 2
+# Expected Feature: CREATE FILE SQ-FS1
+# Purpose: VALIDATION FOR:-
+# Purpose: VALIDATION FOR:-
 # Purpose: VALIDATION FOR:-
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

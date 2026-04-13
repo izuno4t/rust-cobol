@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF116A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF116A.cob
+# Source: .nist/programs/IF/IF116A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 25
 # Expected Feature: LOG Function

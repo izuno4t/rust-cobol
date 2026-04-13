@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST139A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/ST/ST139A.cob
+# Source: .nist/programs/ST/ST139A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 11
 # Expected Feature: ERROR ON OUTPUT DECL.

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ208M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ208M.cob
+# Source: .nist/programs/SQ/SQ208M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: LINAGE AFTER OPEN

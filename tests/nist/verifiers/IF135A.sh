@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF135A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF135A.cob
+# Source: .nist/programs/IF/IF135A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 32
 # Expected Feature: SIN Function

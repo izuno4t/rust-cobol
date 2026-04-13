@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: CM201M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/CM/CM201M.cob
+# Source: .nist/programs/CM/CM201M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

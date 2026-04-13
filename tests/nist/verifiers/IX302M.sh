@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX302M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX302M.cob
+# Source: .nist/programs/IX/IX302M.cob
 # Verifier: verifier_dummy_display
 # Expected Cases: 0
 

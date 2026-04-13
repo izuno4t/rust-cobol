@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC206A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC206A.cob
+# Source: .nist/programs/NC/NC206A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 53
 # Expected Feature: QUAL LIMITS 

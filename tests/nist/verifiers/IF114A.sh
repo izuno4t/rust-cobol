@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF114A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IF/IF114A.cob
+# Source: .nist/programs/IF/IF114A.cob
 # Verifier: verifier_intrinsic_function
 # Expected Cases: 23
 # Expected Feature: INTEGER-PART Function

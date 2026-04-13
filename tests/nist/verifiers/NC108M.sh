@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC108M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC108M.cob
+# Source: .nist/programs/NC/NC108M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 16
 # Expected Feature: COMPLETE DATA FORMAT

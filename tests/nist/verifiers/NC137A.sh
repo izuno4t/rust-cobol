@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC137A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC137A.cob
+# Source: .nist/programs/NC/NC137A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: LEVEL 1 INT INDEXING

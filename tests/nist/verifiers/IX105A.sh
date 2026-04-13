@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX105A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX105A.cob
+# Source: .nist/programs/IX/IX105A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: WRITE SHORT & LONG 

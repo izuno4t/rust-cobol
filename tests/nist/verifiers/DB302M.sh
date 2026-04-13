@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB302M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/DB/DB302M.cob
+# Source: .nist/programs/DB/DB302M.cob
 # Verifier: verifier_dummy_display
 # Expected Cases: 0
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ131A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/SQ/SQ131A.cob
+# Source: .nist/programs/SQ/SQ131A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

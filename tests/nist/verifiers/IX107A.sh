@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX107A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX107A.cob
+# Source: .nist/programs/IX/IX107A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: WRITE  SEQUENTIAL

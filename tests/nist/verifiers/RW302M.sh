@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RW302M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RW/RW302M.cob
+# Source: .nist/programs/RW/RW302M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC116A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC116A.cob
+# Source: .nist/programs/NC/NC116A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 18
 # Expected Feature: SIGN LEADING SEPARATE

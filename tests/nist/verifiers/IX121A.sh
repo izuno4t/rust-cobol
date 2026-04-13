@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX121A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IX/IX121A.cob
+# Source: .nist/programs/IX/IX121A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: OPEN OUTPUT: 00 EXP.

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL301M
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RL/RL301M.cob
+# Source: .nist/programs/RL/RL301M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

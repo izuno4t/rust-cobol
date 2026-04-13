@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC140A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC140A.cob
+# Source: .nist/programs/NC/NC140A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: SET IN UP BY INTEGER

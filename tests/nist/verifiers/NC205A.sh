@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC205A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC205A.cob
+# Source: .nist/programs/NC/NC205A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: CONTINUATION ---

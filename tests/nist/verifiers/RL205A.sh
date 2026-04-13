@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL205A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RL/RL205A.cob
+# Source: .nist/programs/RL/RL205A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 40
 # Expected Feature: CREATE FILE RL-FD1

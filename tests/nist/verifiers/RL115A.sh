@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL115A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/RL/RL115A.cob
+# Source: .nist/programs/RL/RL115A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 2
 # Expected Feature: USE/FILE STATUS

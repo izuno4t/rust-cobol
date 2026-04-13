@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC115A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC115A.cob
+# Source: .nist/programs/NC/NC115A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 20
 # Expected Feature: TALLY FOR CHARACTERS

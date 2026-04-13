@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: EXEC85
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/EX/EXEC85.cob
+# Source: .nist/programs/EX/EXEC85.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

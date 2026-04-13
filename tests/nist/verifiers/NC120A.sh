@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC120A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC120A.cob
+# Source: .nist/programs/NC/NC120A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 39
 # Expected Feature: MULTIPLY BY GIVING

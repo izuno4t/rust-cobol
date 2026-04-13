@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC111A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/NC/NC111A.cob
+# Source: .nist/programs/NC/NC111A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: TRUNCATION

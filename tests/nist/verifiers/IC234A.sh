@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC234A
-# Source: /Users/izuno/Documents/GitHub/izuno4t/rust-cobol/target/nist/programs/IC/IC234A.cob
+# Source: .nist/programs/IC/IC234A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: USE GLOBAL INPUT
