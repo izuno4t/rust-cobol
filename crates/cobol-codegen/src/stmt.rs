@@ -1219,6 +1219,24 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!(
                         "{pad}    uint32_t _fs = {open_call};\n"
                     ));
+                    if org_val == 3 && !entry.alternate_keys.is_empty() {
+                        let record_var = resolve_file_record(&c_name);
+                        for alt_key in &entry.alternate_keys {
+                            let alt_key_c = sanitize_name(&alt_key.name);
+                            if let Some((key_offset, key_len)) =
+                                find_field_offset_and_size(&alt_key.name, &record_var, data_items)
+                            {
+                                let duplicates = if alt_key.duplicates { 1 } else { 0 };
+                                out.push_str(&format!(
+                                    "{pad}    if (_fs == 0) {{ _fs = cobol_file_add_alternate_index(FILE_ID_{c_name}, {key_offset}, {key_len}, {duplicates}); }}\n"
+                                ));
+                            } else {
+                                out.push_str(&format!(
+                                    "{pad}    /* unresolved alternate key {alt_key_c} */\n"
+                                ));
+                            }
+                        }
+                    }
                     emit_file_status_update(
                         out,
                         &c_name,
@@ -1230,6 +1248,24 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!("{pad}}}\n"));
                 } else {
                     out.push_str(&format!("{pad}{open_call};\n"));
+                    if org_val == 3 && !entry.alternate_keys.is_empty() {
+                        let record_var = resolve_file_record(&c_name);
+                        for alt_key in &entry.alternate_keys {
+                            let alt_key_c = sanitize_name(&alt_key.name);
+                            if let Some((key_offset, key_len)) =
+                                find_field_offset_and_size(&alt_key.name, &record_var, data_items)
+                            {
+                                let duplicates = if alt_key.duplicates { 1 } else { 0 };
+                                out.push_str(&format!(
+                                    "{pad}cobol_file_add_alternate_index(FILE_ID_{c_name}, {key_offset}, {key_len}, {duplicates});\n"
+                                ));
+                            } else {
+                                out.push_str(&format!(
+                                    "{pad}/* unresolved alternate key {alt_key_c} */\n"
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1294,8 +1330,16 @@ pub(crate) fn emit_statement_with_ctx(
                 let is_key_group = find_data_item(key_name.as_str(), data_items)
                     .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
                 let addr_prefix = if is_key_group { "&" } else { "" };
+                let key_offset = if ctx.file_organization(&c_name) == Some(3) {
+                    let record_var = resolve_file_record(&c_name);
+                    find_field_offset_and_size(key_name, &record_var, data_items)
+                        .map(|(offset, _)| offset)
+                        .unwrap_or(u32::MAX)
+                } else {
+                    0
+                };
                 out.push_str(&format!(
-                    "{pad}    uint32_t _fs = cobol_file_read_key(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, (uint8_t*)&{target}, {rec_len});\n"
+                    "{pad}    uint32_t _fs = cobol_file_read_key(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, {key_offset}, (uint8_t*)&{target}, {rec_len});\n"
                 ));
             } else {
                 out.push_str(&format!(
@@ -1484,6 +1528,8 @@ pub(crate) fn emit_statement_with_ctx(
             record_name,
             file_name,
             from,
+            invalid_key,
+            not_invalid_key,
             ..
         } => {
             let c_name = sanitize_name(record_name);
@@ -1499,13 +1545,14 @@ pub(crate) fn emit_statement_with_ctx(
                 c_name.clone()
             };
             out.push_str(&format!("{pad}/* REWRITE {c_name} */\n"));
-            {
-                let has_fs = fs_map.contains_key(&c_file);
+            let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
+            let has_fs = fs_map.contains_key(&c_file);
+            if needs_rc || has_fs {
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!(
+                    "{pad}    uint32_t _fs = cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
+                ));
                 if has_fs {
-                    out.push_str(&format!("{pad}{{\n"));
-                    out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
-                    ));
                     emit_file_status_update(
                         out,
                         &c_file,
@@ -1514,12 +1561,42 @@ pub(crate) fn emit_statement_with_ctx(
                         has_declaratives,
                         &format!("{pad}    "),
                     );
-                    out.push_str(&format!("{pad}}}\n"));
-                } else {
-                    out.push_str(&format!(
-                        "{pad}cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
-                    ));
                 }
+                if !invalid_key.is_empty() {
+                    out.push_str(&format!("{pad}    if (_fs != 0) {{\n"));
+                    for s in invalid_key {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 2,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+                if !not_invalid_key.is_empty() {
+                    out.push_str(&format!("{pad}    if (_fs == 0) {{\n"));
+                    for s in not_invalid_key {
+                        emit_statement(
+                            out,
+                            s,
+                            data_items,
+                            paragraphs,
+                            fs_map,
+                            has_declaratives,
+                            indent + 2,
+                        );
+                    }
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+                out.push_str(&format!("{pad}}}\n"));
+            } else {
+                out.push_str(&format!(
+                    "{pad}cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
+                ));
             }
         }
         HirStatement::Delete { file_name, .. } => {
@@ -2774,9 +2851,19 @@ pub(crate) fn emit_statement_with_ctx(
                 let is_key_group = find_data_item(key_name.as_str(), data_items)
                     .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
                 let addr_prefix = if is_key_group { "&" } else { "" };
-                format!("cobol_file_start(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, {mode_val})")
+                let key_offset = if ctx.file_organization(&c_name) == Some(3) {
+                    let record_var = resolve_file_record(&c_name);
+                    find_field_offset_and_size(key_name, &record_var, data_items)
+                        .map(|(offset, _)| offset)
+                        .unwrap_or(u32::MAX)
+                } else {
+                    0
+                };
+                format!(
+                    "cobol_file_start(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, {key_offset}, {mode_val})"
+                )
             } else {
-                format!("cobol_file_start(FILE_ID_{c_name}, NULL, 0, {mode_val})")
+                format!("cobol_file_start(FILE_ID_{c_name}, NULL, 0, 0, {mode_val})")
             };
             if needs_rc {
                 out.push_str(&format!("{pad}    uint32_t _src = {start_call};\n"));

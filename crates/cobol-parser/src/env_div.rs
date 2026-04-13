@@ -184,7 +184,16 @@ impl Parser {
                 self.eat(TokenKind::Record);
                 self.eat(TokenKind::Key);
                 self.eat_is();
-                alternate_keys.push(self.parse_qualified_name()?);
+                let name = self.parse_qualified_name()?;
+                let duplicates = if self.check(TokenKind::With) || self.check(TokenKind::Duplicates)
+                {
+                    self.eat(TokenKind::With);
+                    self.eat(TokenKind::Duplicates);
+                    true
+                } else {
+                    false
+                };
+                alternate_keys.push(cobol_ast::env_div::AlternateKey { name, duplicates });
             } else if self.check(TokenKind::FileStatus) {
                 self.advance();
                 self.eat_is();

@@ -34,8 +34,8 @@ use crate::hir::{
     HirParagraph, HirParagraphId, HirParagraphKind, HirParam, HirParamMode, HirPerformKind,
     HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind, HirScreenInfo,
     HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
-    HirStringSource, HirTallyingKind, HirTransferTarget, HirType, HirUnaryOp, HirUnstringDelimiter,
-    HirVaryingAfter,
+    HirStringSource, HirTallyingKind, HirTransferTarget, HirType, HirUnaryOp,
+    HirUnstringDelimiter, HirVaryingAfter, HirAlternateKey,
 };
 
 #[derive(Debug, Clone)]
@@ -2020,6 +2020,7 @@ fn lower_open(open: &cobol_ast::statement::OpenStatement) -> HirStatement {
                 organization: 1,               // will be updated post-lowering
                 access_mode: 0,                // will be updated post-lowering
                 record_key: None,              // will be updated post-lowering
+                alternate_keys: Vec::new(),    // will be updated post-lowering
                 relative_key: None,            // will be updated post-lowering
             }
         })
@@ -2090,10 +2091,15 @@ fn lower_write(
 
 fn lower_rewrite(rewrite: &cobol_ast::statement::RewriteStatement) -> HirStatement {
     let from = rewrite.from.as_ref().map(lower_expr);
+    let condition_names = HashMap::new();
+    let invalid_key = lower_statements(&rewrite.invalid_key, &condition_names);
+    let not_invalid_key = lower_statements(&rewrite.not_invalid_key, &condition_names);
     HirStatement::Rewrite {
         record_name: rewrite.record_name.name.clone(),
         file_name: SmolStr::default(), // resolved post-lowering
         from,
+        invalid_key,
+        not_invalid_key,
         span: rewrite.span,
     }
 }
@@ -2885,7 +2891,7 @@ fn extract_file_assignments(program: &CobolProgram) -> HashMap<SmolStr, SmolStr>
 
 fn extract_open_metadata(
     program: &CobolProgram,
-) -> HashMap<SmolStr, (u32, Option<SmolStr>, Option<SmolStr>)> {
+) -> HashMap<SmolStr, (u32, Option<SmolStr>, Vec<HirAlternateKey>, Option<SmolStr>)> {
     use cobol_ast::AccessMode;
     let Some(env) = &program.environment else {
         return HashMap::new();
@@ -2906,6 +2912,13 @@ fn extract_open_metadata(
                 (
                     access_mode,
                     fc.record_key.as_ref().map(|q| q.name.clone()),
+                    fc.alternate_keys
+                        .iter()
+                        .map(|q| HirAlternateKey {
+                            name: q.name.name.clone(),
+                            duplicates: q.duplicates,
+                        })
+                        .collect(),
                     fc.relative_key.as_ref().map(|q| q.name.clone()),
                 ),
             )
@@ -2974,7 +2987,7 @@ fn patch_open_entries(
     stmts: &mut [HirStatement],
     org_map: &HashMap<SmolStr, u32>,
     assign_map: &HashMap<SmolStr, SmolStr>,
-    open_meta_map: &HashMap<SmolStr, (u32, Option<SmolStr>, Option<SmolStr>)>,
+    open_meta_map: &HashMap<SmolStr, (u32, Option<SmolStr>, Vec<HirAlternateKey>, Option<SmolStr>)>,
 ) {
     for stmt in stmts.iter_mut() {
         if let HirStatement::Open { entries, .. } = stmt {
@@ -2985,11 +2998,12 @@ fn patch_open_entries(
                 if let Some(path) = assign_map.get(&entry.file_name) {
                     entry.assign_to = path.clone();
                 }
-                if let Some((access_mode, record_key, relative_key)) =
+                if let Some((access_mode, record_key, alternate_keys, relative_key)) =
                     open_meta_map.get(&entry.file_name)
                 {
                     entry.access_mode = *access_mode;
                     entry.record_key = record_key.clone();
+                    entry.alternate_keys = alternate_keys.clone();
                     entry.relative_key = relative_key.clone();
                 }
             }

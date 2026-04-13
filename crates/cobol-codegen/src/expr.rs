@@ -2685,6 +2685,9 @@ pub(crate) fn emit_file_status_update(
         out.push_str(&format!(
             "{pad}{dispatch_fn}(\"{file_c_name}\", {fs_val});\n"
         ));
+        out.push_str(&format!(
+            "{pad}if ({fs_val} != 0 && _goto_target) goto _goto_dispatch;\n"
+        ));
     }
 }
 

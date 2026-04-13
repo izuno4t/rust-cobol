@@ -85,8 +85,16 @@ struct CobolFile {
     record_len: u32,
     /// For relative files: current relative record number (0-based).
     current_record: u64,
-    /// For indexed files: sorted index of (key, file_offset) pairs.
-    index: Vec<(Vec<u8>, u64)>,
+    /// For indexed files: sorted indices for primary and alternate keys.
+    indices: Vec<FileIndex>,
+}
+
+#[derive(Clone)]
+struct FileIndex {
+    key_offset: u32,
+    key_len: u32,
+    duplicates: bool,
+    entries: Vec<(Vec<u8>, u64)>,
 }
 
 // Global file table -- lazily initialised.
@@ -209,7 +217,7 @@ pub unsafe extern "C" fn cobol_file_open(
                         mode,
                         record_len,
                         current_record: 0,
-                        index: Vec::new(),
+                        indices: Vec::new(),
                     },
                 );
                 file_debug_log(&format!(
@@ -237,49 +245,68 @@ pub unsafe extern "C" fn cobol_file_open(
 /// Reads the file from the beginning, extracting the key from each record
 /// at the given offset and length, and stores (key, file_offset) pairs
 /// sorted by key.
-fn build_index(file: &mut CobolFile, key_offset: u32, key_len: u32) {
+fn build_index_entries(file: &mut CobolFile, key_offset: u32, key_len: u32) -> Vec<(Vec<u8>, u64)> {
     if file.org != FileOrganization::Indexed {
-        return;
+        return Vec::new();
     }
     let rec_len = file.record_len as usize;
     if rec_len == 0 {
-        return;
+        return Vec::new();
     }
     let key_off = key_offset as usize;
     let key_length = key_len as usize;
     if key_off + key_length > rec_len {
-        return;
+        return Vec::new();
     }
 
     let f = match &mut file.inner {
         CobolFileInner::Reader(r) => r.get_mut(),
         CobolFileInner::ReadWrite(f) => f,
-        _ => return,
+        _ => return Vec::new(),
     };
 
     // Seek to the beginning.
     if f.seek(SeekFrom::Start(0)).is_err() {
-        return;
+        return Vec::new();
     }
 
     let mut buf = vec![0u8; rec_len];
     let mut offset = 0u64;
-    file.index.clear();
+    let mut entries = Vec::new();
 
     while f.read_exact(&mut buf).is_ok() {
         if !is_deleted_record(&buf) {
             let key = buf[key_off..key_off + key_length].to_vec();
-            file.index.push((key, offset));
+            entries.push((key, offset));
         }
         offset += rec_len as u64;
     }
 
-    // Sort index by key.
-    file.index.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Reset file position to beginning.
     let _ = f.seek(SeekFrom::Start(0));
-    file.current_record = 0;
+    entries
+}
+
+fn rebuild_all_indices(file: &mut CobolFile) {
+    if file.org != FileOrganization::Indexed {
+        return;
+    }
+    let defs: Vec<(u32, u32, bool)> = file
+        .indices
+        .iter()
+        .map(|idx| (idx.key_offset, idx.key_len, idx.duplicates))
+        .collect();
+    let mut rebuilt = Vec::with_capacity(defs.len());
+    for (key_offset, key_len, duplicates) in defs {
+        rebuilt.push(FileIndex {
+            key_offset,
+            key_len,
+            duplicates,
+            entries: build_index_entries(file, key_offset, key_len),
+        });
+    }
+    file.indices = rebuilt;
 }
 
 /// Open an indexed file with key information.
@@ -319,12 +346,43 @@ pub unsafe extern "C" fn cobol_file_open_indexed(
     if mode == FileOpenMode::Input || mode == FileOpenMode::IoMode {
         with_file_table(|table| {
             if let Some(file) = table.get_mut(&file_id) {
-                build_index(file, key_offset, key_len);
+                file.indices = vec![FileIndex {
+                    key_offset,
+                    key_len,
+                    duplicates: false,
+                    entries: build_index_entries(file, key_offset, key_len),
+                }];
             }
         });
     }
 
     FS_OK
+}
+
+#[no_mangle]
+pub extern "C" fn cobol_file_add_alternate_index(
+    file_id: u32,
+    key_offset: u32,
+    key_len: u32,
+    duplicates: u32,
+) -> u32 {
+    with_file_table(|table| {
+        let file = match table.get_mut(&file_id) {
+            Some(f) => f,
+            None => return FS_NOT_OPEN,
+        };
+        if file.org != FileOrganization::Indexed {
+            return FS_IO_ERROR;
+        }
+        let entries = build_index_entries(file, key_offset, key_len);
+        file.indices.push(FileIndex {
+            key_offset,
+            key_len,
+            duplicates: duplicates != 0,
+            entries,
+        });
+        FS_OK
+    })
 }
 
 /// Close a file.
@@ -503,10 +561,14 @@ pub unsafe extern "C" fn cobol_file_read_next(
             FileOrganization::Indexed => {
                 // Sequential read through index order.
                 let idx = file.current_record as usize;
-                if idx >= file.index.len() {
+                let primary = match file.indices.first() {
+                    Some(index) => index,
+                    None => return FS_REC_NOT_FOUND,
+                };
+                if idx >= primary.entries.len() {
                     return FS_AT_END;
                 }
-                let offset = file.index[idx].1;
+                let offset = primary.entries[idx].1;
 
                 let f = match &mut file.inner {
                     CobolFileInner::Reader(r) => r.get_mut(),
@@ -547,6 +609,7 @@ pub unsafe extern "C" fn cobol_file_read_key(
     file_id: u32,
     key_ptr: *const u8,
     key_len: u32,
+    key_offset: u32,
     record_ptr: *mut u8,
     record_len: u32,
 ) -> u32 {
@@ -598,12 +661,33 @@ pub unsafe extern "C" fn cobol_file_read_key(
                 }
             }
             FileOrganization::Indexed => {
-                // Binary search the sorted index.
-                let pos = file.index.partition_point(|(k, _)| k.as_slice() < key);
-                if pos >= file.index.len() || file.index[pos].0 != key {
+                let index = if key_offset != u32::MAX {
+                    file.indices
+                        .iter()
+                        .find(|index| index.key_offset == key_offset && index.key_len == key_len)
+                } else {
+                    file.indices.iter().find(|index| index.key_len == key_len)
+                };
+                let Some(index) = index else {
+                    return FS_REC_NOT_FOUND;
+                };
+                let pos = index.entries.partition_point(|(k, _)| k.as_slice() < key);
+                if pos >= index.entries.len() || index.entries[pos].0 != key {
                     return FS_REC_NOT_FOUND;
                 }
-                let offset = file.index[pos].1;
+                let matched_offset = index.entries[pos].1;
+                let offset = file.indices[0]
+                    .entries
+                    .iter()
+                    .position(|(_, off)| *off == matched_offset)
+                    .map(|primary_pos| {
+                        // READ by key establishes the current record.
+                        // Subsequent DELETE/REWRITE expect 1-based semantics,
+                        // while READ NEXT should advance from the current record.
+                        file.current_record = (primary_pos + 1) as u64;
+                        matched_offset
+                    })
+                    .unwrap_or(matched_offset);
                 let f = match &mut file.inner {
                     CobolFileInner::Reader(r) => r.get_mut(),
                     CobolFileInner::ReadWrite(f) => f,
@@ -614,7 +698,6 @@ pub unsafe extern "C" fn cobol_file_read_key(
                 }
                 match f.read_exact(buf) {
                     Ok(()) => {
-                        file.current_record = (pos + 1) as u64;
                         FS_OK
                     }
                     Err(_) => FS_IO_ERROR,
@@ -753,11 +836,23 @@ pub unsafe extern "C" fn cobol_file_write_indexed(
 
         // Check for duplicate key.
         let key = data[key_off..key_off + key_length].to_vec();
-        let insert_pos = file
-            .index
+        let insert_pos = file.indices[0]
+            .entries
             .partition_point(|(k, _)| k.as_slice() < key.as_slice());
-        if insert_pos < file.index.len() && file.index[insert_pos].0 == key {
+        if insert_pos < file.indices[0].entries.len() && file.indices[0].entries[insert_pos].0 == key {
             return FS_DUPLICATE_KEY;
+        }
+        for index in file.indices.iter().skip(1) {
+            if index.duplicates {
+                continue;
+            }
+            let key_off = index.key_offset as usize;
+            let key_len = index.key_len as usize;
+            let key = data[key_off..key_off + key_len].to_vec();
+            let pos = index.entries.partition_point(|(k, _)| k.as_slice() < key.as_slice());
+            if pos < index.entries.len() && index.entries[pos].0 == key {
+                return FS_DUPLICATE_KEY;
+            }
         }
 
         // Get current write position.
@@ -786,8 +881,8 @@ pub unsafe extern "C" fn cobol_file_write_indexed(
 
         match write_result {
             Ok(()) => {
-                // Insert into sorted index.
-                file.index.insert(insert_pos, (key, offset));
+                file.indices[0].entries.insert(insert_pos, (key, offset));
+                rebuild_all_indices(file);
                 file.current_record += 1;
                 FS_OK
             }
@@ -821,19 +916,56 @@ pub unsafe extern "C" fn cobol_file_rewrite(
             return FS_IO_MODE_REQUIRED;
         }
 
+        let rec_offset = match file.org {
+            FileOrganization::Indexed => {
+                let idx = file.current_record.saturating_sub(1) as usize;
+                match file.indices.first().and_then(|index| index.entries.get(idx)) {
+                    Some((_, offset)) => *offset,
+                    None => return FS_REC_NOT_FOUND,
+                }
+            }
+            _ => (file.current_record.saturating_sub(1)) * (file.record_len as u64),
+        };
+
         let f = match &mut file.inner {
             CobolFileInner::ReadWrite(f) => f,
             _ => return FS_IO_MODE_REQUIRED,
         };
 
-        // Seek back to the start of the current record.
-        let rec_offset = (file.current_record.saturating_sub(1)) * (file.record_len as u64);
+        if file.org == FileOrganization::Indexed {
+            let idx = file.current_record.saturating_sub(1) as usize;
+            let current_offset = match file.indices.first().and_then(|index| index.entries.get(idx)) {
+                Some((_, offset)) => *offset,
+                None => return FS_REC_NOT_FOUND,
+            };
+            for index in &file.indices {
+                if index.duplicates {
+                    continue;
+                }
+                let key_off = index.key_offset as usize;
+                let key_len = index.key_len as usize;
+                let key = data[key_off..key_off + key_len].to_vec();
+                let pos = index.entries.partition_point(|(k, _)| k.as_slice() < key.as_slice());
+                if pos < index.entries.len()
+                    && index.entries[pos].0 == key
+                    && index.entries[pos].1 != current_offset
+                {
+                    return FS_DUPLICATE_KEY;
+                }
+            }
+        }
+
         if f.seek(SeekFrom::Start(rec_offset)).is_err() {
             return FS_IO_ERROR;
         }
 
         match f.write_all(data) {
-            Ok(()) => FS_OK,
+            Ok(()) => {
+                if file.org == FileOrganization::Indexed {
+                    rebuild_all_indices(file);
+                }
+                FS_OK
+            }
             Err(_) => FS_IO_ERROR,
         }
     })
@@ -871,10 +1003,9 @@ pub extern "C" fn cobol_file_delete(file_id: u32) -> u32 {
                 }
             }
             FileOrganization::Indexed => {
-                // Remove from the index.
                 let idx = file.current_record.saturating_sub(1) as usize;
-                if idx < file.index.len() {
-                    let (_key, offset) = file.index.remove(idx);
+                if idx < file.indices.first().map(|i| i.entries.len()).unwrap_or(0) {
+                    let offset = file.indices[0].entries[idx].1;
                     let f = match &mut file.inner {
                         CobolFileInner::ReadWrite(f) => f,
                         _ => return FS_IO_MODE_REQUIRED,
@@ -885,6 +1016,7 @@ pub extern "C" fn cobol_file_delete(file_id: u32) -> u32 {
                     let zeros = vec![0u8; file.record_len as usize];
                     match f.write_all(&zeros) {
                         Ok(()) => {
+                            rebuild_all_indices(file);
                             file.current_record = idx as u64;
                             FS_OK
                         }
@@ -915,6 +1047,7 @@ pub unsafe extern "C" fn cobol_file_start(
     file_id: u32,
     key_ptr: *const u8,
     key_len: u32,
+    key_offset: u32,
     mode: u32,
 ) -> u32 {
     let key = std::slice::from_raw_parts(key_ptr, key_len as usize);
@@ -932,10 +1065,13 @@ pub unsafe extern "C" fn cobol_file_start(
                 for &b in key.iter() {
                     rec_num = rec_num * 256 + b as u64;
                 }
-                file.current_record = rec_num;
+                if rec_num == 0 {
+                    return FS_REC_NOT_FOUND;
+                }
+                file.current_record = rec_num - 1;
 
                 // Seek the underlying file.
-                let offset = rec_num * (file.record_len as u64);
+                let offset = (rec_num - 1) * (file.record_len as u64);
                 let f = match &mut file.inner {
                     CobolFileInner::Reader(r) => r.get_mut(),
                     CobolFileInner::ReadWrite(f) => f,
@@ -947,63 +1083,58 @@ pub unsafe extern "C" fn cobol_file_start(
                 }
             }
             FileOrganization::Indexed => {
-                // Binary search the index for the key.
-                let pos = file.index.partition_point(|(k, _)| k.as_slice() < key);
-
-                let target = match mode {
-                    0 => {
-                        // EQ
-                        if pos < file.index.len() && file.index[pos].0 == key {
-                            Some(pos)
-                        } else {
-                            None
-                        }
-                    }
-                    1 => {
-                        // GT
-                        let mut p = pos;
-                        while p < file.index.len() && file.index[p].0 == key {
-                            p += 1;
-                        }
-                        if p < file.index.len() {
-                            Some(p)
-                        } else {
-                            None
-                        }
-                    }
-                    2 => {
-                        // GE
-                        if pos < file.index.len() {
-                            Some(pos)
-                        } else {
-                            None
-                        }
-                    }
-                    3 => {
-                        // LT
-                        if pos > 0 {
-                            Some(pos - 1)
-                        } else {
-                            None
-                        }
-                    }
-                    4 => {
-                        // LE
-                        if pos < file.index.len() && file.index[pos].0 == key {
-                            Some(pos)
-                        } else if pos > 0 {
-                            Some(pos - 1)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
+                let mut target_offset = None;
+                let index = if key_offset != u32::MAX {
+                    file.indices
+                        .iter()
+                        .find(|index| index.key_offset == key_offset && index.key_len == key_len)
+                } else {
+                    file.indices.iter().find(|index| index.key_len == key_len)
                 };
+                if let Some(index) = index {
+                    let pos = index.entries.partition_point(|(k, _)| k.as_slice() < key);
+                    let target = match mode {
+                        0 => {
+                            (pos < index.entries.len() && index.entries[pos].0 == key)
+                                .then_some(pos)
+                        }
+                        1 => {
+                            let mut p = pos;
+                            while p < index.entries.len() && index.entries[p].0 == key {
+                                p += 1;
+                            }
+                            (p < index.entries.len()).then_some(p)
+                        }
+                        2 => (pos < index.entries.len()).then_some(pos),
+                        3 => (pos > 0).then_some(pos - 1),
+                        4 => {
+                            if pos < index.entries.len() && index.entries[pos].0 == key {
+                                Some(pos)
+                            } else if pos > 0 {
+                                Some(pos - 1)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(idx) = target {
+                        target_offset = Some(index.entries[idx].1);
+                    }
+                }
 
-                match target {
-                    Some(idx) => {
-                        file.current_record = idx as u64;
-                        FS_OK
+                match target_offset {
+                    Some(offset) => {
+                        if let Some(primary_pos) = file.indices[0]
+                            .entries
+                            .iter()
+                            .position(|(_, off)| *off == offset)
+                        {
+                            file.current_record = primary_pos as u64;
+                            FS_OK
+                        } else {
+                            FS_REC_NOT_FOUND
+                        }
                     }
                     None => FS_REC_NOT_FOUND,
                 }
@@ -1285,13 +1416,7 @@ mod tests {
         let key = 2u32.to_be_bytes();
         let mut buf = [0u8; 8];
         let rc = unsafe {
-            cobol_file_read_key(
-                fid,
-                key.as_ptr(),
-                key.len() as u32,
-                buf.as_mut_ptr(),
-                rec_len,
-            )
+            cobol_file_read_key(fid, key.as_ptr(), key.len() as u32, 0, buf.as_mut_ptr(), rec_len)
         };
         assert_eq!(rc, FS_OK);
         assert_eq!(&buf, b"REC2xxxx");
@@ -1335,13 +1460,7 @@ mod tests {
         let key = b"AAA";
         let mut buf = [0u8; 10];
         let rc = unsafe {
-            cobol_file_read_key(
-                fid,
-                key.as_ptr(),
-                key.len() as u32,
-                buf.as_mut_ptr(),
-                rec_len,
-            )
+            cobol_file_read_key(fid, key.as_ptr(), key.len() as u32, 0, buf.as_mut_ptr(), rec_len)
         };
         assert_eq!(rc, FS_OK);
         assert_eq!(&buf, b"AAArecord1");
@@ -1349,13 +1468,7 @@ mod tests {
         // Read by key "CCC".
         let key = b"CCC";
         let rc = unsafe {
-            cobol_file_read_key(
-                fid,
-                key.as_ptr(),
-                key.len() as u32,
-                buf.as_mut_ptr(),
-                rec_len,
-            )
+            cobol_file_read_key(fid, key.as_ptr(), key.len() as u32, 0, buf.as_mut_ptr(), rec_len)
         };
         assert_eq!(rc, FS_OK);
         assert_eq!(&buf, b"CCCrecord3");
@@ -1363,13 +1476,7 @@ mod tests {
         // Read by nonexistent key.
         let key = b"ZZZ";
         let rc = unsafe {
-            cobol_file_read_key(
-                fid,
-                key.as_ptr(),
-                key.len() as u32,
-                buf.as_mut_ptr(),
-                rec_len,
-            )
+            cobol_file_read_key(fid, key.as_ptr(), key.len() as u32, 0, buf.as_mut_ptr(), rec_len)
         };
         assert_eq!(rc, FS_REC_NOT_FOUND);
 
@@ -1505,7 +1612,7 @@ mod tests {
 
         let key = b"AAA";
         let mut buf = [0u8; 9];
-        let rc = unsafe { cobol_file_read_key(fid, key.as_ptr(), 3, buf.as_mut_ptr(), 9) };
+        let rc = unsafe { cobol_file_read_key(fid, key.as_ptr(), 3, 0, buf.as_mut_ptr(), 9) };
         assert_eq!(rc, FS_OK);
         let rc = cobol_file_delete(fid);
         assert_eq!(rc, FS_OK);
@@ -1525,8 +1632,91 @@ mod tests {
             )
         };
         assert_eq!(rc, FS_OK);
-        let rc = unsafe { cobol_file_read_key(fid, key.as_ptr(), 3, buf.as_mut_ptr(), 9) };
+        let rc = unsafe { cobol_file_read_key(fid, key.as_ptr(), 3, 0, buf.as_mut_ptr(), 9) };
         assert_eq!(rc, FS_REC_NOT_FOUND);
+        let _ = cobol_file_close(fid);
+    }
+
+    #[test]
+    fn test_indexed_read_key_uses_matching_alternate_offset() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("indexed_alt_same_len.dat");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"AAA111BBB222").unwrap();
+            f.write_all(b"CCC222DDD111").unwrap();
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 707u32;
+        let rc = unsafe {
+            cobol_file_open_indexed(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileAccessMode::Random,
+                FileOpenMode::Input,
+                12,
+                0,
+                3,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(cobol_file_add_alternate_index(fid, 3, 3, 0), FS_OK);
+        assert_eq!(cobol_file_add_alternate_index(fid, 6, 3, 0), FS_OK);
+        assert_eq!(cobol_file_add_alternate_index(fid, 9, 3, 0), FS_OK);
+
+        let key = b"111";
+        let mut buf = [0u8; 12];
+        let rc = unsafe { cobol_file_read_key(fid, key.as_ptr(), 3, 9, buf.as_mut_ptr(), 12) };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(&buf, b"CCC222DDD111");
+
+        let rc = unsafe { cobol_file_read_key(fid, key.as_ptr(), 3, 3, buf.as_mut_ptr(), 12) };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(&buf, b"AAA111BBB222");
+
+        let _ = cobol_file_close(fid);
+    }
+
+    #[test]
+    fn test_indexed_start_uses_matching_alternate_offset() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("indexed_alt_start_same_len.dat");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"AAA111BBB222").unwrap();
+            f.write_all(b"CCC222DDD111").unwrap();
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 708u32;
+        let rc = unsafe {
+            cobol_file_open_indexed(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileAccessMode::Dynamic,
+                FileOpenMode::Input,
+                12,
+                0,
+                3,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(cobol_file_add_alternate_index(fid, 3, 3, 0), FS_OK);
+        assert_eq!(cobol_file_add_alternate_index(fid, 6, 3, 0), FS_OK);
+        assert_eq!(cobol_file_add_alternate_index(fid, 9, 3, 0), FS_OK);
+
+        let key = b"111";
+        let rc = unsafe { cobol_file_start(fid, key.as_ptr(), 3, 9, 0) };
+        assert_eq!(rc, FS_OK);
+
+        let mut buf = [0u8; 12];
+        let rc = unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 12) };
+        assert_eq!(rc, FS_OK);
+        assert_eq!(&buf, b"CCC222DDD111");
+
         let _ = cobol_file_close(fid);
     }
 }

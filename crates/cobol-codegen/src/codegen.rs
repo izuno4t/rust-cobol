@@ -598,21 +598,26 @@ pub fn generate_c(program: &HirProgram) -> String {
             with_active_context(|ctx| ctx.set_label_map(HashMap::new()));
             out.push_str(&format!("\nstatic void decl_{c_name}(void) {{\n"));
             let is_debug_decl = decl.use_kind == HirDeclarativeUse::ForDebugging;
+            let has_decl_entry = program.paragraphs.iter().any(|p| p.name == decl.name);
             if is_debug_decl {
                 out.push_str("    int _prev_suppress_debug_event = _suppress_debug_event;\n");
                 out.push_str("    _suppress_debug_event = 1;\n");
                 with_active_context(|ctx| ctx.set_in_debug_declarative(true));
             }
-            for stmt in &decl.body {
-                let env = StmtEmitEnv {
-                    data_items: &program.data_items,
-                    paragraphs: &program.paragraphs,
-                    fs_map: &fs_map,
-                    has_declaratives: has_decl,
-                    ctx: &ctx,
-                    current_paragraph: None,
-                };
-                emit_statement_with_ctx(&mut out, stmt, &env, 1);
+            if has_decl_entry {
+                out.push_str(&format!("    para_{c_name}();\n"));
+            } else {
+                for stmt in &decl.body {
+                    let env = StmtEmitEnv {
+                        data_items: &program.data_items,
+                        paragraphs: &program.paragraphs,
+                        fs_map: &fs_map,
+                        has_declaratives: has_decl,
+                        ctx: &ctx,
+                        current_paragraph: None,
+                    };
+                    emit_statement_with_ctx(&mut out, stmt, &env, 1);
+                }
             }
             if is_debug_decl {
                 with_active_context(|ctx| ctx.set_in_debug_declarative(false));
@@ -914,6 +919,17 @@ fn emit_nested_program(
             out.push('\n');
         }
 
+        for decl in &program.declaratives {
+            let c_name = sanitize_name(&decl.name);
+            out.push_str(&format!("#undef decl_{c_name}\n"));
+            out.push_str(&format!(
+                "#define decl_{c_name} decl_{prog_name}__{c_name}\n"
+            ));
+        }
+        if !program.declaratives.is_empty() {
+            out.push('\n');
+        }
+
         // Emit data items as function-scope statics
         let nested_fd_aliases: HashSet<String> = program
             .fd_record_aliases
@@ -1043,16 +1059,21 @@ fn emit_nested_program(
             let c_name = sanitize_name(&decl.name);
             with_active_context(|ctx| ctx.set_label_map(HashMap::new()));
             out.push_str(&format!("\nstatic void decl_{c_name}(void) {{\n"));
-            for stmt in &decl.body {
-                let env = StmtEmitEnv {
-                    data_items: &program.data_items,
-                    paragraphs: &program.paragraphs,
-                    fs_map: &fs_map,
-                    has_declaratives: has_decl,
-                    ctx: &ctx,
-                    current_paragraph: None,
-                };
-                emit_statement_with_ctx(out, stmt, &env, 1);
+            let has_decl_entry = program.paragraphs.iter().any(|p| p.name == decl.name);
+            if has_decl_entry {
+                out.push_str(&format!("    para_{c_name}();\n"));
+            } else {
+                for stmt in &decl.body {
+                    let env = StmtEmitEnv {
+                        data_items: &program.data_items,
+                        paragraphs: &program.paragraphs,
+                        fs_map: &fs_map,
+                        has_declaratives: has_decl,
+                        ctx: &ctx,
+                        current_paragraph: None,
+                    };
+                    emit_statement_with_ctx(out, stmt, &env, 1);
+                }
             }
             out.push_str("_goto_dispatch:\n");
             out.push_str("    while (_goto_target) {\n");
@@ -1082,6 +1103,13 @@ fn emit_nested_program(
             for para in &program.paragraphs {
                 let c_name = sanitize_name(&para.name);
                 out.push_str(&format!("#undef para_{c_name}\n"));
+            }
+        }
+        if !program.declaratives.is_empty() {
+            out.push('\n');
+            for decl in &program.declaratives {
+                let c_name = sanitize_name(&decl.name);
+                out.push_str(&format!("#undef decl_{c_name}\n"));
             }
         }
         if !nested_data_names.is_empty() {
@@ -1248,6 +1276,7 @@ fn emit_isolated_paragraph_definition(
         sanitize_name(program_name),
         paragraph.name
     ));
+    out.push_str("    _goto_target = 0;\n");
     out.push_str(&format!("lbl_{c_name}:;\n"));
     ctx.set_in_body_context(true);
     for stmt in &paragraph.body {

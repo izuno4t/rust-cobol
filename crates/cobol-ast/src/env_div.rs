@@ -92,10 +92,16 @@ pub struct FileControlEntry {
     /// RELATIVE KEY clause.
     pub relative_key: Option<QualifiedName>,
     /// ALTERNATE RECORD KEY clauses.
-    pub alternate_keys: Vec<QualifiedName>,
+    pub alternate_keys: Vec<AlternateKey>,
     /// FILE STATUS clause.
     pub file_status: Option<QualifiedName>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlternateKey {
+    pub name: QualifiedName,
+    pub duplicates: bool,
 }
 
 /// File organization types.

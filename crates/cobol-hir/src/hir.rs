@@ -606,6 +606,8 @@ pub enum HirStatement {
         /// The file name this record belongs to (for FILE_ID resolution).
         file_name: SmolStr,
         from: Option<HirExpr>,
+        invalid_key: Vec<HirStatement>,
+        not_invalid_key: Vec<HirStatement>,
         span: Span,
     },
     /// DELETE statement.
@@ -1004,8 +1006,16 @@ pub struct HirOpenEntry {
     pub access_mode: u32,
     /// Primary record key variable for indexed files.
     pub record_key: Option<SmolStr>,
+    /// Alternate record key variables for indexed files.
+    pub alternate_keys: Vec<HirAlternateKey>,
     /// Relative key variable for relative files.
     pub relative_key: Option<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirAlternateKey {
+    pub name: SmolStr,
+    pub duplicates: bool,
 }
 
 /// File open modes.
