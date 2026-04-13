@@ -2,8 +2,8 @@
 //
 // Tests the full flow: Source -> Lex -> Parse -> Sema -> HIR -> Codegen
 
-use cobol_codegen::generate_c;
 use cobol_ast::CobolProgram;
+use cobol_codegen::generate_c;
 use cobol_common::{FileId, SourceFormat, Span};
 use cobol_hir::lower_to_hir;
 use cobol_hir::{HirDeclarative, HirDeclarativeUse, HirStatement, HirType};
@@ -2460,6 +2460,7 @@ PROCEDURE DIVISION.
     hir.declaratives.push(HirDeclarative {
         name: "FILE-ERR-SECTION".into(),
         use_kind: HirDeclarativeUse::AfterException,
+        is_global: false,
         file_names: vec!["MY-FILE".into()],
         debug_items: vec![],
         body: vec![HirStatement::Display {
@@ -4733,6 +4734,7 @@ PROCEDURE DIVISION.
     hir.declaratives.push(HirDeclarative {
         name: "ERR-SECTION".into(),
         use_kind: HirDeclarativeUse::AfterException,
+        is_global: false,
         file_names: vec!["TEST-FILE".into()],
         debug_items: vec![],
         body: vec![HirStatement::Display {
@@ -5337,6 +5339,7 @@ PROCEDURE DIVISION.
 
 #[test]
 fn test_native_exit_program_in_subprogram_returns_to_caller() {
+    // cspell:ignore MAINPROG SUBPROG
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MAINPROG.
@@ -5368,6 +5371,7 @@ PROCEDURE DIVISION USING LK-NUM.
 
 #[test]
 fn test_call_on_overflow_routes_to_exception_path_for_missing_program() {
+    // cspell:ignore MAINPROG
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MAINPROG.
@@ -5389,6 +5393,7 @@ PROCEDURE DIVISION.
 
 #[test]
 fn test_exit_program_in_nested_subprogram_without_using_returns_to_caller() {
+    // cspell:ignore MAINPROG SUBPROG
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. MAINPROG.

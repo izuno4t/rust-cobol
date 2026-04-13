@@ -1053,7 +1053,8 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!("{inner_pad}}}\n"));
                 }
             } else if params.is_empty() {
-                let is_nested_call = with_active_context(|ctx| ctx.is_nested_program_name(&prog_name));
+                let is_nested_call =
+                    with_active_context(|ctx| ctx.is_nested_program_name(&prog_name));
                 out.push_str(&format!("{inner_pad}{{\n"));
                 if is_nested_call {
                     if has_exception_handlers {
@@ -1085,7 +1086,8 @@ pub(crate) fn emit_statement_with_ctx(
                 // and avoid redefinition when multiple CALLs in same scope.
                 out.push_str(&format!("{inner_pad}{{\n"));
                 let call_pad = format!("{inner_pad}    ");
-                let is_nested_call = with_active_context(|ctx| ctx.is_nested_program_name(&prog_name));
+                let is_nested_call =
+                    with_active_context(|ctx| ctx.is_nested_program_name(&prog_name));
                 // Build param types and values based on passing mode
                 let mut param_types = Vec::new();
                 let mut param_values = Vec::new();

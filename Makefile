@@ -59,6 +59,10 @@ verify:
 	$(MAKE) clean
 	$(MAKE) audit
 	$(MAKE) test
+	$(MAKE) nist-prepare
+	$(MAKE) nist-audit-codegen
+	$(MAKE) nist-compare-codegen
+	$(MAKE) nist-compile
 
 ## ビルド成果物のクリーン
 clean:

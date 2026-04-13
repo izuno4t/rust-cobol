@@ -44,6 +44,7 @@ pub(crate) struct AlterableParagraphInfo {
 pub(crate) struct CodegenContext {
     subscript_paths: HashMap<String, SubscriptPathInfo>,
     file_record_map: FileRecordMap,
+    file_declarative_dispatch_fn: String,
     communication_map: HashMap<String, CommunicationBinding>,
     nested_program_names: HashSet<String>,
     is_subprogram: bool,
@@ -78,6 +79,7 @@ impl CodegenContext {
             &program.file_records,
             &program.communication_descriptions,
             &program.fd_record_aliases,
+            "_check_file_declarative".to_string(),
         );
         ctx.nested_program_names.extend(
             program
@@ -142,6 +144,10 @@ impl CodegenContext {
         Self {
             subscript_paths,
             file_record_map,
+            file_declarative_dispatch_fn: format!(
+                "_check_file_declarative_{}",
+                sanitize_name(&program.name)
+            ),
             communication_map,
             nested_program_names,
             is_subprogram: true,
@@ -168,6 +174,7 @@ impl CodegenContext {
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         communication_descriptions: &[cobol_hir::HirCommunicationDescription],
         fd_record_aliases: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+        file_declarative_dispatch_fn: String,
     ) -> Self {
         Self {
             subscript_paths: build_subscript_paths(data_items),
@@ -175,6 +182,7 @@ impl CodegenContext {
                 .iter()
                 .map(|(f, r)| (sanitize_name(f), sanitize_name(r)))
                 .collect(),
+            file_declarative_dispatch_fn,
             communication_map: build_communication_map(communication_descriptions),
             nested_program_names: HashSet::new(),
             is_subprogram: false,
@@ -253,6 +261,10 @@ impl CodegenContext {
             .get(sanitized_file_name)
             .cloned()
             .unwrap_or_else(|| sanitized_file_name.to_string())
+    }
+
+    pub(crate) fn file_declarative_dispatch_fn(&self) -> &str {
+        &self.file_declarative_dispatch_fn
     }
 
     pub(crate) fn is_nested_program_name(&self, sanitized_name: &str) -> bool {

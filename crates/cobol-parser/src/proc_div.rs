@@ -239,7 +239,9 @@ impl Parser {
 
         let use_stmt = if self.check(TokenKind::After) || self.check(TokenKind::Global) {
             // USE [GLOBAL] AFTER [STANDARD] EXCEPTION/ERROR ON ...
+            let mut is_global = false;
             if self.check(TokenKind::Global) {
+                is_global = true;
                 self.advance();
             }
             self.expect(TokenKind::After)?;
@@ -269,7 +271,10 @@ impl Parser {
                     self.advance();
                 }
             }
-            UseStatement::AfterException { file_names }
+            UseStatement::AfterException {
+                file_names,
+                is_global,
+            }
         } else if self.check(TokenKind::Before) {
             // USE BEFORE REPORTING report-group
             self.advance(); // BEFORE

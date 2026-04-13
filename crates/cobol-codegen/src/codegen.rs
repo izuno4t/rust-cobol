@@ -20,9 +20,9 @@ use std::hash::{Hash, Hasher};
 
 use cobol_hir::{
     HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem,
-    HirDeclarativeUse, HirExpr, HirFileInfo, HirLiteral, HirMoveTarget, HirOpenMode, HirParagraph,
-    HirParagraphId, HirParagraphKind, HirPerformKind, HirProgram, HirStartRelation, HirStatement,
-    HirTransferTarget, HirType, HirUnaryOp,
+    HirDeclarative, HirDeclarativeUse, HirExpr, HirFileInfo, HirLiteral, HirMoveTarget,
+    HirOpenMode, HirParagraph, HirParagraphId, HirParagraphKind, HirPerformKind, HirProgram,
+    HirStartRelation, HirStatement, HirTransferTarget, HirType, HirUnaryOp,
 };
 
 pub use self::compiler::compile_c_to_executable;
@@ -136,9 +136,7 @@ fn emit_using_param_bindings(out: &mut String, program: &HirProgram) {
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
-                out.push_str(&format!(
-                    "static CobolDecimal* _link_{c_name} = NULL;\n"
-                ));
+                out.push_str(&format!("static CobolDecimal* _link_{c_name} = NULL;\n"));
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::Numeric { .. }
@@ -146,33 +144,41 @@ fn emit_using_param_bindings(out: &mut String, program: &HirProgram) {
             | HirType::Binary { .. }
             | HirType::Index => {
                 out.push_str(&format!("static int64_t _link_{c_name}_value = 0;\n"));
-                out.push_str(&format!("static int64_t* _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!(
+                    "static int64_t* _link_{c_name} = &_link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::Pointer => {
                 out.push_str(&format!("static void* _link_{c_name}_value = NULL;\n"));
-                out.push_str(&format!("static void** _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!(
+                    "static void** _link_{c_name} = &_link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::Boolean => {
                 out.push_str(&format!("static int8_t _link_{c_name}_value = 0;\n"));
-                out.push_str(&format!("static int8_t* _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!(
+                    "static int8_t* _link_{c_name} = &_link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::FloatShort => {
                 out.push_str(&format!("static float _link_{c_name}_value = 0;\n"));
-                out.push_str(&format!("static float* _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!(
+                    "static float* _link_{c_name} = &_link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::FloatLong => {
                 out.push_str(&format!("static double _link_{c_name}_value = 0;\n"));
-                out.push_str(&format!("static double* _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!(
+                    "static double* _link_{c_name} = &_link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::FloatExtended => {
-                out.push_str(&format!(
-                    "static long double _link_{c_name}_value = 0;\n"
-                ));
+                out.push_str(&format!("static long double _link_{c_name}_value = 0;\n"));
                 out.push_str(&format!(
                     "static long double* _link_{c_name} = &_link_{c_name}_value;\n"
                 ));
@@ -192,35 +198,47 @@ fn emit_using_param_binding_setup(out: &mut String, program: &HirProgram, indent
                     out.push_str(&format!(
                         "{indent}_link_{c_name}_value = (int8_t)_arg{idx};\n"
                     ));
-                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name} = &_link_{c_name}_value;\n"
+                    ));
                 }
                 HirType::FloatShort => {
                     out.push_str(&format!(
                         "{indent}_link_{c_name}_value = (float)_arg{idx};\n"
                     ));
-                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name} = &_link_{c_name}_value;\n"
+                    ));
                 }
                 HirType::FloatLong => {
                     out.push_str(&format!(
                         "{indent}_link_{c_name}_value = (double)_arg{idx};\n"
                     ));
-                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name} = &_link_{c_name}_value;\n"
+                    ));
                 }
                 HirType::FloatExtended => {
                     out.push_str(&format!(
                         "{indent}_link_{c_name}_value = (long double)_arg{idx};\n"
                     ));
-                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name} = &_link_{c_name}_value;\n"
+                    ));
                 }
                 HirType::Pointer => {
                     out.push_str(&format!(
                         "{indent}_link_{c_name}_value = (void*)(uintptr_t)_arg{idx};\n"
                     ));
-                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name} = &_link_{c_name}_value;\n"
+                    ));
                 }
                 _ => {
                     out.push_str(&format!("{indent}_link_{c_name}_value = _arg{idx};\n"));
-                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name} = &_link_{c_name}_value;\n"
+                    ));
                 }
             },
             cobol_hir::HirParamMode::ByReference | cobol_hir::HirParamMode::ByContent => {
@@ -229,9 +247,7 @@ fn emit_using_param_binding_setup(out: &mut String, program: &HirProgram, indent
                         out.push_str(&format!("{indent}_link_{c_name} = (char*)_arg{idx};\n"));
                     }
                     HirType::National { .. } => {
-                        out.push_str(&format!(
-                            "{indent}_link_{c_name} = (uint16_t*)_arg{idx};\n"
-                        ));
+                        out.push_str(&format!("{indent}_link_{c_name} = (uint16_t*)_arg{idx};\n"));
                     }
                     HirType::Group { .. } => {
                         out.push_str(&format!(
@@ -247,9 +263,7 @@ fn emit_using_param_binding_setup(out: &mut String, program: &HirProgram, indent
                     | HirType::Comp3 { .. }
                     | HirType::Binary { .. }
                     | HirType::Index => {
-                        out.push_str(&format!(
-                            "{indent}_link_{c_name} = (int64_t*)_arg{idx};\n"
-                        ));
+                        out.push_str(&format!("{indent}_link_{c_name} = (int64_t*)_arg{idx};\n"));
                     }
                     HirType::Pointer => {
                         out.push_str(&format!("{indent}_link_{c_name} = (void**)_arg{idx};\n"));
@@ -261,9 +275,7 @@ fn emit_using_param_binding_setup(out: &mut String, program: &HirProgram, indent
                         out.push_str(&format!("{indent}_link_{c_name} = (float*)_arg{idx};\n"));
                     }
                     HirType::FloatLong => {
-                        out.push_str(&format!(
-                            "{indent}_link_{c_name} = (double*)_arg{idx};\n"
-                        ));
+                        out.push_str(&format!("{indent}_link_{c_name} = (double*)_arg{idx};\n"));
                     }
                     HirType::FloatExtended => {
                         out.push_str(&format!(
@@ -286,6 +298,44 @@ fn emit_using_param_binding_cleanup(out: &mut String, program: &HirProgram) {
         out.push_str(&format!("#undef {c_name}\n"));
     }
     out.push('\n');
+}
+
+fn emit_file_declarative_dispatch(
+    out: &mut String,
+    fn_name: &str,
+    declaratives: &[HirDeclarative],
+    inherited_global_declaratives: &[HirDeclarative],
+) {
+    if declaratives.is_empty() && inherited_global_declaratives.is_empty() {
+        return;
+    }
+
+    out.push_str(&format!(
+        "static void {fn_name}(const char* file_c_name, int fs) {{\n"
+    ));
+    out.push_str("    if (fs == 0) return;\n");
+    for decl in declaratives
+        .iter()
+        .chain(inherited_global_declaratives.iter())
+        .filter(|decl| decl.use_kind == HirDeclarativeUse::AfterException)
+    {
+        let c_decl = sanitize_name(&decl.name);
+        let is_mode_based = decl.file_names.iter().any(|f| {
+            let upper = f.to_uppercase();
+            matches!(upper.as_str(), "I-O" | "INPUT" | "OUTPUT" | "EXTEND")
+        });
+        if is_mode_based {
+            out.push_str(&format!("    decl_{c_decl}(); return;\n"));
+        } else {
+            for fname in &decl.file_names {
+                let c_file = sanitize_name(fname);
+                out.push_str(&format!(
+                    "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ decl_{c_decl}(); return; }}\n"
+                ));
+            }
+        }
+    }
+    out.push_str("}\n\n");
 }
 
 macro_rules! cg_timing {
@@ -405,36 +455,13 @@ pub fn generate_c(program: &HirProgram) -> String {
                 out.push_str(&format!("static void decl_{c_name}(void);\n"));
             }
             out.push('\n');
-
-            // Emit dispatcher function: called after each file I/O to invoke matching
-            // USE AFTER EXCEPTION handler if status is non-zero.
-            out.push_str(
-                "static void _check_file_declarative(const char* file_c_name, int fs) {\n",
-            );
-            out.push_str("    if (fs == 0) return;\n");
-            for decl in &program.declaratives {
-                let c_decl = sanitize_name(&decl.name);
-                // Check if any file_name is a mode keyword (I-O, INPUT, OUTPUT,
-                // EXTEND) rather than a specific file name.  Mode-based USE AFTER
-                // handlers apply to ALL files opened in that mode; as a
-                // simplification we treat them as unconditional catch-alls.
-                let is_mode_based = decl.file_names.iter().any(|f| {
-                    let upper = f.to_uppercase();
-                    matches!(upper.as_str(), "I-O" | "INPUT" | "OUTPUT" | "EXTEND")
-                });
-                if is_mode_based {
-                    out.push_str(&format!("    decl_{c_decl}(); return;\n"));
-                } else {
-                    for fname in &decl.file_names {
-                        let c_file = sanitize_name(fname);
-                        out.push_str(&format!(
-                        "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ decl_{c_decl}(); return; }}\n"
-                    ));
-                    }
-                }
-            }
-            out.push_str("}\n\n");
         }
+        emit_file_declarative_dispatch(
+            &mut out,
+            "_check_file_declarative",
+            &program.declaratives,
+            &[],
+        );
 
         emit_debug_declarative_support(&mut out, program);
 
@@ -476,7 +503,7 @@ pub fn generate_c(program: &HirProgram) -> String {
         let fs_map = build_file_status_map(&program.file_status_vars);
 
         // Collect labels from body and build label ID map for goto dispatch
-        let label_map = build_body_label_map(&program.body);
+        let label_map = build_entry_label_map(&program.paragraphs, &program.body);
         let has_labels = !label_map.is_empty();
         with_active_context(|ctx| ctx.set_body_label_map(label_map.clone()));
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
@@ -591,6 +618,14 @@ pub fn generate_c(program: &HirProgram) -> String {
                 with_active_context(|ctx| ctx.set_in_debug_declarative(false));
                 out.push_str("    _suppress_debug_event = _prev_suppress_debug_event;\n");
             }
+            // Declaratives can leave a pending transfer in `_goto_target`,
+            // but the actual dispatch loop lives in the owning procedure.
+            // Keep a local landing label so emitted `goto _goto_dispatch`
+            // statements compile and simply return control to the caller.
+            out.push_str("_goto_dispatch:\n");
+            out.push_str("    while (_goto_target) {\n");
+            out.push_str("      return;\n");
+            out.push_str("    }\n");
             out.push_str("}\n");
         }
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
@@ -643,7 +678,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                 emit_top_level_entry_flow(&mut out, &program.paragraphs, &label_map);
             }
             // Emit goto dispatch table for sub-program if labels exist
-            if has_labels {
+            if has_labels && !use_top_level_entry_flow {
                 out.push_str("_goto_dispatch:\n");
                 out.push_str("    while (_goto_target) {\n");
                 out.push_str("        int _t = _goto_target;\n");
@@ -663,9 +698,16 @@ pub fn generate_c(program: &HirProgram) -> String {
             emit_using_param_binding_cleanup(&mut out, program);
         }
 
+        let inherited_global_declaratives: Vec<_> = program
+            .declaratives
+            .iter()
+            .filter(|decl| decl.is_global && decl.use_kind == HirDeclarativeUse::AfterException)
+            .cloned()
+            .collect();
+
         // Emit nested programs as separate callable functions
         for nested in &program.nested_programs {
-            emit_nested_program(&mut out, nested);
+            emit_nested_program(&mut out, nested, &inherited_global_declaratives);
         }
 
         out
@@ -844,7 +886,11 @@ fn emit_debug_declarative_dispatch_call(out: &mut String, c_decl: &str, needs: D
 }
 
 /// Emit a nested (contained) program as a callable C function.
-fn emit_nested_program(out: &mut String, program: &HirProgram) {
+fn emit_nested_program(
+    out: &mut String,
+    program: &HirProgram,
+    inherited_global_declaratives: &[HirDeclarative],
+) {
     let prog_name = sanitize_name(&program.name);
     let ctx = with_active_context(|parent| CodegenContext::merged_with_program(parent, program));
     with_pushed_context(&ctx, || {
@@ -903,9 +949,25 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
             out.push('\n');
         }
 
+        if !program.declaratives.is_empty() {
+            for decl in &program.declaratives {
+                let c_name = sanitize_name(&decl.name);
+                out.push_str(&format!("static void decl_{c_name}(void);\n"));
+            }
+            out.push('\n');
+        }
+
+        emit_file_declarative_dispatch(
+            out,
+            ctx.file_declarative_dispatch_fn(),
+            &program.declaratives,
+            inherited_global_declaratives,
+        );
+
         let fs_map = build_file_status_map(&program.file_status_vars);
-        let label_map = build_body_label_map(&program.body);
-        let has_decl = !program.declaratives.is_empty();
+        let label_map = build_entry_label_map(&program.paragraphs, &program.body);
+        let has_decl =
+            !program.declaratives.is_empty() || !inherited_global_declaratives.is_empty();
         if !label_map.is_empty() {
             with_active_context(|ctx| ctx.set_body_label_map(label_map.clone()));
             with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
@@ -957,7 +1019,7 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
             emit_top_level_entry_flow(out, &program.paragraphs, &label_map);
         }
 
-        if !label_map.is_empty() {
+        if !label_map.is_empty() && !use_top_level_entry_flow {
             out.push_str("_goto_dispatch:\n");
             out.push_str("    while (_goto_target) {\n");
             out.push_str("        int _t = _goto_target;\n");
@@ -976,11 +1038,44 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
         out.push_str("}\n");
 
         emit_program_paragraph_definitions(out, program, &fs_map, has_decl);
+
+        for decl in &program.declaratives {
+            let c_name = sanitize_name(&decl.name);
+            with_active_context(|ctx| ctx.set_label_map(HashMap::new()));
+            out.push_str(&format!("\nstatic void decl_{c_name}(void) {{\n"));
+            for stmt in &decl.body {
+                let env = StmtEmitEnv {
+                    data_items: &program.data_items,
+                    paragraphs: &program.paragraphs,
+                    fs_map: &fs_map,
+                    has_declaratives: has_decl,
+                    ctx: &ctx,
+                    current_paragraph: None,
+                };
+                emit_statement_with_ctx(out, stmt, &env, 1);
+            }
+            out.push_str("_goto_dispatch:\n");
+            out.push_str("    while (_goto_target) {\n");
+            out.push_str("      return;\n");
+            out.push_str("    }\n");
+            out.push_str("}\n");
+        }
+        with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
+
         emit_using_param_binding_cleanup(out, program);
+
+        let mut next_inherited_global_declaratives = inherited_global_declaratives.to_vec();
+        next_inherited_global_declaratives.extend(
+            program
+                .declaratives
+                .iter()
+                .filter(|decl| decl.is_global && decl.use_kind == HirDeclarativeUse::AfterException)
+                .cloned(),
+        );
 
         // Recursively emit any further nested programs
         for nested in &program.nested_programs {
-            emit_nested_program(out, nested);
+            emit_nested_program(out, nested, &next_inherited_global_declaratives);
         }
         if !program.paragraphs.is_empty() {
             out.push('\n');
@@ -1274,9 +1369,11 @@ fn emit_inline_dispatch_loop(
         }
         if let Some(id) = label_map.get(&paragraph.id) {
             let c_name = sanitize_name(&paragraph.name);
-            let next_id = next_override_map
-                .and_then(|map| map.get(&paragraph.id).copied())
-                .or_else(|| next_label_map.get(&paragraph.id).copied());
+            let next_id = if let Some(map) = next_override_map {
+                map.get(&paragraph.id).copied()
+            } else {
+                next_label_map.get(&paragraph.id).copied()
+            };
             if let Some(next_id) = next_id {
                 out.push_str(&format!(
                     "        case {id}: para_{c_name}(); if (!_goto_target) {{ _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\"); _goto_target = {next_id}; }} break;\n",
@@ -1375,21 +1472,33 @@ fn build_next_label_map(
     next_map
 }
 
-/// Collect all Label statements from the body and assign each a unique integer ID.
-fn build_body_label_map(body: &[HirStatement]) -> HashMap<HirParagraphId, usize> {
+fn build_entry_label_map(
+    paragraphs: &[HirParagraph],
+    body: &[HirStatement],
+) -> HashMap<HirParagraphId, usize> {
     let mut map = HashMap::new();
-    let mut id = 1usize;
+    let mut next_id = 1usize;
+
+    for paragraph in paragraphs {
+        map.entry(paragraph.id).or_insert_with(|| {
+            let current = next_id;
+            next_id += 1;
+            current
+        });
+    }
+
     for stmt in body {
         if let HirStatement::Label { target } = stmt {
             if let Some(paragraph_id) = target.paragraph_id() {
                 map.entry(paragraph_id).or_insert_with(|| {
-                    let current = id;
-                    id += 1;
+                    let current = next_id;
+                    next_id += 1;
                     current
                 });
             }
         }
     }
+
     map
 }
 
@@ -1490,7 +1599,13 @@ fn emit_runtime_declarations(out: &mut String) {
 
 fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
-    let ctx = CodegenContext::new(&[], &empty_records, &[], &HashMap::new());
+    let ctx = CodegenContext::new(
+        &[],
+        &empty_records,
+        &[],
+        &HashMap::new(),
+        "_check_file_declarative".to_string(),
+    );
     for class in classes {
         let c_name = sanitize_name(&class.name);
         out.push_str(&format!("/* CLASS {} */\n", c_name));
@@ -1613,7 +1728,13 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
 
 fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
-    let ctx = CodegenContext::new(&[], &empty_records, &[], &HashMap::new());
+    let ctx = CodegenContext::new(
+        &[],
+        &empty_records,
+        &[],
+        &HashMap::new(),
+        "_check_file_declarative".to_string(),
+    );
     for func in functions {
         let c_name = sanitize_name(&func.name).to_lowercase();
         let ret_type = hir_type_to_c(&func.returning);

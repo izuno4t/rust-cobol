@@ -165,6 +165,7 @@ pub enum HirDeclarativeUse {
 pub struct HirDeclarative {
     pub name: SmolStr,
     pub use_kind: HirDeclarativeUse,
+    pub is_global: bool,
     /// File names this declarative applies to.
     pub file_names: Vec<SmolStr>,
     /// Debug items this declarative applies to.

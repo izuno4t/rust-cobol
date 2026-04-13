@@ -152,8 +152,7 @@ verifier_count_detail_paragraphs() {
     local count
     count="$(
         perl -ne '
-            next unless /^\s*\S.*\s+(?:PASS|FAIL\*|INSPT|\*{5})\s+[A-Z0-9-]+(?:\.[0-9]+)?\s+/;
-            if (/^\s*\S.*\s+(?:PASS|FAIL\*|INSPT|\*{5})\s+([A-Z0-9-]+(?:\.[0-9]+)?)\s+/) {
+            if (/^\s*(?:\S.*?\s+)?(?:PASS|FAIL\*|INSPT|\*{5})\s+([A-Z0-9-]+(?:\.[0-9]+)?)\b/) {
                 next if $1 eq "PARAGRAPH-NAME";
                 $seen{$1} = 1;
             }
@@ -232,8 +231,30 @@ verifier_standard_ccvs() {
         return 0
     fi
 
-    pass=$(grep -ca " PASS " "$result_file" 2>/dev/null) || pass=0
-    fail=$(grep -ca "FAIL\*" "$result_file" 2>/dev/null) || fail=0
+    pass="$(
+        perl -ne '
+            if (/^\s*(?:\S.*?\s+)?PASS\s+([A-Z0-9-]+(?:\.[0-9]+)?)\b/) {
+                next if $1 eq "PARAGRAPH-NAME";
+                $count++;
+            }
+            END {
+                print(($count || 0) . "\n");
+            }
+        ' "$result_file" 2>/dev/null | tail -n 1
+    )"
+    fail="$(
+        perl -ne '
+            if (/^\s*(?:\S.*?\s+)?FAIL\*\s+([A-Z0-9-]+(?:\.[0-9]+)?)\b/) {
+                next if $1 eq "PARAGRAPH-NAME";
+                $count++;
+            }
+            END {
+                print(($count || 0) . "\n");
+            }
+        ' "$result_file" 2>/dev/null | tail -n 1
+    )"
+    pass="${pass:-0}"
+    fail="${fail:-0}"
     ccvs_pass=$(verifier_count_summary "$result_file" 'TESTS WERE EXECUTED SUCCESSFULLY')
     ccvs_failed=$(verifier_count_summary "$result_file" 'TEST\(S\) FAILED')
     ccvs_inspect=$(verifier_count_summary "$result_file" 'TEST\(S\) REQUIRE INSPECTION')

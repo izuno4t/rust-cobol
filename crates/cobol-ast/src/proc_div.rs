@@ -58,7 +58,10 @@ pub struct DeclarativeSection {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UseStatement {
     /// USE AFTER EXCEPTION/ERROR ON file-names.
-    AfterException { file_names: Vec<SmolStr> },
+    AfterException {
+        file_names: Vec<SmolStr>,
+        is_global: bool,
+    },
     /// USE BEFORE REPORTING report-group.
     BeforeReporting { report_group: SmolStr },
     /// USE FOR DEBUGGING ON debug-items.

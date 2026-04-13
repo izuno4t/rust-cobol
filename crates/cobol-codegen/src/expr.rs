@@ -2681,8 +2681,9 @@ pub(crate) fn emit_file_status_update(
         ));
     }
     if has_declaratives {
+        let dispatch_fn = with_active_context(|ctx| ctx.file_declarative_dispatch_fn().to_string());
         out.push_str(&format!(
-            "{pad}_check_file_declarative(\"{file_c_name}\", {fs_val});\n"
+            "{pad}{dispatch_fn}(\"{file_c_name}\", {fs_val});\n"
         ));
     }
 }

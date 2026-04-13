@@ -177,7 +177,9 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         let t_parse = std::time::Instant::now();
         let mut parser = Parser::new(tokens, file_id);
-        let program = match parser.parse_compilation_unit().and_then(merge_compilation_unit_programs)
+        let program = match parser
+            .parse_compilation_unit()
+            .and_then(merge_compilation_unit_programs)
         {
             Ok(p) => {
                 // Render any non-fatal parser diagnostics (warnings, etc.)

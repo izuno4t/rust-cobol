@@ -1232,8 +1232,12 @@ PROCEDURE DIVISION.
         assert_eq!(proc.declaratives.len(), 1);
         assert_eq!(proc.declaratives[0].name.to_ascii_uppercase(), "INPUT-ERR");
         match &proc.declaratives[0].use_statement {
-            cobol_ast::proc_div::UseStatement::AfterException { file_names } => {
+            cobol_ast::proc_div::UseStatement::AfterException {
+                file_names,
+                is_global,
+            } => {
                 assert_eq!(file_names.len(), 1);
+                assert!(!is_global);
             }
             other => panic!("expected AfterException, got {:?}", other),
         }

@@ -101,15 +101,15 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     if let Some(data) = &program.data {
         let has_linage = data.file_section.iter().any(|fd| fd.linage.is_some());
         if has_linage {
-                data_items.push(HirDataItem {
-                    name: SmolStr::new("LINAGE-COUNTER"),
-                    data_type: HirType::Numeric {
-                        size: 6,
-                        decimal_places: 0,
-                        is_signed: false,
-                    },
-                    is_external: false,
-                    initial_value: None,
+            data_items.push(HirDataItem {
+                name: SmolStr::new("LINAGE-COUNTER"),
+                data_type: HirType::Numeric {
+                    size: 6,
+                    decimal_places: 0,
+                    is_signed: false,
+                },
+                is_external: false,
+                initial_value: None,
                 redefines: None,
                 renames: None,
                 occurs: None,
@@ -3119,10 +3119,14 @@ fn lower_declaratives(
                 .flat_map(|para| lower_paragraph(para, condition_names))
                 .collect();
             match &decl.use_statement {
-                UseStatement::AfterException { file_names } => {
+                UseStatement::AfterException {
+                    file_names,
+                    is_global,
+                } => {
                     decls.push(HirDeclarative {
                         name: decl.name.clone(),
                         use_kind: HirDeclarativeUse::AfterException,
+                        is_global: *is_global,
                         file_names: file_names.clone(),
                         debug_items: Vec::new(),
                         body,
@@ -3132,6 +3136,7 @@ fn lower_declaratives(
                     decls.push(HirDeclarative {
                         name: decl.name.clone(),
                         use_kind: HirDeclarativeUse::ForDebugging,
+                        is_global: false,
                         file_names: Vec::new(),
                         debug_items: debug_items.clone(),
                         body,
