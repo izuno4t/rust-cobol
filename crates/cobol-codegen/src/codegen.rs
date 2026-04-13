@@ -70,6 +70,224 @@ fn group_typedef_name(c_name: &str, members: &[HirDataItem]) -> String {
     format!("_grp_{c_name}_{fp:08x}_t")
 }
 
+fn using_param_signature(program: &HirProgram) -> String {
+    if program.using_params.is_empty() {
+        return "void".to_string();
+    }
+
+    program
+        .using_params
+        .iter()
+        .enumerate()
+        .map(|(idx, param)| match param.mode {
+            cobol_hir::HirParamMode::ByValue => format!("int64_t _arg{idx}"),
+            cobol_hir::HirParamMode::ByReference | cobol_hir::HirParamMode::ByContent => {
+                format!("void* _arg{idx}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn using_param_excluded_inits(program: &HirProgram) -> HashSet<String> {
+    let mut excluded: HashSet<String> = program
+        .using_params
+        .iter()
+        .map(|param| sanitize_name(&param.name))
+        .collect();
+    for item in &program.data_items {
+        if item.is_external {
+            excluded.insert(sanitize_name(&item.name));
+        }
+    }
+    excluded
+}
+
+fn emit_using_param_bindings(out: &mut String, program: &HirProgram) {
+    if program.using_params.is_empty() {
+        return;
+    }
+
+    out.push_str("/* PROCEDURE DIVISION USING bindings */\n");
+    for param in &program.using_params {
+        let c_name = sanitize_name(&param.name);
+        out.push_str(&format!("#undef {c_name}\n"));
+        match &param.data_type {
+            HirType::Alphanumeric { size } => {
+                out.push_str(&format!("static char* _link_{c_name} = NULL;\n"));
+                out.push_str(&format!(
+                    "#define {c_name} (*((char (*)[{len}])_link_{c_name}))\n",
+                    len = size + 1
+                ));
+            }
+            HirType::National { size } => {
+                out.push_str(&format!("static uint16_t* _link_{c_name} = NULL;\n"));
+                out.push_str(&format!(
+                    "#define {c_name} (*((uint16_t (*)[{size}])_link_{c_name}))\n"
+                ));
+            }
+            HirType::Group { members, .. } => {
+                let td = group_typedef_name(&c_name, members);
+                let binding_ty = format!("_link_{c_name}_t");
+                out.push_str(&format!(
+                    "typedef union {{ {td} members; uint8_t _bytes[sizeof({td})]; }} {binding_ty};\n"
+                ));
+                out.push_str(&format!("static {binding_ty}* _link_{c_name} = NULL;\n"));
+                out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
+            }
+            HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+                out.push_str(&format!(
+                    "static CobolDecimal* _link_{c_name} = NULL;\n"
+                ));
+                out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
+            }
+            HirType::Numeric { .. }
+            | HirType::Comp3 { .. }
+            | HirType::Binary { .. }
+            | HirType::Index => {
+                out.push_str(&format!("static int64_t _link_{c_name}_value = 0;\n"));
+                out.push_str(&format!("static int64_t* _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
+            }
+            HirType::Pointer => {
+                out.push_str(&format!("static void* _link_{c_name}_value = NULL;\n"));
+                out.push_str(&format!("static void** _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
+            }
+            HirType::Boolean => {
+                out.push_str(&format!("static int8_t _link_{c_name}_value = 0;\n"));
+                out.push_str(&format!("static int8_t* _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
+            }
+            HirType::FloatShort => {
+                out.push_str(&format!("static float _link_{c_name}_value = 0;\n"));
+                out.push_str(&format!("static float* _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
+            }
+            HirType::FloatLong => {
+                out.push_str(&format!("static double _link_{c_name}_value = 0;\n"));
+                out.push_str(&format!("static double* _link_{c_name} = &_link_{c_name}_value;\n"));
+                out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
+            }
+            HirType::FloatExtended => {
+                out.push_str(&format!(
+                    "static long double _link_{c_name}_value = 0;\n"
+                ));
+                out.push_str(&format!(
+                    "static long double* _link_{c_name} = &_link_{c_name}_value;\n"
+                ));
+                out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
+            }
+        }
+    }
+    out.push('\n');
+}
+
+fn emit_using_param_binding_setup(out: &mut String, program: &HirProgram, indent: &str) {
+    for (idx, param) in program.using_params.iter().enumerate() {
+        let c_name = sanitize_name(&param.name);
+        match param.mode {
+            cobol_hir::HirParamMode::ByValue => match &param.data_type {
+                HirType::Boolean => {
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name}_value = (int8_t)_arg{idx};\n"
+                    ));
+                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                }
+                HirType::FloatShort => {
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name}_value = (float)_arg{idx};\n"
+                    ));
+                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                }
+                HirType::FloatLong => {
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name}_value = (double)_arg{idx};\n"
+                    ));
+                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                }
+                HirType::FloatExtended => {
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name}_value = (long double)_arg{idx};\n"
+                    ));
+                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                }
+                HirType::Pointer => {
+                    out.push_str(&format!(
+                        "{indent}_link_{c_name}_value = (void*)(uintptr_t)_arg{idx};\n"
+                    ));
+                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                }
+                _ => {
+                    out.push_str(&format!("{indent}_link_{c_name}_value = _arg{idx};\n"));
+                    out.push_str(&format!("{indent}_link_{c_name} = &_link_{c_name}_value;\n"));
+                }
+            },
+            cobol_hir::HirParamMode::ByReference | cobol_hir::HirParamMode::ByContent => {
+                match &param.data_type {
+                    HirType::Alphanumeric { .. } => {
+                        out.push_str(&format!("{indent}_link_{c_name} = (char*)_arg{idx};\n"));
+                    }
+                    HirType::National { .. } => {
+                        out.push_str(&format!(
+                            "{indent}_link_{c_name} = (uint16_t*)_arg{idx};\n"
+                        ));
+                    }
+                    HirType::Group { .. } => {
+                        out.push_str(&format!(
+                            "{indent}_link_{c_name} = (_link_{c_name}_t*)_arg{idx};\n"
+                        ));
+                    }
+                    HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+                        out.push_str(&format!(
+                            "{indent}_link_{c_name} = (CobolDecimal*)_arg{idx};\n"
+                        ));
+                    }
+                    HirType::Numeric { .. }
+                    | HirType::Comp3 { .. }
+                    | HirType::Binary { .. }
+                    | HirType::Index => {
+                        out.push_str(&format!(
+                            "{indent}_link_{c_name} = (int64_t*)_arg{idx};\n"
+                        ));
+                    }
+                    HirType::Pointer => {
+                        out.push_str(&format!("{indent}_link_{c_name} = (void**)_arg{idx};\n"));
+                    }
+                    HirType::Boolean => {
+                        out.push_str(&format!("{indent}_link_{c_name} = (int8_t*)_arg{idx};\n"));
+                    }
+                    HirType::FloatShort => {
+                        out.push_str(&format!("{indent}_link_{c_name} = (float*)_arg{idx};\n"));
+                    }
+                    HirType::FloatLong => {
+                        out.push_str(&format!(
+                            "{indent}_link_{c_name} = (double*)_arg{idx};\n"
+                        ));
+                    }
+                    HirType::FloatExtended => {
+                        out.push_str(&format!(
+                            "{indent}_link_{c_name} = (long double*)_arg{idx};\n"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn emit_using_param_binding_cleanup(out: &mut String, program: &HirProgram) {
+    if program.using_params.is_empty() {
+        return;
+    }
+
+    for param in &program.using_params {
+        let c_name = sanitize_name(&param.name);
+        out.push_str(&format!("#undef {c_name}\n"));
+    }
+    out.push('\n');
+}
+
 macro_rules! cg_timing {
     ($label:expr, $start:expr) => {
         if std::env::var("COBOL_DEBUG_TIMING").as_deref() == Ok("1") {
@@ -80,6 +298,7 @@ macro_rules! cg_timing {
 
 /// Generates C source code from a HIR program.
 pub fn generate_c(program: &HirProgram) -> String {
+    reset_group_typedef_registry();
     let ctx = CodegenContext::from_program(program);
     with_pushed_context(&ctx, || {
         let mut out = String::new();
@@ -105,6 +324,7 @@ pub fn generate_c(program: &HirProgram) -> String {
         );
         emit_debug_special_registers(&mut out, program);
         emit_fd_alias_macros(&mut out, &program.data_items, &program.fd_record_aliases);
+        emit_using_param_bindings(&mut out, program);
         cg_timing!("emit_data_items", t_data);
 
         // COBOL 2002+: Emit class definitions (struct + vtable)
@@ -133,22 +353,27 @@ pub fn generate_c(program: &HirProgram) -> String {
             out.push('\n');
         }
 
-        // Forward-declare CALL targets with weak stub definitions.  When the
-        // real sub-program is linked, the real definition overrides the stub.
-        // Otherwise the stub (which does nothing) is used, preventing link
-        // errors for absent sub-programs.
+        // Forward-declare CALL targets as weak externs.  If the real
+        // sub-program is not linked, the symbol resolves to NULL so CALL ...
+        // ON EXCEPTION can observe the missing target.
         let call_targets = collect_call_targets(program);
         if !call_targets.is_empty() {
-            out.push_str("/* Weak stubs for CALL targets (overridden by real sub-programs) */\n");
+            out.push_str("/* Weak externs for CALL targets */\n");
             out.push_str(
                 "#pragma clang diagnostic push\n\
              #pragma clang diagnostic ignored \"-Wdeprecated-non-prototype\"\n",
             );
+            out.push_str("#if defined(__APPLE__)\n");
             for target in &call_targets {
                 out.push_str(&format!(
-                    "__attribute__((weak)) void {target}() {{ /* stub */ }}\n"
+                    "extern void {target}() __attribute__((weak_import));\n"
                 ));
             }
+            out.push_str("#else\n");
+            for target in &call_targets {
+                out.push_str(&format!("extern void {target}() __attribute__((weak));\n"));
+            }
+            out.push_str("#endif\n");
             out.push_str("#pragma clang diagnostic pop\n");
             out.push('\n');
         }
@@ -158,16 +383,7 @@ pub fn generate_c(program: &HirProgram) -> String {
             out.push_str("/* Forward declarations for nested programs */\n");
             for nested in &program.nested_programs {
                 let nested_name = sanitize_name(&nested.name);
-                let param_sig = if nested.using_params.is_empty() {
-                    "void".to_string()
-                } else {
-                    nested
-                        .using_params
-                        .iter()
-                        .map(|_| "void*".to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
+                let param_sig = using_param_signature(nested);
                 out.push_str(&format!("void {nested_name}({param_sig});\n"));
             }
             out.push('\n');
@@ -265,10 +481,8 @@ pub fn generate_c(program: &HirProgram) -> String {
         with_active_context(|ctx| ctx.set_body_label_map(label_map.clone()));
         with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
 
-        // Emit goto dispatch variable if needed
-        if has_labels {
-            out.push_str("static int _goto_target = 0;\n\n");
-        }
+        // Shared goto-dispatch state used by main and nested program entry flows.
+        out.push_str("static int _goto_target = 0;\n\n");
         emit_alterable_paragraph_state(&mut out, &ctx);
 
         // Main function
@@ -385,9 +599,13 @@ pub fn generate_c(program: &HirProgram) -> String {
         // This allows other programs to CALL this program by name.
         if !program.using_params.is_empty() {
             let prog_name = sanitize_name(&program.name);
-            out.push_str(&format!("\nvoid {prog_name}(void) {{\n"));
+            let param_sig = using_param_signature(program);
+            out.push_str(&format!("\nvoid {prog_name}({param_sig}) {{\n"));
             out.push_str("    /* Sub-program entry point */\n");
-            if has_labels {
+            emit_using_param_binding_setup(&mut out, program, "    ");
+            let excluded_inits = using_param_excluded_inits(program);
+            emit_data_init_excluding(&mut out, &program.data_items, &excluded_inits);
+            if has_labels && !use_top_level_entry_flow {
                 with_active_context(|ctx| ctx.set_label_map(label_map.clone()));
             }
             let use_top_level_entry_flow = !program.paragraphs.is_empty();
@@ -425,7 +643,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                 emit_top_level_entry_flow(&mut out, &program.paragraphs, &label_map);
             }
             // Emit goto dispatch table for sub-program if labels exist
-            if has_labels && !use_top_level_entry_flow {
+            if has_labels {
                 out.push_str("_goto_dispatch:\n");
                 out.push_str("    while (_goto_target) {\n");
                 out.push_str("        int _t = _goto_target;\n");
@@ -442,6 +660,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                 out.push_str("    }\n");
             }
             out.push_str("}\n");
+            emit_using_param_binding_cleanup(&mut out, program);
         }
 
         // Emit nested programs as separate callable functions
@@ -662,10 +881,12 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
             &program.fd_record_aliases,
         );
         emit_fd_alias_macros(out, &program.data_items, &program.fd_record_aliases);
+        emit_using_param_bindings(out, program);
 
         for nested in &program.nested_programs {
             let nested_name = sanitize_name(&nested.name);
-            out.push_str(&format!("void {nested_name}(void);\n"));
+            let param_sig = using_param_signature(nested);
+            out.push_str(&format!("void {nested_name}({param_sig});\n"));
         }
         if !program.nested_programs.is_empty() {
             out.push('\n');
@@ -692,53 +913,70 @@ fn emit_nested_program(out: &mut String, program: &HirProgram) {
         emit_alterable_paragraph_state(out, &ctx);
 
         // Generate the param signature based on USING params
-        let param_sig = if program.using_params.is_empty() {
-            "void".to_string()
-        } else {
-            program
-                .using_params
-                .iter()
-                .map(|_| "void*".to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let param_sig = using_param_signature(program);
         out.push_str(&format!("\nvoid {prog_name}({param_sig}) {{\n"));
         out.push_str("    /* Nested program entry point */\n");
+        emit_using_param_binding_setup(out, program, "    ");
 
         // Initialize data items
-        emit_data_init(out, &program.data_items);
+        let excluded_inits = using_param_excluded_inits(program);
+        emit_data_init_excluding(out, &program.data_items, &excluded_inits);
 
-        with_active_context(|ctx| ctx.set_in_body_context(true));
-        for stmt in &program.body {
-            let env = StmtEmitEnv {
-                data_items: &program.data_items,
-                paragraphs: &program.paragraphs,
-                fs_map: &fs_map,
-                has_declaratives: has_decl,
-                ctx: &ctx,
-                current_paragraph: None,
-            };
-            emit_statement_with_ctx(out, stmt, &env, 1);
+        let use_top_level_entry_flow = !program.paragraphs.is_empty();
+        let body_prefix = top_level_body_prefix(&program.body);
+        if !body_prefix.is_empty() {
+            with_active_context(|ctx| ctx.set_in_body_context(!use_top_level_entry_flow));
+            for stmt in body_prefix {
+                let env = StmtEmitEnv {
+                    data_items: &program.data_items,
+                    paragraphs: &program.paragraphs,
+                    fs_map: &fs_map,
+                    has_declaratives: has_decl,
+                    ctx: &ctx,
+                    current_paragraph: None,
+                };
+                emit_statement_with_ctx(out, stmt, &env, 1);
+            }
+            with_active_context(|ctx| ctx.set_in_body_context(false));
         }
-        with_active_context(|ctx| ctx.set_in_body_context(false));
+        if !use_top_level_entry_flow {
+            with_active_context(|ctx| ctx.set_in_body_context(true));
+            for stmt in &program.body[body_prefix.len()..] {
+                let env = StmtEmitEnv {
+                    data_items: &program.data_items,
+                    paragraphs: &program.paragraphs,
+                    fs_map: &fs_map,
+                    has_declaratives: has_decl,
+                    ctx: &ctx,
+                    current_paragraph: None,
+                };
+                emit_statement_with_ctx(out, stmt, &env, 1);
+            }
+            with_active_context(|ctx| ctx.set_in_body_context(false));
+        } else {
+            emit_top_level_entry_flow(out, &program.paragraphs, &label_map);
+        }
 
         if !label_map.is_empty() {
             out.push_str("_goto_dispatch:\n");
-            out.push_str("    { int _t = _goto_target; _goto_target = 0;\n");
-            out.push_str("      switch(_t) {\n");
+            out.push_str("    while (_goto_target) {\n");
+            out.push_str("        int _t = _goto_target;\n");
+            out.push_str("        _goto_target = 0;\n");
+            out.push_str("        switch(_t) {\n");
             for paragraph in &program.paragraphs {
                 if let Some(id) = label_map.get(&paragraph.id) {
                     let c_name = sanitize_name(&paragraph.name);
-                    out.push_str(&format!("        case {id}: goto lbl_{c_name};\n"));
+                    out.push_str(&format!("        case {id}: para_{c_name}(); break;\n"));
                 }
             }
             out.push_str("        default: return;\n");
-            out.push_str("      }\n");
+            out.push_str("        }\n");
             out.push_str("    }\n");
         }
         out.push_str("}\n");
 
         emit_program_paragraph_definitions(out, program, &fs_map, has_decl);
+        emit_using_param_binding_cleanup(out, program);
 
         // Recursively emit any further nested programs
         for nested in &program.nested_programs {
@@ -963,6 +1201,9 @@ fn collect_top_level_data_item_c_names(program: &HirProgram) -> Vec<String> {
         .collect();
     let mut names = BTreeSet::new();
     for item in &program.data_items {
+        if item.is_external {
+            continue;
+        }
         let c_name = sanitize_name(&item.name);
         if group_member_names.contains(&c_name) {
             continue;

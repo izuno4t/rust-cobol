@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+cobol-ast.workspace = true
 cobol-common.workspace = true
 cobol-diagnostics.workspace = true
 cobol-preprocessor.workspace = true
@@ -16,6 +17,7 @@ cobol-runtime.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
+cobol-ast.workspace = true
 cobol-common.workspace = true
 cobol-lexer.workspace = true
 cobol-parser.workspace = true

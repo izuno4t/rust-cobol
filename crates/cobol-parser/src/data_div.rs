@@ -426,6 +426,7 @@ impl Parser {
         let data_records = Vec::new();
         let mut recording_mode = None;
         let mut linage = None;
+        let mut is_external = false;
 
         while !self.check(TokenKind::Period) && !self.at_eof() {
             if self.check(TokenKind::Block) {
@@ -557,6 +558,9 @@ impl Parser {
                     top: top_val,
                     bottom: bottom_val,
                 });
+            } else if self.check(TokenKind::External) {
+                self.advance();
+                is_external = true;
             } else if self.check(TokenKind::Data) {
                 // DATA RECORD IS / DATA RECORDS ARE — obsolete clause, skip
                 self.advance();
@@ -601,6 +605,7 @@ impl Parser {
         Ok(FileDescription {
             fd_or_sd,
             file_name,
+            is_external,
             block_contains,
             record_contains,
             record_varying,

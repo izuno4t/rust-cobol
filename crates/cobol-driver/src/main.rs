@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::Parser as ClapParser;
+use cobol_ast::CobolProgram;
 use cobol_codegen::{compile_c_to_executable, generate_c};
 use cobol_common::{FileId, SourceFormat};
 use cobol_diagnostics::{render_diagnostics_to_stderr, WarningLevel};
@@ -71,6 +72,14 @@ fn main() {
     if let Err(code) = run() {
         std::process::exit(code);
     }
+}
+
+fn merge_compilation_unit_programs(mut programs: Vec<CobolProgram>) -> Result<CobolProgram, ()> {
+    let Some(mut root) = programs.drain(..1).next() else {
+        return Err(());
+    };
+    root.nested_programs.extend(programs);
+    Ok(root)
 }
 
 fn run() -> Result<(), i32> {
@@ -168,7 +177,8 @@ fn run() -> Result<(), i32> {
         // ---------------------------------------------------------------
         let t_parse = std::time::Instant::now();
         let mut parser = Parser::new(tokens, file_id);
-        let program = match parser.parse_program() {
+        let program = match parser.parse_compilation_unit().and_then(merge_compilation_unit_programs)
+        {
             Ok(p) => {
                 // Render any non-fatal parser diagnostics (warnings, etc.)
                 let parser_diags = parser.diagnostics();

@@ -45,6 +45,8 @@ pub(crate) struct CodegenContext {
     subscript_paths: HashMap<String, SubscriptPathInfo>,
     file_record_map: FileRecordMap,
     communication_map: HashMap<String, CommunicationBinding>,
+    nested_program_names: HashSet<String>,
+    is_subprogram: bool,
     decimal_names: HashSet<String>,
     group_names: HashSet<String>,
     alpha_names: HashSet<String>,
@@ -77,6 +79,12 @@ impl CodegenContext {
             &program.communication_descriptions,
             &program.fd_record_aliases,
         );
+        ctx.nested_program_names.extend(
+            program
+                .nested_programs
+                .iter()
+                .map(|nested| sanitize_name(&nested.name)),
+        );
         ctx.alterable_paragraphs = collect_alterable_paragraphs(program);
         ctx
     }
@@ -95,6 +103,14 @@ impl CodegenContext {
 
         let mut communication_map = parent.communication_map.clone();
         communication_map.extend(build_communication_map(&program.communication_descriptions));
+
+        let mut nested_program_names = parent.nested_program_names.clone();
+        nested_program_names.extend(
+            program
+                .nested_programs
+                .iter()
+                .map(|nested| sanitize_name(&nested.name)),
+        );
 
         let mut decimal_names = parent.decimal_names.clone();
         decimal_names.extend(build_decimal_names(&program.data_items));
@@ -127,6 +143,8 @@ impl CodegenContext {
             subscript_paths,
             file_record_map,
             communication_map,
+            nested_program_names,
+            is_subprogram: true,
             decimal_names,
             group_names,
             alpha_names,
@@ -158,6 +176,8 @@ impl CodegenContext {
                 .map(|(f, r)| (sanitize_name(f), sanitize_name(r)))
                 .collect(),
             communication_map: build_communication_map(communication_descriptions),
+            nested_program_names: HashSet::new(),
+            is_subprogram: false,
             decimal_names: build_decimal_names(data_items),
             group_names: build_group_names(data_items),
             alpha_names: build_alpha_names(data_items),
@@ -233,6 +253,14 @@ impl CodegenContext {
             .get(sanitized_file_name)
             .cloned()
             .unwrap_or_else(|| sanitized_file_name.to_string())
+    }
+
+    pub(crate) fn is_nested_program_name(&self, sanitized_name: &str) -> bool {
+        self.nested_program_names.contains(sanitized_name)
+    }
+
+    pub(crate) fn is_subprogram(&self) -> bool {
+        self.is_subprogram
     }
 
     pub(crate) fn communication_binding(

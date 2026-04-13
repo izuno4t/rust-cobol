@@ -263,6 +263,7 @@ name = "cobol-driver"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "cobol-ast",
  "cobol-codegen",
  "cobol-common",
  "cobol-diagnostics",

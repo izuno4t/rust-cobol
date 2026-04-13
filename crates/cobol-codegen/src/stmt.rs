@@ -1053,25 +1053,39 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!("{inner_pad}}}\n"));
                 }
             } else if params.is_empty() {
-                if has_exception_handlers {
-                    // Use file-scope weak declaration for null check
-                    out.push_str(&format!("{inner_pad}if ({prog_name}) {{\n"));
-                    out.push_str(&format!(
-                        "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }}\n"
-                    ));
-                    out.push_str(&format!("{inner_pad}}} else {{ _call_failed = 1; }}\n"));
+                let is_nested_call = with_active_context(|ctx| ctx.is_nested_program_name(&prog_name));
+                out.push_str(&format!("{inner_pad}{{\n"));
+                if is_nested_call {
+                    if has_exception_handlers {
+                        out.push_str(&format!(
+                            "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }} else {{ _call_failed = 1; }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }}\n"
+                        ));
+                    }
                 } else {
-                    // Call via file-scope weak declaration — null-check
-                    // to gracefully handle missing sub-programs.
                     out.push_str(&format!(
-                        "{inner_pad}if ({prog_name}) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }} }}\n"
+                        "{inner_pad}    void (*_fp)(void) = (void(*)(void))dlsym(RTLD_DEFAULT, \"{prog_name}\");\n"
                     ));
+                    if has_exception_handlers {
+                        out.push_str(&format!(
+                            "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp(); cobol_call_leave(); }} }} else {{ _call_failed = 1; }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp(); cobol_call_leave(); }} }}\n"
+                        ));
+                    }
                 }
+                out.push_str(&format!("{inner_pad}}}\n"));
             } else {
                 // Wrap in a block to scope _content_copy_* variables
                 // and avoid redefinition when multiple CALLs in same scope.
                 out.push_str(&format!("{inner_pad}{{\n"));
                 let call_pad = format!("{inner_pad}    ");
+                let is_nested_call = with_active_context(|ctx| ctx.is_nested_program_name(&prog_name));
                 // Build param types and values based on passing mode
                 let mut param_types = Vec::new();
                 let mut param_values = Vec::new();
@@ -1101,21 +1115,31 @@ pub(crate) fn emit_statement_with_ctx(
                 for copy in &content_copies {
                     out.push_str(copy);
                 }
-                let _types_str = param_types.join(", ");
+                let types_str = param_types.join(", ");
                 let values_str = param_values.join(", ");
-                if has_exception_handlers {
-                    // Use file-scope weak declaration for null check
-                    out.push_str(&format!("{call_pad}if ({prog_name}) {{\n"));
-                    out.push_str(&format!(
-                        "{call_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
-                    ));
-                    out.push_str(&format!("{call_pad}}} else {{ _call_failed = 1; }}\n"));
+                if is_nested_call {
+                    if has_exception_handlers {
+                        out.push_str(&format!(
+                            "{call_pad}jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }} else {{ _call_failed = 1; }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{call_pad}jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
+                        ));
+                    }
                 } else {
-                    // Call via file-scope weak declaration — null-check
-                    // to gracefully handle missing sub-programs.
                     out.push_str(&format!(
-                        "{call_pad}if ({prog_name}) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }} }}\n"
+                        "{call_pad}void (*_fp)({types_str}) = (void(*)({types_str}))dlsym(RTLD_DEFAULT, \"{prog_name}\");\n"
                     ));
+                    if has_exception_handlers {
+                        out.push_str(&format!(
+                            "{call_pad}if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp({values_str}); cobol_call_leave(); }} }} else {{ _call_failed = 1; }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{call_pad}if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp({values_str}); cobol_call_leave(); }} }}\n"
+                        ));
+                    }
                 }
                 out.push_str(&format!("{inner_pad}}}\n"));
             }
@@ -2511,7 +2535,11 @@ pub(crate) fn emit_statement_with_ctx(
             out.push_str(&format!("{pad}cobol_goback();\n"));
         }
         HirStatement::ExitProgram { .. } => {
-            out.push_str(&format!("{pad}exit(0); /* EXIT PROGRAM */\n"));
+            if ctx.is_subprogram() {
+                out.push_str(&format!("{pad}return; /* EXIT PROGRAM */\n"));
+            } else {
+                out.push_str(&format!("{pad}cobol_stop_run(); /* EXIT PROGRAM */\n"));
+            }
         }
         HirStatement::ExitParagraph { .. } => {
             out.push_str(&format!("{pad}return; /* EXIT PARAGRAPH */\n"));

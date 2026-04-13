@@ -530,6 +530,7 @@ PROCEDURE DIVISION.
                         decimal_places: 0,
                         is_signed: false,
                     },
+                    is_external: false,
                     initial_value: None,
                     occurs: None,
                     indexed_by: Vec::new(),
@@ -766,6 +767,7 @@ PROCEDURE DIVISION.
             data_items: vec![HirDataItem {
                 name: "WS-NAME".into(),
                 data_type: HirType::Alphanumeric { size: 20 },
+                is_external: false,
                 initial_value: None,
                 occurs: None,
                 indexed_by: Vec::new(),

@@ -3,6 +3,7 @@
 // Tests the full flow: Source -> Lex -> Parse -> Sema -> HIR -> Codegen
 
 use cobol_codegen::generate_c;
+use cobol_ast::CobolProgram;
 use cobol_common::{FileId, SourceFormat, Span};
 use cobol_hir::lower_to_hir;
 use cobol_hir::{HirDeclarative, HirDeclarativeUse, HirStatement, HirType};
@@ -11,11 +12,24 @@ use cobol_parser::Parser;
 use cobol_sema::SemanticAnalyzer;
 
 /// Helper: run the full pipeline up to HIR and return the HIR program.
+fn merge_compilation_unit_programs(mut programs: Vec<CobolProgram>) -> CobolProgram {
+    let mut root = programs
+        .drain(..1)
+        .next()
+        .expect("parsing should return at least one program");
+    root.nested_programs.extend(programs);
+    root
+}
+
 fn compile_to_hir(source: &str) -> cobol_hir::HirProgram {
     let mut lexer = Lexer::new(source, FileId(0), SourceFormat::Free);
     let tokens = lexer.lex_all();
     let mut parser = Parser::new(tokens, FileId(0));
-    let program = parser.parse_program().expect("parsing should succeed");
+    let program = merge_compilation_unit_programs(
+        parser
+            .parse_compilation_unit()
+            .expect("parsing should succeed"),
+    );
 
     let mut analyzer = SemanticAnalyzer::new();
     let result = analyzer.analyze(&program);
@@ -33,7 +47,11 @@ fn parse_and_lower(source: &str) -> cobol_hir::HirProgram {
     let mut lexer = Lexer::new(source, FileId(0), SourceFormat::Free);
     let tokens = lexer.lex_all();
     let mut parser = Parser::new(tokens, FileId(0));
-    let program = parser.parse_program().expect("parsing should succeed");
+    let program = merge_compilation_unit_programs(
+        parser
+            .parse_compilation_unit()
+            .expect("parsing should succeed"),
+    );
     lower_to_hir(&program)
 }
 
@@ -2077,6 +2095,17 @@ PROCEDURE DIVISION.
         "ON EXCEPTION should use _call_failed flag, got:\n{}",
         c_code
     );
+    assert!(
+        c_code.contains("extern void SUBPROG() __attribute__((weak_import));")
+            || c_code.contains("extern void SUBPROG() __attribute__((weak));"),
+        "missing subprogram should be emitted as platform weak extern, got:\n{}",
+        c_code
+    );
+    assert!(
+        !c_code.contains("void SUBPROG() { /* stub */ }"),
+        "missing subprogram should not be emitted as executable stub, got:\n{}",
+        c_code
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -2487,6 +2516,7 @@ fn test_c2_move_corresponding() {
                                 decimal_places: 0,
                                 is_signed: false,
                             },
+                            is_external: false,
                             initial_value: None,
                             occurs: None,
                             indexed_by: Vec::new(),
@@ -2499,6 +2529,7 @@ fn test_c2_move_corresponding() {
                         HirDataItem {
                             name: "FIELD-B".into(),
                             data_type: HirType::Alphanumeric { size: 10 },
+                            is_external: false,
                             initial_value: None,
                             occurs: None,
                             indexed_by: Vec::new(),
@@ -2511,6 +2542,7 @@ fn test_c2_move_corresponding() {
                     ],
                     size: 15,
                 },
+                is_external: false,
                 initial_value: None,
                 occurs: None,
                 indexed_by: Vec::new(),
@@ -2531,6 +2563,7 @@ fn test_c2_move_corresponding() {
                                 decimal_places: 0,
                                 is_signed: false,
                             },
+                            is_external: false,
                             initial_value: None,
                             occurs: None,
                             indexed_by: Vec::new(),
@@ -2543,6 +2576,7 @@ fn test_c2_move_corresponding() {
                         HirDataItem {
                             name: "FIELD-C".into(),
                             data_type: HirType::Alphanumeric { size: 10 },
+                            is_external: false,
                             initial_value: None,
                             occurs: None,
                             indexed_by: Vec::new(),
@@ -2555,6 +2589,7 @@ fn test_c2_move_corresponding() {
                     ],
                     size: 15,
                 },
+                is_external: false,
                 initial_value: None,
                 occurs: None,
                 indexed_by: Vec::new(),
@@ -2631,6 +2666,7 @@ fn test_c2_add_corresponding() {
                             decimal_places: 2,
                             is_signed: false,
                         },
+                        is_external: false,
                         initial_value: None,
                         occurs: None,
                         indexed_by: Vec::new(),
@@ -2642,6 +2678,7 @@ fn test_c2_add_corresponding() {
                     }],
                     size: 9,
                 },
+                is_external: false,
                 initial_value: None,
                 occurs: None,
                 indexed_by: Vec::new(),
@@ -2661,6 +2698,7 @@ fn test_c2_add_corresponding() {
                             decimal_places: 2,
                             is_signed: false,
                         },
+                        is_external: false,
                         initial_value: None,
                         occurs: None,
                         indexed_by: Vec::new(),
@@ -2672,6 +2710,7 @@ fn test_c2_add_corresponding() {
                     }],
                     size: 9,
                 },
+                is_external: false,
                 initial_value: None,
                 occurs: None,
                 indexed_by: Vec::new(),
@@ -5292,6 +5331,122 @@ PROCEDURE DIVISION.
     assert!(
         !stdout.contains("SHOULD-NOT-SHOW"),
         "EXIT PROGRAM should stop execution, got: {}",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_native_exit_program_in_subprogram_returns_to_caller() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MAINPROG.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NUM PIC 9(2) VALUE 0.
+PROCEDURE DIVISION.
+    CALL 'SUBPROG' USING WS-NUM.
+    DISPLAY WS-NUM.
+    STOP RUN.
+END PROGRAM MAINPROG.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SUBPROG.
+DATA DIVISION.
+LINKAGE SECTION.
+01 LK-NUM PIC 9(2).
+PROCEDURE DIVISION USING LK-NUM.
+    MOVE 7 TO LK-NUM.
+    EXIT PROGRAM.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains('7'),
+        "EXIT PROGRAM in subprogram should return to caller, got: {}",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_call_on_overflow_routes_to_exception_path_for_missing_program() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MAINPROG.
+PROCEDURE DIVISION.
+    CALL 'XXXXXXXX'
+        ON OVERFLOW
+            DISPLAY 'OVERFLOW'
+    END-CALL.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("OVERFLOW"),
+        "CALL ON OVERFLOW should execute the exception path, got: {}",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_exit_program_in_nested_subprogram_without_using_returns_to_caller() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MAINPROG.
+PROCEDURE DIVISION.
+    CALL 'SUBPROG'.
+    DISPLAY 'AFTER-CALL'.
+    STOP RUN.
+END PROGRAM MAINPROG.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SUBPROG.
+PROCEDURE DIVISION.
+    DISPLAY 'INSIDE-SUB'.
+    EXIT PROGRAM.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("INSIDE-SUB") && stdout.contains("AFTER-CALL"),
+        "EXIT PROGRAM in a nested subprogram should return to caller, got: {}",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_external_working_storage_is_shared_across_nested_program_without_using() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MAINPROG.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 EXTERNAL-DATA IS EXTERNAL.
+   03 EXT-A PIC X(2).
+   03 EXT-B PIC 9(4).
+PROCEDURE DIVISION.
+    MOVE 'AA' TO EXT-A.
+    MOVE 1 TO EXT-B.
+    CALL 'SUBPROG'.
+    DISPLAY EXT-A.
+    DISPLAY EXT-B.
+    STOP RUN.
+END PROGRAM MAINPROG.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SUBPROG.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 EXTERNAL-DATA IS EXTERNAL.
+   03 EXT-A PIC X(2).
+   03 EXT-B PIC 9(4).
+PROCEDURE DIVISION.
+    MOVE 'ZZ' TO EXT-A.
+    ADD 10 TO EXT-B.
+    EXIT PROGRAM.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("ZZ") && stdout.contains("11"),
+        "EXTERNAL working-storage should be shared across nested programs, got: {}",
         stdout.trim()
     );
 }

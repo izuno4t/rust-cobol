@@ -1,4 +1,15 @@
 use super::*;
+use std::cell::RefCell;
+
+thread_local! {
+    static GLOBAL_EMITTED_GROUP_TYPEDEFS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static GLOBAL_EMITTED_EXTERNAL_ITEMS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+pub(crate) fn reset_group_typedef_registry() {
+    GLOBAL_EMITTED_GROUP_TYPEDEFS.with(|registry| registry.borrow_mut().clear());
+    GLOBAL_EMITTED_EXTERNAL_ITEMS.with(|registry| registry.borrow_mut().clear());
+}
 
 pub(crate) fn emit_fd_alias_macros(
     out: &mut String,
@@ -231,6 +242,13 @@ pub(crate) fn emit_single_data_item(
     fd_max_size: Option<u32>,
 ) {
     let c_name = sanitize_name(&item.name);
+    if item.is_external {
+        let should_emit = GLOBAL_EMITTED_EXTERNAL_ITEMS
+            .with(|registry| registry.borrow_mut().insert(c_name.clone()));
+        if !should_emit {
+            return;
+        }
+    }
 
     // RENAMES (level 66): emit a #define alias, no variable declaration
     if let Some((ref from, ref _thru)) = item.renames {
@@ -431,6 +449,11 @@ pub(crate) fn emit_group_typedefs(
     // Skip if this exact typedef (name + member layout) has already been emitted
     let typedef_name = group_typedef_name(c_name, members);
     if !emitted_typedefs.insert(typedef_name.clone()) {
+        return;
+    }
+    let should_emit = GLOBAL_EMITTED_GROUP_TYPEDEFS
+        .with(|registry| registry.borrow_mut().insert(typedef_name.clone()));
+    if !should_emit {
         return;
     }
     // Emit this level's struct typedef
@@ -770,12 +793,23 @@ pub(crate) fn c_type_for_hir_type(ty: &HirType) -> &'static str {
 }
 
 pub(crate) fn emit_data_init(out: &mut String, items: &[HirDataItem]) {
+    emit_data_init_excluding(out, items, &HashSet::new());
+}
+
+pub(crate) fn emit_data_init_excluding(
+    out: &mut String,
+    items: &[HirDataItem],
+    excluded_items: &HashSet<String>,
+) {
     // Skip top-level items that are already members of a group
     // (they are initialized through the group's recursive init)
     let group_member_names = collect_group_member_names(items);
     for item in items {
         let c_name = sanitize_name(&item.name);
         if group_member_names.contains(&c_name) {
+            continue;
+        }
+        if excluded_items.contains(&c_name) {
             continue;
         }
         // Skip REDEFINES items — they share memory with the redefined item

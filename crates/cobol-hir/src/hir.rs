@@ -318,6 +318,7 @@ pub struct HirScreenInfo {
 pub struct HirDataItem {
     pub name: SmolStr,
     pub data_type: HirType,
+    pub is_external: bool,
     pub initial_value: Option<HirLiteral>,
     /// OCCURS clause: number of repetitions (None = scalar).
     pub occurs: Option<u32>,

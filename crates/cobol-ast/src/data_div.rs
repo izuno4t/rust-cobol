@@ -70,6 +70,8 @@ pub struct FileDescription {
     pub fd_or_sd: FdType,
     /// The file name matching a SELECT in FILE-CONTROL.
     pub file_name: SmolStr,
+    /// EXTERNAL attribute on the FD/SD entry.
+    pub is_external: bool,
     /// BLOCK CONTAINS clause.
     pub block_contains: Option<BlockContains>,
     /// RECORD CONTAINS clause.

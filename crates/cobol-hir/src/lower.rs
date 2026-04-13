@@ -101,14 +101,15 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     if let Some(data) = &program.data {
         let has_linage = data.file_section.iter().any(|fd| fd.linage.is_some());
         if has_linage {
-            data_items.push(HirDataItem {
-                name: SmolStr::new("LINAGE-COUNTER"),
-                data_type: HirType::Numeric {
-                    size: 6,
-                    decimal_places: 0,
-                    is_signed: false,
-                },
-                initial_value: None,
+                data_items.push(HirDataItem {
+                    name: SmolStr::new("LINAGE-COUNTER"),
+                    data_type: HirType::Numeric {
+                        size: 6,
+                        decimal_places: 0,
+                        is_signed: false,
+                    },
+                    is_external: false,
+                    initial_value: None,
                 redefines: None,
                 renames: None,
                 occurs: None,
@@ -133,6 +134,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                             decimal_places: 0,
                             is_signed: false,
                         },
+                        is_external: false,
                         initial_value: Some(HirLiteral::Integer(0)),
                         redefines: None,
                         renames: None,
@@ -151,6 +153,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                             decimal_places: 0,
                             is_signed: false,
                         },
+                        is_external: false,
                         initial_value: Some(HirLiteral::Integer(0)),
                         redefines: None,
                         renames: None,
@@ -182,6 +185,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                 data_items.push(HirDataItem {
                     name: SmolStr::new(name),
                     data_type: HirType::Alphanumeric { size: 80 },
+                    is_external: false,
                     initial_value: None,
                     redefines: None,
                     renames: None,
@@ -255,11 +259,13 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                     HirParam {
                         name: p.name.clone(),
                         mode,
-                        data_type: HirType::Numeric {
-                            size: 18,
-                            decimal_places: 0,
-                            is_signed: true,
-                        },
+                        data_type: find_data_item_type_by_name(&data_items, &p.name).unwrap_or(
+                            HirType::Numeric {
+                                size: 18,
+                                decimal_places: 0,
+                                is_signed: true,
+                            },
+                        ),
                     }
                 })
                 .collect()
@@ -393,6 +399,20 @@ fn build_resolved_data_catalog(data_items: &[HirDataItem]) -> Vec<ResolvedDataIt
     let mut out = Vec::new();
     collect(data_items, &[], &mut seen, &mut next_id, &mut out);
     out
+}
+
+fn find_data_item_type_by_name(items: &[HirDataItem], name: &SmolStr) -> Option<HirType> {
+    for item in items {
+        if item.name.eq_ignore_ascii_case(name.as_str()) {
+            return Some(item.data_type.clone());
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            if let Some(found) = find_data_item_type_by_name(members, name) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 fn resolve_data_name(name: &HirDataName) -> Option<ResolvedDataItemEntry> {
@@ -614,28 +634,28 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
     let mut items = Vec::new();
     for fd in &data.file_section {
         for item in &fd.items {
-            lower_data_item(item, &mut items);
+            lower_data_item(item, fd.is_external, &mut items);
         }
     }
     for item in &data.working_storage {
-        lower_data_item(item, &mut items);
+        lower_data_item(item, false, &mut items);
     }
     for item in &data.local_storage {
-        lower_data_item(item, &mut items);
+        lower_data_item(item, false, &mut items);
     }
     for item in &data.linkage {
-        lower_data_item(item, &mut items);
+        lower_data_item(item, false, &mut items);
     }
     for item in &data.screen {
         lower_screen_data_item(item, &mut items);
     }
     for cd in &data.communication {
         for item in &cd.data_items {
-            lower_data_item(item, &mut items);
+            lower_data_item(item, false, &mut items);
         }
     }
     for item in &data.report {
-        lower_data_item(item, &mut items);
+        lower_data_item(item, false, &mut items);
     }
     // Implicit Report Writer special registers
     if !data.report.is_empty() {
@@ -646,6 +666,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
                 decimal_places: 0,
                 is_signed: false,
             },
+            is_external: false,
             initial_value: Some(HirLiteral::Integer(0)),
             occurs: None,
             indexed_by: Vec::new(),
@@ -662,6 +683,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
                 decimal_places: 0,
                 is_signed: false,
             },
+            is_external: false,
             initial_value: Some(HirLiteral::Integer(0)),
             occurs: None,
             indexed_by: Vec::new(),
@@ -675,7 +697,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
     items
 }
 
-fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
+fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirDataItem>) {
     // Skip FILLER and level 88 condition names
     if item.level == 88 {
         return;
@@ -700,6 +722,7 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
+            is_external: inherited_external || item.is_external,
             initial_value,
             occurs,
             indexed_by: indexed_by.clone(),
@@ -717,6 +740,7 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             out.push(HirDataItem {
                 name: idx_name.clone(),
                 data_type: HirType::Index,
+                is_external: false,
                 initial_value: None,
                 occurs: None,
                 indexed_by: Vec::new(),
@@ -731,7 +755,7 @@ fn lower_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
 
     // Recursively lower child items (group items)
     for child in &item.children {
-        lower_data_item(child, out);
+        lower_data_item(child, inherited_external || item.is_external, out);
     }
 }
 
@@ -787,6 +811,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
+            is_external: false,
             initial_value,
             occurs,
             indexed_by: Vec::new(),
@@ -832,6 +857,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
             members.push(HirDataItem {
                 name: member_name,
                 data_type,
+                is_external: child.is_external,
                 initial_value,
                 occurs,
                 indexed_by: indexed_by_child,
@@ -1790,7 +1816,10 @@ fn lower_call(
             }
         })
         .collect();
-    let on_exception = lower_statements(&call.on_exception, condition_names);
+    let mut on_exception = lower_statements(&call.on_exception, condition_names);
+    if !call.on_overflow.is_empty() {
+        on_exception.extend(lower_statements(&call.on_overflow, condition_names));
+    }
     let not_on_exception = lower_statements(&call.not_on_exception, condition_names);
     HirStatement::Call {
         program,
