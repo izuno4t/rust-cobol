@@ -56,8 +56,14 @@ After any implementation change or test expectation change, run the
 directly affected test target immediately, then run the full test suite
 for the affected crate before reporting completion unless that is
 impossible.
+Do not create, edit, or rely on `AGENTS.local.md` in this repository.
+Record repository-specific agent instructions only in this `AGENTS.md`.
 Once work has started, continue until the requested completion condition
 is met unless a hard blocker or explicit user redirect requires stopping.
+During work, do not postpone evaluation until the end. After each
+meaningful chunk of implementation or investigation, run the relevant
+evaluation function for that chunk and use the result to drive the next
+step.
 After applying a fix, always run `make clean test lint` before reporting
 completion.
 
