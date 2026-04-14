@@ -480,6 +480,7 @@ pub enum CloseOption {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadStatement {
     pub file_name: SmolStr,
+    pub is_next: bool,
     pub into: Option<QualifiedName>,
     pub key: Option<QualifiedName>,
     pub at_end: Vec<Statement>,

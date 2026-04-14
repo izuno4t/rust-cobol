@@ -27,15 +27,15 @@ use cobol_common::Span;
 use smol_str::SmolStr;
 
 use crate::hir::{
-    HirAcceptSource, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType, HirCommunicationMode,
-    HirCompareOp, HirCondition, HirDataItem, HirDataName, HirDataRef, HirDeclarative,
-    HirDeclarativeUse, HirExpr, HirFileInfo, HirInspectKind, HirInspectReplacing,
+    HirAcceptSource, HirAlternateKey, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType,
+    HirCommunicationMode, HirCompareOp, HirCondition, HirDataItem, HirDataName, HirDataRef,
+    HirDeclarative, HirDeclarativeUse, HirExpr, HirFileInfo, HirInspectKind, HirInspectReplacing,
     HirInspectTallying, HirItemId, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
     HirParagraph, HirParagraphId, HirParagraphKind, HirParam, HirParamMode, HirPerformKind,
     HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind, HirScreenInfo,
     HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
-    HirStringSource, HirTallyingKind, HirTransferTarget, HirType, HirUnaryOp,
-    HirUnstringDelimiter, HirVaryingAfter, HirAlternateKey,
+    HirStringSource, HirTallyingKind, HirTransferTarget, HirType, HirUnaryOp, HirUnstringDelimiter,
+    HirVaryingAfter,
 };
 
 #[derive(Debug, Clone)]
@@ -78,6 +78,11 @@ struct SectionPlan {
     entry: ParagraphPlan,
     paragraphs: Vec<ParagraphPlan>,
 }
+
+type OpenMetadata = (u32, Option<SmolStr>, Vec<HirAlternateKey>, Option<SmolStr>);
+type OpenMetadataMap = HashMap<SmolStr, OpenMetadata>;
+type ReadMetadata = (u32, u32, Option<SmolStr>, Option<SmolStr>);
+type ReadMetadataMap = HashMap<SmolStr, ReadMetadata>;
 
 /// Lowers a COBOL AST program into the HIR.
 pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
@@ -307,6 +312,15 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     }
     for decl in &mut hir.declaratives {
         patch_open_entries(&mut decl.body, &org_map, &assign_map, &open_meta_map);
+    }
+
+    let read_meta_map = extract_read_metadata(program);
+    patch_read_keys(&mut hir.body, &read_meta_map);
+    for para in &mut hir.paragraphs {
+        patch_read_keys(&mut para.body, &read_meta_map);
+    }
+    for decl in &mut hir.declaratives {
+        patch_read_keys(&mut decl.body, &read_meta_map);
     }
 
     // Post-process: resolve Write/Rewrite record_name → file_name
@@ -2062,6 +2076,7 @@ fn lower_read(
     let not_invalid_key = lower_statements(&read.not_invalid_key, condition_names);
     HirStatement::Read {
         file_name: read.file_name.clone(),
+        is_next: read.is_next,
         into,
         key,
         at_end,
@@ -2889,9 +2904,7 @@ fn extract_file_assignments(program: &CobolProgram) -> HashMap<SmolStr, SmolStr>
         .collect()
 }
 
-fn extract_open_metadata(
-    program: &CobolProgram,
-) -> HashMap<SmolStr, (u32, Option<SmolStr>, Vec<HirAlternateKey>, Option<SmolStr>)> {
+fn extract_open_metadata(program: &CobolProgram) -> OpenMetadataMap {
     use cobol_ast::AccessMode;
     let Some(env) = &program.environment else {
         return HashMap::new();
@@ -2943,6 +2956,42 @@ fn extract_relative_keys(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
         .collect()
 }
 
+fn extract_read_metadata(program: &CobolProgram) -> ReadMetadataMap {
+    use cobol_ast::{AccessMode, FileOrganization};
+
+    let Some(env) = &program.environment else {
+        return HashMap::new();
+    };
+    let Some(io) = &env.input_output else {
+        return HashMap::new();
+    };
+    io.file_controls
+        .iter()
+        .map(|fc| {
+            let organization = match fc.organization {
+                Some(FileOrganization::Sequential) => 0,
+                Some(FileOrganization::LineSequential) | None => 1,
+                Some(FileOrganization::Relative) => 2,
+                Some(FileOrganization::Indexed) => 3,
+            };
+            let access_mode = match fc.access_mode {
+                Some(AccessMode::Random) => 1,
+                Some(AccessMode::Dynamic) => 2,
+                Some(AccessMode::Sequential) | None => 0,
+            };
+            (
+                fc.file_name.clone(),
+                (
+                    organization,
+                    access_mode,
+                    fc.record_key.as_ref().map(|q| q.name.clone()),
+                    fc.relative_key.as_ref().map(|q| q.name.clone()),
+                ),
+            )
+        })
+        .collect()
+}
+
 /// Extract FD/SD file name → first record name mapping from the DATA DIVISION's
 /// FILE SECTION.  Each `FileDescription` contributes a mapping from its file name
 /// to the name of its first 01-level record entry.
@@ -2987,7 +3036,7 @@ fn patch_open_entries(
     stmts: &mut [HirStatement],
     org_map: &HashMap<SmolStr, u32>,
     assign_map: &HashMap<SmolStr, SmolStr>,
-    open_meta_map: &HashMap<SmolStr, (u32, Option<SmolStr>, Vec<HirAlternateKey>, Option<SmolStr>)>,
+    open_meta_map: &OpenMetadataMap,
 ) {
     for stmt in stmts.iter_mut() {
         if let HirStatement::Open { entries, .. } = stmt {
@@ -3007,6 +3056,51 @@ fn patch_open_entries(
                     entry.relative_key = relative_key.clone();
                 }
             }
+        }
+    }
+}
+
+fn patch_read_keys(stmts: &mut [HirStatement], read_meta_map: &ReadMetadataMap) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            HirStatement::Read {
+                file_name,
+                is_next,
+                key,
+                ..
+            } => {
+                if *is_next || key.is_some() {
+                    continue;
+                }
+                if let Some((organization, access_mode, record_key, relative_key)) =
+                    read_meta_map.get(file_name)
+                {
+                    match (*organization, *access_mode) {
+                        (3, 1 | 2) => *key = record_key.clone(),
+                        (2, 1 | 2) => *key = relative_key.clone(),
+                        _ => {}
+                    }
+                }
+            }
+            HirStatement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                patch_read_keys(then_body, read_meta_map);
+                patch_read_keys(else_body, read_meta_map);
+            }
+            HirStatement::Perform { kind, .. } => {
+                let body = match kind.as_mut() {
+                    HirPerformKind::Inline { body } => body.as_mut_slice(),
+                    HirPerformKind::Times { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::Until { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::Varying { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::ProcedureName { .. } => &mut [],
+                };
+                patch_read_keys(body, read_meta_map);
+            }
+            _ => {}
         }
     }
 }

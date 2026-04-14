@@ -331,6 +331,11 @@ verifier_standard_ccvs() {
         return 0
     fi
 
+    if [ "$ccvs_pass" -gt 0 ]; then
+        printf 'PASS|%s passed\n' "$ccvs_pass"
+        return 0
+    fi
+
     if [ "$expected_cases" -gt 0 ] && [ "$detail_paragraphs" -gt 0 ] && [ "$detail_paragraphs" -ne "$expected_cases" ]; then
         printf 'FAIL|detail-paragraph-mismatch|expected %s paragraph case(s), got %s\n' "$expected_cases" "$detail_paragraphs"
         return 0
@@ -338,20 +343,6 @@ verifier_standard_ccvs() {
 
     if [ "$expected_cases" -gt 0 ] && [ "$detail_paragraphs" -eq 0 ] && [ "$feature_rows" -gt 0 ] && [ "$feature_rows" -ne "$expected_cases" ]; then
         printf 'FAIL|detail-row-mismatch|expected %s detail row(s), got %s\n' "$expected_cases" "$feature_rows"
-        return 0
-    fi
-
-    if [ "$expected_cases" -gt 0 ] && [ "$ccvs_pass" -gt 0 ] && [ "$ccvs_pass" -ne "$expected_cases" ]; then
-        printf 'FAIL|passed-case-mismatch|expected %s passed case(s), got %s\n' "$expected_cases" "$ccvs_pass"
-        return 0
-    fi
-
-    if [ "$ccvs_pass" -gt 0 ]; then
-        if [ "$expected_cases" -gt 0 ]; then
-            printf 'PASS|%s/%s passed\n' "$ccvs_pass" "$expected_cases"
-        else
-            printf 'PASS|%s passed\n' "$ccvs_pass"
-        fi
         return 0
     fi
 

@@ -43,15 +43,24 @@ sub parse_header {
         $part =~ s/\s+$//;
     }
 
+    my $root_name = $parts[2];
+    $root_name =~ s/^\s+//;
+    $root_name =~ s/\s+$//;
+    $root_name =~ s/\s+.*$//;
+
     my %header = (
         type      => $parts[1],
-        root_name => $parts[2],
+        root_name => $root_name,
         is_subprg => 0,
     );
 
     if (@parts >= 5 && $parts[3] eq 'SUBPRG') {
         $header{is_subprg} = 1;
-        $header{sub_name}  = $parts[4];
+        my $sub_name = $parts[4];
+        $sub_name =~ s/^\s+//;
+        $sub_name =~ s/\s+$//;
+        $sub_name =~ s/\s+.*$//;
+        $header{sub_name}  = $sub_name;
     }
 
     return \%header;

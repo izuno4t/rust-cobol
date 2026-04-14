@@ -616,7 +616,7 @@ fn rewrap_fixed_format_lines(source: &str) -> String {
             first = false;
         }
     }
-    if !source.ends_with('\n') && !source.ends_with("\r\n") {
+    if !source.ends_with('\n') && !source.ends_with("\r\n") && result.ends_with('\n') {
         result.pop();
     }
     result
@@ -629,7 +629,13 @@ fn rewrap_fixed_format_lines(source: &str) -> String {
 /// removed. Identification area columns 73-80 are also stripped.
 fn normalize_fixed_format_copybook(source: &str, first_line_inline: bool) -> String {
     let mut result = String::with_capacity(source.len());
-    for (idx, line) in source.split('\n').enumerate() {
+    let mut lines: Vec<&str> = source.split('\n').collect();
+    while matches!(lines.last(), Some(line) if line.is_empty()) {
+        lines.pop();
+    }
+    let last_idx = lines.len().saturating_sub(1);
+    for (idx, line) in lines.iter().enumerate() {
+        let line = *line;
         let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
         let line_no_id = if line_no_cr.len() > 72 {
             &line_no_cr[..72]
@@ -646,12 +652,17 @@ fn normalize_fixed_format_copybook(source: &str, first_line_inline: bool) -> Str
         } else {
             ""
         };
+        let inline_content = if first_line_inline && idx == 0 {
+            content.trim_end_matches(' ')
+        } else {
+            content
+        };
         if idx == 0 {
             if first_line_inline && indicator != '*' && indicator != '/' {
-                if !content.is_empty() {
+                if !inline_content.is_empty() {
                     result.push(' ');
                 }
-                result.push_str(content);
+                result.push_str(inline_content);
             } else {
                 // When the first line cannot be inlined (e.g., a comment
                 // line), emit a newline to start a fresh fixed-format line.
@@ -667,7 +678,10 @@ fn normalize_fixed_format_copybook(source: &str, first_line_inline: bool) -> Str
             result.push(indicator);
             result.push_str(content);
         }
-        result.push('\n');
+        let should_preserve_inline_suffix = first_line_inline && idx == last_idx;
+        if !should_preserve_inline_suffix {
+            result.push('\n');
+        }
     }
     if !source.ends_with('\n') && !source.ends_with("\r\n") {
         result.pop();
@@ -1289,6 +1303,194 @@ mod tests {
             result.source
         );
         assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_fixed_copy_expands_sm101a_section_copy() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("sm101a.cob");
+        fs::write(&source_path, "").unwrap();
+        fs::write(
+            dir.path().join("K1SEA.cpy"),
+            concat!(
+                "000100 SECT-COPY-1.                                                     K1SEA4.2\n",
+                "000200     MOVE     95427 TO COPYSECT-1.                                K1SEA4.2\n",
+                "000300 SECT-COPY-2.                                                     K1SEA4.2\n",
+                "000400     MOVE     23121 TO COPYSECT-2.                                K1SEA4.2\n",
+            ),
+        )
+        .unwrap();
+
+        let source = concat!(
+            "045500                                                       COPY K1SEA.SM1014.2\n",
+            "045600D                                                      COPY K1SEA.SM1014.2\n",
+            "045700     IF       COPYSECT-1 EQUAL TO 95427                           SM1014.2\n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            source_format: SourceFormat::Fixed,
+            ..Default::default()
+        };
+
+        let result = preprocess(source, &source_path, &config);
+
+        assert!(
+            !result.source.contains("COPY K1SEA"),
+            "section COPY should be expanded from fixed-format source: {:?}",
+            result.source
+        );
+        assert!(
+            result.source.contains("SECT-COPY-1."),
+            "expanded copybook section should be present: {:?}",
+            result.source
+        );
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_fixed_copy_expands_sm101a_inline_data_item_copy() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("sm101a.cob");
+        fs::write(&source_path, "").unwrap();
+        fs::write(
+            dir.path().join("K1W02.cpy"),
+            concat!(
+                "000100     RCD-4    PIC 9(5) VALUE 02734.                               K1W024.2\n",
+                "000200 77  RCD-5    PICTURE IS 99999 VALUE IS                           K1W024.2\n",
+            ),
+        )
+        .unwrap();
+
+        let source = "008900 77  COPY K1W02.                                                  \n";
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            source_format: SourceFormat::Fixed,
+            ..Default::default()
+        };
+
+        let result = preprocess(source, &source_path, &config);
+
+        assert!(
+            !result.source.contains("COPY K1W02"),
+            "inline data-item COPY should be expanded: {:?}",
+            result.source
+        );
+        assert!(
+            result.source.contains("RCD-4") && result.source.contains("RCD-5"),
+            "expanded inline data-item copy should be present: {:?}",
+            result.source
+        );
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_fixed_copy_expands_sm101a_inline_statement_copy() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("sm101a.cob");
+        fs::write(&source_path, "").unwrap();
+        fs::write(
+            dir.path().join("K1P01.cpy"),
+            "000100          RCD-1                                                   K1P014.2\n",
+        )
+        .unwrap();
+
+        let source = "055000     ADD     COPY K1P01. TO WRK-DS-05V00.                         \n";
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            source_format: SourceFormat::Fixed,
+            ..Default::default()
+        };
+
+        let result = preprocess(source, &source_path, &config);
+
+        assert!(
+            !result.source.contains("COPY K1P01"),
+            "inline statement COPY should be expanded: {:?}",
+            result.source
+        );
+        assert!(
+            result.source.contains("ADD") && result.source.contains("RCD-1"),
+            "expanded inline statement copy should keep surrounding statement: {:?}",
+            result.source
+        );
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_fixed_copy_expands_sm101a_inline_statement_copy_in_full_context() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("sm101a.cob");
+        fs::write(&source_path, "").unwrap();
+        fs::write(
+            dir.path().join("K1SEA.cpy"),
+            concat!(
+                "000100 SECT-COPY-1.                                                     K1SEA4.2\n",
+                "000200     MOVE     95427 TO COPYSECT-1.                                K1SEA4.2\n",
+                "000300 SECT-COPY-2.                                                     K1SEA4.2\n",
+                "000400     MOVE     23121 TO COPYSECT-2.                                K1SEA4.2\n",
+                "000500 SECT-COPY-3.                                                     K1SEA4.2\n",
+                "000600     MOVE     \"LIBCO\" TO COPYSECT-3.                              K1SEA4.2\n",
+                "000700 SECT-COPY-4.                                                     K1SEA4.2\n",
+                "000800     MOVE     \"PYTST\" TO COPYSECT-4.                              K1SEA4.2\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("K1P01.cpy"),
+            "000100          RCD-1                                                   K1P014.2\n",
+        )
+        .unwrap();
+
+        let source = concat!(
+            "010100 77  COPYSECT-1 PICTURE 9(5) VALUE 72459.                         \n",
+            "010200 77  COPYSECT-2 PICTURE 9(5) VALUE 12132.                         \n",
+            "010300 77  COPYSECT-3 PICTURE X(5) VALUE \"TSTLI\".                       \n",
+            "010400 77  COPYSECT-4 PICTURE X(5) VALUE \"BCOPY\".                       \n",
+            "045500                                                       COPY K1SEA.\n",
+            "045600D                                                      COPY K1SEA.\n",
+            "046100     IF       COPYSECT-1 EQUAL TO 95427                           \n",
+            "046200             PERFORM PASS                                         \n",
+            "054700*    ADD     COPY K1P01. TO WRK-DS-05V00.                         \n",
+            "055000     ADD     COPY K1P01. TO WRK-DS-05V00.                         \n",
+            "055200     IF       WRK-DS-05V00 EQUAL TO 97523                         \n",
+            "056900     GO TO CLOSE-FILES.                                           \n",
+            "000100 IDENTIFICATION DIVISION.                                         \n",
+            "000200 PROGRAM-ID.                                                      \n",
+            "000300     SM102A.                                                      \n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            source_format: SourceFormat::Fixed,
+            ..Default::default()
+        };
+
+        let result = preprocess(source, &source_path, &config);
+
+        assert!(
+            !result
+                .source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("*>"))
+                .any(|line| line.contains("COPY K1P01")),
+            "full-context inline statement COPY should be expanded in active code: {:?}",
+            result.source
+        );
+        assert!(
+            result.source.contains("ADD     RCD-1 TO WRK-DS-05V00.")
+                || result.source.contains("ADD RCD-1 TO WRK-DS-05V00."),
+            "expanded inline statement copy should keep the surrounding statement: {:?}",
+            result.source
+        );
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_normalize_fixed_format_copybook_keeps_single_inline_line_open() {
+        let source =
+            "000100          RCD-1                                                   K1P014.2\n";
+        let stripped = strip_fixed_format_columns(source);
+        let normalized = normalize_fixed_format_copybook(&stripped, true);
+        assert_eq!(normalized, " RCD-1");
     }
 
     #[test]

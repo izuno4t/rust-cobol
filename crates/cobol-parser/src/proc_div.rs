@@ -2224,7 +2224,7 @@ impl Parser {
         let file_name = self.expect_identifier()?;
 
         // Skip optional NEXT keyword (parsed as identifier)
-        self.eat_identifier("NEXT");
+        let is_next = self.eat_identifier("NEXT");
         // Skip optional RECORD keyword
         self.eat(TokenKind::Record);
 
@@ -2313,6 +2313,7 @@ impl Parser {
         let end_span = self.span();
         Ok(Statement::Read(Box::new(ReadStatement {
             file_name,
+            is_next,
             into,
             key,
             at_end,

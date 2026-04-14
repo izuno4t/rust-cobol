@@ -1399,7 +1399,9 @@ fn emit_inline_dispatch_loop(
         if let Some(id) = label_map.get(&paragraph.id) {
             let c_name = sanitize_name(&paragraph.name);
             let next_id = if let Some(map) = next_override_map {
-                map.get(&paragraph.id).copied()
+                map.get(&paragraph.id)
+                    .copied()
+                    .or_else(|| next_label_map.get(&paragraph.id).copied())
             } else {
                 next_label_map.get(&paragraph.id).copied()
             };
@@ -1425,7 +1427,6 @@ fn emit_top_level_entry_flow(
 ) {
     let top_level_next_map = build_top_level_next_label_map(paragraphs, label_map);
     let top_level_entry_ids = top_level_group_entry_ids(paragraphs, label_map);
-    let top_level_ids: HashSet<_> = top_level_entry_ids.iter().copied().collect();
     if let Some(first_id) = top_level_entry_ids.first().copied() {
         if let Some(first_name) = paragraphs
             .iter()
@@ -1442,13 +1443,7 @@ fn emit_top_level_entry_flow(
                 "    if (!_goto_target) _goto_target = {first_label_id};\n"
             ));
         }
-        emit_inline_dispatch_loop(
-            out,
-            paragraphs,
-            label_map,
-            Some(&top_level_next_map),
-            Some(&top_level_ids),
-        );
+        emit_inline_dispatch_loop(out, paragraphs, label_map, Some(&top_level_next_map), None);
     }
 }
 

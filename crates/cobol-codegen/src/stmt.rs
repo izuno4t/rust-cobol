@@ -1216,9 +1216,7 @@ pub(crate) fn emit_statement_with_ctx(
                 };
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
-                    out.push_str(&format!(
-                        "{pad}    uint32_t _fs = {open_call};\n"
-                    ));
+                    out.push_str(&format!("{pad}    uint32_t _fs = {open_call};\n"));
                     if org_val == 3 && !entry.alternate_keys.is_empty() {
                         let record_var = resolve_file_record(&c_name);
                         for alt_key in &entry.alternate_keys {
@@ -1295,6 +1293,7 @@ pub(crate) fn emit_statement_with_ctx(
         }
         HirStatement::Read {
             file_name,
+            is_next,
             into,
             key,
             at_end,
@@ -1324,7 +1323,11 @@ pub(crate) fn emit_statement_with_ctx(
             let rec_len = find_record_len(&target_name, data_items);
             out.push_str(&format!("{pad}/* READ {c_name} */\n"));
             out.push_str(&format!("{pad}{{\n"));
-            if let Some(key_name) = key {
+            if *is_next {
+                out.push_str(&format!(
+                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{target}, {rec_len});\n"
+                ));
+            } else if let Some(key_name) = key {
                 let c_key = sanitize_name(key_name);
                 let key_size = find_data_item_size(&c_key, data_items);
                 let is_key_group = find_data_item(key_name.as_str(), data_items)
@@ -1354,7 +1357,7 @@ pub(crate) fn emit_statement_with_ctx(
                 has_declaratives,
                 &format!("{pad}    "),
             );
-            if key.is_none() && ctx.file_organization(&c_name) == Some(2) {
+            if *is_next && ctx.file_organization(&c_name) == Some(2) {
                 if let Some(relative_key) = ctx.relative_key_for_file(&c_name) {
                     out.push_str(&format!("{pad}    if (_fs == 0) {{\n"));
                     emit_store_int(
@@ -2867,6 +2870,16 @@ pub(crate) fn emit_statement_with_ctx(
             };
             if needs_rc {
                 out.push_str(&format!("{pad}    uint32_t _src = {start_call};\n"));
+                if fs_map.contains_key(&c_name) {
+                    emit_file_status_update(
+                        out,
+                        &c_name,
+                        "_src",
+                        fs_map,
+                        has_declaratives,
+                        &format!("{pad}    "),
+                    );
+                }
                 if !invalid_key.is_empty() {
                     out.push_str(&format!("{pad}    if (_src != 0) {{\n"));
                     for s in invalid_key {
@@ -4022,6 +4035,7 @@ pub(crate) fn emit_move_to(
         .map(|i| &i.data_type);
     let is_source_index =
         src_data_name.is_some() && src_type.is_none() && is_index_name(src_var_name, data_items);
+    let is_source_display_numeric_var = matches!(src_type, Some(HirType::Numeric { .. }));
     let is_source_numeric_var = is_source_index
         || matches!(
             src_type,
@@ -4307,8 +4321,22 @@ pub(crate) fn emit_move_to(
                          (uint8_t*){c_target}, {tgt_size}); }}\n"
                     ));
                 }
+            } else if is_target_alpha && is_source_display_numeric_var {
+                let tgt_size = find_data_item_layout(c_target, data_items).item_len;
+                let c_src = emit_expr(from);
+                if let Some(src_size) = grp_display_size(&c_src, data_items) {
+                    let src_ptr = display_numeric_const_ptr(&c_src);
+                    out.push_str(&format!(
+                        "{pad}{move_fn}({src_ptr}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
+                    ));
+                } else {
+                    let e = emit_int_compatible_expr(from, data_items);
+                    out.push_str(&format!(
+                        "{pad}cobol_move_numeric_to_display({e}, 0, (uint8_t*){c_target}, {tgt_size});\n"
+                    ));
+                }
             } else if is_target_alpha && is_source_numeric_var {
-                // Numeric variable → alphanumeric: use cobol_move_numeric_to_display
+                // Non-display numeric variable → alphanumeric: format as display digits.
                 let e = emit_int_compatible_expr(from, data_items);
                 let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 out.push_str(&format!(

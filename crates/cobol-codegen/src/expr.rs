@@ -3287,11 +3287,16 @@ fn find_field_in_group(
     for item in members {
         let item_c = sanitize_name(&item.name);
         let item_size = data_item_byte_size(&item.data_type);
+        let item_offset = if item.redefines.is_some() {
+            offset.saturating_sub(item_size)
+        } else {
+            offset
+        };
         if item_c == field_c {
-            return Some((offset, item_size));
+            return Some((item_offset, item_size));
         }
         if let HirType::Group { members: sub, .. } = &item.data_type {
-            if let Some(found) = find_field_in_group(field_c, sub, offset) {
+            if let Some(found) = find_field_in_group(field_c, sub, item_offset) {
                 return Some(found);
             }
         }

@@ -580,6 +580,7 @@ pub enum HirStatement {
     /// READ statement.
     Read {
         file_name: SmolStr,
+        is_next: bool,
         /// INTO target: (variable_name, subscripts).
         into: Option<(SmolStr, Vec<HirExpr>)>,
         /// Optional key for random/dynamic READ.

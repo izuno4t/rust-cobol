@@ -548,6 +548,7 @@ PROCEDURE DIVISION.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -619,6 +620,7 @@ PROCEDURE DIVISION.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -790,6 +792,7 @@ PROCEDURE DIVISION.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -826,6 +829,7 @@ PROCEDURE DIVISION.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -862,6 +866,7 @@ PROCEDURE DIVISION.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -894,6 +899,7 @@ PROCEDURE DIVISION.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -977,6 +983,30 @@ PARA-1.
     }
 
     #[test]
+    fn test_move_display_numeric_to_alphanumeric_preserves_bytes() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-MOVE-DISPLAY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC-GRP.
+    05 SRC-KEY PIC 9(10) VALUE ZERO.
+01  DST-KEY PIC X(10).
+PROCEDURE DIVISION.
+    MOVE 10 TO SRC-KEY.
+    MOVE SRC-KEY TO DST-KEY.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("cobol_move_string(")
+                && c_code.contains("SRC_KEY")
+                && c_code.contains("DST_KEY"),
+            "DISPLAY numeric to alphanumeric MOVE should copy source bytes: {c_code}"
+        );
+    }
+
+    #[test]
     fn test_generate_xml_generate_statement() {
         use cobol_common::Span;
 
@@ -997,6 +1027,7 @@ PARA-1.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -1033,6 +1064,7 @@ PARA-1.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -1077,6 +1109,7 @@ PARA-1.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
@@ -1120,6 +1153,7 @@ PARA-1.
             using_params: Vec::new(),
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: Vec::new(),
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),

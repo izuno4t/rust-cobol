@@ -26,13 +26,25 @@ pub(crate) fn emit_fd_alias_macros(
     for (alias, primary) in fd_record_aliases {
         let c_alias = sanitize_name(alias);
         let c_primary = sanitize_name(primary);
+        let primary_item = items
+            .iter()
+            .find(|item| item.name.eq_ignore_ascii_case(primary));
         let Some(alias_item) = items
             .iter()
             .find(|item| item.name.eq_ignore_ascii_case(alias))
         else {
-            out.push_str(&format!(
-                "#define {c_alias} {c_primary} /* FD shared record area */\n"
-            ));
+            if matches!(
+                primary_item.map(|item| &item.data_type),
+                Some(HirType::Group { .. })
+            ) {
+                out.push_str(&format!(
+                    "#define {c_alias} ((char*){c_primary}._bytes) /* FD shared record area */\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "#define {c_alias} {c_primary} /* FD shared record area */\n"
+                ));
+            }
             continue;
         };
         if let HirType::Group { members, .. } = &alias_item.data_type {
@@ -60,6 +72,13 @@ pub(crate) fn emit_fd_alias_macros(
                 &duplicate_member_names,
                 &mut emitted_typedefs,
             );
+        } else if matches!(
+            primary_item.map(|item| &item.data_type),
+            Some(HirType::Group { .. })
+        ) {
+            out.push_str(&format!(
+                "#define {c_alias} ((char*){c_primary}._bytes) /* FD shared record area */\n"
+            ));
         } else {
             out.push_str(&format!(
                 "#define {c_alias} {c_primary} /* FD shared record area */\n"
@@ -1127,5 +1146,115 @@ pub(crate) fn emit_default_init(
                 emit_single_data_init(out, member);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cobol_common::Span;
+    use smol_str::SmolStr;
+
+    #[test]
+    fn test_emit_fd_alias_macros_uses_primary_bytes_for_scalar_fd_alias() {
+        let items = vec![HirDataItem {
+            name: SmolStr::new("SHORT-OUT"),
+            data_type: HirType::Group {
+                members: vec![HirDataItem {
+                    name: SmolStr::new("FIELD-1"),
+                    data_type: HirType::Alphanumeric { size: 10 },
+                    is_external: false,
+                    initial_value: None,
+                    occurs: None,
+                    indexed_by: Vec::new(),
+                    redefines: None,
+                    renames: None,
+                    screen_info: None,
+                    justified: false,
+                    span: Span::dummy(),
+                }],
+                size: 10,
+            },
+            is_external: false,
+            initial_value: None,
+            occurs: None,
+            indexed_by: Vec::new(),
+            redefines: None,
+            renames: None,
+            screen_info: None,
+            justified: false,
+            span: Span::dummy(),
+        }];
+        let aliases = std::collections::HashMap::from([(
+            SmolStr::new("MEDIUM-OUT"),
+            SmolStr::new("SHORT-OUT"),
+        )]);
+        let mut out = String::new();
+
+        emit_fd_alias_macros(&mut out, &items, &aliases);
+
+        assert!(
+            out.contains("#define MEDIUM_OUT ((char*)SHORT_OUT._bytes)"),
+            "scalar FD aliases should point at the primary record bytes: {out}"
+        );
+    }
+
+    #[test]
+    fn test_emit_fd_alias_macros_uses_primary_bytes_when_alias_item_is_scalar() {
+        let items = vec![
+            HirDataItem {
+                name: SmolStr::new("SHORT-OUT"),
+                data_type: HirType::Group {
+                    members: vec![HirDataItem {
+                        name: SmolStr::new("FIELD-1"),
+                        data_type: HirType::Alphanumeric { size: 10 },
+                        is_external: false,
+                        initial_value: None,
+                        occurs: None,
+                        indexed_by: Vec::new(),
+                        redefines: None,
+                        renames: None,
+                        screen_info: None,
+                        justified: false,
+                        span: Span::dummy(),
+                    }],
+                    size: 10,
+                },
+                is_external: false,
+                initial_value: None,
+                occurs: None,
+                indexed_by: Vec::new(),
+                redefines: None,
+                renames: None,
+                screen_info: None,
+                justified: false,
+                span: Span::dummy(),
+            },
+            HirDataItem {
+                name: SmolStr::new("MEDIUM-OUT"),
+                data_type: HirType::Alphanumeric { size: 10 },
+                is_external: false,
+                initial_value: None,
+                occurs: None,
+                indexed_by: Vec::new(),
+                redefines: None,
+                renames: None,
+                screen_info: None,
+                justified: false,
+                span: Span::dummy(),
+            },
+        ];
+        let aliases = std::collections::HashMap::from([(
+            SmolStr::new("MEDIUM-OUT"),
+            SmolStr::new("SHORT-OUT"),
+        )]);
+        let mut out = String::new();
+
+        emit_fd_alias_macros(&mut out, &items, &aliases);
+
+        assert!(
+            out.contains("#define MEDIUM_OUT ((char*)SHORT_OUT._bytes)"),
+            "scalar alias items should still point at the primary record bytes: {out}"
+        );
     }
 }

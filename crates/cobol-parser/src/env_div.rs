@@ -158,23 +158,17 @@ impl Parser {
                 self.advance();
                 self.eat_is();
                 record_key = Some(self.parse_qualified_name()?);
-            } else if self.check(TokenKind::Record)
-                && self.peek(1).kind == TokenKind::Key
-            {
+            } else if self.check(TokenKind::Record) && self.peek(1).kind == TokenKind::Key {
                 self.advance();
                 self.advance();
                 self.eat_is();
                 record_key = Some(self.parse_qualified_name()?);
-            } else if self.check(TokenKind::Record)
-                && self.peek(1).kind == TokenKind::Identifier
-            {
+            } else if self.check(TokenKind::Record) && self.peek(1).kind == TokenKind::Identifier {
                 // NIST fixed-format sources sometimes use an abbreviated
                 // FILE-CONTROL form like `RECORD FOO-KEY.` for RECORD KEY.
                 self.advance();
                 record_key = Some(self.parse_qualified_name()?);
-            } else if self.check(TokenKind::Relative)
-                && self.peek(1).kind == TokenKind::Key
-            {
+            } else if self.check(TokenKind::Relative) && self.peek(1).kind == TokenKind::Key {
                 self.advance();
                 self.advance();
                 self.eat_is();
