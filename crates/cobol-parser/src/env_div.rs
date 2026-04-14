@@ -250,7 +250,10 @@ impl Parser {
             Ok(FileOrganization::Sequential)
         } else if self.check(TokenKind::Indexed) {
             self.advance();
-            self.warning_at(start_span, "ORGANIZATION IS INDEXED is a non-conforming indexed feature");
+            self.warning_at(
+                start_span,
+                "ORGANIZATION IS INDEXED is a non-conforming indexed feature",
+            );
             Ok(FileOrganization::Indexed)
         } else if self.check(TokenKind::Relative) {
             self.advance();
@@ -272,11 +275,17 @@ impl Parser {
             Ok(AccessMode::Sequential)
         } else if self.check(TokenKind::Random) {
             self.advance();
-            self.warning_at(start_span, "ACCESS MODE IS RANDOM is a non-conforming indexed feature");
+            self.warning_at(
+                start_span,
+                "ACCESS MODE IS RANDOM is a non-conforming indexed feature",
+            );
             Ok(AccessMode::Random)
         } else if self.check(TokenKind::Dynamic) {
             self.advance();
-            self.warning_at(start_span, "ACCESS MODE IS DYNAMIC is a non-conforming indexed feature");
+            self.warning_at(
+                start_span,
+                "ACCESS MODE IS DYNAMIC is a non-conforming indexed feature",
+            );
             Ok(AccessMode::Dynamic)
         } else {
             self.error("expected access mode");

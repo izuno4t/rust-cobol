@@ -1886,7 +1886,10 @@ impl Parser {
         }
 
         if targets.is_empty() {
-            self.warning_at(start_span, "GO TO without an explicit target is an obsolete feature");
+            self.warning_at(
+                start_span,
+                "GO TO without an explicit target is an obsolete feature",
+            );
         }
 
         let end_span = self.span();
