@@ -158,7 +158,7 @@ source_reason_for_program() {
             $started = 1;
         }
         next unless $started;
-        if (/^[0-9[:space:]]*PROCEDURE DIVISION USING/) {
+        if ($normalized =~ /^PROCEDURE DIVISION\b.*\bUSING\b/) {
             exit 10;
         }
     ' "$src"; then

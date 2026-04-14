@@ -78,8 +78,10 @@ impl Parser {
                 self.expect(TokenKind::Period)?;
                 date_written = Some(self.parse_comment_text());
             } else if self.check_identifier("DATE-COMPILED") {
+                let warning_span = self.span();
                 self.advance();
                 self.expect(TokenKind::Period)?;
+                self.warning_at(warning_span, "DATE-COMPILED is an obsolete feature");
                 date_compiled = Some(self.parse_comment_text());
             } else if self.check_identifier("SECURITY") {
                 self.advance();

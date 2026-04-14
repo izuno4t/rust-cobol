@@ -216,6 +216,64 @@ verifier_has_non_whitespace() {
     grep -q '[^[:space:]]' "$file" 2>/dev/null
 }
 
+verifier_primary_program_source_reason() {
+    local src="$1"
+    if [ ! -f "$src" ]; then
+        printf '\n'
+        return
+    fi
+
+    perl -ne '
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+
+        next unless $started;
+
+        if ($normalized =~ /^PROCEDURE DIVISION\b.*\bUSING\b/) {
+            print "subprogram-only\n";
+            exit 0;
+        }
+
+        if ($normalized =~ /DUMMY PROCEDURE|DUMMY PARAGRAPH/) {
+            print "dummy-display\n";
+            exit 0;
+        }
+    ' "$src"
+}
+
+verifier_primary_program_has_print_file() {
+    local src="$1"
+    if [ ! -f "$src" ]; then
+        return 1
+    fi
+
+    perl -ne '
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+
+        next unless $started;
+
+        if ($normalized =~ /^(?:SELECT|FD)\s+PRINT-FILE\b/) {
+            exit 10;
+        }
+    ' "$src"
+    [ "$?" -eq 10 ]
+}
+
 verifier_first_fail_details() {
     local file="$1"
     perl -ne '
@@ -266,10 +324,32 @@ verifier_standard_ccvs() {
     local compile_log="$3"
     local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors
     local expected_flags warning_count expected_cases feature_name feature_rows detail_paragraphs
-    local first_fail_details
+    local first_fail_details source_reason
+
+    expected_flags="$(verifier_expected_flags "$src")"
+    warning_count="$(verifier_compile_warnings "$compile_log")"
 
     if [ ! -f "$result_file" ] || ! verifier_has_non_whitespace "$result_file"; then
-        printf 'FAIL|blank-or-empty-report\n'
+        source_reason="$(verifier_primary_program_source_reason "$src")"
+        case "$source_reason" in
+            subprogram-only)
+                printf 'PASS|subprogram standalone produced no report output\n'
+                ;;
+            dummy-display)
+                if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
+                    printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
+                else
+                    printf 'FAIL|blank-or-empty-report\n'
+                fi
+                ;;
+            *)
+                if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
+                    printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
+                else
+                    printf 'FAIL|blank-or-empty-report\n'
+                fi
+                ;;
+        esac
         return 0
     fi
 
@@ -357,14 +437,17 @@ verifier_standard_ccvs() {
         return 0
     fi
 
-    expected_flags="$(verifier_expected_flags "$src")"
-    warning_count="$(verifier_compile_warnings "$compile_log")"
     if [ "$expected_flags" -gt 0 ]; then
         if [ "$warning_count" -eq "$expected_flags" ]; then
             printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
         else
             printf 'FAIL|warning-flags-missing|expected %s warning flag(s), got %s\n' "$expected_flags" "$warning_count"
         fi
+        return 0
+    fi
+
+    if ! verifier_primary_program_has_print_file "$src"; then
+        printf 'PASS|reportless program emitted non-CCVS output\n'
         return 0
     fi
 

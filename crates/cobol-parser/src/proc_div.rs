@@ -523,6 +523,8 @@ impl Parser {
             self.advance();
         }
 
+        self.statement_warning_emitted = false;
+
         match self.current().kind {
             TokenKind::Move => self.parse_move_statement(),
             TokenKind::Compute => self.parse_compute_statement(),
@@ -1883,6 +1885,10 @@ impl Parser {
             depending_on = Some(self.parse_qualified_name()?);
         }
 
+        if targets.is_empty() {
+            self.warning_at(start_span, "GO TO without an explicit target is an obsolete feature");
+        }
+
         let end_span = self.span();
         Ok(Statement::GoTo(GoToStatement {
             targets,
@@ -2038,12 +2044,14 @@ impl Parser {
 
     // --- STOP ---
     fn parse_stop_statement(&mut self) -> Result<Statement, ()> {
+        let start_span = self.span();
         self.expect(TokenKind::Stop)?;
         if self.check(TokenKind::Run) {
             self.advance();
             Ok(Statement::StopRun)
         } else {
             // STOP literal (obsolete): display literal and halt
+            self.warning_at(start_span, "STOP literal is an obsolete feature");
             let lit = self.parse_expr()?;
             Ok(Statement::StopLiteral(lit))
         }
@@ -2053,6 +2061,7 @@ impl Parser {
     fn parse_alter_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Alter)?;
+        self.warning_at(start_span, "ALTER is an obsolete feature");
         let from = self.parse_alter_proc_name()?;
         self.expect(TokenKind::To)?;
         // Optional PROCEED TO
@@ -2310,6 +2319,13 @@ impl Parser {
 
         self.eat(TokenKind::EndRead);
 
+        if !invalid_key.is_empty() || !not_invalid_key.is_empty() {
+            self.warning_at(
+                start_span,
+                "READ with INVALID KEY/NOT INVALID KEY is a non-conforming indexed feature",
+            );
+        }
+
         let end_span = self.span();
         Ok(Statement::Read(Box::new(ReadStatement {
             file_name,
@@ -2434,6 +2450,13 @@ impl Parser {
         }
 
         self.eat(TokenKind::EndWrite);
+
+        if !invalid_key.is_empty() || !not_invalid_key.is_empty() {
+            self.warning_at(
+                start_span,
+                "WRITE with INVALID KEY/NOT INVALID KEY is a non-conforming indexed feature",
+            );
+        }
 
         let end_span = self.span();
         Ok(Statement::Write(Box::new(WriteStatement {
@@ -3032,6 +3055,13 @@ impl Parser {
         let (invalid_key, not_invalid_key) =
             self.parse_invalid_key_phrases(TokenKind::EndRewrite)?;
 
+        if !invalid_key.is_empty() || !not_invalid_key.is_empty() {
+            self.warning_at(
+                start_span,
+                "REWRITE with INVALID KEY/NOT INVALID KEY is a non-conforming indexed feature",
+            );
+        }
+
         let end_span = self.span();
         Ok(Statement::Rewrite(Box::new(RewriteStatement {
             record_name,
@@ -3052,6 +3082,13 @@ impl Parser {
 
         let (invalid_key, not_invalid_key) =
             self.parse_invalid_key_phrases(TokenKind::EndDelete)?;
+
+        if !invalid_key.is_empty() || !not_invalid_key.is_empty() {
+            self.warning_at(
+                start_span,
+                "DELETE with INVALID KEY/NOT INVALID KEY is a non-conforming indexed feature",
+            );
+        }
 
         let end_span = self.span();
         Ok(Statement::Delete(Box::new(DeleteStatement {

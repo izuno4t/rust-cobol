@@ -21,6 +21,8 @@ pub struct Parser {
     /// When DECIMAL-POINT IS COMMA is set in SPECIAL-NAMES, commas act as
     /// decimal points in numeric literals (e.g. `123,45` means `123.45`).
     pub(crate) decimal_point_is_comma: bool,
+    /// Suppresses duplicate non-fatal warnings within a single statement.
+    pub(crate) statement_warning_emitted: bool,
 }
 
 impl Parser {
@@ -47,6 +49,7 @@ impl Parser {
             reporter: DiagnosticReporter::new(),
             file_id,
             decimal_point_is_comma: false,
+            statement_warning_emitted: false,
         }
     }
 
@@ -227,6 +230,15 @@ impl Parser {
     /// Report a warning at the given span.
     pub(crate) fn warning_at(&mut self, span: Span, msg: &str) {
         crate::error::report_warning(&mut self.reporter, span, msg);
+    }
+
+    /// Report a warning at most once while parsing the current statement.
+    pub(crate) fn warning_once_per_statement(&mut self, span: Span, msg: &str) {
+        if self.statement_warning_emitted {
+            return;
+        }
+        self.statement_warning_emitted = true;
+        self.warning_at(span, msg);
     }
 
     /// Returns the text of the current token as a SmolStr.

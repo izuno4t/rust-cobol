@@ -155,18 +155,33 @@ impl Parser {
                 self.eat_is();
                 access_mode = Some(self.parse_access_mode()?);
             } else if self.check(TokenKind::RecordKey) {
+                let warning_span = self.span();
                 self.advance();
                 self.eat_is();
+                self.warning_at(
+                    warning_span,
+                    "RECORD KEY is a non-conforming indexed file feature",
+                );
                 record_key = Some(self.parse_qualified_name()?);
             } else if self.check(TokenKind::Record) && self.peek(1).kind == TokenKind::Key {
+                let warning_span = self.span();
                 self.advance();
                 self.advance();
                 self.eat_is();
+                self.warning_at(
+                    warning_span,
+                    "RECORD KEY is a non-conforming indexed file feature",
+                );
                 record_key = Some(self.parse_qualified_name()?);
             } else if self.check(TokenKind::Record) && self.peek(1).kind == TokenKind::Identifier {
                 // NIST fixed-format sources sometimes use an abbreviated
                 // FILE-CONTROL form like `RECORD FOO-KEY.` for RECORD KEY.
+                let warning_span = self.span();
                 self.advance();
+                self.warning_at(
+                    warning_span,
+                    "RECORD KEY is a non-conforming indexed file feature",
+                );
                 record_key = Some(self.parse_qualified_name()?);
             } else if self.check(TokenKind::Relative) && self.peek(1).kind == TokenKind::Key {
                 self.advance();
@@ -229,11 +244,13 @@ impl Parser {
     }
 
     fn parse_file_organization(&mut self) -> Result<FileOrganization, ()> {
+        let start_span = self.span();
         if self.check(TokenKind::Sequential) {
             self.advance();
             Ok(FileOrganization::Sequential)
         } else if self.check(TokenKind::Indexed) {
             self.advance();
+            self.warning_at(start_span, "ORGANIZATION IS INDEXED is a non-conforming indexed feature");
             Ok(FileOrganization::Indexed)
         } else if self.check(TokenKind::Relative) {
             self.advance();
@@ -249,14 +266,17 @@ impl Parser {
     }
 
     fn parse_access_mode(&mut self) -> Result<AccessMode, ()> {
+        let start_span = self.span();
         if self.check(TokenKind::Sequential) {
             self.advance();
             Ok(AccessMode::Sequential)
         } else if self.check(TokenKind::Random) {
             self.advance();
+            self.warning_at(start_span, "ACCESS MODE IS RANDOM is a non-conforming indexed feature");
             Ok(AccessMode::Random)
         } else if self.check(TokenKind::Dynamic) {
             self.advance();
+            self.warning_at(start_span, "ACCESS MODE IS DYNAMIC is a non-conforming indexed feature");
             Ok(AccessMode::Dynamic)
         } else {
             self.error("expected access mode");

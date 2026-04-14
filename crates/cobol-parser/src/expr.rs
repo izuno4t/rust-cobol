@@ -504,6 +504,29 @@ impl Parser {
 
         let name = self.expect_identifier()?;
 
+        if matches!(
+            name.as_str(),
+            "ACOS"
+                | "ANNUITY"
+                | "ASIN"
+                | "ATAN"
+                | "CHAR"
+                | "COS"
+                | "CURRENT-DATE"
+                | "DATE-OF-INTEGER"
+                | "DAY-OF-INTEGER"
+                | "FACTORIAL"
+                | "INTEGER"
+                | "INTEGER-OF-DATE"
+                | "INTEGER-OF-DAY"
+                | "INTEGER-PART"
+        ) {
+            self.warning_once_per_statement(
+                start_span,
+                "intrinsic function is a non-conforming standard feature",
+            );
+        }
+
         let mut args = Vec::new();
         if self.check(TokenKind::LeftParen) {
             self.advance();
