@@ -511,7 +511,9 @@ pub enum HirStatement {
     Multiply {
         operand: HirExpr,
         by: Vec<HirExpr>,
+        by_rounded: Vec<bool>,
         giving: Vec<HirExpr>,
+        giving_rounded: Vec<bool>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,

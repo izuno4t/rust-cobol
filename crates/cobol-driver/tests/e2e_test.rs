@@ -4362,6 +4362,115 @@ PROCEDURE DIVISION.
     );
 }
 
+#[test]
+fn test_nist_nc101a_multiply_by_decimal_target_compares_scaled_result() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NC101A-MULTIPLY-BY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 MULTIPLY-DATA.
+   02 MULT1 PIC 999V99 VALUE 80.12.
+   02 MULT5 PIC 9 VALUE 4.
+PROCEDURE DIVISION.
+    MOVE 80.12 TO MULT1.
+    MOVE 4 TO MULT5.
+    MULTIPLY MULT5 BY MULT1.
+    IF MULT1 EQUAL TO 320.48
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY MULT1
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("PASS"),
+        "80.12 * 4 should compare equal to 320.48, got '{}'",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_nist_nc101a_multiply_rounded_display_numeric_target() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NC101A-MULTIPLY-ROUNDED.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 MULTIPLY-DATA.
+   02 MULT4 PIC S99 VALUE -56.
+PROCEDURE DIVISION.
+    MULTIPLY -1.3 BY MULT4 ROUNDED.
+    DISPLAY MULT4.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("73"),
+        "-56 * -1.3 ROUNDED should store 73, got '{}'",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_nist_nc101a_multiply_decimal_operand_preserves_integer_target_digits() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NC101A-MULTIPLY-WIDE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 WRK-DS-18V00 PIC S9(18).
+77 A06THREES-DS-03V03 PIC S999V999 VALUE 333.333.
+PROCEDURE DIVISION.
+    MOVE 222222222222 TO WRK-DS-18V00.
+    MULTIPLY A06THREES-DS-03V03 BY WRK-DS-18V00.
+    IF WRK-DS-18V00 EQUAL TO 000074073999999925
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY WRK-DS-18V00
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("PASS"),
+        "222222222222 * 333.333 should keep the integer target width, got '{}'",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_nist_nc101a_multiply_rounded_decimal_target() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NC101A-MULTIPLY-ROUNDED-DECIMAL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 WRK-DS-06V06 PIC S9(6)V9(6).
+77 A08TWOS-DS-02V06 PIC S99V9(6) VALUE 22.222222.
+PROCEDURE DIVISION.
+    MOVE A08TWOS-DS-02V06 TO WRK-DS-06V06.
+    MULTIPLY 0.4 BY WRK-DS-06V06 ROUNDED.
+    IF WRK-DS-06V06 EQUAL TO 8.888889
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY WRK-DS-06V06
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("PASS"),
+        "22.222222 * 0.4 ROUNDED should store 8.888889, got '{}'",
+        stdout.trim()
+    );
+}
+
 /// Test ADD/SUBTRACT/MULTIPLY/DIVIDE with subscripted targets.
 #[test]
 fn test_native_subscripted_arithmetic() {

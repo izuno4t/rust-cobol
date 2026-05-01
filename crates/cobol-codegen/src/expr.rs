@@ -1086,15 +1086,17 @@ pub(crate) fn emit_assign_to_decimal(
 ) {
     match from {
         HirExpr::Literal(HirLiteral::Integer(n)) => {
-            out.push_str(&format!(
-                "{pad}cobol_decimal_from_int({n}, 0, &{c_target});\n"
-            ));
+            emit_assign_scaled_int_to_decimal(out, c_target, &n.to_string(), "0", pad);
         }
         HirExpr::Literal(HirLiteral::Decimal(d)) => {
             let (scaled, scale) = parse_decimal_literal(d);
-            out.push_str(&format!(
-                "{pad}cobol_decimal_from_int({scaled}, {scale}, &{c_target});\n"
-            ));
+            emit_assign_scaled_int_to_decimal(
+                out,
+                c_target,
+                &scaled.to_string(),
+                &scale.to_string(),
+                pad,
+            );
         }
         HirExpr::Literal(HirLiteral::Zero) | HirExpr::Literal(HirLiteral::Null) => {
             // Only zero the value; preserve scale/size/is_signed so that
@@ -1112,9 +1114,9 @@ pub(crate) fn emit_assign_to_decimal(
         }
         _ => {
             if is_decimal_expr(from, data_items) {
-                // CobolDecimal to CobolDecimal: struct copy
+                // Preserve the target PICTURE metadata; only move the scaled value.
                 let c_src = emit_expr(from);
-                out.push_str(&format!("{pad}{c_target} = {c_src};\n"));
+                emit_assign_decimal_value_to_decimal(out, c_target, &c_src, pad);
             } else if expr_requires_double_precision(from, data_items) {
                 // Expression contains decimal sub-expressions or fractional
                 // literals: use double arithmetic to preserve precision, then
@@ -1125,16 +1127,43 @@ pub(crate) fn emit_assign_to_decimal(
                     "{pad}cobol_decimal_from_double({e}, &{c_target});\n"
                 ));
             } else {
-                // Integer variable or expression -> CobolDecimal
-                // Use emit_int_compatible_expr to handle BinaryOp/UnaryOp
-                // that may contain CobolDecimal sub-expressions.
+                // Integer variable or expression -> CobolDecimal. Preserve
+                // the target PICTURE metadata and scale the integer value into it.
                 let e = emit_int_compatible_expr(from, data_items);
-                out.push_str(&format!(
-                    "{pad}cobol_decimal_from_int({e}, 0, &{c_target});\n"
-                ));
+                emit_assign_scaled_int_to_decimal(out, c_target, &e, "0", pad);
             }
         }
     }
+}
+
+fn emit_assign_scaled_int_to_decimal(
+    out: &mut String,
+    c_target: &str,
+    scaled_value_expr: &str,
+    source_scale_expr: &str,
+    pad: &str,
+) {
+    out.push_str(&format!(
+        "{pad}{{ int64_t _dv = ({scaled_value_expr}); int32_t _ds = ({source_scale_expr}); \
+         int32_t _dd = {c_target}.scale - _ds; \
+         if (_dd > 0) _dv *= (int64_t)pow(10.0, _dd); \
+         else if (_dd < 0) _dv /= (int64_t)pow(10.0, -_dd); \
+         {c_target}.value = _dv; }}\n"
+    ));
+}
+
+fn emit_assign_decimal_value_to_decimal(
+    out: &mut String,
+    c_target: &str,
+    c_source: &str,
+    pad: &str,
+) {
+    out.push_str(&format!(
+        "{pad}{{ int64_t _dv = {c_source}.value; int32_t _dd = {c_target}.scale - {c_source}.scale; \
+         if (_dd > 0) _dv *= (int64_t)pow(10.0, _dd); \
+         else if (_dd < 0) _dv /= (int64_t)pow(10.0, -_dd); \
+         {c_target}.value = _dv; }}\n"
+    ));
 }
 
 fn intrinsic_returns_double(name: &str) -> bool {
@@ -2553,18 +2582,6 @@ pub(crate) fn emit_condition_with_ctx(
                     HirCompareOp::Le => "<= 0",
                 };
                 format!("({cmp} {op_str})")
-            } else if expr_contains_decimal(left) || expr_contains_decimal(right) {
-                let l = emit_expr_as_double(left);
-                let r = emit_expr_as_double(right);
-                let op_str = match op {
-                    HirCompareOp::Eq => "==",
-                    HirCompareOp::Ne => "!=",
-                    HirCompareOp::Gt => ">",
-                    HirCompareOp::Lt => "<",
-                    HirCompareOp::Ge => ">=",
-                    HirCompareOp::Le => "<=",
-                };
-                format!("({l} {op_str} {r})")
             } else if is_decimal_expr(left, data_items) || is_decimal_expr(right, data_items) {
                 // CobolDecimal comparison via runtime function
                 let left_is_dec = is_decimal_expr(left, data_items);
@@ -2607,6 +2624,18 @@ pub(crate) fn emit_condition_with_ctx(
                          cobol_decimal_cmp(&_tcmp, &{r}); }}) {op_str})"
                     )
                 }
+            } else if expr_contains_decimal(left) || expr_contains_decimal(right) {
+                let l = emit_expr_as_double(left);
+                let r = emit_expr_as_double(right);
+                let op_str = match op {
+                    HirCompareOp::Eq => "==",
+                    HirCompareOp::Ne => "!=",
+                    HirCompareOp::Gt => ">",
+                    HirCompareOp::Lt => "<",
+                    HirCompareOp::Ge => ">=",
+                    HirCompareOp::Le => "<=",
+                };
+                format!("({l} {op_str} {r})")
             } else {
                 let l = emit_int_compatible_expr(left, data_items);
                 let r = emit_int_compatible_expr(right, data_items);

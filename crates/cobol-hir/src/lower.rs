@@ -1863,17 +1863,25 @@ fn lower_multiply(
             .map(|t| lower_qualified_name_to_expr(&t.target))
             .collect()
     };
+    let by_rounded: Vec<bool> = if mul.by_expr.is_some() {
+        vec![false]
+    } else {
+        mul.by.iter().map(|t| t.rounded).collect()
+    };
     let giving = mul
         .giving
         .iter()
         .map(|t| lower_qualified_name_to_expr(&t.target))
         .collect();
+    let giving_rounded = mul.giving.iter().map(|t| t.rounded).collect();
     let on_size_error = lower_statements(&mul.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&mul.not_on_size_error, condition_names);
     HirStatement::Multiply {
         operand,
         by,
+        by_rounded,
         giving,
+        giving_rounded,
         on_size_error,
         not_on_size_error,
         span: mul.span,
@@ -3713,7 +3721,9 @@ fn fix_subscripts_in_statement(stmt: &mut HirStatement, occurs_dims: &HashMap<Sm
         HirStatement::Multiply {
             operand,
             by,
+            by_rounded: _,
             giving,
+            giving_rounded: _,
             on_size_error,
             not_on_size_error,
             ..

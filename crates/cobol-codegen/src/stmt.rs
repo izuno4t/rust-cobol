@@ -551,7 +551,9 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::Multiply {
             operand,
             by,
+            by_rounded,
             giving,
+            giving_rounded,
             on_size_error,
             not_on_size_error,
             ..
@@ -573,7 +575,8 @@ pub(crate) fn emit_statement_with_ctx(
                     .first()
                     .map(|b| emit_int_compatible_expr(b, data_items))
                     .unwrap_or_default();
-                for target in giving {
+                for (idx, target) in giving.iter().enumerate() {
+                    let rounded = giving_rounded.get(idx).copied().unwrap_or(false);
                     let c_target = emit_expr(target);
                     let target_name = expr_data_name(target);
                     let target_is_decimal = target_name
@@ -611,18 +614,32 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!("{pad}{{ {init_a} {init_b} "));
                         out.push_str("CobolDecimal _mr; cobol_decimal_mul(&_ma, &_mb, &_mr); ");
                         if target_is_decimal {
-                            out.push_str(&format!("{c_target} = _mr; }}\n"));
+                            if rounded {
+                                out.push_str(&format!(
+                                        "{c_target}.value = llround(cobol_decimal_to_double(&_mr) * pow(10.0, {c_target}.scale)); }}\n"
+                                    ));
+                            } else {
+                                out.push_str(&format!("{c_target} = _mr; }}\n"));
+                            }
                         } else if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                             let c_target_ptr = display_numeric_ptr(&c_target);
+                            let store_expr = if rounded {
+                                "llround(cobol_decimal_to_double(&_mr))".to_string()
+                            } else {
+                                "cobol_decimal_to_int64(&_mr)".to_string()
+                            };
                             out.push_str(&format!(
                                 "cobol_store_numeric_display(\
-                                 cobol_decimal_to_int64(&_mr), \
+                                 {store_expr}, \
                                  {c_target_ptr}, {disp_size}); }}\n"
                             ));
                         } else {
-                            out.push_str(&format!(
-                                "{c_target} = cobol_decimal_to_int64(&_mr); }}\n"
-                            ));
+                            let store_expr = if rounded {
+                                "llround(cobol_decimal_to_double(&_mr))"
+                            } else {
+                                "cobol_decimal_to_int64(&_mr)"
+                            };
+                            out.push_str(&format!("{c_target} = {store_expr}; }}\n"));
                         }
                     } else {
                         let mul_expr = format!("{first_by_int} * {c_operand_int}");
@@ -656,42 +673,84 @@ pub(crate) fn emit_statement_with_ctx(
                     }
                 }
             } else {
-                for target in by {
+                for (idx, target) in by.iter().enumerate() {
+                    let rounded = by_rounded.get(idx).copied().unwrap_or(false);
                     let c_target = emit_expr(target);
                     let target_name = expr_data_name(target);
                     let target_is_decimal = target_name
                         .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     if target_is_decimal {
-                        emit_decimal_arith(
-                            out,
-                            &c_target,
-                            operand,
-                            "cobol_decimal_mul",
-                            data_items,
-                            &pad,
-                        );
+                        if rounded {
+                            emit_rounded_decimal_multiply_by(
+                                out, &c_target, operand, data_items, &pad,
+                            );
+                        } else {
+                            emit_decimal_arith(
+                                out,
+                                &c_target,
+                                operand,
+                                "cobol_decimal_mul",
+                                data_items,
+                                &pad,
+                            );
+                        }
                     } else if is_decimal_expr(operand, data_items) {
-                        // int64 target *= CobolDecimal operand: use decimal path
+                        // int64 target *= CobolDecimal operand. Do not use
+                        // cobol_decimal_mul here: it clamps to operand PICTURE
+                        // size, while the receiving integer target determines
+                        // the allowed result size for this statement.
                         let c_operand = emit_expr(operand);
                         if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                             let c_target_const_ptr = display_numeric_const_ptr(&c_target);
                             let c_target_ptr = display_numeric_ptr(&c_target);
+                            let target_name_str = target_name.map_or("", HirDataName::as_str);
+                            let max_val = get_pic_max(target_name_str, data_items);
                             out.push_str(&format!(
-                                "{pad}{{ CobolDecimal _td; cobol_decimal_from_int(\
-                                 cobol_display_to_int64(\
-                                 {c_target_const_ptr}, {disp_size}), 0, &_td); \
-                                 cobol_decimal_mul(&_td, &{c_operand}, &_td); \
-                                 cobol_store_numeric_display(\
-                                 cobol_decimal_to_int64(&_td), \
-                                 {c_target_ptr}, {disp_size}); }}\n"
+                                "{pad}{{ int64_t _prev = cobol_display_to_int64(\
+                                 {c_target_const_ptr}, {disp_size});\n"
                             ));
+                            emit_scaled_decimal_multiply_result(
+                                out, "_prev", &c_operand, rounded, &pad,
+                            );
+                            if has_size_error {
+                                if let Some(max_val) = max_val {
+                                    out.push_str(&format!(
+                                        "{pad}if (llabs(_result) > {max_val}) {{ _size_error = 1; }} \
+                                         else {{ cobol_store_numeric_display(_result, {c_target_ptr}, {disp_size}); }}\n"
+                                    ));
+                                } else {
+                                    out.push_str(&format!(
+                                        "{pad}cobol_store_numeric_display(_result, {c_target_ptr}, {disp_size});\n"
+                                    ));
+                                }
+                            } else {
+                                out.push_str(&format!(
+                                    "{pad}cobol_store_numeric_display(_result, {c_target_ptr}, {disp_size});\n"
+                                ));
+                            }
+                            out.push_str(&format!("{pad}}}\n"));
                         } else {
-                            out.push_str(&format!(
-                                "{pad}{{ CobolDecimal _td; cobol_decimal_from_int({c_target}, 0, &_td); \
-                                 cobol_decimal_mul(&_td, &{c_operand}, &_td); \
-                                 {c_target} = cobol_decimal_to_int64(&_td); }}\n"
-                            ));
+                            out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
+                            emit_scaled_decimal_multiply_result(
+                                out, "_prev", &c_operand, rounded, &pad,
+                            );
+                            if has_size_error {
+                                if let Some(max_val) = get_pic_max(
+                                    target_name.map_or("", HirDataName::as_str),
+                                    data_items,
+                                ) {
+                                    out.push_str(&format!(
+                                        "{pad}if (llabs(_result) > {max_val}) {{ _size_error = 1; }} \
+                                         else {{ {c_target} = _result; }}\n"
+                                    ));
+                                } else {
+                                    out.push_str(&format!("{pad}{c_target} = _result;\n"));
+                                }
+                            } else {
+                                out.push_str(&format!("{pad}{c_target} = _result;\n"));
+                            }
+                            out.push_str(&format!("{pad}}}\n"));
                         }
                     } else {
                         let c_operand = emit_int_compatible_expr(operand, data_items);
@@ -699,19 +758,36 @@ pub(crate) fn emit_statement_with_ctx(
                             if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                                 let c_target_const_ptr = display_numeric_const_ptr(&c_target);
                                 let c_target_ptr = display_numeric_ptr(&c_target);
+                                let target_name_str = target_name.map_or("", HirDataName::as_str);
+                                let max_val = get_pic_max(target_name_str, data_items);
                                 out.push_str(&format!(
                                     "{pad}{{ int64_t _prev = cobol_display_to_int64(\
                                      {c_target_const_ptr}, {disp_size});\n"
                                 ));
-                                out.push_str(&format!(
-                                    "{pad}cobol_store_numeric_display(\
-                                     cobol_display_to_int64(\
-                                     {c_target_const_ptr}, {disp_size}) * ({c_operand}), \
-                                     {c_target_ptr}, {disp_size});\n"
-                                ));
+                                let result_expr = if rounded {
+                                    format!("llround((double)(_prev * ({c_operand})))")
+                                } else {
+                                    format!("_prev * ({c_operand})")
+                                };
+                                out.push_str(&format!("{pad}int64_t _result = {result_expr};\n"));
+                                if let Some(max_val) = max_val {
+                                    out.push_str(&format!(
+                                        "{pad}if (llabs(_result) > {max_val}) {{ _size_error = 1; }} \
+                                         else {{ cobol_store_numeric_display(_result, {c_target_ptr}, {disp_size}); }}\n"
+                                    ));
+                                } else {
+                                    out.push_str(&format!(
+                                        "{pad}cobol_store_numeric_display(_result, {c_target_ptr}, {disp_size});\n"
+                                    ));
+                                }
                             } else {
                                 out.push_str(&format!("{pad}{{ int64_t _prev = {c_target};\n"));
-                                out.push_str(&format!("{pad}{c_target} *= {c_operand};\n"));
+                                let result_expr = if rounded {
+                                    format!("llround((double)({c_target} * ({c_operand})))")
+                                } else {
+                                    format!("{c_target} * ({c_operand})")
+                                };
+                                out.push_str(&format!("{pad}{c_target} = {result_expr};\n"));
                             }
                             emit_integer_overflow_check(
                                 out,
@@ -721,6 +797,17 @@ pub(crate) fn emit_statement_with_ctx(
                                 &pad,
                             );
                             out.push_str(&format!("{pad}}}\n"));
+                        } else if rounded {
+                            let current = if let Some(disp_size) =
+                                grp_display_size(&c_target, data_items)
+                            {
+                                let c_target_const_ptr = display_numeric_const_ptr(&c_target);
+                                format!("cobol_display_to_int64({c_target_const_ptr}, {disp_size})")
+                            } else {
+                                c_target.clone()
+                            };
+                            let product = format!("llround((double)(({current}) * ({c_operand})))");
+                            emit_store_int(out, &c_target, &product, data_items, &pad);
                         } else {
                             emit_store_int_op(out, &c_target, "*", &c_operand, data_items, &pad);
                         }
@@ -5228,6 +5315,76 @@ fn find_subscripted_var_in_expr<'a>(expr: &'a HirExpr, var: &str) -> Option<&'a 
         HirExpr::FunctionCall { args, .. } => args
             .iter()
             .find_map(|arg| find_subscripted_var_in_expr(arg, var)),
+        _ => None,
+    }
+}
+
+fn emit_scaled_decimal_multiply_result(
+    out: &mut String,
+    target_expr: &str,
+    decimal_expr: &str,
+    rounded: bool,
+    pad: &str,
+) {
+    out.push_str(&format!(
+        "{pad}__int128 _raw = (__int128)({target_expr}) * (__int128){decimal_expr}.value;\n\
+         {pad}int64_t _divisor = (int64_t)pow(10.0, {decimal_expr}.scale);\n"
+    ));
+    if rounded {
+        out.push_str(&format!(
+            "{pad}int64_t _result = (int64_t)((_raw >= 0) \
+             ? ((_raw + (_divisor / 2)) / _divisor) \
+             : ((_raw - (_divisor / 2)) / _divisor));\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}int64_t _result = (int64_t)(_raw / _divisor);\n"
+        ));
+    }
+}
+
+fn emit_rounded_decimal_multiply_by(
+    out: &mut String,
+    c_target: &str,
+    operand: &HirExpr,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    if is_decimal_expr(operand, data_items) {
+        let c_operand = emit_expr(operand);
+        out.push_str(&format!(
+            "{pad}{{ __int128 _raw = (__int128){c_target}.value * (__int128){c_operand}.value;\n\
+             {pad}int64_t _divisor = (int64_t)pow(10.0, {c_operand}.scale);\n\
+             {pad}{c_target}.value = (int64_t)((_raw >= 0) \
+             ? ((_raw + (_divisor / 2)) / _divisor) \
+             : ((_raw - (_divisor / 2)) / _divisor)); }}\n"
+        ));
+        return;
+    }
+
+    if let Some((scaled, scale)) = decimal_literal_parts(operand) {
+        out.push_str(&format!(
+            "{pad}{{ __int128 _raw = (__int128){c_target}.value * (__int128)({scaled});\n\
+             {pad}int64_t _divisor = (int64_t)pow(10.0, {scale});\n\
+             {pad}{c_target}.value = (int64_t)((_raw >= 0) \
+             ? ((_raw + (_divisor / 2)) / _divisor) \
+             : ((_raw - (_divisor / 2)) / _divisor)); }}\n"
+        ));
+        return;
+    }
+
+    let c_operand = emit_int_compatible_expr(operand, data_items);
+    out.push_str(&format!("{pad}{c_target}.value *= ({c_operand});\n"));
+}
+
+fn decimal_literal_parts(expr: &HirExpr) -> Option<(i64, u32)> {
+    match expr {
+        HirExpr::Literal(HirLiteral::Integer(n)) => Some((*n, 0)),
+        HirExpr::Literal(HirLiteral::Decimal(d)) => Some(parse_decimal_literal(d)),
+        HirExpr::UnaryOp {
+            op: HirUnaryOp::Neg,
+            operand,
+        } => decimal_literal_parts(operand).map(|(value, scale)| (-value, scale)),
         _ => None,
     }
 }
