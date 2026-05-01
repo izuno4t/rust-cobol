@@ -113,6 +113,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                     decimal_places: 0,
                     is_signed: false,
                 },
+                scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
                 redefines: None,
@@ -139,6 +140,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                             decimal_places: 0,
                             is_signed: false,
                         },
+                        scale_adjustment: 0,
                         is_external: false,
                         initial_value: Some(HirLiteral::Integer(0)),
                         redefines: None,
@@ -158,6 +160,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                             decimal_places: 0,
                             is_signed: false,
                         },
+                        scale_adjustment: 0,
                         is_external: false,
                         initial_value: Some(HirLiteral::Integer(0)),
                         redefines: None,
@@ -190,6 +193,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                 data_items.push(HirDataItem {
                     name: SmolStr::new(name),
                     data_type: HirType::Alphanumeric { size: 80 },
+                    scale_adjustment: 0,
                     is_external: false,
                     initial_value: None,
                     redefines: None,
@@ -685,6 +689,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
                 decimal_places: 0,
                 is_signed: false,
             },
+            scale_adjustment: 0,
             is_external: false,
             initial_value: Some(HirLiteral::Integer(0)),
             occurs: None,
@@ -702,6 +707,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
                 decimal_places: 0,
                 is_signed: false,
             },
+            scale_adjustment: 0,
             is_external: false,
             initial_value: Some(HirLiteral::Integer(0)),
             occurs: None,
@@ -741,6 +747,7 @@ fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirD
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
+            scale_adjustment: picture_scale_adjustment(item),
             is_external: inherited_external || item.is_external,
             initial_value,
             occurs,
@@ -759,6 +766,7 @@ fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirD
             out.push(HirDataItem {
                 name: idx_name.clone(),
                 data_type: HirType::Index,
+                scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
                 occurs: None,
@@ -830,6 +838,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
+            scale_adjustment: picture_scale_adjustment(item),
             is_external: false,
             initial_value,
             occurs,
@@ -876,6 +885,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
             members.push(HirDataItem {
                 name: member_name,
                 data_type,
+                scale_adjustment: picture_scale_adjustment(child),
                 is_external: child.is_external,
                 initial_value,
                 occurs,
@@ -941,6 +951,14 @@ fn determine_hir_type(item: &DataItem) -> HirType {
             }
             Usage::Comp | Usage::Comp4 | Usage::Comp5 | Usage::Binary | Usage::Computational => {
                 if let Some(pic) = &item.picture {
+                    let decimal_places = effective_decimal_places(item);
+                    if decimal_places > 0 {
+                        return HirType::Numeric {
+                            size: pic.size,
+                            decimal_places,
+                            is_signed: pic.is_signed,
+                        };
+                    }
                     return HirType::Binary { size: pic.size };
                 }
                 return HirType::Binary { size: 4 };
@@ -958,7 +976,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
             cobol_ast::PictureCategory::Numeric | cobol_ast::PictureCategory::NumericEdited => {
                 HirType::Numeric {
                     size: pic.size,
-                    decimal_places: pic.decimal_positions,
+                    decimal_places: effective_decimal_places(item),
                     is_signed: pic.is_signed,
                 }
             }
@@ -971,6 +989,67 @@ fn determine_hir_type(item: &DataItem) -> HirType {
         // Default: single character alphanumeric
         HirType::Alphanumeric { size: 1 }
     }
+}
+
+fn effective_decimal_places(item: &DataItem) -> u32 {
+    let Some(pic) = &item.picture else {
+        return 0;
+    };
+    if pic.decimal_positions > 0 {
+        return pic.decimal_positions;
+    }
+    let adjustment = picture_scale_adjustment(item);
+    if adjustment < 0 {
+        pic.size
+    } else {
+        0
+    }
+}
+
+fn picture_scale_adjustment(item: &DataItem) -> i32 {
+    let Some(pic) = &item.picture else {
+        return 0;
+    };
+    let raw = pic.raw_string.to_ascii_uppercase();
+    let mut seen_digit = false;
+    let mut adjustment = 0;
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'9' | b'Z' | b'*' => {
+                seen_digit = true;
+                parse_repeat_count_for_picture_scale(bytes, &mut i);
+            }
+            b'P' => {
+                let count = parse_repeat_count_for_picture_scale(bytes, &mut i) as i32;
+                if seen_digit {
+                    adjustment += count;
+                } else {
+                    adjustment -= count;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    adjustment
+}
+
+fn parse_repeat_count_for_picture_scale(bytes: &[u8], i: &mut usize) -> u32 {
+    if *i + 1 < bytes.len() && bytes[*i + 1] == b'(' {
+        let start = *i + 2;
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b')' {
+            end += 1;
+        }
+        if end < bytes.len() {
+            *i = end;
+            let s = std::str::from_utf8(&bytes[start..end]).unwrap_or("1");
+            return s.parse().unwrap_or(1);
+        }
+    }
+    1
 }
 
 fn lower_value_clause(value: &ValueClause) -> HirLiteral {

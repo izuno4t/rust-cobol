@@ -889,25 +889,65 @@ pub(crate) fn emit_store_int(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
+    let stored_value_expr = find_data_item_by_c_name(c_target, data_items)
+        .filter(|item| item.scale_adjustment != 0)
+        .map(|item| apply_scale_adjustment_to_store(value_expr, item.scale_adjustment))
+        .unwrap_or_else(|| value_expr.to_string());
     if let Some(disp_size) = grp_display_size(c_target, data_items) {
         let c_target_ptr = display_numeric_ptr(c_target);
         out.push_str(&format!(
-            "{pad}cobol_store_numeric_display({value_expr}, {c_target_ptr}, {disp_size});\n"
+            "{pad}cobol_store_numeric_display({stored_value_expr}, {c_target_ptr}, {disp_size});\n"
         ));
     } else if find_data_item(c_target, data_items)
         .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
     {
         let tgt_size = find_data_item_size(c_target, data_items);
         out.push_str(&format!(
-            "{pad}cobol_move_numeric_to_display({value_expr}, 0, (uint8_t*)&{c_target}, {tgt_size});\n"
+            "{pad}cobol_move_numeric_to_display({stored_value_expr}, 0, (uint8_t*)&{c_target}, {tgt_size});\n"
         ));
     } else if is_group_member_field(c_target) {
         out.push_str(&format!(
-            "{pad}cobol_move_numeric_to_display({value_expr}, 0, (uint8_t*){c_target}, sizeof({c_target}));\n"
+            "{pad}cobol_move_numeric_to_display({stored_value_expr}, 0, (uint8_t*){c_target}, sizeof({c_target}));\n"
         ));
     } else {
-        out.push_str(&format!("{pad}{c_target} = {value_expr};\n"));
+        out.push_str(&format!("{pad}{c_target} = {stored_value_expr};\n"));
     }
+}
+
+pub(crate) fn apply_scale_adjustment_to_read(value_expr: &str, adjustment: i32) -> String {
+    if adjustment > 0 {
+        format!(
+            "(({value_expr}) * {})",
+            pow10_i64_literal(adjustment as u32)
+        )
+    } else if adjustment < 0 {
+        format!(
+            "(({value_expr}) / {})",
+            pow10_i64_literal((-adjustment) as u32)
+        )
+    } else {
+        value_expr.to_string()
+    }
+}
+
+pub(crate) fn apply_scale_adjustment_to_store(value_expr: &str, adjustment: i32) -> String {
+    if adjustment > 0 {
+        format!(
+            "(({value_expr}) / {})",
+            pow10_i64_literal(adjustment as u32)
+        )
+    } else if adjustment < 0 {
+        format!(
+            "(({value_expr}) * {})",
+            pow10_i64_literal((-adjustment) as u32)
+        )
+    } else {
+        value_expr.to_string()
+    }
+}
+
+fn pow10_i64_literal(exp: u32) -> String {
+    10_i64.pow(exp).to_string()
 }
 
 /// Check whether a variable name refers to a group member (char[] without null
@@ -1041,7 +1081,10 @@ pub(crate) fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem
                     let c_ptr = display_numeric_const_ptr(&c);
                     format!("cobol_display_to_int64({c_ptr}, {disp_size})")
                 } else {
-                    c
+                    let adjustment = expr_data_name(expr)
+                        .and_then(|name| find_data_item_by_name(name, data_items))
+                        .map_or(0, |item| item.scale_adjustment);
+                    apply_scale_adjustment_to_read(&c, adjustment)
                 }
             }
         }

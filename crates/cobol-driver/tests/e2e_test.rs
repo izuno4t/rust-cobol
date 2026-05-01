@@ -2517,6 +2517,7 @@ fn test_c2_move_corresponding() {
                                 decimal_places: 0,
                                 is_signed: false,
                             },
+                            scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
                             occurs: None,
@@ -2530,6 +2531,7 @@ fn test_c2_move_corresponding() {
                         HirDataItem {
                             name: "FIELD-B".into(),
                             data_type: HirType::Alphanumeric { size: 10 },
+                            scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
                             occurs: None,
@@ -2543,6 +2545,7 @@ fn test_c2_move_corresponding() {
                     ],
                     size: 15,
                 },
+                scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
                 occurs: None,
@@ -2564,6 +2567,7 @@ fn test_c2_move_corresponding() {
                                 decimal_places: 0,
                                 is_signed: false,
                             },
+                            scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
                             occurs: None,
@@ -2577,6 +2581,7 @@ fn test_c2_move_corresponding() {
                         HirDataItem {
                             name: "FIELD-C".into(),
                             data_type: HirType::Alphanumeric { size: 10 },
+                            scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
                             occurs: None,
@@ -2590,6 +2595,7 @@ fn test_c2_move_corresponding() {
                     ],
                     size: 15,
                 },
+                scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
                 occurs: None,
@@ -2668,6 +2674,7 @@ fn test_c2_add_corresponding() {
                             decimal_places: 2,
                             is_signed: false,
                         },
+                        scale_adjustment: 0,
                         is_external: false,
                         initial_value: None,
                         occurs: None,
@@ -2680,6 +2687,7 @@ fn test_c2_add_corresponding() {
                     }],
                     size: 9,
                 },
+                scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
                 occurs: None,
@@ -2700,6 +2708,7 @@ fn test_c2_add_corresponding() {
                             decimal_places: 2,
                             is_signed: false,
                         },
+                        scale_adjustment: 0,
                         is_external: false,
                         initial_value: None,
                         occurs: None,
@@ -2712,6 +2721,7 @@ fn test_c2_add_corresponding() {
                     }],
                     size: 9,
                 },
+                scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
                 occurs: None,
@@ -4467,6 +4477,67 @@ PROCEDURE DIVISION.
     assert!(
         stdout.contains("PASS"),
         "22.222222 * 0.4 ROUNDED should store 8.888889, got '{}'",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_nist_nc101a_multiply_scaled_p_target_by_comp_decimal() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NC101A-MULTIPLY-P.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 WRK-DS-0201P PIC S99P.
+77 A01ONE-CS-00V01 PIC SV9 COMPUTATIONAL VALUE .1.
+77 WRK-DS-05V00 PIC S9(5).
+PROCEDURE DIVISION.
+    MOVE -990 TO WRK-DS-0201P.
+    MULTIPLY A01ONE-CS-00V01 BY WRK-DS-0201P.
+    MOVE WRK-DS-0201P TO WRK-DS-05V00.
+    IF WRK-DS-05V00 EQUAL TO -00090
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY WRK-DS-05V00
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("PASS"),
+        "S99P target multiplied by .1 should move out as -90, got '{}'",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_nist_nc101a_multiply_leading_p_decimal_operand() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NC101A-MULTIPLY-LEADING-P.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 WRK-CS-18V00 PIC S9(18) COMPUTATIONAL.
+77 WRK-DU-18V00 PIC 9(18).
+77 A18ONES-DS-18V00 PIC S9(18) VALUE 111111111111111111.
+77 A01ONE-DS-P0801 PIC SP(8)9 VALUE .000000001.
+PROCEDURE DIVISION.
+    MOVE A18ONES-DS-18V00 TO WRK-CS-18V00.
+    MULTIPLY A01ONE-DS-P0801 BY WRK-CS-18V00.
+    MOVE WRK-CS-18V00 TO WRK-DU-18V00.
+    IF WRK-DU-18V00 EQUAL TO 000000000111111111
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY WRK-DU-18V00
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("PASS"),
+        "S9(18) target multiplied by SP(8)9 should keep 111111111, got '{}'",
         stdout.trim()
     );
 }

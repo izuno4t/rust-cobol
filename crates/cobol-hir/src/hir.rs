@@ -321,6 +321,7 @@ pub struct HirScreenInfo {
 pub struct HirDataItem {
     pub name: SmolStr,
     pub data_type: HirType,
+    pub scale_adjustment: i32,
     pub is_external: bool,
     pub initial_value: Option<HirLiteral>,
     /// OCCURS clause: number of repetitions (None = scalar).
