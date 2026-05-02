@@ -26,13 +26,14 @@
 | TASK-001 | ✅ | 現行NIST結果の仕様別ベースラインを固定する | - |
 | TASK-002 | ✅ | CCVS出力判定の共通分類表を作る | TASK-001 |
 | TASK-003 | ✅ | 19件のCErrをcodegen欠陥別に再現する | TASK-001 |
-| TASK-004 | ⏳ | 制御フロー仕様差分の代表reproを作る | TASK-002 |
-| TASK-005 | ⏳ | ファイルI/O仕様差分の代表reproを作る | TASK-002 |
-| TASK-006 | ⏳ | 数値変換と算術仕様差分の代表reproを作る | TASK-002 |
-| TASK-007 | ⏳ | 組込み関数仕様差分の代表reproを作る | TASK-002 |
-| TASK-008 | ⏳ | COPYと診断仕様差分の代表reproを作る | TASK-002 |
-| TASK-009 | ⏳ | REPORT/SORT/SEGMENT仕様差分を分離する | TASK-002,TASK-005 |
-| TASK-010 | ⏳ | 100% passまでの実装ロードマップを確定する | TASK-003,TASK-004,TASK-005,TASK-006,TASK-007,TASK-008,TASK-009 |
+| TASK-004 | ✅ | 制御フロー仕様差分の代表reproを作る | TASK-002 |
+| TASK-005 | ✅ | ファイルI/O仕様差分の代表reproを作る | TASK-002 |
+| TASK-006 | ✅ | 数値変換と算術仕様差分の代表reproを作る | TASK-002 |
+| TASK-007 | ✅ | 組込み関数仕様差分の代表reproを作る | TASK-002 |
+| TASK-008 | ✅ | COPYと診断仕様差分の代表reproを作る | TASK-002 |
+| TASK-009 | ✅ | REPORT/SORT/SEGMENT仕様差分を分離する | TASK-002,TASK-005 |
+| TASK-010 | ✅ | 100% passまでの実装ロードマップを確定する | TASK-003,TASK-004,TASK-005,TASK-006,TASK-007,TASK-008,TASK-009 |
+| TASK-011 | ⏳ | Backlogを実装タスクへ再編する | TASK-010 |
 
 ## タスク詳細（補足が必要な場合のみ）
 
@@ -285,12 +286,176 @@ TASK-003時点での判断:
 - 補足: 影響範囲は `IF`, `NC`, `DB`, `RL`, `RW`, `SM`, `SQ`, `OB`。
 - 成果物: COBOL制御移譲仕様とHIR/codegen/runtime責務の差分表。
 
+#### TASK-004 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 対象: `.nist/results/**/*.reason`, `.nist/results/**/*.log`
+- 参照ソース: `.nist/programs/**/**/*.cob`
+- 前提: TASK-002のreason分類から制御移譲に関係する候補を抽出する
+
+制御フロー仕様カテゴリ:
+
+| Category | COBOL機能 | 主な未達症状 | 主な責務 |
+| ---- | ---- | ---- | ---- |
+| debug declaratives | `USE FOR DEBUGGING` | DEBUG内容やPROC-NAMEがずれる | parser, HIR lowering, codegen |
+| transfer statements | `PERFORM`, `GO TO`, `ALTER` | 到達段落数や遷移先がずれる | parser, HIR CFG, codegen |
+| exception phrases | `AT END`, `INVALID KEY`, `ON SIZE ERROR` | 例外経路が発火しない | HIR CFG, codegen, runtime status |
+| program termination | `STOP`, `GOBACK`, `EXIT PROGRAM` | 実行停止や呼出元復帰がずれる | codegen, runtime program ABI |
+| call/linkage control | `CALL`, `ON OVERFLOW` | 呼出先結果や例外句がずれる | HIR linkage, codegen, runtime program ABI |
+
+代表repro候補:
+
+| Repro | NIST例 | Reason | 観測症状 | 最小化する仕様 |
+| ---- | ---- | ---- | ---- | ---- |
+| CF-001 | DB101A | `ccvs-first-fail` | `START PROGRAM` debug内容が`FALL THROUGH`になる | `USE FOR DEBUGGING`の起動契機 |
+| CF-002 | NC302M | `warning-flags-missing` | `ALTER`関連の警告数が不足 | `ALTER`の解析と診断 |
+| CF-003 | DB104A | `no-decisive-ccvs-summary` | SORT/AT-END系debug出力を決定できない | `USE FOR DEBUGGING`とSORT入出力 |
+| CF-004 | IC223A | `ccvs-first-fail` | CALL戻り値と`ON OVERFLOW`句がずれる | `CALL`後の復帰と例外句 |
+| CF-005 | OB/NC1M系 | `ccvs-first-fail` | `STOP literal`後も実行が継続する | `STOP`の終端意味論 |
+| CF-006 | IF101A | `detail-paragraph-mismatch` | 期待26段落に対して16段落のみ出力 | `PERFORM THRU`範囲と条件分岐 |
+
+他タスクへ渡す候補:
+
+| NIST例 | 理由 | 渡し先 |
+| ---- | ---- | ---- |
+| SQ201M | `INVALID KEY`やLINAGEを含み、I/O状態が主因候補 | TASK-005,TASK-009 |
+| CM101M | communication statusと`NO DATA`句が主因候補 | TASK-009 |
+| SM205A | COPY SD REPLACINGによる入力生成差分が主因候補 | TASK-008 |
+| IF128A | `ORD-MAX`関数値が主因候補 | TASK-007 |
+
+制御フローreproの最小形:
+
+| Repro | 最小COBOL構造 | 期待観測 |
+| ---- | ---- | ---- |
+| CF-001 | `DECLARATIVES`内に`USE FOR DEBUGGING ON paragraph`を置く | 対象段落突入時にDEBUG内容が一致する |
+| CF-002 | `ALTER A TO PROCEED TO B`後に`GO TO A`を実行する | 変更後の遷移先へ一度だけ移る |
+| CF-003 | `SORT ... INPUT PROCEDURE ... OUTPUT PROCEDURE`を持つ | procedure突入順とdebug hookが一致する |
+| CF-004 | `CALL`成功/失敗と`ON OVERFLOW`を分ける | 成功時は通常継続、失敗時は例外句へ移る |
+| CF-005 | `STOP "literal"`の直後に到達不能DISPLAYを置く | STOP後の文は実行されない |
+| CF-006 | `PERFORM A THRU C`の中に`GO TO`とfallthroughを置く | 範囲終了と戻り先が一致する |
+
+実装責務:
+
+| Layer | 責務 |
+| ---- | ---- |
+| parser | `ALTER`, `USE`, 例外句、`PERFORM THRU`境界をASTで落とさない |
+| sema | 段落/section名、debug対象、ALTER対象の解決を検証する |
+| HIR lowering | 通常辺、例外辺、debug辺、perform return辺を明示する |
+| codegen | `_goto_target`とperform returnの優先順を一貫させる |
+| runtime | program終端、CALL失敗、file statusを例外句へ伝える |
+| verifier | 到達段落、debug content、終端後出力を同じ形式で記録する |
+
+TASK-004時点での判断:
+
+- 制御フロー不具合は、単なる`GO TO`不足ではなく、通常辺、例外辺、
+  debug declarative、program terminationを同じCFGで扱えていない疑いが強い。
+- `IF101A`のようなdetail段落不足は、intrinsic不一致だけでは説明できない。
+  ただし最終分類はCF-006の縮小reproで確認する。
+- I/O例外句は制御フローとI/O状態機械の境界なので、TASK-005と重複させず、
+  TASK-004では「例外句へ制御が渡るか」だけを確認対象にする。
+
 ### TASK-005
 
 - 補足: 対象は sequential/indexed/relative の `OPEN`, `READ`,
   `WRITE`, `REWRITE`, `DELETE`, `START`, cursor, file status。
 - 補足: 影響範囲は `IX`, `RL`, `SQ`, `ST`, `SG`, `OB`, `NC`。
 - 成果物: ファイル組織ごとの状態遷移表と代表repro。
+
+#### TASK-005 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 対象: `.nist/results/{IX,RL,SQ,ST,OB,RW}/**/*.reason`,
+  `.nist/results/{IX,RL,SQ,ST,OB,RW}/**/*.log`
+- 参照ソース: `.nist/programs/{IX,RL,SQ,ST,OB,RW}/**/*.cob`
+- 前提: TASK-002のreason分類から、ファイル組織、access mode、
+  file status、cursor、例外句に関係する候補を抽出する
+
+ファイルI/O仕様カテゴリ:
+
+| Category | COBOL機能 | 主な未達症状 | 主な責務 |
+| ---- | ---- | ---- | ---- |
+| sequential basic | `OPEN`, `READ`, `WRITE`, `CLOSE`, `AT END` | record count、AT END、statusがずれる | HIR file metadata, runtime sequential state |
+| indexed random/sequential | `RECORD KEY`, `READ`, `REWRITE`, `INVALID KEY` | key検索とstatusがずれる | sema key resolution, runtime indexed store |
+| indexed dynamic | `ALTERNATE RECORD KEY`, `START`, `READ NEXT` | cursor順序と診断warningが不足 | runtime cursor, sema diagnostics |
+| relative random/dynamic | `RELATIVE KEY`, `READ NEXT`, `START` | relative keyとcursor位置がずれる | runtime relative store/cursor |
+| file exception phrases | `INVALID KEY`, `NOT INVALID KEY`, `AT END` | 例外句への分岐条件がずれる | HIR exception edges, codegen, runtime status |
+| output positioning | `LINAGE`, `WRITE ADVANCING`, `END-OF-PAGE` | line/page counterがずれる | runtime output control, verifier |
+| sort file boundary | `SD`, sort input/output file | sort前後のREAD/WRITE結果がずれる | runtime sort/merge, shared I/O |
+
+代表repro候補:
+
+| Repro | NIST例 | Reason | 観測症状 | 最小化する仕様 |
+| ---- | ---- | ---- | ---- | ---- |
+| IO-001 | IX104A | `ccvs-first-fail` | keyed `READ`でcomputed keyが`101`、期待が`1` | indexed randomのkey検索とstatus |
+| IO-002 | IX401M | `warning-flags-missing` | dynamic/alternate key系warningが10件期待に対して6件 | indexed dynamicと診断 |
+| IO-003 | RL205A | `ccvs-first-fail` | `READ NEXT`でcomputedが`9`、期待が`0` | relative cursorと`START` |
+| IO-004 | RL301M | `blank-or-empty-report` | relative randomの帳票が空 | relative `READ/WRITE/REWRITE/DELETE` |
+| IO-005 | SQ103A | `ccvs-first-fail` | declarativeが少なくとも一度入った扱いになる | sequential `AT END`と`USE`境界 |
+| IO-006 | SQ205A | `ccvs-first-fail` | 501件期待のREAD結果が空扱いになる | sequential file statusと複数file |
+| IO-007 | SQ201M | `ccvs-first-fail` | `OPEN`後のLINAGE counterが`0`、期待が`1` | `LINAGE`と`WRITE ADVANCING` |
+| IO-008 | OB/SQ1A系 | `ccvs-first-fail` | sequential fileの読取error countがずれる | sequential write/read内容保持 |
+
+他タスクへ渡す候補:
+
+| NIST例 | 理由 | 渡し先 |
+| ---- | ---- | ---- |
+| ST109A | variable-length sequential fileをSORT連鎖へ渡す入口 | TASK-009 |
+| ST115A | SORT用のsequential入力生成と後続SORTが混在 | TASK-009 |
+| RW101A | `INITIATE REPORT`とpage counterが主因 | TASK-009 |
+| SQ201M | LINAGEはI/Oだが帳票位置決めとverifier差分も含む | TASK-005,TASK-009 |
+
+縮小repro入力の形:
+
+| Repro | 最小COBOL構造 | 期待観測 |
+| ---- | ---- | ---- |
+| IO-001 | indexed fileへkey付きrecordを書き、close/open後に既存keyと欠番keyを読む | 既存keyはrecord一致、欠番keyは`INVALID KEY`とstatus一致 |
+| IO-002 | alternate key付きindexed fileで`START`後に`READ NEXT`する | alternate key順のcursorとwarning数が一致する |
+| IO-003 | relative fileに欠番を含むrecordを書き、`START`後に`READ NEXT`する | cursorが次の有効relative recordへ進む |
+| IO-004 | relative randomで`READ`, `WRITE`, `REWRITE`, `DELETE`を成功/失敗双方で行う | `INVALID KEY`と`NOT INVALID KEY`が期待どおり分岐する |
+| IO-005 | sequential fileをN件書いてN+1回読む | N+1回目だけ`AT END`になり、不要な`USE`へ入らない |
+| IO-006 | 複数sequential fileを同時に開き、各file statusを検証する | fileごとのstatusとrecord countが独立する |
+| IO-007 | `LINAGE`付きoutput fileで`WRITE AFTER ADVANCING PAGE`を行う | line/page counterと`END-OF-PAGE`が一致する |
+| IO-008 | sequential fileへ固定長recordを連続write/readする | record内容と件数が完全一致する |
+
+ファイル組織ごとの状態遷移:
+
+| Organization | State | 有効操作 | 主なstatus/例外 |
+| ---- | ---- | ---- | ---- |
+| sequential | closed | `OPEN INPUT/OUTPUT/EXTEND` | open失敗時はfile status設定 |
+| sequential | open input | `READ`, `CLOSE` | EOFで`AT END`、通常READで次recordへ進む |
+| sequential | open output/extend | `WRITE`, `CLOSE` | 書込後もcursorをrecord末尾に保つ |
+| indexed | closed | `OPEN INPUT/OUTPUT/I-O/EXTEND` | key定義と重複条件を初期化する |
+| indexed | open random | `READ`, `WRITE`, `REWRITE`, `DELETE` | key不在/重複で`INVALID KEY` |
+| indexed | open dynamic | `START`, `READ NEXT`, `READ PREVIOUS` | `START`がcursor基準を設定する |
+| relative | closed | `OPEN INPUT/OUTPUT/I-O/EXTEND` | relative key領域を初期化する |
+| relative | open random | `READ`, `WRITE`, `REWRITE`, `DELETE` | relative key不在/重複で`INVALID KEY` |
+| relative | open dynamic | `START`, `READ NEXT` | 欠番を飛ばし次の有効recordへ進む |
+
+実装責務:
+
+| Layer | 責務 |
+| ---- | ---- |
+| parser | `SELECT`, `ASSIGN`, `ORGANIZATION`, `ACCESS MODE`, key句、LINAGE句を落とさない |
+| sema | record key、alternate key、relative key、file status項目を解決する |
+| HIR lowering | file metadata、通常辺、例外辺、cursor操作を明示する |
+| codegen | file操作ごとにruntime ABIへmetadataとstatus格納先を渡す |
+| runtime | organization/access mode別の状態機械と永続storeを実装する |
+| verifier | 出力file、print file、record countを同じ基準で集計する |
+
+TASK-005時点での判断:
+
+- IX201AはPASSしているため、indexed I/O全体が未実装というより、
+  dynamic access、alternate key、cursor、status更新が未達の中心である。
+- RL系FAILはrelative keyそのものより、`START`後のcursor、欠番skip、
+  delete/rewrite後の状態更新が未達候補である。
+- SQ系FAILはsequential read/writeの基礎、file status、`AT END`、
+  LINAGE/output positioningが混在している。
+- ST/RWはファイルI/Oを踏むが、SORT/REPORT固有仕様が主因になるため、
+  TASK-005では共通I/O境界だけを扱い、固有仕様はTASK-009で分離する。
 
 ### TASK-006
 
@@ -299,12 +464,220 @@ TASK-003時点での判断:
 - 補足: 影響範囲は `NC`, `IC`, `CM`, `IF`。
 - 成果物: 数値カテゴリ、scale、符号、丸め、桁あふれの仕様表と代表repro。
 
+#### TASK-006 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 対象: `.nist/results/{NC,IC,CM,IF}/**/*.reason`,
+  `.nist/results/{NC,IC,CM,IF}/**/*.compile.log`
+- 参照ソース: `.nist/programs/{NC,IC,CM,IF}/**/*.cob`
+- 前提: TASK-002のreason分類から、MOVE、算術、PICTURE、数値条件、
+  CALL/通信statusの数値表現、intrinsic境界に関係する候補を抽出する
+
+数値仕様カテゴリ:
+
+| Category | COBOL機能 | 主な未達症状 | 主な責務 |
+| ---- | ---- | ---- | ---- |
+| numeric storage model | display numeric, binary, packed/decimal | computedが0化、桁/scaleが落ちる | sema picture metadata, runtime decimal |
+| MOVE conversion | numeric to numeric, numeric to display, edited numeric | MOVE後の値、符号、桁詰めがずれる | HIR conversion, codegen, runtime formatting |
+| arithmetic scale | `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE` | 小数桁、商、余り、符号がずれる | decimal arithmetic, result coercion |
+| rounded and overflow | `ROUNDED`, `ON SIZE ERROR` | overflow発火、丸め、結果保持がずれる | decimal rounding, exception edge |
+| PICTURE editing | `+`, `-`, `Z`, `*`, `/`, currency, decimal point | edited出力とblank/zero suppressionがずれる | picture parser, formatter |
+| numeric comparison | numeric condition, figurative constants, class | 条件TRUE/FALSEが逆になる | value conversion, comparison semantics |
+| table/subscript numeric | numeric subscript, index, SEARCH | 添字値や探索結果がずれる | subscript conversion, bounds, SEARCH |
+| inter-module numeric ABI | `CALL USING`, communication status | 表示値は同じでも判定がFAILになる | linkage layout, argument conversion |
+
+代表repro候補:
+
+| Repro | NIST例 | Reason | 観測症状 | 最小化する仕様 |
+| ---- | ---- | ---- | ---- | ---- |
+| NUM-001 | NC104A | `ccvs-first-fail` | `MOVE NUMERIC INTEGER`で`5`期待が`0`になる | numeric MOVEとscale合わせ |
+| NUM-002 | NC101A | `ccvs-first-fail` | `MULTIPLY BY`で`8888889`期待が`0`になる | multiplication result coercion |
+| NUM-003 | NC207A | `ccvs-first-fail` | qualified `ADD`で`2`期待が`0`になる | qualified item解決とADD |
+| NUM-004 | NC203A | `ccvs-first-fail` | DIVIDE remainderが`10.8`期待に対して`10` | division quotient/remainder scale |
+| NUM-005 | NC218A | `ccvs-first-fail` | overflowすべき箇所で結果が`****`扱いになる | `ON SIZE ERROR`と結果保持 |
+| NUM-006 | NC124A | `ccvs-first-fail` | `PICTURE + AND -`でblank期待が`+` | sign editingとblank suppression |
+| NUM-007 | NC114M | `ccvs-first-fail` | `/`編集で符号と桁配置がずれる | edited numeric formatter |
+| NUM-008 | NC103A | `ccvs-first-fail` | numeric equalityで表示桁が一致しない | numeric comparison coercion |
+| NUM-009 | NC225A | `ccvs-first-fail` | `EVALUATE`のnumeric conditionが期待分岐に入らない | numeric condition評価 |
+| NUM-010 | NC136A | `ccvs-first-fail` | numeric literal subscriptで期待要素を参照しない | subscript numeric conversion |
+| NUM-011 | IC237A | `ccvs-first-fail` | CALL戻り値の表示上は同値だがFAIL | linkage numeric ABI |
+
+CErrからTASK-006へ入る入口:
+
+| Family | NIST例 | 生成Cの壊れ方 | TASK-006で固定する契約 |
+| ---- | ---- | ---- | ---- |
+| Decimal helper mismatch | NC105A, NC118A, NC123A, NC177A | decimal値をinteger helperへ渡す | decimal source/valueを型別helperで受ける |
+| char array assignment | NC125A, NC401M | char配列へdecimal結果を直接代入する | formatted byte列として格納する |
+| display numeric as integer | NC109M | display numericをinteger値として扱う | display numericを値化してから演算する |
+| refmod pointer as integer | NC224A | reference modificationをinteger値として扱う | sliceを型変換してから数値化する |
+
+他タスクへ渡す候補:
+
+| NIST例 | 理由 | 渡し先 |
+| ---- | ---- | ---- |
+| IF101A | intrinsic結果以前に段落到達数が不足 | TASK-004,TASK-007 |
+| IF128A | `ORD-MAX`固有の戻り値規則が主因 | TASK-007 |
+| CM101M | communication status wordの数値表示を含むが通信仕様が主因 | TASK-009 |
+| CM201M | 帳票が空で、数値処理以前に出力捕捉が不明 | TASK-009 |
+
+縮小repro入力の形:
+
+| Repro | 最小COBOL構造 | 期待観測 |
+| ---- | ---- | ---- |
+| NUM-001 | `PIC 9`から`PIC 9V9`、`PIC S9`、display numericへ`MOVE`する | 桁寄せ、scale、符号がPICTUREどおりになる |
+| NUM-002 | integer/display/decimalを混在させて`MULTIPLY BY`する | 中間decimal値と受け側PICTUREへの格納が一致する |
+| NUM-003 | group配下の同名qualified itemへ`ADD`する | 名前解決後の対象だけが更新される |
+| NUM-004 | `DIVIDE ... GIVING ... REMAINDER`を小数付きで実行する | 商と余りのscaleが保持される |
+| NUM-005 | 桁あふれする算術を`ON SIZE ERROR`付きで実行する | overflow時は例外句へ入り、規定どおり結果を保持する |
+| NUM-006 | 正負ゼロを`PIC +`, `PIC -`, `PIC Z`, `PIC *`へMOVEする | blank/zero/sign suppressionが一致する |
+| NUM-007 | `PIC 9/999`, currency, decimal pointを含むedited項目へMOVEする | 文字配置と符号位置が一致する |
+| NUM-008 | display numericとdecimal numericを`IF =`, `<`, `>`で比較する | 表示表現ではなく数値として比較される |
+| NUM-009 | `EVALUATE TRUE`とnumeric conditionを組み合わせる | 期待分岐だけに入る |
+| NUM-010 | numeric literal、data item、indexでtableを参照する | 添字変換と境界判定が一致する |
+| NUM-011 | subprogramへnumeric itemを`CALL USING`し、戻り値を更新する | caller/calleeのscale、符号、layoutが一致する |
+
+数値表現契約:
+
+| Boundary | 入力 | 内部表現 | 出力 |
+| ---- | ---- | ---- | ---- |
+| literal parse | integer/decimal literal | sign, coefficient, scale | contextごとにcoerce |
+| display numeric read | `PIC 9`, `PIC S9`, edited source | decimal value + validity | arithmetic/comparisonへ渡す |
+| arithmetic intermediate | operands | arbitrary precision decimal相当 | result PICTUREへ丸め/桁詰め |
+| result store | decimal intermediate | target PICTURE metadata | binary/display/edited bytes |
+| comparison | mixed numeric operands | common numeric value | boolean |
+| exception edge | overflow/divide error | status + optional preserved target | `ON SIZE ERROR`/通常辺 |
+
+実装責務:
+
+| Layer | 責務 |
+| ---- | ---- |
+| parser | PICTURE文字列、edited記号、算術句、`ROUNDED`、`SIZE ERROR`句を落とさない |
+| sema | category、digits、scale、sign、edited/numeric-edited、usageをHIRへ渡す |
+| HIR lowering | conversion node、算術中間型、例外辺、target metadataを明示する |
+| codegen | helper選択を値型ではなくsource/target categoryで決める |
+| runtime decimal | 四則演算、丸め、比較、overflow判定、division remainderを提供する |
+| runtime picture | display numericとedited numericのparse/formatを一元化する |
+| verifier | computed/correctの表示差分を数値値と帳票文字列のどちらで見るか分ける |
+
+TASK-006時点での判断:
+
+- NC系の大量FAILは、個々の`ADD`や`MOVE`の局所バグではなく、
+  decimal中間値、PICTURE metadata、格納時coercionの契約不足として扱う。
+- `HirDataItem`へ追加された`picture`と`is_numeric_edited`は、
+  codegen初期化だけ埋める対処では足りない。semaからruntime formatterまで
+  同じmetadataを運ぶ必要がある。
+- CErrのdecimal/display系はTASK-003のcodegen契約問題だが、
+  修正方針はTASK-006の数値表現契約に従わせる。
+- IFのintrinsicは数値変換を使うが、関数固有規則はTASK-007で扱う。
+  TASK-006では引数/戻り値の共通coercionだけを境界として定義する。
+
 ### TASK-007
 
 - 補足: 対象は `IF` の数学、統計、文字列、日時系 intrinsic function。
 - 注意: 個別関数ごとではなく、引数変換、戻り値カテゴリ、境界値、
   丸めの共通規則を先に定義する。
 - 成果物: intrinsic共通変換モデルと失敗関数の分類表。
+
+#### TASK-007 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 対象: `.nist/results/IF/**/*.reason`, `.nist/results/IF/**/*.log`
+- 参照ソース: `.nist/programs/IF/**/*.cob`
+- 前提: TASK-006の数値表現契約を使うが、関数固有規則はTASK-007で扱う
+
+intrinsic仕様カテゴリ:
+
+| Category | COBOL機能 | 主な未達症状 | 主な責務 |
+| ---- | ---- | ---- | ---- |
+| argument coercion | numeric, alphanumeric, table `ALL`, nested function | 段落不足や値の0化、巨大値化 | HIR call lowering, runtime conversion |
+| numeric scalar | `INTEGER`, `INTEGER-PART`, `MOD`, `REM` | truncation/floor、符号、小数処理がずれる | runtime intrinsic numeric |
+| math transcendental | `LOG`, `LOG10`, `SQRT`, 三角関数系 | 許容誤差内の数値比較へ到達しない | runtime math, decimal/float bridge |
+| aggregate/statistical | `MAX`, `MIN`, `MEAN`, `MEDIAN`, `MIDRANGE`, `RANGE`, `SUM`, `VARIANCE` | 引数列、table展開、戻り値scaleがずれる | argument flatten, aggregate runtime |
+| ordinal/string | `CHAR`, `ORD`, `ORD-MAX`, `ORD-MIN` | 文字集合の序数、最大/最小位置がずれる | collating sequence, ordinal runtime |
+| string transform | `LENGTH`, `LOWER-CASE`, `UPPER-CASE`, `REVERSE` | 文字列結果、長さ、nested functionがずれる | string runtime, result storage |
+| numeric string parse | `NUMVAL`, `NUMVAL-C` | 符号、通貨記号、桁区切り、小数点がずれる | parser/runtime numeric string |
+| date/time | `CURRENT-DATE`, `WHEN-COMPILED`, date/day integer変換 | 可変値検証、日付基準、世紀/通算日がずれる | date runtime, verifier tolerance |
+| random | `RANDOM` | seed、範囲、再現性の期待とずれる | runtime random state |
+
+代表repro候補:
+
+| Repro | NIST例 | Reason | 観測症状 | 最小化する仕様 |
+| ---- | ---- | ---- | ---- | ---- |
+| FUN-001 | IF105A | `ccvs-first-fail` | `CHAR`で`+`期待が制御文字になる | collating sequenceと1-origin序数 |
+| FUN-002 | IF111A | `ccvs-first-fail` | `INTEGER`で`0`期待が巨大値になる | floor/truncationと引数coercion |
+| FUN-003 | IF114A | `ccvs-first-fail` | `INTEGER-PART`で`4`期待が巨大値になる | integer-partの符号処理 |
+| FUN-004 | IF119A | `ccvs-first-fail` | `MAX`で`7`期待が壊れた値になる | aggregate引数列と比較 |
+| FUN-005 | IF123A | `ccvs-first-fail` | `MIN`で`0`期待が壊れた値になる | aggregate最小値と戻り値category |
+| FUN-006 | IF128A | `ccvs-first-fail` | `ORD-MAX`で位置`3`期待が`1`になる | 最大値の位置、同値時規則 |
+| FUN-007 | IF129A | `ccvs-first-fail` | `ORD-MIN`で位置`1`期待が`2`になる | 最小値の位置、同値時規則 |
+| FUN-008 | IF113A | `ccvs-first-fail` | `INTEGER-OF-DAY`で`400`期待が`678` | day-of-yearから通算日の変換 |
+| FUN-009 | IF107A | `ccvs-first-fail` | `CURRENT-DATE`の可変値判定がFAIL | 日時形式とverifier許容条件 |
+| FUN-010 | IF142A | `ccvs-first-fail` | `WHEN-COMPILED`の可変値判定がFAIL | compile timestampの固定/形式 |
+| FUN-011 | IF101A系 | `detail-paragraph-mismatch` | 期待段落数より実行段落が少ない | intrinsic式を含む制御到達 |
+
+他タスクへ渡す候補:
+
+| NIST例 | 理由 | 渡し先 |
+| ---- | ---- | ---- |
+| IF101A, IF102A, IF103A, IF104A | `detail-paragraph-mismatch`で、関数値以前に到達段落が不足 | TASK-004 |
+| IF116A, IF117A, IF120A, IF121A | 数学/統計関数だが段落不足が先に出ている | TASK-004,TASK-007 |
+| IF126A | `NUMVAL-C`は文字列parseとdecimal格納の境界 | TASK-006,TASK-007 |
+| IF131A | `RANDOM`はseed/stateの再現性を別途固定する必要がある | TASK-007,TASK-010 |
+
+縮小repro入力の形:
+
+| Repro | 最小COBOL構造 | 期待観測 |
+| ---- | ---- | ---- |
+| FUN-001 | `COMPUTE N = FUNCTION ORD("+")`, `MOVE FUNCTION CHAR(N)` | `ORD`と`CHAR`が同じcollating sequenceで往復する |
+| FUN-002 | `FUNCTION INTEGER(0.00032)`, `FUNCTION INTEGER(-9.763)` | COBOL定義どおりの整数化になる |
+| FUN-003 | `FUNCTION INTEGER-PART(4.578)`, `FUNCTION INTEGER-PART(-9.763)` | 小数部を除いた値が返る |
+| FUN-004 | `FUNCTION MAX(5, 6, 10, 3, 7)`とtable `ALL` | 最大値と戻り値categoryが一致する |
+| FUN-005 | `FUNCTION MIN(5, 6, 10, 3, 7)`と英数字混在 | 比較規則と戻り値categoryが一致する |
+| FUN-006 | `FUNCTION ORD-MAX(5, 3, 2, 8, 3, 1)` | 最大値の出現位置が1-originで返る |
+| FUN-007 | `FUNCTION ORD-MIN(5, 3, 2, 8, 3, 1)` | 最小値の出現位置が1-originで返る |
+| FUN-008 | `FUNCTION INTEGER-OF-DATE(16010101)`と`INTEGER-OF-DAY(1601001)` | 1601-01-01基準の通算日が一致する |
+| FUN-009 | `MOVE FUNCTION CURRENT-DATE TO X`して形式と単調性を見る | year/month/day/time/offset形式と比較が通る |
+| FUN-010 | `MOVE FUNCTION WHEN-COMPILED TO X`を複数回読む | 実行中に値が変わらず形式が一致する |
+| FUN-011 | `PERFORM UNTIL FUNCTION INTEGER(ARG) < 0`のような条件式 | 関数式が制御条件でも同じ評価になる |
+
+intrinsic共通変換モデル:
+
+| Boundary | 入力 | 処理 | 出力 |
+| ---- | ---- | ---- | ---- |
+| argument collect | literal, data item, table `ALL`, nested function | 左から評価し、関数ごとの引数列へflattenする | typed argument list |
+| numeric coercion | integer, decimal, display numeric | TASK-006のdecimal値へ変換する | numeric runtime value |
+| alphanumeric coercion | literal, display, edited result | byte列と長さを保持する | string runtime value |
+| return category | function definition | numeric/alphanumeric/integer/dateなどを決定する | target MOVE/COMPUTEへ渡す |
+| tolerance compare | floating/math/statistical result | NIST許容範囲か表示値で比較する | verifier判定 |
+| variable value | current/compiled date, random | 再現性条件と形式条件を分ける | runtime value + verifier metadata |
+
+実装責務:
+
+| Layer | 責務 |
+| ---- | ---- |
+| parser | `FUNCTION name(args)`、nested function、table `ALL`をASTで保持する |
+| sema | 関数名、引数数、引数category、戻り値categoryを解決する |
+| HIR lowering | function call node、argument flatten、return categoryを明示する |
+| codegen | runtime intrinsic helperへ型付き引数列を渡し、target conversionを共通化する |
+| runtime intrinsic | 関数ファミリ別の仕様実装を持つ |
+| runtime date/random | 可変値の形式、基準日、seed/stateを管理する |
+| verifier | 可変日時、浮動小数許容、文字列完全一致を区別して判定する |
+
+TASK-007時点での判断:
+
+- IFの`detail-paragraph-mismatch`は、intrinsic個別値だけでは説明できない。
+  まずTASK-004の制御到達と組み合わせて、関数式が条件やPERFORM境界で
+  評価される経路を確認する。
+- 値が出ているFAILでは、`CHAR/ORD`, `INTEGER/INTEGER-PART`,
+  `MAX/MIN`, `ORD-MAX/ORD-MIN`, date/timeが代表的な入口である。
+- TASK-006のdecimal変換を使うが、`ORD-MAX`の位置返却、`CURRENT-DATE`の
+  形式、`WHEN-COMPILED`の固定性のような関数固有規則はTASK-007で実装する。
+- verifierは数値完全一致だけでなく、日時形式、浮動小数許容範囲、
+  randomの再現性条件を扱える必要がある。
 
 ### TASK-008
 
@@ -313,17 +686,321 @@ TASK-003時点での判断:
 - 補足: 影響範囲は `SM`, `SG`, `SQ`, `RL`, `NC`。
 - 成果物: source manipulation と sema診断ルールの差分表。
 
+#### TASK-008 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 対象: `.nist/results/{SM,SG,SQ,RL,NC,IX}/**/*.reason`,
+  `.nist/results/{SM,SG,SQ,RL,NC,IX}/**/*.compile.log`
+- 参照ソース: `.nist/programs/{SM,SG,SQ,RL,NC,IX}/**/*.cob`
+- 前提: TASK-002の`warning-flags-missing`とSM系COPY失敗を主対象にする
+
+source manipulation / 診断仕様カテゴリ:
+
+| Category | COBOL機能 | 主な未達症状 | 主な責務 |
+| ---- | ---- | ---- | ---- |
+| basic COPY expansion | `COPY text-name` | 帳票が空、段落数不足 | preprocessor, source map |
+| COPY REPLACING pseudo-text | `COPY ... REPLACING ==a== BY ==b==` | pseudo text置換結果がずれる | tokenizer, replacement engine |
+| copybook section placement | ENV/DATA/PROCEDURE内COPY | 展開位置により構文/実行結果がずれる | preprocessor, parser handoff |
+| library-name resolution | qualified library-name | wrong libraryのtextを読む | copybook resolver |
+| continuation and quote handling | continuation line, quote literal | 長い引用符列や文字列置換がずれる | lexer, fixed-format source handling |
+| diagnostic warning flags | obsolete/non-conforming feature | 期待warning数に足りない | sema diagnostics, verifier warning counter |
+| generated C macro hygiene | repeated data names after COPY | C macro redefinition warning | codegen naming, not source semantics |
+
+代表repro候補:
+
+| Repro | NIST例 | Reason | 観測症状 | 最小化する仕様 |
+| ---- | ---- | ---- | ---- | ---- |
+| SRC-001 | SM201A | `ccvs-first-fail` | `PSEUDO TEXT`のCOPY-TEST-11がFAIL | pseudo-text replacement |
+| SRC-002 | SM205A | `ccvs-first-fail` | `COPY SD REPLACING`でEOFを早く読む | SD copybookとREPLACING |
+| SRC-003 | SM206A | `ccvs-first-fail` | cascaded replacementが7回、期待5回 | cascading replacement抑止 |
+| SRC-004 | SM207A | `ccvs-first-fail` | qualified library-nameでwrong libraryを読む | library-name解決 |
+| SRC-005 | SM208A | `ccvs-first-fail` | single charと160 quotesの置換がずれる | continuation/quote replacement |
+| DIAG-001 | SG302M | `warning-flags-missing` | segmentation level 1でwarning 1件期待、0件 | segmentation obsolete warning |
+| DIAG-002 | SG303M | `warning-flags-missing` | segmentation level 2でwarning 4件期待、0件 | segmentation obsolete warning群 |
+| DIAG-003 | SG401M | `warning-flags-missing` | segmentation moduleでwarning 2件期待、0件 | `SEGMENT-LIMIT`診断 |
+| DIAG-004 | RL302M | `warning-flags-missing` | relative random系でwarning 4件期待、1件 | file-control non-conforming warnings |
+| DIAG-005 | SQ302M | `warning-flags-missing` | sequential file句でwarning 4件期待、0件 | `LABEL RECORDS`, `VALUE OF`等 |
+| DIAG-006 | NC302M | `warning-flags-missing` | obsolete featureでwarning 7件期待、2件 | `ALTER`, 明示宛先なし`GO TO`, `STOP literal` |
+| DIAG-007 | IX401M | `warning-flags-missing` | indexed dynamic系でwarning 10件期待、6件 | indexed non-conforming warnings |
+
+他タスクへ渡す候補:
+
+| NIST例 | 理由 | 渡し先 |
+| ---- | ---- | ---- |
+| SG102A, SG103A, SG201A, SG202A, SG203A | segmentation実行意味論が主因 | TASK-009 |
+| RL302M, SQ302M, IX401M | warning不足はTASK-008だがI/O実行意味論は別 | TASK-005 |
+| NC302M | warning不足はTASK-008だが`ALTER`実行意味論は別 | TASK-004 |
+| SM103A, SM106A, SM301M | blank reportでCOPY以前に出力捕捉も疑う | TASK-009 |
+
+縮小repro入力の形:
+
+| Repro | 最小COBOL構造 | 期待観測 |
+| ---- | ---- | ---- |
+| SRC-001 | copybook内のtoken列をpseudo-textで置換する | 区切り文字、空白、句点を含めて期待textになる |
+| SRC-002 | `SD`句を含むcopybookを`COPY ... REPLACING`で展開する | sort descriptionの置換後sourceが完全に読まれる |
+| SRC-003 | 置換後textがさらに別の置換対象に見えるcopybookを使う | 規定どおりcascaded replacementしない |
+| SRC-004 | 同名copybookを異なるlibrary-name配下に置く | qualified library-nameの指定先だけを読む |
+| SRC-005 | continuationを含む長いquote列をsingle charへ置換する | literal境界を壊さず置換する |
+| DIAG-001 | `SEGMENT-LIMIT`を含む最小program | segmentation関連warningが期待数出る |
+| DIAG-004 | `LABEL RECORDS`, `VALUE OF`, random/relative句を含むFD | non-conforming file句warningが出る |
+| DIAG-006 | `ALTER`, 明示宛先なし`GO TO`, `STOP "literal"`を含むprogram | obsolete feature warningが各箇所で出る |
+| DIAG-007 | indexed dynamic, alternate key, invalid-key句を含むprogram | indexed feature warningが各句で出る |
+
+診断ルール:
+
+| Rule | 対象構文 | 期待 |
+| ---- | ---- | ---- |
+| obsolete feature | `ALTER`, 明示宛先なし`GO TO`, `STOP literal`, `DATE-COMPILED` | 出現箇所ごとにwarningを出す |
+| source manipulation | `COPY ... REPLACING` | 非準拠source manipulationとしてwarningを出す |
+| segmentation | `SEGMENT-LIMIT`, segmentation section | segmentation featureとしてwarningを出す |
+| indexed extension | `ORGANIZATION INDEXED`, `ACCESS DYNAMIC`, `RECORD KEY`, `ALTERNATE KEY` | indexed非準拠featureとしてwarningを出す |
+| relative/sequential file extensions | `LABEL RECORDS`, `VALUE OF`, random/relative句 | file-control非準拠featureとしてwarningを出す |
+| warning counting | compile log | verifierがCOBC warningだけを数える |
+
+実装責務:
+
+| Layer | 責務 |
+| ---- | ---- |
+| lexer | fixed-format continuation、quote literal、pseudo-text delimiterを保持する |
+| preprocessor | copybook探索、library-name解決、REPLACING、source mapを実装する |
+| parser | 展開後sourceをdivision/section文脈に渡す |
+| sema diagnostics | obsolete/non-conforming featureを構文単位で警告する |
+| codegen | COPY後の重複名でもC macro衝突を避ける |
+| verifier | expected warning flag数と実際のCOBC warning数を安定して数える |
+
+TASK-008時点での判断:
+
+- SM系FAILは単なるwarning不足ではなく、COPY展開後sourceが期待と違う。
+  preprocessorのtoken単位置換、copybook探索、continuation処理を先に固定する。
+- `warning-flags-missing`は実行時FAILではなく、compile-time diagnosticの
+  仕様不足である。I/Oや制御フローの実行修正とは別に扱う。
+- 生成Cのmacro redefinition warningはCOPY診断ではなくcodegen hygieneである。
+  CErrやC警告削減には効くが、NISTのwarning flag期待とは別カウントにする。
+- warningの正否は文言完全一致より、COBC warningとしての件数、対象構文、
+  source locationを安定させることを優先する。
+
 ### TASK-009
 
 - 補足: 対象は Report Writer、SORT/MERGE、segmentation、printer/output capture。
 - 注意: ファイルI/Oと出力捕捉の不備に巻き込まれるため、TASK-005の分類後に分離する。
 - 成果物: REPORT/SORT/SEGMENT固有欠陥と共通I/O欠陥の切り分け表。
 
+#### TASK-009 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 対象: `.nist/results/{RW,ST,SG,SM,CM}/**/*.reason`,
+  `.nist/results/{RW,ST,SG,SM,CM}/**/*.compile.log`
+- 参照ソース: `.nist/programs/{RW,ST,SG,SM,CM}/**/*.cob`
+- 前提: TASK-005で共通ファイルI/O境界を先に切り出したため、
+  TASK-009ではREPORT/SORT/SEGMENT固有仕様と出力捕捉だけを扱う
+
+REPORT/SORT/SEGMENT仕様カテゴリ:
+
+| Category | COBOL機能 | 主な未達症状 | 主な責務 |
+| ---- | ---- | ---- | ---- |
+| Report Writer lifecycle | `INITIATE`, `GENERATE`, `TERMINATE` | page counterが0のまま、reportが空 | parser, HIR, runtime report |
+| report counters | `PAGE-COUNTER`, `LINE-COUNTER` | 初期値と更新がずれる | runtime report state |
+| printer/output capture | print file, report output | `blank-or-empty-report`, summary不在 | runtime output, NIST verifier |
+| SORT lifecycle | `SORT`, `RELEASE`, `RETURN`, input/output procedure | sort結果、到達段落、EOFがずれる | HIR sort CFG, runtime sort |
+| MERGE lifecycle | `MERGE`, same sort-merge area | 段落数不足、merge出力不一致 | runtime merge, codegen |
+| sort key flatten | `ASCENDING/DESCENDING KEY`, group key, binary/display key | key値が壊れる、CErrになる | data layout, codegen, runtime sort ABI |
+| collating sequence | `COLLATING SEQUENCE`, native sequence | sort順、文字列keyがずれる | runtime collation |
+| segmentation runtime | `SEGMENT-LIMIT`, segment priority, last used state | 初期/最終state、遷移先がずれる | parser, HIR CFG, runtime segmentation |
+| segmentation diagnostics | obsolete segmentation features | warning flag不足 | sema diagnostics |
+
+代表repro候補:
+
+| Repro | NIST例 | Reason | 観測症状 | 最小化する仕様 |
+| ---- | ---- | ---- | ---- | ---- |
+| RPT-001 | RW101A | `ccvs-first-fail` | `INITIATE`後のpage counterが1期待、0 | report lifecycle初期化 |
+| RPT-002 | RW103A | `ccvs-first-fail` | `INITIATE`後のpage counter不一致が多数 | report counter更新 |
+| RPT-003 | RW301M | `blank-or-empty-report` | report帳票が空 | Report Writer出力捕捉 |
+| SORT-001 | ST134A | `ccvs-first-fail` | COMP sort keyで`-100`期待が巨大値 | sort key flattenと数値key |
+| SORT-002 | ST136A | `ccvs-first-fail` | `RELEASE FROM`後のkey areaが0 | `RELEASE FROM`のrecord転送 |
+| SORT-003 | ST135A | `ccvs-first-fail` | same areaでEOFが早すぎる | same sort areaとRETURN |
+| SORT-004 | ST137A | `ccvs-first-fail` | native collating sequenceの期待値が壊れる | collating sequence |
+| SORT-005 | ST139A | `detail-paragraph-mismatch` | MERGE系で期待11段落に対して2段落 | MERGE control flow |
+| SORT-006 | ST109A | `no-decisive-ccvs-summary` | sort入力生成後のsummaryを決定できない | sort前後I/Oとverifier境界 |
+| SEG-001 | SG103A | `ccvs-first-fail` | initial stateが2期待、9 | segmentation初期state |
+| SEG-002 | SG202A | `ccvs-first-fail` | last used stateが23期待、2 | segmentation last-used state |
+| SEG-003 | SG203A | `ccvs-first-fail` | PARA-37開始判定が逆 | segment priorityと到達順 |
+| OUT-001 | CM201M | `blank-or-empty-report` | 帳票が空 | 非REPORT系出力捕捉 |
+| OUT-002 | SM103A | `blank-or-empty-report` | COPY系帳票が空 | COPY後実行とprint capture境界 |
+
+共通I/O欠陥との切り分け:
+
+| NIST例 | 固有候補 | 共通I/O候補 | 扱い |
+| ---- | ---- | ---- | ---- |
+| ST109A, ST115A | SORT入力/出力procedureとsummary | sequential file生成 | TASK-009でsort境界、TASK-005でsequential基礎 |
+| ST135A | same sort areaとRETURN | EOF/file status | TASK-009でsame area、TASK-005でEOF |
+| ST139A, ST140A, ST144A, ST147A | MERGE lifecycle | 入出力file cursor | TASK-009でMERGE、TASK-005でfile cursor |
+| RW301M, RW302M | Report Writer出力 | print file capture | TASK-009で両方確認 |
+| SM103A, SM106A, SM301M | COPY展開後の実行 | print file capture | TASK-008でCOPY、TASK-009で出力捕捉 |
+| CM201M | communication出力 | print file capture | TASK-009で出力捕捉、通信仕様は後続 |
+
+他タスクへ渡す候補:
+
+| NIST例 | 理由 | 渡し先 |
+| ---- | ---- | ---- |
+| ST104A, ST106A, ST108A, ST118A, ST125A, ST127A | sort record flatten由来のCErr | TASK-003 |
+| ST134A | 数値sort keyの表示/格納も絡む | TASK-006,TASK-009 |
+| SG302M, SG303M, SG401M | warning不足が主因 | TASK-008 |
+| SM201A, SM205A, SM206A, SM207A, SM208A | COPY/REPLACINGが主因 | TASK-008 |
+| CM101M, CM202M | communication status/queue意味論が主因 | TASK-010以降 |
+
+縮小repro入力の形:
+
+| Repro | 最小COBOL構造 | 期待観測 |
+| ---- | ---- | ---- |
+| RPT-001 | `REPORT SECTION`にpage counterを置き、`INITIATE`直後に検査する | page counterが1になる |
+| RPT-002 | `GENERATE`を複数回行い、line/page counterを検査する | counterがreport writer規則どおり進む |
+| RPT-003 | `INITIATE`から`TERMINATE`まで実行し、print fileを読む | report bodyとsummaryが捕捉される |
+| SORT-001 | binary/display混在keyで`SORT ON ASCENDING KEY`する | key値で正しく並ぶ |
+| SORT-002 | `RELEASE record FROM work-record`後に`RETURN`する | FROM sourceの内容がsort recordへ入る |
+| SORT-003 | same sort-merge areaを使って`SORT`/`RETURN`する | EOFとrecord countが一致する |
+| SORT-004 | `COLLATING SEQUENCE`を指定して文字keyをsortする | 指定順で並ぶ |
+| SORT-005 | `MERGE ... OUTPUT PROCEDURE`を最小入力2本で実行する | procedure到達順と出力順が一致する |
+| SEG-001 | `SEGMENT-LIMIT`付きprogramで初期paragraphを記録する | initial stateが期待値になる |
+| SEG-002 | 複数segmentを遷移し、last used stateを記録する | 最終使用segmentが期待値になる |
+| OUT-001 | `DISPLAY`/print fileを使う最小programを実行する | runner/verifierが同じ出力を読む |
+
+実装責務:
+
+| Layer | 責務 |
+| ---- | ---- |
+| parser | `REPORT SECTION`, `RD`, `SORT`, `MERGE`, `RELEASE`, `RETURN`, segmentation句を保持する |
+| sema | report counter、sort file、sort key、merge input、segment priorityを解決する |
+| HIR lowering | report lifecycle、sort/merge procedure CFG、segmentation stateを明示する |
+| codegen | sort key flatten、same area、report counter更新、segment dispatchを一貫して出す |
+| runtime report | report writer状態、counter、print outputを管理する |
+| runtime sort/merge | sort store、key compare、collation、release/return、merge cursorを管理する |
+| runtime output | print file、stdout、report fileをNIST verifierが読める場所へ流す |
+| verifier | blank report、summary不在、sort chain生成物を区別して記録する |
+
+TASK-009時点での判断:
+
+- RW101AからRW104Aは、I/O以前にReport Writerの`INITIATE`時counter初期化が
+  未達である。RW301M/RW302Mは出力捕捉も合わせて確認する。
+- ST系は、共通sequential I/Oだけではなく、sort/mergeのrecord転送、
+  key flatten、collating sequence、procedure CFGが独立した欠陥である。
+- SG系はwarning不足をTASK-008へ渡し、実行時のinitial/last-used stateと
+  segment priorityをTASK-009固有として扱う。
+- `blank-or-empty-report`はREPORT専用ではないため、runtime outputと
+  verifier captureの共通欠陥として明示的に分ける。
+
 ### TASK-010
 
 - 補足: 実装順は `CErr解消 -> 判定精度改善 -> 制御フロー -> ファイルI/O -> 数値/関数 -> 残余モジュール` を基本線にする。
 - 注意: 各実装タスクは必ず縮小e2eテストを追加してからNISTモジュールを再実行する。
 - 成果物: 100% passまでの実装マイルストーン、CI gate、完了条件一覧。
+
+#### TASK-010 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 入力: TASK-003からTASK-009の成果物
+- 目的: `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr`へ到達する
+  実装順、検証gate、完了条件を固定する
+- 前提: 対症療法ではなく、COBOL仕様境界ごとに縮小repro、実装、NIST再実行、
+  CI gate強化を同じ単位で進める
+
+実装マイルストーン:
+
+| Milestone | 目的 | 主対象 | 完了条件 | Gate |
+| ---- | ---- | ---- | ---- | ---- |
+| M2 | CErrを0にする | TASK-003, TASK-006, TASK-009 | 19 CErrが0、生成C警告が原因分類済み | `make nist-compile-errors`が0件 |
+| M3 | 判定精度を固定する | TASK-002, TASK-005, TASK-009 | summary不在、blank report、warning countの誤分類をなくす | `make nist-summary`でReady/RErrが0、reason分類が一意 |
+| M4 | 制御フローをHIR契約化する | TASK-004, TASK-008, TASK-009 | `PERFORM`, `GO TO`, `ALTER`, `USE`, 例外句、program終端の縮小e2eが通る | DB/IF/NC/OBの制御reproが全PASS |
+| M5 | ファイルI/O状態機械を実装する | TASK-005 | sequential/indexed/relativeのcursor、status、例外句が仕様どおり動く | IX/RL/SQのI/O reproが全PASS |
+| M6 | 数値/PICTUREを一元化する | TASK-006 | MOVE、算術、丸め、SIZE ERROR、edited numericが同じmetadataで動く | NC/ICの数値reproが全PASS |
+| M7 | intrinsic functionを仕様化する | TASK-007 | 引数flatten、戻り値category、日時/乱数/許容誤差を扱える | IFの関数reproが全PASS |
+| M8 | COPY/診断を仕様化する | TASK-008 | COPY REPLACING、library-name、continuation、warning countが一致 | SM/SG/SQ/RL/IXの診断reproが全PASS |
+| M9 | REPORT/SORT/SEGMENTを実装する | TASK-009 | report counter、sort/merge、segment state、output captureが一致 | RW/ST/SG/SM/CMの固有reproが全PASS |
+| M10 | NIST 100%をCI必須化する | 全タスク | 391件すべてPASSし、未分類reasonが0 | full NIST gateが必須check |
+
+実装順序:
+
+| Order | 作業単位 | 先に潰す理由 | 後続へ渡す契約 |
+| ----: | ---- | ---- | ---- |
+| 1 | CErr/codegen契約 | コンパイル不能のままではFAIL分類が不正確になる | HIR data item、decimal/display、sort key、linkageのC ABI |
+| 2 | verifier/runner判定精度 | summary不在やblank reportを実装FAILと誤認しないため | NIST結果、warning count、print outputの観測契約 |
+| 3 | 制御フローCFG | 到達段落不足は値不一致より上位の欠陥であるため | 通常辺、例外辺、debug辺、perform return辺 |
+| 4 | ファイルI/O状態機械 | IX/RL/SQ/ST/RWの多数FAILがcursor/statusに依存するため | file metadata、status格納、record cursor、例外句 |
+| 5 | 数値/PICTURE | NC/IC/IF/CMの値不一致が共通変換に依存するため | decimal中間値、PICTURE metadata、store coercion |
+| 6 | intrinsic function | 数値変換とCFGが固まらないと関数値を正しく判定できないため | typed argument list、return category、variable value metadata |
+| 7 | COPY/診断 | 実行意味論とwarning期待を分けて検証するため | source map、copybook resolution、diagnostic counter |
+| 8 | REPORT/SORT/SEGMENT | I/O、CFG、数値key、出力捕捉を横断するため | report state、sort store、merge cursor、segment dispatch |
+| 9 | 残余モジュール横断 | CM/DB/EX/OBなどの複合仕様を最後に残すため | 仕様別の未分類ゼロ状態 |
+
+CI gate一覧:
+
+| Gate | 実行タイミング | コマンド | 必須条件 |
+| ---- | ---- | ---- | ---- |
+| local-build | 各実装chunk後 | `make build` | build成功 |
+| focused-e2e | 各縮小repro追加後 | `cargo test -p cobol-driver --test e2e_test <test-name>` | 追加/影響テストがPASS |
+| crate-suite | crate境界変更後 | `cargo test -p <crate> --all-targets` | 対象crateがPASS |
+| compile-errors | M2完了時と以後 | `make nist-compile-errors` | 0件 |
+| nist-module | 各仕様カテゴリ完了時 | `make nist-run MODULE=<module>` | 対象moduleの対象reasonが解消 |
+| nist-summary | 各NIST再実行後 | `make nist-summary` | Ready/RErrが0、分類が更新済み |
+| lint | PR前 | `make lint` | clippy/rustfmt/cspellがPASS |
+| full-regression | PR前とM10 | `make clean test lint` | workspace testとlintがPASS |
+| full-nist | M10 | `make nist-run NIST_JOBS=5` | `391 pass / 0 fail / 0 CErr / 0 RErr` |
+
+完了条件:
+
+| Level | 条件 |
+| ---- | ---- |
+| repro完了 | NIST由来の縮小COBOL入力、期待結果、失敗理由、対象crateが記録されている |
+| 実装chunk完了 | 縮小e2eが先に追加され、修正後に同テストと対象crate testがPASSしている |
+| 仕様カテゴリ完了 | 関連するNIST moduleまたはprogramが再実行され、同じreasonが残っていない |
+| マイルストーン完了 | gateがPASSし、残ったFAIL/CErrが次マイルストーンへ分類済み |
+| NIST完了 | TOTALが`391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr`で、CI必須gateとして固定済み |
+
+100%到達までの追跡指標:
+
+| Metric | Baseline | Target | 用途 |
+| ---- | ----: | ----: | ---- |
+| Pass | 112 | 391 | 進捗の最終指標 |
+| Fail | 260 | 0 | 仕様差分の残量 |
+| CErr | 19 | 0 | codegen契約破綻の残量 |
+| RErr | 0 | 0 | runtime異常を増やしていないことの確認 |
+| Ready | 0 | 0 | 未実行を残していないことの確認 |
+| Unclassified reason | 未固定 | 0 | 判定器/分類表の成熟度 |
+
+リスクと抑止策:
+
+| Risk | 症状 | 抑止策 |
+| ---- | ---- | ---- |
+| CErr修正が値FAILを増やす | COMPILE_ERRORがFAILへ移るだけでPASSが増えない | CErr修正時に最小e2eと対象NIST programを必ず並走する |
+| verifier誤判定 | blank reportやsummary不在を実装FAILと混同する | M3で出力捕捉、warning count、summary抽出を先に固定する |
+| 仕様境界の混線 | I/O修正でSORT/REPORT固有FAILを追う | TASK-005とTASK-009の切り分け表をgate条件に使う |
+| 数値の局所修正 | MOVEだけ通り算術やintrinsicで壊れる | TASK-006のdecimal/PICTURE契約を共通helperへ集約する |
+| warning件数の過剰最適化 | NIST期待だけに合わせて診断が不安定になる | 構文単位、source location、COBC warning countを同時に記録する |
+
+TASK-010時点での判断:
+
+- 100% passの実装単位は、NIST program単位ではなく仕様境界単位にする。
+  program単位の修正は複数仕様が混ざり、原因が再び見えなくなるためである。
+- 最初の実装修正はCErr 0化だが、成功条件は`COMPILE_ERROR -> FAIL`ではない。
+  CErrファミリごとに縮小e2eを作り、生成C契約が仕様カテゴリへ接続されたことを
+  確認してから完了扱いにする。
+- 判定器の精度改善は実装修正の前提である。`blank-or-empty-report`、
+  `no-decisive-ccvs-summary`、`warning-flags-missing`を実装欠陥と観測欠陥に
+  分けられない状態では、100% passまでの残作業を正しく測れない。
+- M10のCI gateは`pass == total`だけでなく、`Fail/Ready/CErr/RErr == 0`を
+  同時に要求する。部分改善を完了扱いにしないため、この条件を最終gateにする。
+
+### TASK-011
+
+- 補足: Backlog一覧の各項目を、次マイルストーンで実行可能な通常タスクへ
+  昇格、分割、並べ替えする。
+- 注意: 1タスクの粒度はレビュー可能な2から6時間程度に収める。
+- 成果物: M2以降の実装タスク一覧、依存関係、完了条件。
 
 ## Backlog一覧
 
