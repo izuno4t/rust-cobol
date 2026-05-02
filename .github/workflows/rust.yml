@@ -123,12 +123,14 @@ jobs:
         echo "$summary"
         printf '%s\n' "$summary" | tee "${CI_LOG_ROOT}/nist/make-nist-summary.log"
         total_line=$(echo "$summary" | grep '^TOTAL')
+        total=$(echo "$total_line" | awk '{print $2}')
         pass=$(echo "$total_line" | awk '{print $3}')
         fail=$(echo "$total_line" | awk '{print $4}')
+        ready=$(echo "$total_line" | awk '{print $5}')
         cerr=$(echo "$total_line" | awk '{print $6}')
         rerr=$(echo "$total_line" | awk '{print $7}')
-        if [ "$fail" -ne 0 ] || [ "$cerr" -ne 0 ] || [ "$rerr" -ne 0 ]; then
-          echo "::error::NIST CCVS 85 regression: $fail FAIL, $cerr CErr, $rerr RErr"
+        if [ "$pass" -ne "$total" ] || [ "$fail" -ne 0 ] || [ "$ready" -ne 0 ] || [ "$cerr" -ne 0 ] || [ "$rerr" -ne 0 ]; then
+          echo "::error::NIST CCVS 85 regression: $pass/$total PASS, $fail FAIL, $ready Ready, $cerr CErr, $rerr RErr"
           exit 1
         fi
 
