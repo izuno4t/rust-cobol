@@ -4542,6 +4542,41 @@ PROCEDURE DIVISION.
     );
 }
 
+#[test]
+fn test_nist_nc101a_multiply_leading_p_operand_multiple_targets() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NC101A-MULTIPLY-P-MULTI.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WRK-DU-0V12-1 PIC V9(12) VALUE .00001.
+01 WRK-DU-2P4-1 PIC 99P(4) VALUE 990000.
+01 WRK-DU-4P1-1 PIC P(4)9 VALUE .00001.
+01 WRK-DU-5V1-1 PIC 9(5)V9 VALUE 12345.6.
+01 WRK-DU-6V0-1 PIC 9(6) VALUE 99999.
+01 WRK-DU-6V0-2 PIC 9(6) VALUE 99999.
+PROCEDURE DIVISION.
+    MOVE .00001 TO WRK-DU-4P1-1.
+    MOVE 12345.6 TO WRK-DU-5V1-1.
+    MULTIPLY WRK-DU-4P1-1 BY WRK-DU-5V1-1 ROUNDED
+        WRK-DU-2P4-1 WRK-DU-6V0-1 ROUNDED
+        WRK-DU-6V0-2 WRK-DU-0V12-1.
+    IF WRK-DU-2P4-1 = 0
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY WRK-DU-2P4-1
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("PASS"),
+        "P(4)9 multiplier should zero 99P(4) target, got '{}'",
+        stdout.trim()
+    );
+}
+
 /// Test ADD/SUBTRACT/MULTIPLY/DIVIDE with subscripted targets.
 #[test]
 fn test_native_subscripted_arithmetic() {

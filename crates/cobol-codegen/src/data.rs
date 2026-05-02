@@ -953,8 +953,15 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 HirLiteral::Decimal(d) => {
                     // Parse decimal literal: "123.45" -> value=12345, scale=2
                     let (value, scale) = parse_decimal_literal(d);
+                    let scaled_value = if decimal_places > scale {
+                        value * 10_i64.pow(decimal_places - scale)
+                    } else if decimal_places < scale {
+                        value / 10_i64.pow(scale - decimal_places)
+                    } else {
+                        value
+                    };
                     out.push_str(&format!(
-                        "    {c_name} = (CobolDecimal){{ .value = {value}, .scale = {scale}, .size = {size}, .is_signed = {} }};\n",
+                        "    {c_name} = (CobolDecimal){{ .value = {scaled_value}, .scale = {decimal_places}, .size = {size}, .is_signed = {} }};\n",
                         if is_signed { 1 } else { 0 }
                     ));
                 }
@@ -1061,7 +1068,12 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 | HirType::FloatExtended,
                 HirLiteral::Integer(n),
             ) => {
-                out.push_str(&format!("    {c_name} = {n};\n"));
+                let value = if item.scale_adjustment != 0 {
+                    apply_scale_adjustment_to_store(&n.to_string(), item.scale_adjustment)
+                } else {
+                    n.to_string()
+                };
+                out.push_str(&format!("    {c_name} = {value};\n"));
             }
             (
                 HirType::Numeric { .. }
@@ -1075,6 +1087,23 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 HirLiteral::Zero,
             ) => {
                 out.push_str(&format!("    {c_name} = 0;\n"));
+            }
+            (
+                HirType::Numeric {
+                    decimal_places: 0, ..
+                }
+                | HirType::Binary { .. },
+                HirLiteral::Decimal(d),
+            ) => {
+                let (scaled, scale) = parse_decimal_literal(d);
+                let mut value = scaled.to_string();
+                if scale > 0 {
+                    value = format!("(({value}) / {})", 10_i64.pow(scale));
+                }
+                if item.scale_adjustment != 0 {
+                    value = apply_scale_adjustment_to_store(&value, item.scale_adjustment);
+                }
+                out.push_str(&format!("    {c_name} = {value};\n"));
             }
             (HirType::National { size }, HirLiteral::String(s)) => {
                 let escaped = escape_c_string(s);
@@ -1163,6 +1192,7 @@ mod tests {
                 members: vec![HirDataItem {
                     name: SmolStr::new("FIELD-1"),
                     data_type: HirType::Alphanumeric { size: 10 },
+                    scale_adjustment: 0,
                     is_external: false,
                     initial_value: None,
                     occurs: None,
@@ -1175,6 +1205,7 @@ mod tests {
                 }],
                 size: 10,
             },
+            scale_adjustment: 0,
             is_external: false,
             initial_value: None,
             occurs: None,
@@ -1208,6 +1239,7 @@ mod tests {
                     members: vec![HirDataItem {
                         name: SmolStr::new("FIELD-1"),
                         data_type: HirType::Alphanumeric { size: 10 },
+                        scale_adjustment: 0,
                         is_external: false,
                         initial_value: None,
                         occurs: None,
@@ -1220,6 +1252,7 @@ mod tests {
                     }],
                     size: 10,
                 },
+                scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
                 occurs: None,
@@ -1233,6 +1266,7 @@ mod tests {
             HirDataItem {
                 name: SmolStr::new("MEDIUM-OUT"),
                 data_type: HirType::Alphanumeric { size: 10 },
+                scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
                 occurs: None,
