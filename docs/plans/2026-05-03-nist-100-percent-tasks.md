@@ -24,8 +24,8 @@
 | ID | Status | Summary | DependsOn |
 | ---- | ---- | ---- | ---- |
 | TASK-001 | ✅ | 現行NIST結果の仕様別ベースラインを固定する | - |
-| TASK-002 | ⏳ | CCVS出力判定の共通分類表を作る | TASK-001 |
-| TASK-003 | ⏳ | 19件のCErrをcodegen欠陥別に再現する | TASK-001 |
+| TASK-002 | ✅ | CCVS出力判定の共通分類表を作る | TASK-001 |
+| TASK-003 | ✅ | 19件のCErrをcodegen欠陥別に再現する | TASK-001 |
 | TASK-004 | ⏳ | 制御フロー仕様差分の代表reproを作る | TASK-002 |
 | TASK-005 | ⏳ | ファイルI/O仕様差分の代表reproを作る | TASK-002 |
 | TASK-006 | ⏳ | 数値変換と算術仕様差分の代表reproを作る | TASK-002 |
@@ -134,6 +134,69 @@ CErrファミリ別ベースライン:
 - 成果物: CCVS出力、最初の失敗段落、期待値/実値、生成物有無を
   同じ形式で読める分類表。
 
+#### TASK-002 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 対象: `.nist/results/**/*.reason`
+- 参照実装: `tests/nist/run_nist.sh`, `tests/nist/verifiers/lib.sh`
+- 前提: TASK-001のベースラインで `Ready` は 0
+
+共通分類表:
+
+| Reason | Count | 判定意味 | 主な証跡 | 次の分類先 |
+| ---- | ----: | ---- | ---- | ---- |
+| `ccvs-first-fail` | 184 | CCVS帳票にFAIL段落がある | `.log`, first fail details | TASK-004,TASK-005,TASK-006,TASK-007,TASK-009 |
+| `detail-paragraph-mismatch` | 32 | 期待段落数と出力段落数が違う | `.log`, detail rows | TASK-004,TASK-005,TASK-009 |
+| `no-decisive-ccvs-summary` | 25 | PASS/FAIL summaryを決定できない | `.log`, output channel | TASK-002,TASK-009 |
+| `blank-or-empty-report` | 12 | 実行後の帳票出力が空 | `.log`, print file `P` | TASK-004,TASK-005,TASK-009 |
+| `warning-flags-missing` | 7 | 期待されるcompile warningが不足 | `.compile.log` | TASK-008 |
+
+分類ルール:
+
+| 入力 | 抽出する値 | 目的 |
+| ---- | ---- | ---- |
+| `.status` | `PASS`, `FAIL`, `COMPILE_ERROR` | 集計状態を確定する |
+| `.reason` | 共通reason名 | FAILの観測分類を確定する |
+| `.log` | CCVS pass/fail count | 実行結果のずれを定量化する |
+| `.log` | first failing paragraph | 仕様カテゴリの入口を特定する |
+| `.log` | expected/computed detail | 数値、I/O、制御差分を分ける |
+| `.compile.log` | warning/error count | 診断不足とCErrを分ける |
+| print file `P` | 帳票出力の有無 | 出力捕捉とREPORT系を分ける |
+
+reasonから仕様カテゴリへの一次写像:
+
+| Reason | 制御フロー | ファイルI/O | 数値/算術 | intrinsic | COPY/診断 | REPORT/SORT |
+| ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| `ccvs-first-fail` | 候補 | 候補 | 候補 | 候補 | - | 候補 |
+| `detail-paragraph-mismatch` | 候補 | 候補 | - | - | - | 候補 |
+| `no-decisive-ccvs-summary` | 候補 | 候補 | - | - | - | 候補 |
+| `blank-or-empty-report` | 候補 | 候補 | - | - | - | 候補 |
+| `warning-flags-missing` | - | - | - | - | 確定候補 | - |
+
+代表例:
+
+| Reason | 代表例 | 読み方 |
+| ---- | ---- | ---- |
+| `ccvs-first-fail` | `NC101A`, `IF101A`, `IX104A` | 失敗段落の仕様を読む |
+| `detail-paragraph-mismatch` | `IF`, `ST`, `RL`の複数件 | 到達段落数と制御/I/Oを読む |
+| `no-decisive-ccvs-summary` | `DB104A`, `EXEC85`, `SQ109M` | 出力経路と帳票形式を読む |
+| `blank-or-empty-report` | `SM103A`, `SQ303M`, `RW301M` | 帳票未生成か別経路出力を読む |
+| `warning-flags-missing` | `SG`, `IX`, `SQ`, `RL`, `NC` | sema診断ルールを読む |
+
+TASK-002時点での判断:
+
+- `ccvs-first-fail` は最大分類だが、原因分類としては粗い。
+  TASK-004以降では first failing paragraph と expected/computed detail を
+  読んで仕様カテゴリへ分解する。
+- `detail-paragraph-mismatch` は制御フロー不達とI/O cursor不一致の両方を
+  含むため、TASK-004とTASK-005の代表reproで切り分ける。
+- `no-decisive-ccvs-summary` と `blank-or-empty-report` は、実装FAILと
+  verifier/出力捕捉不足が混在している。TASK-009で分離する。
+- `warning-flags-missing` は実行時FAILではなく、compile-time diagnosticの
+  仕様未実装としてTASK-008へ渡す。
+
 ### TASK-003
 
 - 補足: CErrは、整数/ポインタ不整合 7 件、
@@ -142,6 +205,78 @@ CErrファミリ別ベースライン:
   pointer/int不整合 1 件に分かれる。
 - 注意: CErrはNIST全体の入口を塞ぐため、FAILより先にcodegen契約として潰す。
 - 成果物: 各CErrファミリの最小COBOL入力、期待されるC表現、責務crate一覧。
+
+#### TASK-003 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 対象: `.nist/results/**/*.compile.log`
+- 参照コマンド: `make nist-compile-errors`
+- 参照生成C: `.nist/work/run/**/nist_preproc_*.c`
+- 判定前提: CErrはC compilerで停止したprogram単位で数える
+
+CErr program別の一次分類:
+
+| Primary family | Count | Programs |
+| ---- | ----: | ---- |
+| scalar storageをpointer引数へ渡す生成C | 9 | SG104A, SG105A, SG106A, ST104A, ST106A, ST108A, ST118A, ST125A, ST127A |
+| Decimal値をinteger helper引数へ渡す生成C | 4 | NC105A, NC118A, NC123A, NC177A |
+| char配列へ直接代入する生成C | 2 | NC125A, NC401M |
+| display numeric配列をinteger値として扱う生成C | 1 | NC109M |
+| reference modification対象をinteger値として扱う生成C | 1 | NC224A |
+| linkage groupのraw/value typedef不整合 | 2 | IC106A, IC216A |
+| TOTAL | 19 | - |
+
+補助的に観測された警告:
+
+| Warning | Programs | 扱い |
+| ---- | ---- | ---- |
+| generated macro name collision | NC401M, ST104A, ST106A | CErr主因ではなく別修正として扱う |
+
+再現ファミリ詳細:
+
+| Family | 代表program | 生成Cの壊れ方 | 期待するC表現 |
+| ---- | ---- | ---- | ---- |
+| scalar storage pointer | SG104A | `memcpy(dst, scalar, n)` | scalarは `&scalar`、配列はそのまま渡す |
+| Decimal helper mismatch | NC118A | `cobol_decimal_from_int(decimal, ...)` | decimal sourceはcopy/add helperへ渡す |
+| char array assignment | NC125A | `char_array = CobolDecimal` | display/edit変換後に`memcpy`する |
+| display numeric as integer | NC109M | `llabs(char_array)` | `cobol_display_to_int64(ptr, len)`を挟む |
+| refmod pointer as integer | NC224A | `llabs(int64_t*)` | 参照変更はsliceを値化してから変換する |
+| linkage group typedef | IC106A | `_grp_*_val_*_t`未定義 | raw/value layout判定をlinkageにも揃える |
+
+縮小repro入力の形:
+
+| Family | COBOL入力の最小形 | 入口 |
+| ---- | ---- | ---- |
+| scalar storage pointer | `SORT` recordにbinary keyとdisplay keyを混在させる | ST/SG sort record flatten |
+| Decimal helper mismatch | decimal itemへdecimal itemを含む算術結果を格納する | NC arithmetic codegen |
+| char array assignment | numeric edited/display table itemに`VALUE`を持たせる | NC data initialization |
+| display numeric as integer | display numeric group memberを数値DISPLAYへ渡す | NC DISPLAY/MOVE conversion |
+| refmod pointer as integer | OCCURS/添字付き項目の参照変更を数値化する | NC reference modification |
+| linkage group typedef | `LINKAGE SECTION`のgroup引数を`USING`で受ける | IC CALL linkage lowering |
+
+責務crate:
+
+| Family | 主責務 | 関連責務 |
+| ---- | ---- | ---- |
+| scalar storage pointer | `crates/cobol-codegen/src/data.rs` | `expr.rs`, runtime sort ABI |
+| Decimal helper mismatch | `crates/cobol-codegen/src/expr.rs` | `stmt.rs`, `cobol-runtime/src/decimal.rs` |
+| char array assignment | `crates/cobol-codegen/src/data.rs` | `context.rs`, HIR picture metadata |
+| display numeric as integer | `crates/cobol-codegen/src/expr.rs` | runtime display conversion |
+| refmod pointer as integer | `crates/cobol-codegen/src/expr.rs` | HIR `ReferenceModification` lowering |
+| linkage group typedef | `crates/cobol-codegen/src/codegen.rs` | `cobol-hir/src/lower.rs` |
+
+TASK-003時点での判断:
+
+- CErrの最大群はSORT/SEGMENT固有ではなく、scalar storageとbyte pointerの
+  codegen契約違反である。ST/SGを個別修正せず、データ表現変換を直す。
+- `macro redefined` はログ分類では目立つが、現在のC compiler停止主因は
+  別の型不一致である。BACKLOG-001では警告も別チェックとして残す。
+- NC系CErrはdecimal/display/reference modificationの値表現境界が崩れている。
+  TASK-006より前に、Cへ出す型変換契約を固定する必要がある。
+- IC系CErrはCALL/linkageのgroup layout契約違反である。
+  制御フローではなく、linkage data modelとして扱う。
 
 ### TASK-004
 
