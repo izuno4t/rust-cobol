@@ -125,8 +125,8 @@ jobs:
         total_line=$(echo "$summary" | grep '^TOTAL')
         pass=$(echo "$total_line" | awk '{print $3}')
         fail=$(echo "$total_line" | awk '{print $4}')
-        cerr=$(echo "$total_line" | awk '{print $5}')
-        rerr=$(echo "$total_line" | awk '{print $6}')
+        cerr=$(echo "$total_line" | awk '{print $6}')
+        rerr=$(echo "$total_line" | awk '{print $7}')
         if [ "$fail" -ne 0 ] || [ "$cerr" -ne 0 ] || [ "$rerr" -ne 0 ]; then
           echo "::error::NIST CCVS 85 regression: $fail FAIL, $cerr CErr, $rerr RErr"
           exit 1
@@ -139,5 +139,5 @@ jobs:
         name: linux-nist-logs-and-results
         path: |
           ci-logs/nist
-          target/nist/results
+          .nist/results
         if-no-files-found: warn

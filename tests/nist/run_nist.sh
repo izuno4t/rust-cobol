@@ -94,6 +94,30 @@ count_task_file() {
     awk 'END { print NR + 0 }' "$task_file"
 }
 
+count_task_file_for_module() {
+    local task_file="$1"
+    local wanted="$2"
+    if [ ! -f "$task_file" ]; then
+        printf '0\n'
+        return
+    fi
+    awk -F'|' -v wanted="$wanted" '$1 == wanted { count++ } END { print count + 0 }' "$task_file"
+}
+
+build_compiled_task_file() {
+    local infile="$1"
+    local outfile="$2"
+    : > "$outfile"
+    local module program status_file
+    while IFS='|' read -r module program; do
+        [ -n "$module" ] || continue
+        status_file="$RESULTS_DIR/$module/${program}.status"
+        if [ "$(cat "$status_file" 2>/dev/null || printf 'UNKNOWN')" = "COMPILED" ]; then
+            printf '%s|%s\n' "$module" "$program" >> "$outfile"
+        fi
+    done < "$infile"
+}
+
 module_index() {
     local wanted="$1"
     shift
@@ -1481,7 +1505,7 @@ run_phase_workers() {
     failures=0
 
     for module in "${modules[@]}"; do
-        module_totals+=("$(list_module_programs "$module" | awk 'END { print NR + 0 }')")
+        module_totals+=("$(count_task_file_for_module "$task_file" "$module")")
         module_done+=(0)
     done
 
@@ -1511,6 +1535,7 @@ run_pipeline() {
     shift
     local modules=("$@")
     local compile_tasks execute_tasks
+    local compile_failures execute_total
 
     snapshot_compiler_if_needed >/dev/null
     reset_modules_results "${modules[@]}"
@@ -1519,20 +1544,26 @@ run_pipeline() {
     execute_tasks="$(mktemp "$NIST_TMP_ROOT/execute_tasks.XXXXXX")"
     build_task_file "$compile_tasks" "${modules[@]}"
 
-    if ! run_phase_workers compile "$jobs" "$compile_tasks" "${modules[@]}"; then
+    compile_failures=0
+    run_phase_workers compile "$jobs" "$compile_tasks" "${modules[@]}" || compile_failures=$?
+    build_compiled_task_file "$compile_tasks" "$execute_tasks"
+    execute_total="$(count_task_file "$execute_tasks")"
+
+    if [ "$compile_failures" -gt 0 ]; then
         echo ""
         if [ "${#modules[@]}" -eq 1 ]; then
-            echo "Compile phase failed. Execution phase skipped for module ${modules[0]}."
+            echo "Compile phase completed with ${compile_failures} error(s) for module ${modules[0]}."
         else
-            echo "Compile phase failed. Execution phase skipped."
+            echo "Compile phase completed with ${compile_failures} error(s)."
         fi
-        run_collect_phase "${modules[@]}"
-        rm -f "$compile_tasks" "$execute_tasks"
-        return
     fi
 
-    cp "$compile_tasks" "$execute_tasks"
-    run_phase_workers execute "$jobs" "$execute_tasks" "${modules[@]}" || true
+    if [ "$execute_total" -gt 0 ]; then
+        run_phase_workers execute "$jobs" "$execute_tasks" "${modules[@]}" || true
+    else
+        echo ""
+        echo "No compiled programs available for execution."
+    fi
     run_collect_phase "${modules[@]}"
     rm -f "$compile_tasks" "$execute_tasks"
 }
@@ -1595,33 +1626,34 @@ run_module() {
 show_summary() {
     echo "=== NIST CCVS 85 — GnuCOBOL-style Summary ==="
     echo ""
-    printf "%-6s %6s %6s %6s %6s %6s %8s\n" \
-        "Module" "Total" "Pass" "Fail" "CErr" "RErr" "Rate"
-    printf "%-6s %6s %6s %6s %6s %6s %8s\n" \
-        "------" "------" "------" "------" "------" "------" "--------"
-    local grand_total=0 grand_pass=0 grand_fail=0 grand_cerr=0 grand_rerr=0
+    printf "%-6s %6s %6s %6s %6s %6s %6s %8s\n" \
+        "Module" "Total" "Pass" "Fail" "Ready" "CErr" "RErr" "Rate"
+    printf "%-6s %6s %6s %6s %6s %6s %6s %8s\n" \
+        "------" "------" "------" "------" "------" "------" "------" "--------"
+    local grand_total=0 grand_pass=0 grand_fail=0 grand_ready=0 grand_cerr=0 grand_rerr=0
     local module total pass fail compile_ready cerr rerr timeout_count skip tested rate
     while IFS= read -r module; do
         read -r total pass fail compile_ready cerr rerr timeout_count skip tested rate <<EOF
 $(module_summary_values "$module")
 EOF
-        printf "%-6s %6s %6s %6s %6s %6s %8s\n" \
-            "$module" "$total" "$pass" "$fail" "$cerr" "$rerr" "${rate}%"
+        printf "%-6s %6s %6s %6s %6s %6s %6s %8s\n" \
+            "$module" "$total" "$pass" "$fail" "$compile_ready" "$cerr" "$rerr" "${rate}%"
         grand_total=$((grand_total + total))
         grand_pass=$((grand_pass + pass))
         grand_fail=$((grand_fail + fail))
+        grand_ready=$((grand_ready + compile_ready))
         grand_cerr=$((grand_cerr + cerr))
         grand_rerr=$((grand_rerr + rerr))
     done < <(list_modules)
-    printf "%-6s %6s %6s %6s %6s %6s %8s\n" \
-        "------" "------" "------" "------" "------" "------" "--------"
+    printf "%-6s %6s %6s %6s %6s %6s %6s %8s\n" \
+        "------" "------" "------" "------" "------" "------" "------" "--------"
     local grand_rate=0
     if [ "$grand_total" -gt 0 ]; then
         grand_rate=$((grand_pass * 100 / grand_total))
     fi
-    printf "%-6s %6d %6d %6d %6d %6d %7d%%\n" \
+    printf "%-6s %6d %6d %6d %6d %6d %6d %7d%%\n" \
         "TOTAL" "$grand_total" "$grand_pass" "$grand_fail" \
-        "$grand_cerr" "$grand_rerr" "$grand_rate"
+        "$grand_ready" "$grand_cerr" "$grand_rerr" "$grand_rate"
 }
 
 if [ ! -d "$PROGRAMS_DIR" ]; then
