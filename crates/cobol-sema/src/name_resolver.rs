@@ -522,6 +522,14 @@ impl<'a> NameResolver<'a> {
                     parent_name: Some(section.name.clone()),
                     parent_span: None,
                 });
+                self.table.define(Symbol {
+                    name: format!("{}--{}", section.name, para.name).into(),
+                    kind: SymbolKind::Paragraph,
+                    data_type: None,
+                    span: para.span,
+                    parent_name: Some(section.name.clone()),
+                    parent_span: None,
+                });
             }
         }
 

@@ -54,6 +54,7 @@ pub(crate) struct CodegenContext {
     group_names: HashSet<String>,
     alpha_names: HashSet<String>,
     display_numeric_sizes: HashMap<String, u32>,
+    display_numeric_scales: HashMap<String, u32>,
     group_alpha_names: HashSet<String>,
     justified_names: HashSet<String>,
     data_item_size_cache: HashMap<String, u32>,
@@ -146,6 +147,8 @@ impl CodegenContext {
 
         let mut display_numeric_sizes = parent.display_numeric_sizes.clone();
         display_numeric_sizes.extend(build_display_numeric_sizes(&program.data_items));
+        let mut display_numeric_scales = parent.display_numeric_scales.clone();
+        display_numeric_scales.extend(build_display_numeric_scales(&program.data_items));
 
         let mut group_alpha_names = parent.group_alpha_names.clone();
         group_alpha_names.extend(build_group_alpha_names(&program.data_items));
@@ -181,6 +184,7 @@ impl CodegenContext {
             group_names,
             alpha_names,
             display_numeric_sizes,
+            display_numeric_scales,
             group_alpha_names,
             justified_names,
             data_item_size_cache,
@@ -227,6 +231,7 @@ impl CodegenContext {
             group_names: build_group_names(data_items),
             alpha_names: build_alpha_names(data_items),
             display_numeric_sizes: build_display_numeric_sizes(data_items),
+            display_numeric_scales: build_display_numeric_scales(data_items),
             group_alpha_names: build_group_alpha_names(data_items),
             justified_names: build_justified_names(data_items),
             data_item_size_cache: build_data_item_size_cache(data_items),
@@ -344,10 +349,20 @@ impl CodegenContext {
 
     pub(crate) fn is_justified_name(&self, c_name: &str) -> bool {
         self.justified_names.contains(c_name)
+            || c_name
+                .rfind("__")
+                .is_some_and(|pos| self.justified_names.contains(&c_name[pos + 2..]))
+            || c_name
+                .rfind("_m_")
+                .is_some_and(|pos| self.justified_names.contains(&c_name[pos + 3..]))
     }
 
     pub(crate) fn display_numeric_size(&self, c_name: &str) -> Option<u32> {
         self.display_numeric_sizes.get(c_name).copied()
+    }
+
+    pub(crate) fn display_numeric_scale(&self, c_name: &str) -> Option<u32> {
+        self.display_numeric_scales.get(c_name).copied()
     }
 
     pub(crate) fn has_display_numeric(&self, c_name: &str) -> bool {
@@ -541,19 +556,12 @@ pub(crate) fn build_subscript_paths(
 
 pub(crate) fn build_decimal_names(data_items: &[HirDataItem]) -> HashSet<String> {
     let mut set = HashSet::new();
-    collect_decimal_names(&mut set, data_items);
-    set
-}
-
-pub(crate) fn collect_decimal_names(set: &mut HashSet<String>, data_items: &[HirDataItem]) {
     for item in data_items {
         if needs_decimal(&item.data_type) {
             set.insert(sanitize_name(&item.name));
         }
-        if let HirType::Group { members, .. } = &item.data_type {
-            collect_decimal_names(set, members);
-        }
     }
+    set
 }
 
 pub(crate) fn build_justified_names(data_items: &[HirDataItem]) -> HashSet<String> {
@@ -576,8 +584,76 @@ fn collect_justified_names(set: &mut HashSet<String>, data_items: &[HirDataItem]
 pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap<String, u32> {
     let mut map = HashMap::new();
     for item in data_items {
+        if let HirType::Numeric {
+            size,
+            decimal_places: 0,
+            ..
+        } = &item.data_type
+        {
+            if item.redefines.is_some()
+                || data_items.iter().any(|other| {
+                other
+                    .redefines
+                    .as_ref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                    && matches!(
+                        other.data_type,
+                        HirType::Alphanumeric { .. } | HirType::Group { .. }
+                    )
+                })
+            {
+                map.insert(sanitize_name(&item.name), *size);
+            }
+        }
         if let HirType::Group { members, .. } = &item.data_type {
-            collect_display_numeric_sizes(&mut map, members);
+            let raw_display_layout =
+                item.redefines.is_some()
+                    || data_items.iter().any(|other| {
+                        other
+                            .redefines
+                            .as_ref()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                    })
+                    || group_members_need_raw_display_layout(members);
+            collect_display_numeric_sizes(&mut map, members, raw_display_layout);
+        }
+    }
+    map
+}
+
+pub(crate) fn build_display_numeric_scales(data_items: &[HirDataItem]) -> HashMap<String, u32> {
+    let mut map = HashMap::new();
+    for item in data_items {
+        if let HirType::Numeric {
+            decimal_places: 0, ..
+        } = &item.data_type
+        {
+            if item.redefines.is_some()
+                || data_items.iter().any(|other| {
+                    other
+                        .redefines
+                        .as_ref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                        && matches!(
+                            other.data_type,
+                            HirType::Alphanumeric { .. } | HirType::Group { .. }
+                        )
+                })
+            {
+                map.insert(sanitize_name(&item.name), 0);
+            }
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            let raw_display_layout =
+                item.redefines.is_some()
+                    || data_items.iter().any(|other| {
+                        other
+                            .redefines
+                            .as_ref()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                    })
+                    || group_members_need_raw_display_layout(members);
+            collect_display_numeric_scales(&mut map, members, raw_display_layout);
         }
     }
     map
@@ -586,21 +662,22 @@ pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap
 pub(crate) fn collect_display_numeric_sizes(
     map: &mut HashMap<String, u32>,
     members: &[HirDataItem],
+    raw_display_layout: bool,
 ) {
     for member in members {
         let c_name = sanitize_name(&member.name);
         match &member.data_type {
-            HirType::Numeric {
-                size,
-                decimal_places: 0,
-                ..
-            } => {
+            HirType::Numeric { size, .. } if raw_display_layout => {
                 map.insert(c_name, *size);
             }
             HirType::Group {
                 members: sub_members,
                 ..
-            } => collect_display_numeric_sizes(map, sub_members),
+            } => collect_display_numeric_sizes(
+                map,
+                sub_members,
+                raw_display_layout || group_members_need_raw_display_layout(sub_members),
+            ),
             _ => {}
         }
     }
@@ -617,6 +694,52 @@ pub(crate) fn collect_display_numeric_sizes(
             }
         }
     }
+}
+
+pub(crate) fn collect_display_numeric_scales(
+    map: &mut HashMap<String, u32>,
+    members: &[HirDataItem],
+    raw_display_layout: bool,
+) {
+    for member in members {
+        let c_name = sanitize_name(&member.name);
+        match &member.data_type {
+            HirType::Numeric { decimal_places, .. } if raw_display_layout => {
+                map.insert(c_name, *decimal_places);
+            }
+            HirType::Group {
+                members: sub_members,
+                ..
+            } => collect_display_numeric_scales(
+                map,
+                sub_members,
+                raw_display_layout || group_members_need_raw_display_layout(sub_members),
+            ),
+            _ => {}
+        }
+    }
+    for member in members {
+        if let Some((ref from, ref thru)) = member.renames {
+            if thru.is_none() {
+                let from_c = sanitize_name(from);
+                if let Some(&scale) = map.get(&from_c) {
+                    let c_name = sanitize_name(&member.name);
+                    map.insert(c_name, scale);
+                }
+            }
+        }
+    }
+}
+
+fn group_members_need_raw_display_layout(members: &[HirDataItem]) -> bool {
+    members.iter().any(|member| {
+        member.redefines.is_some()
+            || matches!(
+                &member.data_type,
+                HirType::Group { members: sub_members, .. }
+                    if group_members_need_raw_display_layout(sub_members)
+            )
+    })
 }
 
 pub(crate) fn build_group_alpha_names(data_items: &[HirDataItem]) -> HashSet<String> {

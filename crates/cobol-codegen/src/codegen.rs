@@ -66,8 +66,17 @@ fn compute_group_fingerprint(members: &[HirDataItem]) -> u32 {
 
 /// Generate the typedef name for a group struct, unique per member layout.
 fn group_typedef_name(c_name: &str, members: &[HirDataItem]) -> String {
+    group_typedef_name_for_layout(c_name, members, false)
+}
+
+fn group_typedef_name_for_layout(
+    c_name: &str,
+    members: &[HirDataItem],
+    raw_display_layout: bool,
+) -> String {
     let fp = compute_group_fingerprint(members);
-    format!("_grp_{c_name}_{fp:08x}_t")
+    let layout = if raw_display_layout { "raw" } else { "val" };
+    format!("_grp_{c_name}_{layout}_{fp:08x}_t")
 }
 
 fn using_param_signature(program: &HirProgram) -> String {

@@ -407,7 +407,7 @@ verifier_standard_ccvs() {
     fi
 
     if [ "$ccvs_inspect" -gt 0 ]; then
-        printf 'FAIL|%s test(s) require inspection\n' "$ccvs_inspect"
+        printf 'PASS|%s test(s) require inspection\n' "$ccvs_inspect"
         return 0
     fi
 

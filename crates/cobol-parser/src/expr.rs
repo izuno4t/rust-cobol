@@ -413,7 +413,11 @@ impl Parser {
                 }
                 // Note: integers exceeding i64 range silently become 0
                 let val: i64 = tok.text.parse().unwrap_or(0);
-                Some(Literal::Integer(val))
+                if tok.text.len() > 1 && tok.text.starts_with('0') {
+                    Some(Literal::Decimal(tok.text.to_string()))
+                } else {
+                    Some(Literal::Integer(val))
+                }
             }
             TokenKind::DecimalLiteral => {
                 let tok = self.advance();
@@ -423,7 +427,10 @@ impl Parser {
                 let tok = self.advance();
                 let s = tok.text.as_str();
                 let stripped = if s.len() >= 2 { &s[1..s.len() - 1] } else { s };
-                Some(Literal::String(SmolStr::from(stripped)))
+                let quote = s.as_bytes().first().copied().unwrap_or(b'"') as char;
+                let doubled = format!("{quote}{quote}");
+                let unescaped = stripped.replace(&doubled, &quote.to_string());
+                Some(Literal::String(SmolStr::from(unescaped)))
             }
             TokenKind::HexLiteral => {
                 let tok = self.advance();
@@ -488,7 +495,11 @@ impl Parser {
                         let tok = self.advance();
                         let text = format!("{}{}", sign_char, tok.text);
                         let val: i64 = text.parse().unwrap_or(0);
-                        Some(Literal::Integer(val))
+                        if tok.text.len() > 1 && tok.text.starts_with('0') {
+                            Some(Literal::Decimal(text))
+                        } else {
+                            Some(Literal::Integer(val))
+                        }
                     }
                     TokenKind::DecimalLiteral => {
                         let tok = self.advance();
@@ -524,6 +535,34 @@ impl Parser {
                 | "INTEGER-OF-DATE"
                 | "INTEGER-OF-DAY"
                 | "INTEGER-PART"
+                | "LENGTH"
+                | "LOG"
+                | "LOG10"
+                | "LOWER-CASE"
+                | "MAX"
+                | "MEAN"
+                | "MEDIAN"
+                | "MIDRANGE"
+                | "MIN"
+                | "MOD"
+                | "NUMVAL"
+                | "NUMVAL-C"
+                | "ORD"
+                | "ORD-MAX"
+                | "ORD-MIN"
+                | "PRESENT-VALUE"
+                | "RANDOM"
+                | "RANGE"
+                | "REM"
+                | "REVERSE"
+                | "SIN"
+                | "SQRT"
+                | "STANDARD-DEVIATION"
+                | "SUM"
+                | "TAN"
+                | "UPPER-CASE"
+                | "VARIANCE"
+                | "WHEN-COMPILED"
         ) {
             self.warning_once_per_statement(
                 start_span,

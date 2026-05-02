@@ -540,12 +540,35 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let abs_value = dec.value.unsigned_abs();
 
     // Count digit positions before and after the decimal point in the PICTURE.
-    let pic_upper = pic.to_uppercase();
+    let pic_upper = expand_picture_repeats(pic).to_uppercase();
     let chars: Vec<char> = pic_upper.chars().collect();
+    if chars.iter().all(|&c| c == '$' || c == 'W') && !chars.is_empty() {
+        let symbol = chars[0];
+        let digits = abs_value.to_string();
+        let mut result = String::with_capacity(chars.len());
+        let occupied = (digits.len() + 1).min(chars.len());
+        result.push_str(&" ".repeat(chars.len().saturating_sub(occupied)));
+        if digits.len() < chars.len() {
+            result.push(symbol);
+            result.push_str(&digits);
+        } else {
+            result.push_str(&digits[digits.len().saturating_sub(chars.len())..]);
+        }
+        return result;
+    }
 
-    // Find the decimal point position (V or .).
-    let decimal_pos = chars.iter().position(|&c| c == 'V' || c == '.');
-    let has_actual_point = chars.contains(&'.');
+    // Find the decimal point position. When both "." and "," appear in an
+    // edited picture, the rightmost separator is the decimal separator and the
+    // other is a grouping insertion.
+    let actual_decimal_char = chars
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(_, &c)| if c == '.' || c == ',' { Some(c) } else { None });
+    let decimal_pos = chars
+        .iter()
+        .position(|&c| c == 'V' || Some(c) == actual_decimal_char);
+    let has_actual_point = actual_decimal_char.is_some();
     let has_mandatory_integer_digit = chars
         .iter()
         .take_while(|&&c| c != 'V' && c != '.')
@@ -557,7 +580,7 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let mut frac_digits = 0usize;
     let mut found_decimal = false;
     for &c in &chars {
-        if c == 'V' || c == '.' {
+        if c == 'V' || Some(c) == actual_decimal_char {
             found_decimal = true;
             continue;
         }
@@ -595,10 +618,24 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let mut result = String::with_capacity(chars.len());
     let mut in_frac = false;
     let mut suppress_zeros = true; // for Z suppression
+    let mut forced_next = None;
+    let mut pending_floating_symbol = None;
 
     for (idx, &c) in chars.iter().enumerate() {
+        if let Some(ch) = forced_next.take() {
+            result.push(ch);
+            continue;
+        }
         match c {
-            '$' | '*' | 'C' | 'R' if zero_asterisk_fill => {
+            'C' if !zero_asterisk_fill && chars.get(idx + 1).is_some_and(|next| *next == 'R') => {
+                result.push(if negative { 'C' } else { ' ' });
+                forced_next = Some(if negative { 'R' } else { ' ' });
+            }
+            'D' if !zero_asterisk_fill && chars.get(idx + 1).is_some_and(|next| *next == 'B') => {
+                result.push(if negative { 'D' } else { ' ' });
+                forced_next = Some(if negative { 'B' } else { ' ' });
+            }
+            '$' | 'W' | '*' | 'C' | 'R' if zero_asterisk_fill => {
                 result.push('*');
                 if c == '*' && !in_frac {
                     int_idx += 1;
@@ -610,26 +647,51 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
                 // Implicit sign — not emitted.
             }
             '+' => {
-                if negative {
+                if chars.get(idx + 1).is_some_and(|next| *next == '+') {
+                    result.push(' ');
+                } else if suppress_zeros
+                    && chars
+                        .get(idx + 1)
+                        .is_some_and(|next| *next == ',' || *next == 'B')
+                {
+                    result.push(' ');
+                    pending_floating_symbol = Some(if negative { '-' } else { '+' });
+                } else if negative {
                     result.push('-');
                 } else {
                     result.push('+');
                 }
             }
             '-' => {
-                if negative {
+                if chars.get(idx + 1).is_some_and(|next| *next == '-') {
+                    result.push(' ');
+                } else if suppress_zeros
+                    && chars
+                        .get(idx + 1)
+                        .is_some_and(|next| *next == ',' || *next == 'B')
+                {
+                    result.push(' ');
+                    pending_floating_symbol = Some(if negative { '-' } else { ' ' });
+                } else if negative {
                     result.push('-');
                 } else {
                     result.push(' ');
                 }
             }
-            '$' => {
-                if suppress_zeros && chars.get(idx + 1).is_some_and(|next| *next == '$') {
+            '$' | 'W' => {
+                if suppress_zeros && chars.get(idx + 1).is_some_and(|next| *next == c) {
                     result.push(' ');
                 } else if suppress_zeros && chars.get(idx + 1).is_some_and(|next| *next == '*') {
-                    result.push('$');
+                    result.push(c);
+                } else if suppress_zeros
+                    && chars
+                        .get(idx + 1)
+                        .is_some_and(|next| *next == ',' || *next == 'B')
+                {
+                    result.push(' ');
+                    pending_floating_symbol = Some(c);
                 } else {
-                    result.push('$');
+                    result.push(c);
                     suppress_zeros = false;
                 }
             }
@@ -637,20 +699,42 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
                 in_frac = true;
                 suppress_zeros = false;
             }
-            '.' => {
+            '.' if Some(c) == actual_decimal_char => {
                 in_frac = true;
                 suppress_zeros = false;
                 result.push('.');
             }
+            ',' if Some(c) == actual_decimal_char => {
+                in_frac = true;
+                suppress_zeros = false;
+                result.push(',');
+            }
             ',' => {
-                if suppress_zeros {
+                if let Some(symbol) = pending_floating_symbol.take() {
+                    result.push(symbol);
+                    suppress_zeros = false;
+                } else if suppress_zeros && chars[..idx].contains(&'*') {
+                    result.push('*');
+                } else if suppress_zeros {
                     result.push(' ');
                 } else {
                     result.push(',');
                 }
             }
+            '.' => {
+                if suppress_zeros {
+                    result.push(' ');
+                } else {
+                    result.push('.');
+                }
+            }
             'B' => {
-                result.push(' ');
+                if let Some(symbol) = pending_floating_symbol.take() {
+                    result.push(symbol);
+                    suppress_zeros = false;
+                } else {
+                    result.push(' ');
+                }
             }
             '9' => {
                 if !in_frac {
@@ -667,7 +751,7 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
             'Z' => {
                 if !in_frac {
                     let digit = int_str.as_bytes().get(int_idx).copied().unwrap_or(b'0');
-                    if suppress_zeros && digit == b'0' && int_idx < int_str.len() - 1 {
+                    if suppress_zeros && digit == b'0' {
                         result.push(' ');
                     } else {
                         suppress_zeros = false;
@@ -708,15 +792,35 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let _ = decimal_pos;
     let _ = has_actual_point;
 
-    if !zero_asterisk_fill && !negative && (pic_upper.ends_with("CR") || pic_upper.ends_with("DB"))
-    {
-        let mut chars: Vec<char> = result.chars().collect();
-        let len = chars.len();
-        if len >= 2 {
-            chars[len - 2] = ' ';
-            chars[len - 1] = ' ';
-            return chars.into_iter().collect();
+    result
+}
+
+fn expand_picture_repeats(pic: &str) -> String {
+    let chars: Vec<char> = pic.chars().collect();
+    let mut result = String::with_capacity(pic.len());
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if i + 1 < chars.len() && chars[i + 1] == '(' {
+            let mut j = i + 2;
+            let mut count = String::new();
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                count.push(chars[j]);
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == ')' {
+                let repeat = count.parse::<usize>().unwrap_or(1);
+                for _ in 0..repeat {
+                    result.push(ch);
+                }
+                i = j + 1;
+                continue;
+            }
         }
+
+        result.push(ch);
+        i += 1;
     }
 
     result

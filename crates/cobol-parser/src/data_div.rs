@@ -956,6 +956,7 @@ impl Parser {
             if self.check(TokenKind::Period) || self.at_eof() {
                 break;
             }
+            let _ = self.eat(TokenKind::Comma);
         }
 
         let end_span = self.span();
@@ -1615,7 +1616,7 @@ fn analyze_picture(raw: &str) -> PictureAnalysis {
                 let count = parse_repeat_count(bytes, &mut i);
                 size += count;
             }
-            b'Z' | b'*' | b'+' | b'-' | b'$' | b'B' | b'0' | b'/' | b',' | b'.' => {
+            b'Z' | b'*' | b'+' | b'-' | b'$' | b'W' | b'B' | b'0' | b'/' | b',' | b'.' => {
                 is_edited = true;
                 let count = parse_repeat_count(bytes, &mut i);
                 size += count;

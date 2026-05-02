@@ -323,6 +323,7 @@ pub struct HirDataItem {
     pub data_type: HirType,
     pub picture: Option<SmolStr>,
     pub is_numeric_edited: bool,
+    pub blank_when_zero: bool,
     pub scale_adjustment: i32,
     pub is_external: bool,
     pub initial_value: Option<HirLiteral>,
@@ -506,6 +507,7 @@ pub enum HirStatement {
     Subtract {
         operands: Vec<HirExpr>,
         from: Vec<HirExpr>,
+        from_rounded: Vec<bool>,
         giving: Vec<HirExpr>,
         giving_rounded: Vec<bool>,
         on_size_error: Vec<HirStatement>,
@@ -525,7 +527,9 @@ pub enum HirStatement {
     Divide {
         operand: HirExpr,
         into: Vec<HirExpr>,
+        into_rounded: Vec<bool>,
         giving: Vec<HirExpr>,
+        giving_rounded: Vec<bool>,
         remainder: Option<HirExpr>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,

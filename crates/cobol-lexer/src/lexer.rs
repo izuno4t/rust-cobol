@@ -263,24 +263,31 @@ impl Lexer {
                         let quote = first_non_space.unwrap();
                         skip += 1;
 
-                        // Trim trailing spaces, then drop the previous line's
-                        // trailing quote when present. COBOL fixed-format
-                        // string continuation uses one quote at the end of the
-                        // continued line and one at the start of the next line
-                        // as continuation markers rather than string content.
+                        // Drop the previous line's trailing quote when present.
+                        // If the previous line is an open literal without that
+                        // marker, its trailing spaces are literal content.
                         let prev_trimmed_len = prev.text.trim_end().len();
-                        prev.text.truncate(prev_trimmed_len);
                         // Drop exactly the trailing continuation quote marker.
                         // This preserves any escaped quotes that are part of
                         // the string content while still removing the single
                         // quote used to continue the literal onto the next
                         // physical line.
                         let mut dropped_prev_quote = false;
-                        if prev.text.as_bytes().last() == Some(&quote)
-                            && Self::ends_inside_string(&prev.text[..prev.text.len() - 1], quote)
+                        let trailing_spaces = prev.text.len().saturating_sub(prev_trimmed_len);
+                        if prev_trimmed_len > 0
+                            && prev.text.as_bytes().get(prev_trimmed_len - 1)
+                            == Some(&quote)
+                            && Self::ends_inside_string(&prev.text[..prev_trimmed_len - 1], quote)
                         {
+                            prev.text.truncate(prev_trimmed_len);
                             prev.text.pop();
                             dropped_prev_quote = true;
+                        }
+                        if !dropped_prev_quote {
+                            prev.text.truncate(prev_trimmed_len);
+                            if trailing_spaces == 1 {
+                                prev.text.push(' ');
+                            }
                         }
 
                         // When the previous physical line ended with a
@@ -450,10 +457,18 @@ impl Lexer {
     /// Determines whether a `+` or `-` should be treated as a sign prefix
     /// (part of a numeric literal) rather than an operator.
     ///
-    /// Heuristic: treat as sign only when at the very start of input or
-    /// when the preceding non-whitespace token position was an operator or
-    /// opening paren.
+    /// Heuristic: treat as sign only when at the very start of input, after
+    /// whitespace, or when the preceding non-whitespace token position was an
+    /// operator or opening paren. COBOL arithmetic operators are separated; a
+    /// sign immediately attached to digits denotes a signed numeric literal.
     fn should_treat_as_sign(&self) -> bool {
+        if self.pos > 0 {
+            let prev = self.content.as_bytes()[self.pos - 1];
+            if prev == b' ' || prev == b'\t' {
+                return true;
+            }
+        }
+
         // Look backward in content for the preceding non-whitespace char
         let mut i = self.pos;
         while i > 0 {
@@ -1308,6 +1323,19 @@ mod tests {
             .find(|t| t.text.as_str() == "+5")
             .expect("should lex +5");
         assert_eq!(num.kind, TokenKind::IntegerLiteral);
+    }
+
+    #[test]
+    fn test_lex_attached_sign_after_space_as_signed_number() {
+        let src = "COMPUTE X = FUNCTION RANGE(10.2 -0.2, 5.6, -15.6).";
+        let tokens = lex_free(src);
+
+        assert!(tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::DecimalLiteral && t.text == "-0.2"));
+        assert!(tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::DecimalLiteral && t.text == "-15.6"));
     }
 
     #[test]

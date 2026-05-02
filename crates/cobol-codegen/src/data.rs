@@ -48,8 +48,8 @@ pub(crate) fn emit_fd_alias_macros(
             continue;
         };
         if let HirType::Group { members, .. } = &alias_item.data_type {
-            emit_group_typedefs(out, &c_alias, members, &mut emitted_typedefs);
-            let td = group_typedef_name(&c_alias, members);
+            emit_group_typedefs(out, &c_alias, members, &mut emitted_typedefs, true);
+            let td = group_typedef_name_for_layout(&c_alias, members, true);
             let union_td = format!("_fd_alias_{c_alias}_t");
             out.push_str(&format!(
                 "typedef union {{ {td} members; uint8_t _bytes[sizeof({td})]; }} {union_td};\n"
@@ -109,6 +109,7 @@ pub(crate) fn emit_data_items(
     // When multiple 01-level records share the same FD, the primary record's
     // static union must be large enough to hold any of them.
     let fd_primary_max_sizes = compute_fd_primary_max_sizes(items, fd_record_aliases);
+    let redefines_max_sizes = compute_redefines_max_sizes(items);
 
     let mut emitted_typedefs = HashSet::new();
     out.push_str("/* Data items */\n");
@@ -121,12 +122,19 @@ pub(crate) fn emit_data_items(
             continue; // FD record alias — will be #defined to the primary record
         }
         let fd_max = fd_primary_max_sizes.get(&c_name).copied();
+        let redef_max = redefines_max_sizes.get(&c_name).copied();
+        let storage_max = match (fd_max, redef_max) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        };
         emit_single_data_item(
             out,
             item,
+            items,
             &duplicate_member_names,
             &mut emitted_typedefs,
-            fd_max,
+            storage_max,
         );
     }
     out.push('\n');
@@ -172,6 +180,53 @@ fn compute_fd_primary_max_sizes(
         }
     }
     result
+}
+
+fn compute_redefines_max_sizes(items: &[HirDataItem]) -> HashMap<String, u32> {
+    let mut result = HashMap::new();
+    for item in items {
+        let Some(redef_name) = &item.redefines else {
+            continue;
+        };
+        let c_redef = sanitize_name(redef_name);
+        let alias_size = data_item_byte_size(&item.data_type);
+        let primary_size = items
+            .iter()
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(redef_name))
+            .map(|candidate| data_item_byte_size(&candidate.data_type))
+            .unwrap_or(0);
+        let max_size = alias_size.max(primary_size);
+        result
+            .entry(c_redef)
+            .and_modify(|size: &mut u32| *size = (*size).max(max_size))
+            .or_insert(max_size);
+    }
+    result
+}
+
+fn group_needs_raw_display_layout(item: &HirDataItem, all_items: &[HirDataItem]) -> bool {
+    if item.redefines.is_some() {
+        return true;
+    }
+    let c_name = sanitize_name(&item.name);
+    all_items
+        .iter()
+        .any(|candidate| candidate.redefines.as_deref().map(sanitize_name) == Some(c_name.clone()))
+        || match &item.data_type {
+            HirType::Group { members, .. } => group_members_need_raw_display_layout(members),
+            _ => false,
+        }
+}
+
+fn group_members_need_raw_display_layout(members: &[HirDataItem]) -> bool {
+    members.iter().any(|member| {
+        member.redefines.is_some()
+            || matches!(
+                &member.data_type,
+                HirType::Group { members: sub_members, .. }
+                    if group_members_need_raw_display_layout(sub_members)
+            )
+    })
 }
 
 /// Collect sanitized names of all items that are members of a group.
@@ -253,9 +308,29 @@ pub(crate) fn collect_duplicate_member_names(
     duplicates
 }
 
+fn top_level_numeric_redefined_as_display(item: &HirDataItem, all_items: &[HirDataItem]) -> bool {
+    matches!(
+        item.data_type,
+        HirType::Numeric {
+            decimal_places: 0,
+            ..
+        }
+    ) && all_items.iter().any(|other| {
+        other
+            .redefines
+            .as_ref()
+            .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+            && matches!(
+                other.data_type,
+                HirType::Alphanumeric { .. } | HirType::Group { .. }
+            )
+    })
+}
+
 pub(crate) fn emit_single_data_item(
     out: &mut String,
     item: &HirDataItem,
+    all_items: &[HirDataItem],
     duplicate_member_names: &BTreeSet<String>,
     emitted_typedefs: &mut HashSet<String>,
     fd_max_size: Option<u32>,
@@ -291,8 +366,8 @@ pub(crate) fn emit_single_data_item(
             }
             HirType::Group { members, .. } => {
                 // Group REDEFINES: reinterpret as the group's struct type
-                emit_group_typedefs(out, &c_name, members, emitted_typedefs);
-                let td = group_typedef_name(&c_name, members);
+                emit_group_typedefs(out, &c_name, members, emitted_typedefs, true);
+                let td = group_typedef_name_for_layout(&c_name, members, true);
                 out.push_str(&format!(
                     "#define {c_name} (*({td}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
                 ));
@@ -367,13 +442,27 @@ pub(crate) fn emit_single_data_item(
         HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
             out.push_str(&format!("static CobolDecimal {c_name}{array_suffix};\n"));
         }
+        HirType::Numeric {
+            size,
+            decimal_places: 0,
+            ..
+        } if top_level_numeric_redefined_as_display(item, all_items) => {
+            out.push_str(&format!("static char {c_name}{array_suffix}[{}];\n", size + 1));
+        }
         HirType::Numeric { .. } => {
             out.push_str(&format!("static int64_t {c_name}{array_suffix};\n"));
         }
         HirType::Group { members, .. } => {
             // Emit group as union of struct + byte array for group-level operations
-            emit_group_typedefs(out, &c_name, members, emitted_typedefs);
-            let td = group_typedef_name(&c_name, members);
+            let raw_display_layout = group_needs_raw_display_layout(item, all_items);
+            emit_group_typedefs(
+                out,
+                &c_name,
+                members,
+                emitted_typedefs,
+                raw_display_layout,
+            );
+            let td = group_typedef_name_for_layout(&c_name, members, raw_display_layout);
             out.push_str("static union {\n");
             out.push_str(&format!("    {td} members;\n"));
             out.push_str(&format!("    uint8_t _bytes[sizeof({td})];\n"));
@@ -441,6 +530,7 @@ pub(crate) fn emit_group_typedefs(
     c_name: &str,
     members: &[HirDataItem],
     emitted_typedefs: &mut HashSet<String>,
+    raw_display_layout: bool,
 ) {
     // First, recurse into nested groups using the same duplicate-name
     // disambiguation as the enclosing struct members.
@@ -462,11 +552,17 @@ pub(crate) fn emit_group_typedefs(
             ..
         } = &member.data_type
         {
-            emit_group_typedefs(out, &member_c_name, sub_members, emitted_typedefs);
+            emit_group_typedefs(
+                out,
+                &member_c_name,
+                sub_members,
+                emitted_typedefs,
+                raw_display_layout || group_members_need_raw_display_layout(sub_members),
+            );
         }
     }
     // Skip if this exact typedef (name + member layout) has already been emitted
-    let typedef_name = group_typedef_name(c_name, members);
+    let typedef_name = group_typedef_name_for_layout(c_name, members, raw_display_layout);
     if !emitted_typedefs.insert(typedef_name.clone()) {
         return;
     }
@@ -482,7 +578,7 @@ pub(crate) fn emit_group_typedefs(
         if member.redefines.is_some() || member.renames.is_some() {
             continue; // REDEFINES handled separately
         }
-        emit_group_struct_member(out, member, &mut member_name_counts);
+        emit_group_struct_member(out, member, &mut member_name_counts, raw_display_layout);
     }
     out.push_str(&format!("}} {typedef_name};\n"));
 }
@@ -492,6 +588,7 @@ pub(crate) fn emit_group_struct_member(
     out: &mut String,
     member: &HirDataItem,
     member_name_counts: &mut HashMap<String, u32>,
+    raw_display_layout: bool,
 ) {
     let base_c_name = sanitize_name(&member.name);
     // Track member names to avoid duplicates (common with FILLER and implicit FILLER items)
@@ -523,26 +620,27 @@ pub(crate) fn emit_group_struct_member(
                 out.push_str(&format!("    uint16_t _m_{c_name}[{size}];\n"));
             }
         }
-        HirType::Numeric {
-            size,
-            decimal_places,
-            ..
-        } if *decimal_places > 0 => {
-            out.push_str(&format!("    CobolDecimal _m_{c_name}{array_suffix};\n"));
-        }
-        HirType::Numeric { size, .. } => {
+        HirType::Numeric { size, .. } if raw_display_layout => {
             // USAGE DISPLAY numeric in group: store as zoned decimal (char[])
-            // so that group-level byte operations (MOVE, COMPARE) work correctly.
+            // when REDEFINES/record aliases need byte-for-byte overlay layout.
             let disp_size = *size as usize;
             out.push_str(&format!(
                 "    char _m_{c_name}{array_suffix}[{disp_size}];\n"
             ));
         }
+        HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+            out.push_str(&format!("    CobolDecimal _m_{c_name}{array_suffix};\n"));
+        }
+        HirType::Numeric { .. } => {
+            out.push_str(&format!("    int64_t _m_{c_name}{array_suffix};\n"));
+        }
         HirType::Group {
             members: ref sub_members,
             ..
         } => {
-            let td = group_typedef_name(&c_name, sub_members);
+            let child_raw_display_layout =
+                raw_display_layout || group_members_need_raw_display_layout(sub_members);
+            let td = group_typedef_name_for_layout(&c_name, sub_members, child_raw_display_layout);
             out.push_str(&format!(
                 "    union {{ {td} members; uint8_t _bytes[sizeof({td})]; }} _m_{c_name}{array_suffix};\n"
             ));
@@ -710,8 +808,8 @@ pub(crate) fn emit_group_redefines(
                     members: grp_members,
                     ..
                 } => {
-                    emit_group_typedefs(out, &c_name, grp_members, emitted_typedefs);
-                    let td = group_typedef_name(&c_name, grp_members);
+                    emit_group_typedefs(out, &c_name, grp_members, emitted_typedefs, true);
+                    let td = group_typedef_name_for_layout(&c_name, grp_members, true);
                     let alias_expr =
                         format!("(*({td}*)&{qualified_target}) /* REDEFINES {c_redef} */");
                     if emit_aliases && !duplicate_names.contains(&c_name) {
@@ -891,6 +989,25 @@ pub(crate) fn emit_single_data_init_with_prefix(
         // access .members on an array element without a subscript).
         if item.occurs.is_some() {
             out.push_str(&format!("    memset(&{c_name}, 0, sizeof({c_name}));\n"));
+            let Some(n) = item.occurs else { unreachable!() };
+            let my_prefix = format!("{c_name}[_gi].members");
+            out.push_str(&format!("    for (int _gi = 0; _gi < {n}; _gi++) {{\n"));
+            let mut member_name_counts: HashMap<String, u32> = HashMap::new();
+            for member in members {
+                if member.redefines.is_some() || member.renames.is_some() {
+                    continue;
+                }
+                let member_base = sanitize_name(&member.name);
+                let count = member_name_counts.entry(member_base.clone()).or_insert(0);
+                *count += 1;
+                let deduped = if *count > 1 {
+                    format!("{}_{}", member_base, count)
+                } else {
+                    member_base
+                };
+                emit_single_data_init_with_prefix(out, member, Some(&my_prefix), Some(&deduped));
+            }
+            out.push_str("    }\n");
             return;
         }
         // Initialize group members recursively with C struct access path
@@ -929,14 +1046,26 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 out.push_str(&format!("    memset({c_name}, 0, sizeof({c_name}));\n"));
             }
             HirType::Alphanumeric { size } => {
-                if group_prefix.is_some() {
-                    out.push_str(&format!(
-                        "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); }}\n"
-                    ));
-                } else {
-                    out.push_str(&format!(
-                        "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); {c_name}[_i][{size}] = '\\0'; }}\n"
-                    ));
+                if let Some(HirLiteral::String(s)) = &item.initial_value {
+                    let escaped = escape_c_string(s);
+                    let copy_len = (*size).min(s.len() as u32);
+                    if group_prefix.is_some() {
+                        out.push_str(&format!(
+                            "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); memcpy({c_name}[_i], \"{escaped}\", {copy_len}); }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); memcpy({c_name}[_i], \"{escaped}\", {copy_len}); {c_name}[_i][{size}] = '\\0'; }}\n"
+                        ));
+                    }
+                } else if group_prefix.is_some() {
+                        out.push_str(&format!(
+                            "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); {c_name}[_i][{size}] = '\\0'; }}\n"
+                        ));
                 }
             }
             HirType::National { size } => {
@@ -950,8 +1079,12 @@ pub(crate) fn emit_single_data_init_with_prefix(
         }
         return;
     }
-    // CobolDecimal initialization
-    if needs_decimal(&item.data_type) {
+    let in_group = group_prefix.is_some();
+    // CobolDecimal initialization. DISPLAY numeric group members are byte
+    // fields, including items with implied decimal places.
+    if needs_decimal(&item.data_type)
+        && !(in_group && matches!(item.data_type, HirType::Numeric { .. }))
+    {
         let (size, decimal_places, is_signed) = match &item.data_type {
             HirType::Numeric {
                 size,
@@ -1011,7 +1144,6 @@ pub(crate) fn emit_single_data_init_with_prefix(
         }
         return;
     }
-    let in_group = group_prefix.is_some();
     if let Some(init) = &item.initial_value {
         match (&item.data_type, init) {
             (HirType::Alphanumeric { size }, HirLiteral::String(s)) => {
@@ -1045,6 +1177,33 @@ pub(crate) fn emit_single_data_init_with_prefix(
                     ));
                 }
             }
+            (HirType::Alphanumeric { size }, HirLiteral::HighValue) => {
+                if in_group {
+                    out.push_str(&format!("    memset({c_name}, 0xFF, {size});\n"));
+                } else {
+                    out.push_str(&format!(
+                        "    memset({c_name}, 0xFF, {size});\n    {c_name}[{size}] = '\\0';\n"
+                    ));
+                }
+            }
+            (HirType::Alphanumeric { size }, HirLiteral::LowValue) => {
+                if in_group {
+                    out.push_str(&format!("    memset({c_name}, 0x00, {size});\n"));
+                } else {
+                    out.push_str(&format!(
+                        "    memset({c_name}, 0x00, {size});\n    {c_name}[{size}] = '\\0';\n"
+                    ));
+                }
+            }
+            (HirType::Alphanumeric { size }, HirLiteral::Quote) => {
+                if in_group {
+                    out.push_str(&format!("    memset({c_name}, '\"', {size});\n"));
+                } else {
+                    out.push_str(&format!(
+                        "    memset({c_name}, '\"', {size});\n    {c_name}[{size}] = '\\0';\n"
+                    ));
+                }
+            }
             (HirType::Alphanumeric { size }, HirLiteral::Integer(n)) => {
                 let digits_raw = n.to_string();
                 let digits = escape_c_string(&digits_raw);
@@ -1062,13 +1221,41 @@ pub(crate) fn emit_single_data_init_with_prefix(
             (
                 HirType::Numeric {
                     size,
-                    decimal_places: 0,
+                    decimal_places,
                     ..
                 },
                 HirLiteral::Integer(n),
-            ) if group_prefix.is_some() || c_name.contains("__") || c_name.contains("._m_") => {
+            ) if group_prefix.is_some()
+                || c_name.contains("__")
+                || c_name.contains("._m_")
+                || with_active_context(|ctx| ctx.has_display_numeric(&c_name)) =>
+            {
+                let value = if *decimal_places > 0 {
+                    format!("({n} * {})", 10_i64.pow(*decimal_places))
+                } else {
+                    n.to_string()
+                };
                 out.push_str(&format!(
-                    "    cobol_store_numeric_display({n}, \
+                    "    cobol_store_numeric_display({value}, \
+                     (uint8_t*)&({c_name}), {size});\n"
+                ));
+            }
+            (
+                HirType::Numeric {
+                    size,
+                    decimal_places: _,
+                    ..
+                },
+                HirLiteral::Decimal(d),
+            ) if group_prefix.is_some()
+                || c_name.contains("__")
+                || c_name.contains("._m_")
+                || with_active_context(|ctx| ctx.has_display_numeric(&c_name)) =>
+            {
+                let (scaled, scale) = parse_decimal_literal(d);
+                let value = if scale > 0 { scaled.to_string() } else { scaled.to_string() };
+                out.push_str(&format!(
+                    "    cobol_store_numeric_display({value}, \
                      (uint8_t*)&({c_name}), {size});\n"
                 ));
             }
@@ -1079,7 +1266,11 @@ pub(crate) fn emit_single_data_init_with_prefix(
                     ..
                 },
                 HirLiteral::Zero,
-            ) if group_prefix.is_some() || c_name.contains("__") || c_name.contains("._m_") => {
+            ) if group_prefix.is_some()
+                || c_name.contains("__")
+                || c_name.contains("._m_")
+                || with_active_context(|ctx| ctx.has_display_numeric(&c_name)) =>
+            {
                 out.push_str(&format!(
                     "    cobol_store_numeric_display(0, \
                      (uint8_t*)&({c_name}), {size});\n"
@@ -1172,9 +1363,13 @@ pub(crate) fn emit_default_init(
         }
         HirType::Numeric {
             size,
-            decimal_places: 0,
+            decimal_places: _,
             ..
-        } if in_group || c_name.contains("__") || c_name.contains("._m_") => {
+        } if in_group
+            || c_name.contains("__")
+            || c_name.contains("._m_")
+            || with_active_context(|ctx| ctx.has_display_numeric(c_name)) =>
+        {
             out.push_str(&format!(
                 "    cobol_store_numeric_display(0, (uint8_t*)&({c_name}), {size});\n"
             ));
@@ -1220,6 +1415,9 @@ mod tests {
                 members: vec![HirDataItem {
                     name: SmolStr::new("FIELD-1"),
                     data_type: HirType::Alphanumeric { size: 10 },
+                    picture: None,
+                    is_numeric_edited: false,
+                    blank_when_zero: false,
                     scale_adjustment: 0,
                     is_external: false,
                     initial_value: None,
@@ -1233,6 +1431,9 @@ mod tests {
                 }],
                 size: 10,
             },
+            picture: None,
+            is_numeric_edited: false,
+            blank_when_zero: false,
             scale_adjustment: 0,
             is_external: false,
             initial_value: None,
@@ -1267,6 +1468,9 @@ mod tests {
                     members: vec![HirDataItem {
                         name: SmolStr::new("FIELD-1"),
                         data_type: HirType::Alphanumeric { size: 10 },
+                        picture: None,
+                        is_numeric_edited: false,
+                        blank_when_zero: false,
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: None,
@@ -1280,6 +1484,9 @@ mod tests {
                     }],
                     size: 10,
                 },
+                picture: None,
+                is_numeric_edited: false,
+                blank_when_zero: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -1294,6 +1501,9 @@ mod tests {
             HirDataItem {
                 name: SmolStr::new("MEDIUM-OUT"),
                 data_type: HirType::Alphanumeric { size: 10 },
+                picture: None,
+                is_numeric_edited: false,
+                blank_when_zero: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,

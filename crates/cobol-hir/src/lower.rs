@@ -115,6 +115,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                 },
                 picture: None,
                 is_numeric_edited: false,
+                blank_when_zero: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -144,6 +145,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                         },
                         picture: None,
                         is_numeric_edited: false,
+                        blank_when_zero: false,
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: Some(HirLiteral::Integer(0)),
@@ -166,6 +168,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                         },
                         picture: None,
                         is_numeric_edited: false,
+                        blank_when_zero: false,
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: Some(HirLiteral::Integer(0)),
@@ -201,6 +204,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                     data_type: HirType::Alphanumeric { size: 80 },
                     picture: None,
                     is_numeric_edited: false,
+                    blank_when_zero: false,
                     scale_adjustment: 0,
                     is_external: false,
                     initial_value: None,
@@ -699,6 +703,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
             },
             picture: None,
             is_numeric_edited: false,
+            blank_when_zero: false,
             scale_adjustment: 0,
             is_external: false,
             initial_value: Some(HirLiteral::Integer(0)),
@@ -719,6 +724,7 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
             },
             picture: None,
             is_numeric_edited: false,
+            blank_when_zero: false,
             scale_adjustment: 0,
             is_external: false,
             initial_value: Some(HirLiteral::Integer(0)),
@@ -735,13 +741,22 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
 }
 
 fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirDataItem>) {
+    lower_data_item_with_usage(item, inherited_external, None, out);
+}
+
+fn lower_data_item_with_usage(
+    item: &DataItem,
+    inherited_external: bool,
+    inherited_usage: Option<&Usage>,
+    out: &mut Vec<HirDataItem>,
+) {
     // Skip FILLER and level 88 condition names
     if item.level == 88 {
         return;
     }
 
     if let Some(name) = &item.name {
-        let data_type = determine_hir_type(item);
+        let data_type = determine_hir_type_with_usage(item, inherited_usage);
         let initial_value = item.value.as_ref().map(lower_value_clause);
         let occurs = item.occurs.as_ref().map(|o| o.max);
 
@@ -761,6 +776,7 @@ fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirD
             data_type,
             picture: item.picture.as_ref().map(|p| p.raw_string.clone()),
             is_numeric_edited: is_numeric_edited_item(item),
+            blank_when_zero: item.blank_when_zero,
             scale_adjustment: picture_scale_adjustment(item),
             is_external: inherited_external || item.is_external,
             initial_value,
@@ -782,6 +798,7 @@ fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirD
                 data_type: HirType::Index,
                 picture: None,
                 is_numeric_edited: false,
+                blank_when_zero: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -797,8 +814,9 @@ fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirD
     }
 
     // Recursively lower child items (group items)
+    let child_usage = item.usage.as_ref().or(inherited_usage);
     for child in &item.children {
-        lower_data_item(child, inherited_external || item.is_external, out);
+        lower_data_item_with_usage(child, inherited_external || item.is_external, child_usage, out);
     }
 }
 
@@ -856,6 +874,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             data_type,
             picture: item.picture.as_ref().map(|p| p.raw_string.clone()),
             is_numeric_edited: is_numeric_edited_item(item),
+            blank_when_zero: item.blank_when_zero,
             scale_adjustment: picture_scale_adjustment(item),
             is_external: false,
             initial_value,
@@ -875,11 +894,16 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
 }
 
 fn determine_hir_type(item: &DataItem) -> HirType {
+    determine_hir_type_with_usage(item, None)
+}
+
+fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage>) -> HirType {
     if item.picture.is_none() && !item.children.is_empty() {
         // Group items stay groups even when USAGE is specified on the group.
         // The usage affects descendants semantically, but collapsing the
         // group into a scalar loses nested OCCURS structure needed by codegen.
         let mut members = Vec::new();
+        let child_usage = item.usage.as_ref().or(inherited_usage);
         for child in &item.children {
             if child.level == 88 {
                 continue;
@@ -888,7 +912,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 .name
                 .clone()
                 .unwrap_or_else(|| SmolStr::from("FILLER"));
-            let data_type = determine_hir_type(child);
+            let data_type = determine_hir_type_with_usage(child, child_usage);
             let initial_value = child.value.as_ref().map(lower_value_clause);
             let occurs = child.occurs.as_ref().map(|o| o.max);
             let renames = child
@@ -905,6 +929,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
                 data_type,
                 picture: child.picture.as_ref().map(|p| p.raw_string.clone()),
                 is_numeric_edited: is_numeric_edited_item(child),
+                blank_when_zero: child.blank_when_zero,
                 scale_adjustment: picture_scale_adjustment(child),
                 is_external: child.is_external,
                 initial_value,
@@ -953,7 +978,7 @@ fn determine_hir_type(item: &DataItem) -> HirType {
     }
 
     // Check USAGE first for special types
-    if let Some(usage) = &item.usage {
+    if let Some(usage) = item.usage.as_ref().or(inherited_usage) {
         match usage {
             Usage::Index => return HirType::Index,
             Usage::Pointer | Usage::FunctionPointer => return HirType::Pointer,
@@ -1191,7 +1216,7 @@ fn lower_procedure_division(
             },
         );
     }
-    for section in &section_plans {
+    for (section_src, section) in proc.sections.iter().zip(section_plans.iter()) {
         transfer_targets.insert(
             section.entry.name.clone(),
             HirTransferTarget::Paragraph {
@@ -1202,6 +1227,17 @@ fn lower_procedure_division(
         for plan in &section.paragraphs {
             transfer_targets.insert(
                 plan.name.clone(),
+                HirTransferTarget::Paragraph {
+                    id: plan.id,
+                    name: plan.name.clone(),
+                },
+            );
+        }
+        for (para_src, plan) in section_src.paragraphs.iter().zip(section.paragraphs.iter()) {
+            let qualified_name: SmolStr =
+                format!("{}--{}", section.entry.name, para_src.name).into();
+            transfer_targets.insert(
+                qualified_name,
                 HirTransferTarget::Paragraph {
                     id: plan.id,
                     name: plan.name.clone(),
@@ -1645,6 +1681,11 @@ fn lower_subtract(
             .map(|t| lower_qualified_name_to_expr(&t.target))
             .collect()
     };
+    let from_rounded = if sub.from_expr.is_some() {
+        vec![false]
+    } else {
+        sub.from.iter().map(|t| t.rounded).collect()
+    };
     let giving = sub
         .giving
         .iter()
@@ -1656,6 +1697,7 @@ fn lower_subtract(
     HirStatement::Subtract {
         operands,
         from,
+        from_rounded,
         giving,
         giving_rounded,
         on_size_error,
@@ -2008,18 +2050,26 @@ fn lower_divide(
             .map(|t| lower_qualified_name_to_expr(&t.target))
             .collect()
     };
+    let into_rounded = if div.into_expr.is_some() {
+        vec![false]
+    } else {
+        div.into.iter().map(|t| t.rounded).collect()
+    };
     let giving = div
         .giving
         .iter()
         .map(|t| lower_qualified_name_to_expr(&t.target))
         .collect();
+    let giving_rounded = div.giving.iter().map(|t| t.rounded).collect();
     let remainder = div.remainder.as_ref().map(lower_qualified_name_to_expr);
     let on_size_error = lower_statements(&div.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&div.not_on_size_error, condition_names);
     HirStatement::Divide {
         operand,
         into,
+        into_rounded,
         giving,
+        giving_rounded,
         remainder,
         on_size_error,
         not_on_size_error,
@@ -2283,6 +2333,7 @@ fn lower_set(
                 cobol_ast::statement::SetDirection::Down => HirStatement::Subtract {
                     operands: vec![hir_value],
                     from: target_exprs,
+                    from_rounded: Vec::new(),
                     giving: Vec::new(),
                     giving_rounded: Vec::new(),
                     on_size_error: Vec::new(),

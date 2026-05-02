@@ -318,6 +318,12 @@ impl<'a> TypeChecker<'a> {
             // Numeric to numeric-edited: OK.
             (s, CobolType::NumericEdited { .. }) if s.is_numeric() => true,
 
+            // Numeric-edited fields are display fields and can be moved as
+            // alphanumeric text or reparsed into numeric-edited targets.
+            (CobolType::NumericEdited { .. }, t) if t.is_alphanumeric() => true,
+            (s, CobolType::NumericEdited { .. }) if s.is_alphanumeric() => true,
+            (CobolType::NumericEdited { .. }, CobolType::NumericEdited { .. }) => true,
+
             // Alphanumeric to alphanumeric: OK.
             (s, t) if s.is_alphanumeric() && t.is_alphanumeric() => true,
 

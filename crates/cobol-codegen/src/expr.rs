@@ -132,7 +132,12 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
             if d.chars()
                 .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')
             {
-                d.to_string()
+                if !d.contains('.') {
+                    let (scaled, _) = parse_decimal_literal(d);
+                    scaled.to_string()
+                } else {
+                    d.to_string()
+                }
             } else {
                 "0 /* invalid decimal */".to_string()
             }
@@ -237,12 +242,29 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_max_min(args, "cobol_func_max_alpha")
-                    } else if c_args.len() >= 2 {
-                        let arg_list = c_args.join(", ");
+                    } else if args
+                        .iter()
+                        .any(|arg| aggregate_arg_requires_double(arg, ctx))
+                    {
+                        let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                        emit_double_max_min(&arg_list, ">")
+                    } else if let Some(arg_list) = emit_all_subscript_values(args, ctx, false) {
+                        let count = arg_list.len();
+                        let arg_list = arg_list.join(", ");
                         format!(
                             "({{ int64_t _mv[] = {{{arg_list}}}; \
                              cobol_func_max_int_n(_mv, {}); }})",
-                            c_args.len()
+                            count
+                        )
+                    } else if c_args.len() >= 2 {
+                        let arg_list =
+                            emit_all_subscript_values(args, ctx, false).unwrap_or(c_args);
+                        let count = arg_list.len();
+                        let arg_list = arg_list.join(", ");
+                        format!(
+                            "({{ int64_t _mv[] = {{{arg_list}}}; \
+                             cobol_func_max_int_n(_mv, {}); }})",
+                            count
                         )
                     } else {
                         c_args.first().cloned().unwrap_or_else(|| "0".to_string())
@@ -255,12 +277,29 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     });
                     if has_alpha && !args.is_empty() {
                         emit_alpha_max_min(args, "cobol_func_min_alpha")
-                    } else if c_args.len() >= 2 {
-                        let arg_list = c_args.join(", ");
+                    } else if args
+                        .iter()
+                        .any(|arg| aggregate_arg_requires_double(arg, ctx))
+                    {
+                        let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                        emit_double_max_min(&arg_list, "<")
+                    } else if let Some(arg_list) = emit_all_subscript_values(args, ctx, false) {
+                        let count = arg_list.len();
+                        let arg_list = arg_list.join(", ");
                         format!(
                             "({{ int64_t _mv[] = {{{arg_list}}}; \
                              cobol_func_min_int_n(_mv, {}); }})",
-                            c_args.len()
+                            count
+                        )
+                    } else if c_args.len() >= 2 {
+                        let arg_list =
+                            emit_all_subscript_values(args, ctx, false).unwrap_or(c_args);
+                        let count = arg_list.len();
+                        let arg_list = arg_list.join(", ");
+                        format!(
+                            "({{ int64_t _mv[] = {{{arg_list}}}; \
+                             cobol_func_min_int_n(_mv, {}); }})",
+                            count
                         )
                     } else {
                         c_args.first().cloned().unwrap_or_else(|| "0".to_string())
@@ -273,7 +312,22 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                         "0".to_string()
                     }
                 }
-                "INTEGER" | "INTEGER-PART" => {
+                "INTEGER" => {
+                    if let Some(arg_expr) = args.first() {
+                        if aggregate_arg_requires_double(arg_expr, ctx)
+                            || expr_requires_double_precision(arg_expr, &[])
+                        {
+                            let arg = emit_expr_as_double(arg_expr);
+                            format!("((int64_t)floor({arg}))")
+                        } else {
+                            let arg = emit_expr_as_numeric(arg_expr);
+                            format!("cobol_func_integer({arg}, 0)")
+                        }
+                    } else {
+                        "0".to_string()
+                    }
+                }
+                "INTEGER-PART" => {
                     if let Some(arg) = c_args.first() {
                         format!("cobol_func_integer({arg}, 0)")
                     } else {
@@ -505,57 +559,75 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "MEAN" => {
-                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                    let arg_list =
+                        emit_all_subscript_values(args, ctx, true).unwrap_or_else(|| {
+                            args.iter().map(emit_expr_as_double).collect::<Vec<_>>()
+                        });
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_mean(_mv, {}); }})",
-                        args.len()
+                        arg_list.len()
                     )
                 }
                 "MEDIAN" => {
-                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                    let arg_list =
+                        emit_all_subscript_values(args, ctx, true).unwrap_or_else(|| {
+                            args.iter().map(emit_expr_as_double).collect::<Vec<_>>()
+                        });
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_median(_mv, {}); }})",
-                        args.len()
+                        arg_list.len()
                     )
                 }
                 "RANGE" => {
-                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                    let arg_list =
+                        emit_all_subscript_values(args, ctx, true).unwrap_or_else(|| {
+                            args.iter().map(emit_expr_as_double).collect::<Vec<_>>()
+                        });
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _rv[] = {{{joined}}}; \
                          cobol_func_range(_rv, {}); }})",
-                        args.len()
+                        arg_list.len()
                     )
                 }
                 "MIDRANGE" => {
-                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                    let arg_list =
+                        emit_all_subscript_values(args, ctx, true).unwrap_or_else(|| {
+                            args.iter().map(emit_expr_as_double).collect::<Vec<_>>()
+                        });
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_midrange(_mv, {}); }})",
-                        args.len()
+                        arg_list.len()
                     )
                 }
                 "STANDARD-DEVIATION" => {
-                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                    let arg_list =
+                        emit_all_subscript_values(args, ctx, true).unwrap_or_else(|| {
+                            args.iter().map(emit_expr_as_double).collect::<Vec<_>>()
+                        });
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_standard_deviation(_mv, {}); }})",
-                        args.len()
+                        arg_list.len()
                     )
                 }
                 "VARIANCE" => {
-                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                    let arg_list =
+                        emit_all_subscript_values(args, ctx, true).unwrap_or_else(|| {
+                            args.iter().map(emit_expr_as_double).collect::<Vec<_>>()
+                        });
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _mv[] = {{{joined}}}; \
                          cobol_func_variance(_mv, {}); }})",
-                        args.len()
+                        arg_list.len()
                     )
                 }
                 "PRESENT-VALUE" => {
@@ -573,12 +645,15 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "SUM" => {
-                    let arg_list = args.iter().map(emit_expr_as_double).collect::<Vec<_>>();
+                    let arg_list =
+                        emit_all_subscript_values(args, ctx, true).unwrap_or_else(|| {
+                            args.iter().map(emit_expr_as_double).collect::<Vec<_>>()
+                        });
                     let joined = arg_list.join(", ");
                     format!(
                         "({{ double _sv[] = {{{joined}}}; \
                          cobol_func_sum_float(_sv, {}); }})",
-                        args.len()
+                        arg_list.len()
                     )
                 }
                 "ORD-MAX" => {
@@ -825,11 +900,24 @@ fn string_arg_ptr_len_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> (String,
 }
 
 fn emit_ord_all_subscript(args: &[HirExpr], ctx: &CodegenContext, func: &str) -> Option<String> {
+    let values = emit_all_subscript_values(args, ctx, false)?;
+    let count = values.len();
+    let values = values.join(", ");
+    Some(format!(
+        "({{ int64_t _om[] = {{{values}}}; {func}(_om, {count}); }})"
+    ))
+}
+
+fn emit_all_subscript_values(
+    args: &[HirExpr],
+    ctx: &CodegenContext,
+    as_double: bool,
+) -> Option<Vec<String>> {
     let [arg] = args else {
         return None;
     };
 
-    let (count, values) = match arg {
+    match arg {
         HirExpr::Subscript {
             variable,
             subscripts,
@@ -838,17 +926,21 @@ fn emit_ord_all_subscript(args: &[HirExpr], ctx: &CodegenContext, func: &str) ->
             let count = ctx
                 .occurs_count(&base_name)
                 .or_else(|| ctx.occurs_count(extract_leaf_member(&base_name)))?;
-            let values = (1..=count)
-                .map(|idx| {
-                    let element = HirExpr::Subscript {
-                        variable: variable.clone(),
-                        subscripts: vec![HirExpr::Literal(HirLiteral::Integer(idx as i64))],
-                    };
-                    super::emit_expr_as_numeric_with_ctx(&element, ctx)
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            (count, values)
+            Some(
+                (1..=count)
+                    .map(|idx| {
+                        let element = HirExpr::Subscript {
+                            variable: variable.clone(),
+                            subscripts: vec![HirExpr::Literal(HirLiteral::Integer(idx as i64))],
+                        };
+                        if as_double {
+                            super::emit_expr_as_double_with_ctx(&element, ctx)
+                        } else {
+                            super::emit_expr_as_numeric_with_ctx(&element, ctx)
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
         }
         HirExpr::DataRef(data_ref) if matches!(data_ref.subscripts.as_slice(), [sub] if is_all_subscript_marker(sub)) =>
         {
@@ -856,22 +948,57 @@ fn emit_ord_all_subscript(args: &[HirExpr], ctx: &CodegenContext, func: &str) ->
             let count = ctx
                 .occurs_count(&base_name)
                 .or_else(|| ctx.occurs_count(extract_leaf_member(&base_name)))?;
-            let values = (1..=count)
-                .map(|idx| {
-                    let mut element_ref = data_ref.clone();
-                    element_ref.subscripts =
-                        vec![HirExpr::Literal(HirLiteral::Integer(idx as i64))];
-                    super::emit_expr_as_numeric_with_ctx(&HirExpr::DataRef(element_ref), ctx)
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            (count, values)
+            Some(
+                (1..=count)
+                    .map(|idx| {
+                        let mut element_ref = data_ref.clone();
+                        element_ref.subscripts =
+                            vec![HirExpr::Literal(HirLiteral::Integer(idx as i64))];
+                        let element = HirExpr::DataRef(element_ref);
+                        if as_double {
+                            super::emit_expr_as_double_with_ctx(&element, ctx)
+                        } else {
+                            super::emit_expr_as_numeric_with_ctx(&element, ctx)
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
         }
-        _ => return None,
-    };
-    Some(format!(
-        "({{ int64_t _om[] = {{{values}}}; {func}(_om, {count}); }})"
-    ))
+        _ => None,
+    }
+}
+
+fn emit_double_max_min(args: &[String], cmp: &str) -> String {
+    let count = args.len();
+    if count == 0 {
+        return "0.0".to_string();
+    }
+    let joined = args.join(", ");
+    format!(
+        "({{ double _mv[] = {{{joined}}}; double _m = _mv[0]; for (int _i = 1; _i < {count}; _i++) {{ if (_mv[_i] {cmp} _m) _m = _mv[_i]; }} _m; }})"
+    )
+}
+
+fn aggregate_arg_requires_double(expr: &HirExpr, ctx: &CodegenContext) -> bool {
+    if expr_contains_decimal(expr) {
+        return true;
+    }
+    match expr {
+        HirExpr::DataRef(data_ref) => {
+            let base_name = data_name_to_c_name(&data_ref.name);
+            ctx.is_decimal_name(&base_name) || ctx.is_decimal_name(extract_leaf_member(&base_name))
+        }
+        HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
+            let base_name = data_name_to_c_name(name);
+            ctx.is_decimal_name(&base_name) || ctx.is_decimal_name(extract_leaf_member(&base_name))
+        }
+        HirExpr::UnaryOp { operand, .. } => aggregate_arg_requires_double(operand, ctx),
+        HirExpr::BinaryOp { left, right, .. } => {
+            aggregate_arg_requires_double(left, ctx) || aggregate_arg_requires_double(right, ctx)
+        }
+        HirExpr::FunctionCall { name, .. } => intrinsic_returns_double(name),
+        _ => false,
+    }
 }
 
 fn is_all_subscript_marker(expr: &HirExpr) -> bool {
@@ -930,7 +1057,6 @@ pub(crate) fn emit_subscript_access(variable: &HirDataName, subscripts: &[HirExp
         access
     }
 }
-
 /// Returns true if the given HirType requires CobolDecimal representation
 /// (i.e., has fractional decimal places).
 pub(crate) fn needs_decimal(data_type: &HirType) -> bool {
@@ -977,7 +1103,6 @@ pub(crate) fn grp_display_size(c_name: &str, data_items: &[HirDataItem]) -> Opti
             if mc == c_name {
                 if let HirType::Numeric {
                     size,
-                    decimal_places: 0,
                     ..
                 } = &m.data_type
                 {
@@ -1046,6 +1171,19 @@ pub(crate) fn emit_store_int(
         .filter(|item| item.scale_adjustment != 0)
         .map(|item| apply_scale_adjustment_to_store(value_expr, item.scale_adjustment))
         .unwrap_or_else(|| value_expr.to_string());
+    let stored_value_expr = target_item
+        .filter(|item| {
+            !item.is_numeric_edited
+                && matches!(
+                    item.data_type,
+                    HirType::Numeric {
+                        decimal_places: 0,
+                        ..
+                    } | HirType::Binary { .. }
+                )
+        })
+        .map(|item| truncate_integral_to_picture_size(&stored_value_expr, item))
+        .unwrap_or(stored_value_expr);
     let stored_value_expr = if target_item.is_some_and(is_unsigned_numeric_storage) {
         format!("llabs({stored_value_expr})")
     } else {
@@ -1087,6 +1225,24 @@ pub(crate) fn emit_store_int(
     } else {
         out.push_str(&format!("{pad}{c_target} = {stored_value_expr};\n"));
     }
+}
+
+fn truncate_integral_to_picture_size(value_expr: &str, item: &HirDataItem) -> String {
+    let size = match item.data_type {
+        HirType::Numeric { size, .. } | HirType::Binary { size } => size,
+        _ => return value_expr.to_string(),
+    };
+    let size = if item.scale_adjustment > 0 {
+        size.saturating_sub(item.scale_adjustment as u32)
+    } else {
+        size
+    };
+    if size == 0 || size > 18 {
+        return value_expr.to_string();
+    }
+    let factor = pow10_i64_literal(size);
+    let int_value = format!("((int64_t)({value_expr}))");
+    format!("(({int_value} >= 0) ? ({int_value} % {factor}) : -((-{int_value}) % {factor}))")
 }
 
 fn is_unsigned_numeric_storage(item: &HirDataItem) -> bool {
@@ -1205,10 +1361,19 @@ pub(crate) fn emit_store_int_op(
 /// Returns true if the given expression refers to a CobolDecimal variable.
 pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
-            .is_some_and(|i| needs_decimal(&i.data_type)),
+        HirExpr::DataRef(data_ref) => {
+            let c_name = data_name_to_c_name(&data_ref.name);
+            grp_display_size(&c_name, data_items).is_none()
+                && !with_active_context(|ctx| ctx.has_display_numeric(&c_name))
+                && find_data_item_by_name(&data_ref.name, data_items)
+                    .is_some_and(|i| needs_decimal(&i.data_type))
+        }
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
-            find_data_item_by_name(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+            let c_name = data_name_to_c_name(name);
+            grp_display_size(&c_name, data_items).is_none()
+                && !with_active_context(|ctx| ctx.has_display_numeric(&c_name))
+                && find_data_item_by_name(name, data_items)
+                    .is_some_and(|i| needs_decimal(&i.data_type))
         }
         _ => false,
     }
@@ -1252,7 +1417,7 @@ pub(crate) fn expr_contains_decimal(expr: &HirExpr) -> bool {
             let c_name = data_name_to_c_name(name);
             with_active_context(|ctx| ctx.is_decimal_name(&c_name))
         }
-        HirExpr::Literal(HirLiteral::Decimal(_)) => true,
+        HirExpr::Literal(HirLiteral::Decimal(d)) => decimal_literal_has_fraction(d),
         HirExpr::BinaryOp { left, right, .. } => {
             expr_contains_decimal(left) || expr_contains_decimal(right)
         }
@@ -1260,6 +1425,10 @@ pub(crate) fn expr_contains_decimal(expr: &HirExpr) -> bool {
         HirExpr::FunctionCall { args, .. } => args.iter().any(expr_contains_decimal),
         _ => false,
     }
+}
+
+fn decimal_literal_has_fraction(literal: &str) -> bool {
+    literal.contains('.')
 }
 
 /// Emit an expression as int64, converting CobolDecimal to int64 if needed.
@@ -1401,9 +1570,22 @@ fn emit_assign_scaled_int_to_decimal(
 ) {
     out.push_str(&format!(
         "{pad}{{ int64_t _dv = ({scaled_value_expr}); int32_t _ds = ({source_scale_expr}); \
+         if ({c_target}.size > {c_target}.scale && {c_target}.size <= 18 && _ds >= 0) {{ \
+             int32_t _keep = {c_target}.size - {c_target}.scale + _ds; \
+             if (_keep > 0 && _keep <= 18) {{ \
+                 int64_t _limit = 1; \
+                 for (int32_t _i = 0; _i < _keep; _i++) _limit *= 10; \
+                 _dv = (_dv >= 0) ? (_dv % _limit) : -((-_dv) % _limit); \
+             }} \
+         }} \
          int32_t _dd = {c_target}.scale - _ds; \
          if (_dd > 0) _dv *= (int64_t)pow(10.0, _dd); \
          else if (_dd < 0) _dv /= (int64_t)pow(10.0, -_dd); \
+         if ({c_target}.size > 0 && {c_target}.size <= 18) {{ \
+             int64_t _limit = 1; \
+             for (int32_t _i = 0; _i < {c_target}.size; _i++) _limit *= 10; \
+             _dv = (_dv >= 0) ? (_dv % _limit) : -((-_dv) % _limit); \
+         }} \
          {c_target}.value = _dv; }}\n"
     ));
 }
@@ -1416,8 +1598,21 @@ fn emit_assign_decimal_value_to_decimal(
 ) {
     out.push_str(&format!(
         "{pad}{{ int64_t _dv = {c_source}.value; int32_t _dd = {c_target}.scale - {c_source}.scale; \
+         if ({c_target}.size > {c_target}.scale && {c_target}.size <= 18 && {c_source}.scale >= 0) {{ \
+             int32_t _keep = {c_target}.size - {c_target}.scale + {c_source}.scale; \
+             if (_keep > 0 && _keep <= 18) {{ \
+                 int64_t _limit = 1; \
+                 for (int32_t _i = 0; _i < _keep; _i++) _limit *= 10; \
+                 _dv = (_dv >= 0) ? (_dv % _limit) : -((-_dv) % _limit); \
+             }} \
+         }} \
          if (_dd > 0) _dv *= (int64_t)pow(10.0, _dd); \
          else if (_dd < 0) _dv /= (int64_t)pow(10.0, -_dd); \
+         if ({c_target}.size > 0 && {c_target}.size <= 18) {{ \
+             int64_t _limit = 1; \
+             for (int32_t _i = 0; _i < {c_target}.size; _i++) _limit *= 10; \
+             _dv = (_dv >= 0) ? (_dv % _limit) : -((-_dv) % _limit); \
+         }} \
          {c_target}.value = _dv; }}\n"
     ));
 }
@@ -1441,17 +1636,25 @@ fn intrinsic_returns_double(name: &str) -> bool {
             | "NUMVAL"
             | "NUMVAL-C"
             | "ANNUITY"
+            | "PRESENT-VALUE"
             | "MEAN"
             | "MEDIAN"
             | "RANGE"
+            | "MIDRANGE"
+            | "STANDARD-DEVIATION"
+            | "SUM"
+            | "VARIANCE"
     )
 }
 
 pub(crate) fn expr_requires_double_precision(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::Literal(HirLiteral::Decimal(_)) => true,
+        HirExpr::Literal(HirLiteral::Decimal(d)) => decimal_literal_has_fraction(d),
         HirExpr::FunctionCall { name, args } => {
+            let upper_name = name.to_ascii_uppercase();
             intrinsic_returns_double(name)
+                || matches!(upper_name.as_str(), "MAX" | "MIN")
+                    && args.iter().any(|arg| is_decimal_expr(arg, data_items))
                 || args
                     .iter()
                     .any(|arg| expr_requires_double_precision(arg, data_items))
@@ -1708,26 +1911,46 @@ pub(crate) fn emit_corresponding_move(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    let from_members = get_group_members(from, data_items);
-    let to_members = get_group_members(to, data_items);
     let c_from = data_name_to_c_name(from);
     let c_to = data_name_to_c_name(to);
     out.push_str(&format!(
         "{pad}/* MOVE CORRESPONDING {c_from} TO {c_to} */\n"
     ));
+    emit_corresponding_move_members(out, from, to, data_items, pad);
+}
+
+fn emit_corresponding_move_members(
+    out: &mut String,
+    from: &HirDataName,
+    to: &HirDataName,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let from_members = get_group_members(from, data_items);
+    let to_members = get_group_members(to, data_items);
     for src_item in from_members {
         for tgt_item in to_members {
             if src_item.name == tgt_item.name && src_item.name != "FILLER" && src_item.name != "PIC"
             {
+                if src_item.occurs.is_some() || tgt_item.occurs.is_some() {
+                    continue;
+                }
                 let src_q = data_name_to_c_name(&child_data_name(from, src_item));
                 let tgt_q = data_name_to_c_name(&child_data_name(to, tgt_item));
                 let src_ptr = c_ptr_expr(&src_q, data_items);
                 let tgt_ptr = c_ptr_expr(&tgt_q, data_items);
-                // For OCCURS items, use memcpy instead of direct assignment
-                if src_item.occurs.is_some() || tgt_item.occurs.is_some() {
-                    out.push_str(&format!(
-                        "{pad}memcpy({tgt_ptr}, {src_ptr}, sizeof({tgt_q}));\n"
-                    ));
+
+                if matches!(src_item.data_type, HirType::Group { .. })
+                    && matches!(tgt_item.data_type, HirType::Group { .. })
+                    && corresponding_groups_have_common_children(src_item, tgt_item)
+                {
+                    emit_corresponding_move_members(
+                        out,
+                        &child_data_name(from, src_item),
+                        &child_data_name(to, tgt_item),
+                        data_items,
+                        pad,
+                    );
                     continue;
                 }
                 match (&src_item.data_type, &tgt_item.data_type) {
@@ -1789,6 +2012,37 @@ pub(crate) fn emit_corresponding_move(
             }
         }
     }
+}
+
+fn corresponding_groups_have_common_children(
+    src_item: &HirDataItem,
+    tgt_item: &HirDataItem,
+) -> bool {
+    let HirType::Group {
+        members: src_members,
+        ..
+    } = &src_item.data_type
+    else {
+        return false;
+    };
+    let HirType::Group {
+        members: tgt_members,
+        ..
+    } = &tgt_item.data_type
+    else {
+        return false;
+    };
+    src_members.iter().any(|src_child| {
+        src_child.name != "FILLER"
+            && src_child.name != "PIC"
+            && src_child.occurs.is_none()
+            && tgt_members.iter().any(|tgt_child| {
+                tgt_child.name == src_child.name
+                    && tgt_child.name != "FILLER"
+                    && tgt_child.name != "PIC"
+                    && tgt_child.occurs.is_none()
+            })
+    })
 }
 
 /// Emit ADD/SUBTRACT CORRESPONDING: for each matching numeric member,
@@ -2619,6 +2873,10 @@ fn padded_numeric_literal_for_alphanumeric(expr: &HirExpr, width: u32) -> Option
         HirExpr::Literal(HirLiteral::Integer(n)) if *n >= 0 => {
             Some(format!("{:0width$}", n, width = width.max(1)))
         }
+        HirExpr::Literal(HirLiteral::Space) => Some(" ".repeat(width)),
+        HirExpr::Literal(HirLiteral::HighValue) => Some("\\xFF".repeat(width)),
+        HirExpr::Literal(HirLiteral::LowValue) => Some("\\x00".repeat(width)),
+        HirExpr::Literal(HirLiteral::Quote) => Some("\\\"".repeat(width)),
         _ => None,
     }
 }
@@ -2816,9 +3074,29 @@ fn numeric_display_alphanumeric_operand(
     match &item.data_type {
         HirType::Numeric {
             decimal_places: 0, ..
+        } => {
+            if grp_display_size(c_expr, data_items).is_some() || is_group_member_field(c_expr) {
+                Some((display_numeric_const_ptr(c_expr), format!("{size}")))
+            } else {
+                let value = emit_int_compatible_expr(expr, data_items);
+                let blank_when_zero = if item.blank_when_zero {
+                    format!(
+                        "if ({value} == 0) {{ memset(_cmp_num_buf, ' ', {size}); }} else "
+                    )
+                } else {
+                    String::new()
+                };
+                Some((
+                    format!(
+                        "({{ static uint8_t _cmp_num_buf[64]; \
+                         {blank_when_zero}{{ cobol_move_numeric_to_display({value}, 0, _cmp_num_buf, {size}); }} \
+                         (const uint8_t*)_cmp_num_buf; }})"
+                    ),
+                    format!("{size}"),
+                ))
+            }
         }
-        | HirType::Binary { .. }
-        | HirType::Index => {
+        HirType::Binary { .. } | HirType::Index => {
             let value = emit_int_compatible_expr(expr, data_items);
             Some((
                 format!(
@@ -2853,7 +3131,12 @@ fn numeric_display_alphanumeric_operand(
 
 /// Generate code to initialize a CobolDecimal _tcmp from a non-decimal expression.
 /// Handles decimal literals properly via cobol_decimal_from_string.
-pub(crate) fn emit_decimal_init_expr(expr: &HirExpr, c_expr: &str) -> String {
+pub(crate) fn emit_decimal_init_expr(
+    expr: &HirExpr,
+    c_expr: &str,
+    data_items: &[HirDataItem],
+    scale_source: Option<&str>,
+) -> String {
     match expr {
         HirExpr::Literal(HirLiteral::Decimal(d)) => {
             let len = d.len();
@@ -2870,6 +3153,21 @@ pub(crate) fn emit_decimal_init_expr(expr: &HirExpr, c_expr: &str) -> String {
             } else {
                 unreachable!()
             }
+        }
+        _ if expr_requires_double_precision(expr, data_items) || expr_contains_decimal(expr) => {
+            let init = scale_source.map_or_else(
+                || {
+                    "_tcmp = (CobolDecimal){ .value = 0, .scale = 9, .size = 18, .is_signed = 1 };"
+                        .to_string()
+                },
+                |source| {
+                    format!(
+                        "_tcmp = (CobolDecimal){{ .value = 0, .scale = {source}.scale, \
+                         .size = {source}.size, .is_signed = 1 }};"
+                    )
+                },
+            );
+            format!("{init} cobol_decimal_from_double((double)({c_expr}), &_tcmp);")
         }
         _ => {
             format!("cobol_decimal_from_int({c_expr}, 0, &_tcmp);")
@@ -2892,27 +3190,25 @@ pub(crate) fn emit_condition_with_ctx(
         HirCondition::Compare { left, op, right } => {
             if is_alphanumeric_expr(left, data_items) || is_alphanumeric_expr(right, data_items) {
                 // Alphanumeric comparison via runtime function
-                let (a_ptr, a_len) = if is_alphanumeric_expr(left, data_items) {
-                    emit_alphanumeric_operand(left, data_items)
-                } else if let Some(width) = alphanumeric_expr_len(right, data_items) {
+                let (a_ptr, a_len) = if let Some(width) = alphanumeric_expr_len(right, data_items) {
                     if let Some(s) = padded_numeric_literal_for_alphanumeric(left, width) {
-                        let len = s.len();
-                        (format!("(const uint8_t*)\"{s}\""), format!("{len}"))
+                        (format!("(const uint8_t*)\"{s}\""), format!("{width}"))
                     } else {
                         emit_alphanumeric_operand(left, data_items)
                     }
+                } else if is_alphanumeric_expr(left, data_items) {
+                    emit_alphanumeric_operand(left, data_items)
                 } else {
                     emit_alphanumeric_operand(left, data_items)
                 };
-                let (b_ptr, b_len) = if is_alphanumeric_expr(right, data_items) {
-                    emit_alphanumeric_operand(right, data_items)
-                } else if let Some(width) = alphanumeric_expr_len(left, data_items) {
+                let (b_ptr, b_len) = if let Some(width) = alphanumeric_expr_len(left, data_items) {
                     if let Some(s) = padded_numeric_literal_for_alphanumeric(right, width) {
-                        let len = s.len();
-                        (format!("(const uint8_t*)\"{s}\""), format!("{len}"))
+                        (format!("(const uint8_t*)\"{s}\""), format!("{width}"))
                     } else {
                         emit_alphanumeric_operand(right, data_items)
                     }
+                } else if is_alphanumeric_expr(right, data_items) {
+                    emit_alphanumeric_operand(right, data_items)
                 } else {
                     emit_alphanumeric_operand(right, data_items)
                 };
@@ -2955,14 +3251,14 @@ pub(crate) fn emit_condition_with_ctx(
                     format!("(cobol_decimal_cmp(&{l}, &{r}) {op_str})")
                 } else if left_is_dec {
                     // left is decimal, right is not: convert right to temp
-                    let init = emit_decimal_init_expr(right, &r);
+                    let init = emit_decimal_init_expr(right, &r, data_items, Some(&l));
                     format!(
                         "(({{ CobolDecimal _tcmp; {init} \
                          cobol_decimal_cmp(&{l}, &_tcmp); }}) {op_str})"
                     )
                 } else {
                     // right is decimal, left is not: convert left to temp
-                    let init = emit_decimal_init_expr(left, &l);
+                    let init = emit_decimal_init_expr(left, &l, data_items, Some(&r));
                     format!(
                         "(({{ CobolDecimal _tcmp; {init} \
                          cobol_decimal_cmp(&_tcmp, &{r}); }}) {op_str})"
@@ -3534,13 +3830,6 @@ pub(crate) fn find_data_item_size_in(c_name: &str, items: &[HirDataItem]) -> u32
 pub(crate) fn find_data_item_storage_size(c_name: &str, data_items: &[HirDataItem]) -> u32 {
     let lookup = extract_leaf_member(c_name);
     if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {
-        if let Some(redef_name) = &item.redefines {
-            let redef_c = sanitize_name(redef_name);
-            let resolved = find_data_item_storage_size(&redef_c, data_items);
-            if resolved > 0 {
-                return resolved;
-            }
-        }
         return data_item_byte_size(&item.data_type);
     }
     find_data_item_size(c_name, data_items)

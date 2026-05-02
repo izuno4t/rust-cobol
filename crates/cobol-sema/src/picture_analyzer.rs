@@ -117,7 +117,7 @@ impl PictureAnalyzer {
                         decimal_positions += 1;
                     }
                 }
-                '$' => {
+                '$' | 'W' => {
                     edit_dollar_count += 1;
                     is_edited = true;
                 }

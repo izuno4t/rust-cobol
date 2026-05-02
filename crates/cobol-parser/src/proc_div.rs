@@ -1629,14 +1629,15 @@ impl Parser {
                 || self.peek(1).kind == TokenKind::At
                 || self.peek(1).kind == TokenKind::Eof)
         {
-            let procedure = self.expect_procedure_name()?;
+            let mut procedure = self.expect_procedure_name()?;
             // Consume optional comma/semicolon noise separator after procedure name
             self.eat(TokenKind::Comma);
             self.eat(TokenKind::Semicolon);
             // Consume optional IN/OF section-name qualifier
             if self.check(TokenKind::Of) || self.check(TokenKind::In) {
                 self.advance(); // OF or IN
-                let _ = self.expect_procedure_name(); // section name (ignored for now)
+                let section = self.expect_procedure_name()?;
+                procedure = format!("{section}--{procedure}").into();
             }
             let through = if self.eat(TokenKind::Thru).is_some() {
                 Some(self.expect_procedure_name()?)
@@ -1869,14 +1870,16 @@ impl Parser {
             && !Self::is_statement_start_keyword(self.current().kind)
             && !self.is_end_keyword(self.current().kind)
         {
-            targets.push(self.expect_procedure_name()?);
+            let mut target = self.expect_procedure_name()?;
             // Consume optional IN/OF section-name qualifier
             if self.check(TokenKind::Of) || self.check(TokenKind::In) {
                 self.advance(); // OF or IN
                 if self.check_procedure_name_token() {
-                    let _ = self.expect_procedure_name(); // section name (ignored)
+                    let section = self.expect_procedure_name()?;
+                    target = format!("{section}--{target}").into();
                 }
             }
+            targets.push(target);
         }
 
         if self.check(TokenKind::Depending) {

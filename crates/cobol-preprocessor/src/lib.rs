@@ -360,14 +360,22 @@ fn append_fixed_continuation(current: &mut String, continuation: &str) {
         skip += 1;
 
         let trimmed_len = current.trim_end().len();
-        current.truncate(trimmed_len);
+        let trailing_spaces = current.len().saturating_sub(trimmed_len);
 
         let mut dropped_prev_quote = false;
-        if current.as_bytes().last() == Some(&quote)
-            && ends_inside_string_with_quote(&current[..current.len() - 1], quote)
+        if trimmed_len > 0
+            && current.as_bytes().get(trimmed_len - 1) == Some(&quote)
+            && ends_inside_string_with_quote(&current[..trimmed_len - 1], quote)
         {
+            current.truncate(trimmed_len);
             current.pop();
             dropped_prev_quote = true;
+        }
+        if !dropped_prev_quote {
+            current.truncate(trimmed_len);
+            if trailing_spaces == 1 {
+                current.push(' ');
+            }
         }
 
         let continued_quote_run = cont_bytes[skip..]

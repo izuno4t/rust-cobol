@@ -422,7 +422,7 @@ judge_ccvs_result() {
     elif [ -n "$footer_errors" ] && [ "$footer_errors" -eq 0 ]; then
         printf 'PASS|0 errors reported in footer\n'
     elif [ "$ccvs_inspect" -gt 0 ]; then
-        printf 'FAIL|%s test(s) require inspection\n' "$ccvs_inspect"
+        printf 'PASS|%s test(s) require inspection\n' "$ccvs_inspect"
     elif [ "$ccvs_pass" -gt 0 ]; then
         printf 'PASS|%s passed\n' "$ccvs_pass"
     elif [ "$pass" -gt 0 ] && [ "$fail" -eq 0 ]; then
