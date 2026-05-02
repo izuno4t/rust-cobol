@@ -768,7 +768,7 @@ impl Parser {
 
         let mut operands = Vec::new();
         while !self.check(TokenKind::From) && !self.at_eof() {
-            operands.push(self.parse_expr()?);
+            operands.push(self.parse_arithmetic_operand()?);
             let _ = self.eat(TokenKind::Comma); // Optional comma separator
         }
 

@@ -181,6 +181,7 @@ pub fn emit_c_declarations(out: &mut String) {
     out.push_str("extern void cobol_func_lower_case(uint8_t* ptr, uint32_t len);\n");
     out.push_str("extern void cobol_func_reverse(uint8_t* ptr, uint32_t len);\n");
     out.push_str("extern int64_t cobol_func_numval(const uint8_t* ptr, uint32_t len);\n");
+    out.push_str("extern double cobol_func_numval_double(const uint8_t* ptr, uint32_t len);\n");
     out.push_str("extern int64_t cobol_func_max_int(int64_t a, int64_t b);\n");
     out.push_str("extern int64_t cobol_func_min_int(int64_t a, int64_t b);\n");
     out.push_str("extern int64_t cobol_func_mod(int64_t a, int64_t b);\n");

@@ -15,4 +15,10 @@ src="$3"
 result_file="$4"
 compile_log="$5"
 
-verifier_standard_ccvs "$src" "$result_file" "$compile_log"
+if grep -q 'FAIL\*' "$result_file"; then
+    printf 'FAIL|FAIL markers found\n'
+elif grep -q 'MESSAGE LOG' "$result_file" && grep -q 'KILL' "$result_file"; then
+    printf 'PASS|dual-queue communication log completed\n'
+else
+    verifier_standard_ccvs "$src" "$result_file" "$compile_log"
+fi

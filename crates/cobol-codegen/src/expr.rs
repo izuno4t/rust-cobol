@@ -216,15 +216,16 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                         if let HirExpr::Literal(HirLiteral::String(s)) = arg_expr {
                             return format!("((int64_t){})", s.len());
                         }
-                        let c_arg = &c_args[0];
-                        format!("cobol_func_length((const uint8_t*){c_arg}, sizeof({c_arg}))")
+                        let (c_arg, c_len) = string_arg_ptr_len_with_ctx(arg_expr, ctx);
+                        format!("cobol_func_length({c_arg}, {c_len})")
                     } else {
                         "0".to_string()
                     }
                 }
                 "NUMVAL" | "NUMVAL-C" => {
-                    if let Some(arg) = c_args.first() {
-                        format!("cobol_func_numval((const uint8_t*){arg}, sizeof({arg}))")
+                    if let Some(arg_expr) = args.first() {
+                        let (c_arg, c_len) = string_arg_ptr_len_with_ctx(arg_expr, ctx);
+                        format!("cobol_func_numval({c_arg}, {c_len})")
                     } else {
                         "0".to_string()
                     }
@@ -282,6 +283,15 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                 "ORD" => {
                     if let Some(arg_expr) = args.first() {
                         match arg_expr {
+                            HirExpr::FunctionCall { name, args }
+                                if name.eq_ignore_ascii_case("CHAR") =>
+                            {
+                                if let Some(arg) = args.first() {
+                                    emit_expr_as_numeric(arg)
+                                } else {
+                                    "0".to_string()
+                                }
+                            }
                             HirExpr::Literal(HirLiteral::String(s)) => {
                                 if let Some(ch) = s.bytes().next() {
                                     format!("cobol_func_ord({ch})")
@@ -572,6 +582,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     )
                 }
                 "ORD-MAX" => {
+                    if let Some(expanded) = emit_ord_all_subscript(args, ctx, "cobol_func_ord_max")
+                    {
+                        return expanded;
+                    }
                     let has_alpha = args.iter().any(|a| {
                         matches!(a, HirExpr::Literal(HirLiteral::String(_)))
                             || is_alphanumeric_expr(a, &[])
@@ -588,6 +602,10 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
                     }
                 }
                 "ORD-MIN" => {
+                    if let Some(expanded) = emit_ord_all_subscript(args, ctx, "cobol_func_ord_min")
+                    {
+                        return expanded;
+                    }
                     let has_alpha = args.iter().any(|a| {
                         matches!(a, HirExpr::Literal(HirLiteral::String(_)))
                             || is_alphanumeric_expr(a, &[])
@@ -729,6 +747,139 @@ pub(crate) fn emit_expr_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> String
             variable,
             subscripts,
         } => emit_subscript_access(variable, subscripts),
+    }
+}
+
+fn string_arg_ptr_len_with_ctx(expr: &HirExpr, ctx: &CodegenContext) -> (String, String) {
+    match expr {
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            (
+                format!("(const uint8_t*)\"{escaped}\""),
+                s.len().to_string(),
+            )
+        }
+        HirExpr::Literal(HirLiteral::Space) => {
+            ("(const uint8_t*)\" \"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::Quote) => {
+            ("(const uint8_t*)\"\\\"\"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::LowValue) => {
+            ("(const uint8_t*)\"\\x00\"".to_string(), "1".to_string())
+        }
+        HirExpr::Literal(HirLiteral::HighValue) => {
+            ("(const uint8_t*)\"\\xFF\"".to_string(), "1".to_string())
+        }
+        HirExpr::DataRef(_) | HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
+            let c_expr = emit_expr_with_ctx(expr, ctx);
+            let base_name = expr_data_name(expr)
+                .map(data_name_to_c_name)
+                .unwrap_or_default();
+            let leaf_name = extract_leaf_member(&c_expr);
+            let len = ctx
+                .data_item_size(&base_name)
+                .or_else(|| ctx.data_item_size(leaf_name))
+                .or_else(|| ctx.display_numeric_size(&base_name))
+                .or_else(|| ctx.display_numeric_size(leaf_name))
+                .unwrap_or(0);
+            let ptr = if (!base_name.is_empty() && ctx.is_group_name(&base_name))
+                || ctx.is_group_name(leaf_name)
+            {
+                format!("(const uint8_t*)&({c_expr})")
+            } else {
+                format!("(const uint8_t*){c_expr}")
+            };
+            (ptr, len.to_string())
+        }
+        HirExpr::FunctionCall { name, args } => {
+            let upper_fn = name.to_uppercase();
+            match upper_fn.as_str() {
+                "CHAR" => {
+                    let e = emit_expr_with_ctx(expr, ctx);
+                    (format!("(const uint8_t*){e}"), "1".to_string())
+                }
+                "CURRENT-DATE" | "WHEN-COMPILED" => {
+                    let e = emit_expr_with_ctx(expr, ctx);
+                    (format!("(const uint8_t*){e}"), "21".to_string())
+                }
+                "UPPER-CASE" | "LOWER-CASE" | "REVERSE" => {
+                    let e = emit_expr_with_ctx(expr, ctx);
+                    let len = args
+                        .first()
+                        .map(|arg| string_arg_ptr_len_with_ctx(arg, ctx).1)
+                        .unwrap_or_else(|| "0".to_string());
+                    (format!("(const uint8_t*){e}"), len)
+                }
+                _ => {
+                    let e = emit_expr_with_ctx(expr, ctx);
+                    (format!("(const uint8_t*)&({e})"), format!("sizeof({e})"))
+                }
+            }
+        }
+        _ => {
+            let e = emit_expr_with_ctx(expr, ctx);
+            (format!("(const uint8_t*)&({e})"), format!("sizeof({e})"))
+        }
+    }
+}
+
+fn emit_ord_all_subscript(args: &[HirExpr], ctx: &CodegenContext, func: &str) -> Option<String> {
+    let [arg] = args else {
+        return None;
+    };
+
+    let (count, values) = match arg {
+        HirExpr::Subscript {
+            variable,
+            subscripts,
+        } if matches!(subscripts.as_slice(), [sub] if is_all_subscript_marker(sub)) => {
+            let base_name = data_name_to_c_name(variable);
+            let count = ctx
+                .occurs_count(&base_name)
+                .or_else(|| ctx.occurs_count(extract_leaf_member(&base_name)))?;
+            let values = (1..=count)
+                .map(|idx| {
+                    let element = HirExpr::Subscript {
+                        variable: variable.clone(),
+                        subscripts: vec![HirExpr::Literal(HirLiteral::Integer(idx as i64))],
+                    };
+                    super::emit_expr_as_numeric_with_ctx(&element, ctx)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            (count, values)
+        }
+        HirExpr::DataRef(data_ref) if matches!(data_ref.subscripts.as_slice(), [sub] if is_all_subscript_marker(sub)) =>
+        {
+            let base_name = data_name_to_c_name(&data_ref.name);
+            let count = ctx
+                .occurs_count(&base_name)
+                .or_else(|| ctx.occurs_count(extract_leaf_member(&base_name)))?;
+            let values = (1..=count)
+                .map(|idx| {
+                    let mut element_ref = data_ref.clone();
+                    element_ref.subscripts =
+                        vec![HirExpr::Literal(HirLiteral::Integer(idx as i64))];
+                    super::emit_expr_as_numeric_with_ctx(&HirExpr::DataRef(element_ref), ctx)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            (count, values)
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "({{ int64_t _om[] = {{{values}}}; {func}(_om, {count}); }})"
+    ))
+}
+
+fn is_all_subscript_marker(expr: &HirExpr) -> bool {
+    match expr {
+        HirExpr::Literal(HirLiteral::Space) => true,
+        HirExpr::Literal(HirLiteral::String(s)) => s.trim().is_empty(),
+        HirExpr::Literal(HirLiteral::AllChar(s)) => s.trim().is_empty(),
+        _ => false,
     }
 }
 
@@ -1054,11 +1205,10 @@ pub(crate) fn emit_store_int_op(
 /// Returns true if the given expression refers to a CobolDecimal variable.
 pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::DataRef(data_ref) => {
-            find_data_item(&data_ref.name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
-        }
+        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
+            .is_some_and(|i| needs_decimal(&i.data_type)),
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
-            find_data_item(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+            find_data_item_by_name(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
         }
         _ => false,
     }
@@ -1067,10 +1217,10 @@ pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> boo
 /// Check whether an expression refers to a group variable (emitted as a C union).
 pub(crate) fn is_group_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::DataRef(data_ref) => find_data_item(&data_ref.name, data_items)
+        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
             .is_some_and(|i| matches!(i.data_type, HirType::Group { .. })),
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
-            find_data_item(name, data_items)
+            find_data_item_by_name(name, data_items)
                 .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
         }
         _ => false,
@@ -1080,10 +1230,10 @@ pub(crate) fn is_group_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool 
 /// Check whether an expression refers to an alphanumeric variable (emitted as `char[]`).
 pub(crate) fn is_alpha_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
-        HirExpr::DataRef(data_ref) => find_data_item(&data_ref.name, data_items)
+        HirExpr::DataRef(data_ref) => find_data_item_by_name(&data_ref.name, data_items)
             .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. })),
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
-            find_data_item(name, data_items)
+            find_data_item_by_name(name, data_items)
                 .is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }))
         }
         _ => false,
@@ -1288,6 +1438,8 @@ fn intrinsic_returns_double(name: &str) -> bool {
             | "ATAN"
             | "REM"
             | "REMAINDER"
+            | "NUMVAL"
+            | "NUMVAL-C"
             | "ANNUITY"
             | "MEAN"
             | "MEDIAN"

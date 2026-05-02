@@ -161,18 +161,39 @@ pub unsafe extern "C" fn cobol_func_reverse(ptr: *mut u8, len: u32) {
 /// `ptr` must be readable for `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_func_numval(ptr: *const u8, len: u32) -> i64 {
+    cobol_func_numval_double(ptr, len) as i64
+}
+
+/// FUNCTION NUMVAL -- floating-point variant used when the receiving context
+/// can preserve fractional digits.
+///
+/// # Safety
+/// `ptr` must be readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_func_numval_double(ptr: *const u8, len: u32) -> f64 {
     let data = std::slice::from_raw_parts(ptr, len as usize);
     let s = match std::str::from_utf8(data) {
         Ok(s) => s.trim(),
-        Err(_) => return 0,
+        Err(_) => return 0.0,
     };
 
-    // Remove commas and parse.
-    let cleaned: String = s.chars().filter(|&c| c != ',').collect();
-    if cleaned.contains('.') {
-        cleaned.parse::<f64>().unwrap_or(0.0) as i64
+    let mut cleaned: String = s
+        .chars()
+        .filter(|&c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))
+        .collect();
+    let negative = cleaned.starts_with('-') || cleaned.ends_with('-');
+    let positive = cleaned.starts_with('+') || cleaned.ends_with('+');
+    if negative || positive {
+        cleaned = cleaned
+            .trim_start_matches(['-', '+'])
+            .trim_end_matches(['-', '+'])
+            .to_string();
+    }
+    let value = cleaned.parse::<f64>().unwrap_or(0.0);
+    if negative {
+        -value
     } else {
-        cleaned.parse::<i64>().unwrap_or(0)
+        value
     }
 }
 

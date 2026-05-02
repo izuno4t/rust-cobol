@@ -507,6 +507,7 @@ pub enum HirStatement {
         operands: Vec<HirExpr>,
         from: Vec<HirExpr>,
         giving: Vec<HirExpr>,
+        giving_rounded: Vec<bool>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,

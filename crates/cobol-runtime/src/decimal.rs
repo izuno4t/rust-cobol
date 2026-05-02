@@ -546,6 +546,11 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     // Find the decimal point position (V or .).
     let decimal_pos = chars.iter().position(|&c| c == 'V' || c == '.');
     let has_actual_point = chars.contains(&'.');
+    let has_mandatory_integer_digit = chars
+        .iter()
+        .take_while(|&&c| c != 'V' && c != '.')
+        .any(|&c| c == '9');
+    let zero_asterisk_fill = abs_value == 0 && chars.contains(&'*') && !has_mandatory_integer_digit;
 
     // Count integer and fractional digit positions.
     let mut int_digits = 0usize;
@@ -593,6 +598,14 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
 
     for (idx, &c) in chars.iter().enumerate() {
         match c {
+            '$' | '*' | 'C' | 'R' if zero_asterisk_fill => {
+                result.push('*');
+                if c == '*' && !in_frac {
+                    int_idx += 1;
+                } else if c == '*' {
+                    frac_idx += 1;
+                }
+            }
             'S' => {
                 // Implicit sign — not emitted.
             }
@@ -695,6 +708,17 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let _ = decimal_pos;
     let _ = has_actual_point;
 
+    if !zero_asterisk_fill && !negative && (pic_upper.ends_with("CR") || pic_upper.ends_with("DB"))
+    {
+        let mut chars: Vec<char> = result.chars().collect();
+        let len = chars.len();
+        if len >= 2 {
+            chars[len - 2] = ' ';
+            chars[len - 1] = ' ';
+            return chars.into_iter().collect();
+        }
+    }
+
     result
 }
 
@@ -769,7 +793,47 @@ mod tests {
                 6,
             )
         };
-        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "$**.00");
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "***.00");
+
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"$.**".as_ptr(),
+                4,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "*.**");
+
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"$**.**CR".as_ptr(),
+                8,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "***.****"
+        );
+
+        let positive = make_dec(55, 2, 5, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &positive,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"$$$.99CR".as_ptr(),
+                8,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "  $.55  "
+        );
     }
 
     #[test]

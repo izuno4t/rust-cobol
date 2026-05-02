@@ -1650,12 +1650,14 @@ fn lower_subtract(
         .iter()
         .map(|t| lower_qualified_name_to_expr(&t.target))
         .collect();
+    let giving_rounded = sub.giving.iter().map(|t| t.rounded).collect();
     let on_size_error = lower_statements(&sub.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&sub.not_on_size_error, condition_names);
     HirStatement::Subtract {
         operands,
         from,
         giving,
+        giving_rounded,
         on_size_error,
         not_on_size_error,
         span: sub.span,
@@ -2282,6 +2284,7 @@ fn lower_set(
                     operands: vec![hir_value],
                     from: target_exprs,
                     giving: Vec::new(),
+                    giving_rounded: Vec::new(),
                     on_size_error: Vec::new(),
                     not_on_size_error: Vec::new(),
                     span: set.span,

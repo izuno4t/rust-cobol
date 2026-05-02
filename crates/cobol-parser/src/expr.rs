@@ -227,6 +227,10 @@ impl Parser {
         self.parse_additive()
     }
 
+    pub(crate) fn parse_arithmetic_operand(&mut self) -> Result<Expr, ()> {
+        self.parse_unary()
+    }
+
     fn parse_additive(&mut self) -> Result<Expr, ()> {
         let mut left = self.parse_multiplicative()?;
 

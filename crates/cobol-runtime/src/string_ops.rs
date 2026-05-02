@@ -362,7 +362,7 @@ pub unsafe extern "C" fn cobol_move_numeric_to_display(
 
 /// Store an integer value as zoned decimal (zero-padded ASCII digits) in a
 /// display numeric buffer within a group struct. PIC 99 with value 7 → "07".
-/// Negative values store the absolute value (sign handling is separate).
+/// Negative values use a trailing overpunch sign in the final digit.
 ///
 /// # Safety
 /// `dst_ptr` must point to a valid buffer of at least `dst_len` bytes.
@@ -379,6 +379,23 @@ pub unsafe extern "C" fn cobol_store_numeric_display(value: i64, dst_ptr: *mut u
         n /= 10;
         if n == 0 {
             break;
+        }
+    }
+    if value < 0 {
+        if let Some(last) = dst.last_mut() {
+            *last = match *last {
+                b'0' => b'}',
+                b'1' => b'J',
+                b'2' => b'K',
+                b'3' => b'L',
+                b'4' => b'M',
+                b'5' => b'N',
+                b'6' => b'O',
+                b'7' => b'P',
+                b'8' => b'Q',
+                b'9' => b'R',
+                other => other,
+            };
         }
     }
 }
@@ -416,12 +433,36 @@ pub unsafe extern "C" fn cobol_display_to_int64(src_ptr: *const u8, src_len: u32
     }
     let mut value = 0i64;
     let mut saw_digit = false;
-    for &b in &src[start..end] {
-        if b.is_ascii_digit() {
-            saw_digit = true;
-            value = value.saturating_mul(10).saturating_add((b - b'0') as i64);
+    for (idx, &b) in src[start..end].iter().enumerate() {
+        let is_last = idx + 1 == end - start;
+        let digit = if b.is_ascii_digit() {
+            b - b'0'
+        } else if is_last {
+            match b {
+                b'{' => {
+                    negative = false;
+                    0
+                }
+                b'A'..=b'I' => {
+                    negative = false;
+                    b - b'A' + 1
+                }
+                b'}' => {
+                    negative = true;
+                    0
+                }
+                b'J'..=b'R' => {
+                    negative = true;
+                    b - b'J' + 1
+                }
+                _ => return 0,
+            }
         } else {
             return 0;
+        };
+        if b.is_ascii_digit() || is_last {
+            saw_digit = true;
+            value = value.saturating_mul(10).saturating_add(digit as i64);
         }
     }
     if !saw_digit {
@@ -842,10 +883,21 @@ mod tests {
     }
 
     #[test]
+    fn test_store_numeric_display_negative_overpunch() {
+        let mut buf = [b' '; 4];
+        unsafe {
+            cobol_store_numeric_display(-123, buf.as_mut_ptr(), buf.len() as u32);
+            assert_eq!(&buf, b"012L");
+            assert_eq!(cobol_display_to_int64(buf.as_ptr(), buf.len() as u32), -123);
+        }
+    }
+
+    #[test]
     fn test_display_to_int64_handles_spaces_and_signs() {
         unsafe {
             assert_eq!(cobol_display_to_int64(b"  +123".as_ptr(), 6), 123);
             assert_eq!(cobol_display_to_int64(b"456- ".as_ptr(), 5), -456);
+            assert_eq!(cobol_display_to_int64(b"12L".as_ptr(), 3), -123);
             assert_eq!(cobol_display_to_int64(b"   ".as_ptr(), 3), 0);
         }
     }

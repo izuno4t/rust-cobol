@@ -861,6 +861,31 @@ pub(crate) fn emit_single_data_init_with_prefix(
         return;
     }
     if let HirType::Group { members, .. } = &item.data_type {
+        if let Some(init) = &item.initial_value {
+            let (fill, literal): (char, Option<String>) = match init {
+                HirLiteral::String(s) => (' ', Some(s.to_string())),
+                HirLiteral::Integer(n) => (' ', Some(n.to_string())),
+                HirLiteral::Zero => ('0', None),
+                HirLiteral::Space => (' ', None),
+                _ => ('\0', None),
+            };
+            if fill == '\0' {
+                out.push_str(&format!("    memset(&{c_name}, 0, sizeof({c_name}));\n"));
+            } else {
+                out.push_str(&format!(
+                    "    memset(&{c_name}, '{fill}', sizeof({c_name}));\n"
+                ));
+            }
+            if let Some(literal) = literal {
+                let escaped = escape_c_string(&literal);
+                out.push_str(&format!(
+                    "    memcpy(&{c_name}, \"{escaped}\", sizeof({c_name}) < {} ? sizeof({c_name}) : {});\n",
+                    literal.len(),
+                    literal.len()
+                ));
+            }
+            return;
+        }
         // If this group itself has OCCURS, zero-init the entire array of structs
         // rather than recursing into members (which would fail because we can't
         // access .members on an array element without a subscript).
@@ -991,13 +1016,14 @@ pub(crate) fn emit_single_data_init_with_prefix(
         match (&item.data_type, init) {
             (HirType::Alphanumeric { size }, HirLiteral::String(s)) => {
                 let escaped = escape_c_string(s);
+                let copy_len = (*size).min(s.len() as u32);
                 if in_group {
                     out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    strncpy({c_name}, \"{escaped}\", {size});\n"
+                        "    memset({c_name}, ' ', {size});\n    memcpy({c_name}, \"{escaped}\", {copy_len});\n"
                     ));
                 } else {
                     out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    strncpy({c_name}, \"{escaped}\", {size});\n    {c_name}[{size}] = '\\0';\n"
+                        "    memset({c_name}, ' ', {size});\n    memcpy({c_name}, \"{escaped}\", {copy_len});\n    {c_name}[{size}] = '\\0';\n"
                     ));
                 }
             }
@@ -1020,14 +1046,16 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 }
             }
             (HirType::Alphanumeric { size }, HirLiteral::Integer(n)) => {
-                let digits = escape_c_string(&n.to_string());
+                let digits_raw = n.to_string();
+                let digits = escape_c_string(&digits_raw);
+                let copy_len = (*size).min(digits_raw.len() as u32);
                 if in_group {
                     out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    strncpy({c_name}, \"{digits}\", {size});\n"
+                        "    memset({c_name}, ' ', {size});\n    memcpy({c_name}, \"{digits}\", {copy_len});\n"
                     ));
                 } else {
                     out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    strncpy({c_name}, \"{digits}\", {size});\n    {c_name}[{size}] = '\\0';\n"
+                        "    memset({c_name}, ' ', {size});\n    memcpy({c_name}, \"{digits}\", {copy_len});\n    {c_name}[{size}] = '\\0';\n"
                     ));
                 }
             }
