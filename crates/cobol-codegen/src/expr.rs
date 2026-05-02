@@ -1101,11 +1101,7 @@ pub(crate) fn grp_display_size(c_name: &str, data_items: &[HirDataItem]) -> Opti
             }
             let mc = sanitize_name(&m.name);
             if mc == c_name {
-                if let HirType::Numeric {
-                    size,
-                    ..
-                } = &m.data_type
-                {
+                if let HirType::Numeric { size, .. } = &m.data_type {
                     return Some(*size);
                 }
             }
@@ -1967,13 +1963,15 @@ fn emit_corresponding_move_members(
                         },
                     ) => {
                         // Both are display numeric in groups (char[])
+                        let src_ptr = display_numeric_const_ptr(&src_q);
+                        let tgt_ptr = display_numeric_ptr(&tgt_q);
                         let src_read = format!(
                             "cobol_display_to_int64(\
-                             (const uint8_t*){src_q}, {src_disp})"
+                             {src_ptr}, {src_disp})"
                         );
                         out.push_str(&format!(
                             "{pad}cobol_store_numeric_display({src_read}, \
-                             (uint8_t*){tgt_q}, {tgt_disp});\n"
+                             {tgt_ptr}, {tgt_disp});\n"
                         ));
                     }
                     (HirType::Numeric { .. }, HirType::Numeric { .. })
@@ -3080,9 +3078,7 @@ fn numeric_display_alphanumeric_operand(
             } else {
                 let value = emit_int_compatible_expr(expr, data_items);
                 let blank_when_zero = if item.blank_when_zero {
-                    format!(
-                        "if ({value} == 0) {{ memset(_cmp_num_buf, ' ', {size}); }} else "
-                    )
+                    format!("if ({value} == 0) {{ memset(_cmp_num_buf, ' ', {size}); }} else ")
                 } else {
                     String::new()
                 };
@@ -3196,8 +3192,6 @@ pub(crate) fn emit_condition_with_ctx(
                     } else {
                         emit_alphanumeric_operand(left, data_items)
                     }
-                } else if is_alphanumeric_expr(left, data_items) {
-                    emit_alphanumeric_operand(left, data_items)
                 } else {
                     emit_alphanumeric_operand(left, data_items)
                 };
@@ -3207,8 +3201,6 @@ pub(crate) fn emit_condition_with_ctx(
                     } else {
                         emit_alphanumeric_operand(right, data_items)
                     }
-                } else if is_alphanumeric_expr(right, data_items) {
-                    emit_alphanumeric_operand(right, data_items)
                 } else {
                     emit_alphanumeric_operand(right, data_items)
                 };

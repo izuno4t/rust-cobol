@@ -560,11 +560,12 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     // Find the decimal point position. When both "." and "," appear in an
     // edited picture, the rightmost separator is the decimal separator and the
     // other is a grouping insertion.
-    let actual_decimal_char = chars
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(_, &c)| if c == '.' || c == ',' { Some(c) } else { None });
+    let actual_decimal_char =
+        chars
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(_, &c)| if c == '.' || c == ',' { Some(c) } else { None });
     let decimal_pos = chars
         .iter()
         .position(|&c| c == 'V' || Some(c) == actual_decimal_char);

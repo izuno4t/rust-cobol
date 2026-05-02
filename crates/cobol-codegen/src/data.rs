@@ -447,7 +447,10 @@ pub(crate) fn emit_single_data_item(
             decimal_places: 0,
             ..
         } if top_level_numeric_redefined_as_display(item, all_items) => {
-            out.push_str(&format!("static char {c_name}{array_suffix}[{}];\n", size + 1));
+            out.push_str(&format!(
+                "static char {c_name}{array_suffix}[{}];\n",
+                size + 1
+            ));
         }
         HirType::Numeric { .. } => {
             out.push_str(&format!("static int64_t {c_name}{array_suffix};\n"));
@@ -455,13 +458,7 @@ pub(crate) fn emit_single_data_item(
         HirType::Group { members, .. } => {
             // Emit group as union of struct + byte array for group-level operations
             let raw_display_layout = group_needs_raw_display_layout(item, all_items);
-            emit_group_typedefs(
-                out,
-                &c_name,
-                members,
-                emitted_typedefs,
-                raw_display_layout,
-            );
+            emit_group_typedefs(out, &c_name, members, emitted_typedefs, raw_display_layout);
             let td = group_typedef_name_for_layout(&c_name, members, raw_display_layout);
             out.push_str("static union {\n");
             out.push_str(&format!("    {td} members;\n"));
@@ -990,8 +987,12 @@ pub(crate) fn emit_single_data_init_with_prefix(
         if item.occurs.is_some() {
             out.push_str(&format!("    memset(&{c_name}, 0, sizeof({c_name}));\n"));
             let Some(n) = item.occurs else { unreachable!() };
-            let my_prefix = format!("{c_name}[_gi].members");
-            out.push_str(&format!("    for (int _gi = 0; _gi < {n}; _gi++) {{\n"));
+            let depth = group_prefix.map_or(0, |prefix| prefix.matches("[_gi").count());
+            let loop_var = format!("_gi{depth}");
+            let my_prefix = format!("{c_name}[{loop_var}].members");
+            out.push_str(&format!(
+                "    for (int {loop_var} = 0; {loop_var} < {n}; {loop_var}++) {{\n"
+            ));
             let mut member_name_counts: HashMap<String, u32> = HashMap::new();
             for member in members {
                 if member.redefines.is_some() || member.renames.is_some() {
@@ -1059,11 +1060,11 @@ pub(crate) fn emit_single_data_init_with_prefix(
                         ));
                     }
                 } else if group_prefix.is_some() {
-                        out.push_str(&format!(
+                    out.push_str(&format!(
                             "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); }}\n"
                         ));
-                    } else {
-                        out.push_str(&format!(
+                } else {
+                    out.push_str(&format!(
                             "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); {c_name}[_i][{size}] = '\\0'; }}\n"
                         ));
                 }
@@ -1083,7 +1084,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
     // CobolDecimal initialization. DISPLAY numeric group members are byte
     // fields, including items with implied decimal places.
     if needs_decimal(&item.data_type)
-        && !(in_group && matches!(item.data_type, HirType::Numeric { .. }))
+        && !with_active_context(|ctx| ctx.has_display_numeric(&base_c_name))
     {
         let (size, decimal_places, is_signed) = match &item.data_type {
             HirType::Numeric {
@@ -1252,8 +1253,8 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 || c_name.contains("._m_")
                 || with_active_context(|ctx| ctx.has_display_numeric(&c_name)) =>
             {
-                let (scaled, scale) = parse_decimal_literal(d);
-                let value = if scale > 0 { scaled.to_string() } else { scaled.to_string() };
+                let (scaled, _scale) = parse_decimal_literal(d);
+                let value = scaled.to_string();
                 out.push_str(&format!(
                     "    cobol_store_numeric_display({value}, \
                      (uint8_t*)&({c_name}), {size});\n"

@@ -429,8 +429,7 @@ pub(crate) fn emit_statement_with_ctx(
                             out.push_str(&decimal_subtract_exact_statement("_sr", &tmp));
                         }
                         let max_int = item.picture.as_deref().and_then(numeric_edited_integer_max);
-                        if has_size_error && max_int.is_some() {
-                            let max_int = max_int.expect("checked is_some");
+                        if let (true, Some(max_int)) = (has_size_error, max_int) {
                             out.push_str(&format!(
                                 "int64_t _abs = llabs(_sr.value); \
                                  for (int32_t _i = 0; _i < _sr.scale; _i++) _abs /= 10; \
@@ -523,9 +522,9 @@ pub(crate) fn emit_statement_with_ctx(
                         .or_else(|| find_data_item(&c_target, data_items));
                     let scale_adjustment = target_item.map_or(0, |item| item.scale_adjustment);
                     let rounded = from_rounded.get(idx).copied().unwrap_or(false);
-                    let uses_decimal = operands
-                        .iter()
-                        .any(|o| is_decimal_expr(o, data_items) || decimal_literal_parts(o).is_some());
+                    let uses_decimal = operands.iter().any(|o| {
+                        is_decimal_expr(o, data_items) || decimal_literal_parts(o).is_some()
+                    });
                     if target_is_decimal {
                         if has_size_error || rounded {
                             out.push_str(&format!("{pad}{{ "));
@@ -4220,10 +4219,9 @@ pub(crate) fn emit_move_to(
     let inherited_target_group = with_active_context(|ctx| ctx.is_group_name(&target_c_name));
     let is_target_alpha =
         matches!(target_type, Some(HirType::Alphanumeric { .. })) || inherited_target_alpha;
-    let is_target_group =
-        matches!(target_type, Some(HirType::Group { .. }))
-            || inherited_target_group
-            || is_group_item_c(c_target, data_items);
+    let is_target_group = matches!(target_type, Some(HirType::Group { .. }))
+        || inherited_target_group
+        || is_group_item_c(c_target, data_items);
     // JUSTIFIED RIGHT: use right-justified move for alphanumeric targets
     let move_fn = if with_active_context(|ctx| ctx.is_justified_name(&target_c_name)) {
         "cobol_move_string_right"
@@ -4379,10 +4377,10 @@ pub(crate) fn emit_move_to(
                 _ => emit_expr(from),
             };
             let src_item = find_data_item_by_name(src_name, data_items)
-                .or_else(|| find_data_item(&data_name_to_c_name(src_name), data_items));
-            let is_source_group =
-                src_item.is_some_and(|item| matches!(item.data_type, HirType::Group { .. }))
-                    || is_group_expr(from, data_items);
+                .or_else(|| find_data_item(data_name_to_c_name(src_name), data_items));
+            let is_source_group = src_item
+                .is_some_and(|item| matches!(item.data_type, HirType::Group { .. }))
+                || is_group_expr(from, data_items);
             let is_source_alpha_like = src_item.is_some_and(|item| {
                 matches!(
                     item.data_type,
@@ -6318,6 +6316,7 @@ fn emit_fast_decimal_sub_assign(
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_fast_decimal_multiply_giving(
     out: &mut String,
     c_target: &str,
@@ -6709,6 +6708,7 @@ fn emit_decimal_divide_to_target_statement(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_decimal_divide_to_numeric_edited_statement(
     pad: &str,
     target: &str,

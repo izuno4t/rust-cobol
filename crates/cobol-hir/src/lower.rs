@@ -816,7 +816,12 @@ fn lower_data_item_with_usage(
     // Recursively lower child items (group items)
     let child_usage = item.usage.as_ref().or(inherited_usage);
     for child in &item.children {
-        lower_data_item_with_usage(child, inherited_external || item.is_external, child_usage, out);
+        lower_data_item_with_usage(
+            child,
+            inherited_external || item.is_external,
+            child_usage,
+            out,
+        );
     }
 }
 

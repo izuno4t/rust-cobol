@@ -592,29 +592,28 @@ pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap
         {
             if item.redefines.is_some()
                 || data_items.iter().any(|other| {
-                other
-                    .redefines
-                    .as_ref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
-                    && matches!(
-                        other.data_type,
-                        HirType::Alphanumeric { .. } | HirType::Group { .. }
-                    )
+                    other
+                        .redefines
+                        .as_ref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                        && matches!(
+                            other.data_type,
+                            HirType::Alphanumeric { .. } | HirType::Group { .. }
+                        )
                 })
             {
                 map.insert(sanitize_name(&item.name), *size);
             }
         }
         if let HirType::Group { members, .. } = &item.data_type {
-            let raw_display_layout =
-                item.redefines.is_some()
-                    || data_items.iter().any(|other| {
-                        other
-                            .redefines
-                            .as_ref()
-                            .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
-                    })
-                    || group_members_need_raw_display_layout(members);
+            let raw_display_layout = item.redefines.is_some()
+                || data_items.iter().any(|other| {
+                    other
+                        .redefines
+                        .as_ref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                })
+                || group_members_need_raw_display_layout(members);
             collect_display_numeric_sizes(&mut map, members, raw_display_layout);
         }
     }
@@ -644,15 +643,14 @@ pub(crate) fn build_display_numeric_scales(data_items: &[HirDataItem]) -> HashMa
             }
         }
         if let HirType::Group { members, .. } = &item.data_type {
-            let raw_display_layout =
-                item.redefines.is_some()
-                    || data_items.iter().any(|other| {
-                        other
-                            .redefines
-                            .as_ref()
-                            .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
-                    })
-                    || group_members_need_raw_display_layout(members);
+            let raw_display_layout = item.redefines.is_some()
+                || data_items.iter().any(|other| {
+                    other
+                        .redefines
+                        .as_ref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                })
+                || group_members_need_raw_display_layout(members);
             collect_display_numeric_scales(&mut map, members, raw_display_layout);
         }
     }

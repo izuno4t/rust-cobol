@@ -275,8 +275,7 @@ impl Lexer {
                         let mut dropped_prev_quote = false;
                         let trailing_spaces = prev.text.len().saturating_sub(prev_trimmed_len);
                         if prev_trimmed_len > 0
-                            && prev.text.as_bytes().get(prev_trimmed_len - 1)
-                            == Some(&quote)
+                            && prev.text.as_bytes().get(prev_trimmed_len - 1) == Some(&quote)
                             && Self::ends_inside_string(&prev.text[..prev_trimmed_len - 1], quote)
                         {
                             prev.text.truncate(prev_trimmed_len);

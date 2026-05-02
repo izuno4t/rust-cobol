@@ -567,7 +567,8 @@ PROCEDURE DIVISION.
         .any(|s| matches!(s, HirStatement::Move { .. })));
 
     let c_code = compile_to_c(src);
-    assert!(c_code.contains("WS_B = WS_A"));
+    assert!(c_code.contains("WS_B = llabs"));
+    assert!(c_code.contains("WS_A"));
 }
 
 #[test]
@@ -590,7 +591,8 @@ PROCEDURE DIVISION.
         .any(|s| matches!(s, HirStatement::Move { .. })));
 
     let c_code = compile_to_c(src);
-    assert!(c_code.contains("WS_A = 0"));
+    assert!(c_code.contains("WS_A = llabs"));
+    assert!(c_code.contains("((int64_t)(0))"));
 }
 
 #[test]
@@ -696,7 +698,7 @@ PROCEDURE DIVISION.
     assert!(c_code.contains("int main("));
     assert!(c_code.contains("static char WS_MSG"));
     assert!(c_code.contains("memset(WS_MSG"));
-    assert!(c_code.contains("strncpy(WS_MSG"));
+    assert!(c_code.contains("memcpy(WS_MSG"));
     assert!(c_code.contains("Hello from COBOL!"));
     assert!(c_code.contains("cobol_stop_run()"));
 }
