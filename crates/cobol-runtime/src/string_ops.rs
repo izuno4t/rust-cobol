@@ -235,6 +235,75 @@ pub unsafe extern "C" fn cobol_move_string_right(
     dst[pad_len..].copy_from_slice(&src[src_start..src_start + copy_len]);
 }
 
+/// MOVE to an alphanumeric-edited PICTURE, applying insertion symbols.
+///
+/// # Safety
+/// Pointers must be readable/writable for their respective lengths.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_move_alphanumeric_edited(
+    src_ptr: *const u8,
+    src_len: u32,
+    dst_ptr: *mut u8,
+    dst_len: u32,
+    pic_ptr: *const u8,
+    pic_len: u32,
+) {
+    if src_ptr.is_null() || dst_ptr.is_null() || pic_ptr.is_null() {
+        return;
+    }
+
+    let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
+    let pic = std::slice::from_raw_parts(pic_ptr, pic_len as usize);
+
+    dst.fill(b' ');
+
+    let mut src_idx = 0usize;
+    let mut dst_idx = 0usize;
+    let mut pic_idx = 0usize;
+    while pic_idx < pic.len() && dst_idx < dst.len() {
+        let symbol = pic[pic_idx].to_ascii_uppercase();
+        let repeat = picture_repeat_count(pic, &mut pic_idx);
+        for _ in 0..repeat {
+            if dst_idx >= dst.len() {
+                break;
+            }
+            dst[dst_idx] = match symbol {
+                b'A' | b'X' | b'9' => {
+                    let value = src.get(src_idx).copied().unwrap_or(b' ');
+                    src_idx += 1;
+                    value
+                }
+                b'B' => b' ',
+                b'0' => b'0',
+                b'/' | b',' | b'.' => symbol,
+                _ => symbol,
+            };
+            dst_idx += 1;
+        }
+        pic_idx += 1;
+    }
+}
+
+fn picture_repeat_count(pic: &[u8], idx: &mut usize) -> u32 {
+    if *idx + 1 >= pic.len() || pic[*idx + 1] != b'(' {
+        return 1;
+    }
+    let mut end = *idx + 2;
+    while end < pic.len() && pic[end] != b')' {
+        end += 1;
+    }
+    if end >= pic.len() {
+        return 1;
+    }
+    let count = std::str::from_utf8(&pic[*idx + 2..end])
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(1);
+    *idx = end;
+    count
+}
+
 /// MOVE numeric to alphanumeric display.
 ///
 /// The numeric value is right-justified in the destination buffer with

@@ -556,7 +556,7 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
             found_decimal = true;
             continue;
         }
-        if c == '9' || c == 'Z' {
+        if c == '9' || c == 'Z' || c == '*' {
             if found_decimal {
                 frac_digits += 1;
             } else {
@@ -591,7 +591,7 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let mut in_frac = false;
     let mut suppress_zeros = true; // for Z suppression
 
-    for &c in &chars {
+    for (idx, &c) in chars.iter().enumerate() {
         match c {
             'S' => {
                 // Implicit sign — not emitted.
@@ -611,7 +611,14 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
                 }
             }
             '$' => {
-                result.push('$');
+                if suppress_zeros && chars.get(idx + 1).is_some_and(|next| *next == '$') {
+                    result.push(' ');
+                } else if suppress_zeros && chars.get(idx + 1).is_some_and(|next| *next == '*') {
+                    result.push('$');
+                } else {
+                    result.push('$');
+                    suppress_zeros = false;
+                }
             }
             'V' => {
                 in_frac = true;
@@ -628,6 +635,9 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
                 } else {
                     result.push(',');
                 }
+            }
+            'B' => {
+                result.push(' ');
             }
             '9' => {
                 if !in_frac {
@@ -646,6 +656,22 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
                     let digit = int_str.as_bytes().get(int_idx).copied().unwrap_or(b'0');
                     if suppress_zeros && digit == b'0' && int_idx < int_str.len() - 1 {
                         result.push(' ');
+                    } else {
+                        suppress_zeros = false;
+                        result.push(digit as char);
+                    }
+                    int_idx += 1;
+                } else {
+                    let digit = frac_str.as_bytes().get(frac_idx).copied().unwrap_or(b'0');
+                    result.push(digit as char);
+                    frac_idx += 1;
+                }
+            }
+            '*' => {
+                if !in_frac {
+                    let digit = int_str.as_bytes().get(int_idx).copied().unwrap_or(b'0');
+                    if suppress_zeros && digit == b'0' {
+                        result.push('*');
                     } else {
                         suppress_zeros = false;
                         result.push(digit as char);
@@ -697,6 +723,53 @@ mod tests {
         unsafe { cobol_decimal_add(&a, &b, &mut r) };
         assert_eq!(r.value, 30125); // 301.25
         assert_eq!(r.scale, 2);
+    }
+
+    #[test]
+    fn test_floating_currency_picture_suppresses_leading_symbol() {
+        let d = make_dec(7211, 2, 7, true);
+        let mut out = [0u8; 16];
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &d,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"$$99.99".as_ptr(),
+                7,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            " $72.11"
+        );
+    }
+
+    #[test]
+    fn test_asterisk_picture_replaces_suppressed_zeroes() {
+        let mut out = [0u8; 16];
+        let d = make_dec(1000, 2, 6, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &d,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"$**.99".as_ptr(),
+                6,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "$10.00");
+
+        let zero = make_dec(0, 0, 6, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"$**.99".as_ptr(),
+                6,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "$**.00");
     }
 
     #[test]

@@ -113,6 +113,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                     decimal_places: 0,
                     is_signed: false,
                 },
+                picture: None,
+                is_numeric_edited: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -140,6 +142,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                             decimal_places: 0,
                             is_signed: false,
                         },
+                        picture: None,
+                        is_numeric_edited: false,
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: Some(HirLiteral::Integer(0)),
@@ -160,6 +164,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                             decimal_places: 0,
                             is_signed: false,
                         },
+                        picture: None,
+                        is_numeric_edited: false,
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: Some(HirLiteral::Integer(0)),
@@ -193,6 +199,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                 data_items.push(HirDataItem {
                     name: SmolStr::new(name),
                     data_type: HirType::Alphanumeric { size: 80 },
+                    picture: None,
+                    is_numeric_edited: false,
                     scale_adjustment: 0,
                     is_external: false,
                     initial_value: None,
@@ -689,6 +697,8 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
                 decimal_places: 0,
                 is_signed: false,
             },
+            picture: None,
+            is_numeric_edited: false,
             scale_adjustment: 0,
             is_external: false,
             initial_value: Some(HirLiteral::Integer(0)),
@@ -707,6 +717,8 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
                 decimal_places: 0,
                 is_signed: false,
             },
+            picture: None,
+            is_numeric_edited: false,
             scale_adjustment: 0,
             is_external: false,
             initial_value: Some(HirLiteral::Integer(0)),
@@ -747,6 +759,8 @@ fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirD
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
+            picture: item.picture.as_ref().map(|p| p.raw_string.clone()),
+            is_numeric_edited: is_numeric_edited_item(item),
             scale_adjustment: picture_scale_adjustment(item),
             is_external: inherited_external || item.is_external,
             initial_value,
@@ -766,6 +780,8 @@ fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirD
             out.push(HirDataItem {
                 name: idx_name.clone(),
                 data_type: HirType::Index,
+                picture: None,
+                is_numeric_edited: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -838,6 +854,8 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
         out.push(HirDataItem {
             name: name.clone(),
             data_type,
+            picture: item.picture.as_ref().map(|p| p.raw_string.clone()),
+            is_numeric_edited: is_numeric_edited_item(item),
             scale_adjustment: picture_scale_adjustment(item),
             is_external: false,
             initial_value,
@@ -885,6 +903,8 @@ fn determine_hir_type(item: &DataItem) -> HirType {
             members.push(HirDataItem {
                 name: member_name,
                 data_type,
+                picture: child.picture.as_ref().map(|p| p.raw_string.clone()),
+                is_numeric_edited: is_numeric_edited_item(child),
                 scale_adjustment: picture_scale_adjustment(child),
                 is_external: child.is_external,
                 initial_value,
@@ -973,13 +993,12 @@ fn determine_hir_type(item: &DataItem) -> HirType {
     // Derive type from PICTURE clause
     if let Some(pic) = &item.picture {
         match pic.category {
-            cobol_ast::PictureCategory::Numeric | cobol_ast::PictureCategory::NumericEdited => {
-                HirType::Numeric {
-                    size: pic.size,
-                    decimal_places: effective_decimal_places(item),
-                    is_signed: pic.is_signed,
-                }
-            }
+            cobol_ast::PictureCategory::NumericEdited => HirType::Alphanumeric { size: pic.size },
+            cobol_ast::PictureCategory::Numeric => HirType::Numeric {
+                size: pic.size,
+                decimal_places: effective_decimal_places(item),
+                is_signed: pic.is_signed,
+            },
             cobol_ast::PictureCategory::National | cobol_ast::PictureCategory::NationalEdited => {
                 HirType::National { size: pic.size }
             }
@@ -989,6 +1008,12 @@ fn determine_hir_type(item: &DataItem) -> HirType {
         // Default: single character alphanumeric
         HirType::Alphanumeric { size: 1 }
     }
+}
+
+fn is_numeric_edited_item(item: &DataItem) -> bool {
+    item.picture
+        .as_ref()
+        .is_some_and(|pic| pic.category == cobol_ast::PictureCategory::NumericEdited)
 }
 
 fn effective_decimal_places(item: &DataItem) -> u32 {

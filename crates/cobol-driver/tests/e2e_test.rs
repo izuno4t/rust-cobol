@@ -2517,6 +2517,8 @@ fn test_c2_move_corresponding() {
                                 decimal_places: 0,
                                 is_signed: false,
                             },
+                            picture: None,
+                            is_numeric_edited: false,
                             scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
@@ -2531,6 +2533,8 @@ fn test_c2_move_corresponding() {
                         HirDataItem {
                             name: "FIELD-B".into(),
                             data_type: HirType::Alphanumeric { size: 10 },
+                            picture: None,
+                            is_numeric_edited: false,
                             scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
@@ -2545,6 +2549,8 @@ fn test_c2_move_corresponding() {
                     ],
                     size: 15,
                 },
+                picture: None,
+                is_numeric_edited: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -2567,6 +2573,8 @@ fn test_c2_move_corresponding() {
                                 decimal_places: 0,
                                 is_signed: false,
                             },
+                            picture: None,
+                            is_numeric_edited: false,
                             scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
@@ -2581,6 +2589,8 @@ fn test_c2_move_corresponding() {
                         HirDataItem {
                             name: "FIELD-C".into(),
                             data_type: HirType::Alphanumeric { size: 10 },
+                            picture: None,
+                            is_numeric_edited: false,
                             scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
@@ -2595,6 +2605,8 @@ fn test_c2_move_corresponding() {
                     ],
                     size: 15,
                 },
+                picture: None,
+                is_numeric_edited: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -2674,6 +2686,8 @@ fn test_c2_add_corresponding() {
                             decimal_places: 2,
                             is_signed: false,
                         },
+                        picture: None,
+                        is_numeric_edited: false,
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: None,
@@ -2687,6 +2701,8 @@ fn test_c2_add_corresponding() {
                     }],
                     size: 9,
                 },
+                picture: None,
+                is_numeric_edited: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -2708,6 +2724,8 @@ fn test_c2_add_corresponding() {
                             decimal_places: 2,
                             is_signed: false,
                         },
+                        picture: None,
+                        is_numeric_edited: false,
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: None,
@@ -2721,6 +2739,8 @@ fn test_c2_add_corresponding() {
                     }],
                     size: 9,
                 },
+                picture: None,
+                is_numeric_edited: false,
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
@@ -3247,6 +3267,194 @@ PARA-C.
     assert_eq!(lines[0].trim(), "A");
     assert_eq!(lines[1].trim(), "C");
     assert_eq!(lines[2].trim(), "DONE");
+}
+
+#[test]
+fn test_native_perform_thru_sections_do_not_duplicate_child_paragraphs() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. THRU-SECTION.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 P-COUNT PIC 9(5) VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM B THRU D.
+    ADD 1 TO P-COUNT.
+    PERFORM A THRU C.
+    ADD 1 TO P-COUNT.
+    PERFORM A THRU D.
+    ADD 1 TO P-COUNT.
+    PERFORM B THRU C.
+    ADD 1 TO P-COUNT.
+    DISPLAY P-COUNT.
+    STOP RUN.
+A SECTION.
+B.
+    ADD 100 TO P-COUNT.
+C SECTION.
+D.
+    ADD 10000 TO P-COUNT.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("40404"),
+        "PERFORM THRU should not duplicate paragraphs owned by selected sections: got '{stdout}'"
+    );
+}
+
+#[test]
+fn test_native_reversed_perform_thru_keeps_goto_return() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. THRU-GOTO-RETURN.
+PROCEDURE DIVISION.
+MAIN.
+    PERFORM G THRU B.
+    DISPLAY 'OK'.
+    STOP RUN.
+A SECTION.
+B.
+    DISPLAY 'PASS'.
+C.
+    DISPLAY 'BAD-C'.
+E.
+    GO TO L.
+F.
+    DISPLAY 'BAD-F'.
+G SECTION.
+H.
+    GO TO E.
+I.
+    DISPLAY 'BAD-I'.
+J SECTION.
+K.
+    DISPLAY 'BAD-K'.
+L.
+    GO TO B.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.trim().lines().map(str::trim).collect();
+    assert_eq!(lines, vec!["PASS", "OK"], "unexpected output: '{stdout}'");
+}
+
+#[test]
+fn test_native_perform_times_evaluates_count_once() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TIMES-COUNT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 N PIC 9(3) VALUE 7.
+PROCEDURE DIVISION.
+    PERFORM STEP-PARA N TIMES.
+    DISPLAY N.
+    STOP RUN.
+STEP-PARA.
+    ADD 100 TO N.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("707"),
+        "PERFORM TIMES should evaluate the count once before looping: got '{stdout}'"
+    );
+}
+
+#[test]
+fn test_native_numeric_edited_move_and_compare() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NUMERIC-EDITED.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 EDITED PIC $9,9B9.90+.
+01 EXPECTED PIC X(10) VALUE '$1,2 3.40+'.
+PROCEDURE DIVISION.
+    MOVE +123.4 TO EDITED.
+    IF EDITED = EXPECTED
+        DISPLAY 'PASS'
+    ELSE
+        DISPLAY EDITED
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "PASS", "unexpected output: '{stdout}'");
+}
+
+#[test]
+fn test_native_alphanumeric_edited_move_and_compare() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALPHA-EDITED.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 EDITED PIC ABABX0A.
+01 EXPECTED PIC X(7) VALUE 'A C D0E'.
+PROCEDURE DIVISION.
+    MOVE 'ACDE' TO EDITED.
+    IF EDITED = EXPECTED
+        DISPLAY 'PASS'
+    ELSE
+        DISPLAY EDITED
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "PASS", "unexpected output: '{stdout}'");
+}
+
+#[test]
+fn test_native_numeric_to_alphanumeric_compare_uses_display_value() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NUM-ALPHA-CMP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 N PIC S9(18).
+01 X PIC X(18).
+PROCEDURE DIVISION.
+    MOVE 111111111111111111 TO N.
+    MOVE '111111111111111111' TO X.
+    IF N = X
+        DISPLAY 'PASS'
+    ELSE
+        DISPLAY 'FAIL'
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "PASS", "unexpected output: '{stdout}'");
+}
+
+#[test]
+fn test_native_quote_move_fills_group_member_without_null_slot() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. QUOTE-GROUP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 G.
+   02 A PIC X(2).
+   02 B PIC X(2).
+PROCEDURE DIVISION.
+    MOVE QUOTES TO A.
+    MOVE QUOTES TO B.
+    IF G = '""""'
+        DISPLAY 'PASS'
+    ELSE
+        DISPLAY 'FAIL'
+    END-IF.
+    STOP RUN.
+"#;
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "PASS", "unexpected output: '{stdout}'");
 }
 
 #[test]

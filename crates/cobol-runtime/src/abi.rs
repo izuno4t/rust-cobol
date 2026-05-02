@@ -115,6 +115,9 @@ pub fn emit_c_declarations(out: &mut String) {
         "extern void cobol_move_string_right(const uint8_t* src, uint32_t src_len, uint8_t* dst, uint32_t dst_len);\n",
     );
     out.push_str(
+        "extern void cobol_move_alphanumeric_edited(const uint8_t* src, uint32_t src_len, uint8_t* dst, uint32_t dst_len, const uint8_t* pic, uint32_t pic_len);\n",
+    );
+    out.push_str(
         "extern void cobol_move_numeric_to_display(int64_t value, int32_t scale, uint8_t* dst, uint32_t dst_len);\n",
     );
     out.push_str(

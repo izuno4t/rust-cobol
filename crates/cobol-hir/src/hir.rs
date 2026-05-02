@@ -321,6 +321,8 @@ pub struct HirScreenInfo {
 pub struct HirDataItem {
     pub name: SmolStr,
     pub data_type: HirType,
+    pub picture: Option<SmolStr>,
+    pub is_numeric_edited: bool,
     pub scale_adjustment: i32,
     pub is_external: bool,
     pub initial_value: Option<HirLiteral>,

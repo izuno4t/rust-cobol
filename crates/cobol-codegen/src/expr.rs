@@ -889,11 +889,35 @@ pub(crate) fn emit_store_int(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    let stored_value_expr = find_data_item_by_c_name(c_target, data_items)
+    let target_item = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items));
+    let stored_value_expr = target_item
         .filter(|item| item.scale_adjustment != 0)
         .map(|item| apply_scale_adjustment_to_store(value_expr, item.scale_adjustment))
         .unwrap_or_else(|| value_expr.to_string());
-    if let Some(disp_size) = grp_display_size(c_target, data_items) {
+    let stored_value_expr = if target_item.is_some_and(is_unsigned_numeric_storage) {
+        format!("llabs({stored_value_expr})")
+    } else {
+        stored_value_expr
+    };
+    if let Some(item) = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))
+        .filter(|item| item.is_numeric_edited)
+    {
+        let pic = item
+            .picture
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "9".to_string());
+        let escaped_pic = escape_c_string(&pic);
+        let pic_len = pic.len();
+        let tgt_size = find_data_item_size(c_target, data_items);
+        out.push_str(&format!(
+            "{pad}{{ CobolDecimal _ned = {{ .value = ({stored_value_expr}), .scale = 0, .size = {tgt_size}, .is_signed = 1 }}; \
+             char _ned_buf[256]; uint32_t _ned_len = cobol_decimal_to_display(&_ned, (uint8_t*)_ned_buf, 256, \
+             (const uint8_t*)\"{escaped_pic}\", {pic_len}); cobol_move_string((const uint8_t*)_ned_buf, _ned_len, (uint8_t*){c_target}, {tgt_size}); }}\n"
+        ));
+    } else if let Some(disp_size) = grp_display_size(c_target, data_items) {
         let c_target_ptr = display_numeric_ptr(c_target);
         out.push_str(&format!(
             "{pad}cobol_store_numeric_display({stored_value_expr}, {c_target_ptr}, {disp_size});\n"
@@ -911,6 +935,23 @@ pub(crate) fn emit_store_int(
         ));
     } else {
         out.push_str(&format!("{pad}{c_target} = {stored_value_expr};\n"));
+    }
+}
+
+fn is_unsigned_numeric_storage(item: &HirDataItem) -> bool {
+    if item.is_numeric_edited {
+        return false;
+    }
+    match item.data_type {
+        HirType::Numeric {
+            is_signed: false, ..
+        }
+        | HirType::Comp3 { .. }
+        | HirType::Binary { .. } => item
+            .picture
+            .as_ref()
+            .is_some_and(|pic| !pic.to_ascii_uppercase().contains('S')),
+        _ => false,
     }
 }
 
@@ -967,7 +1008,29 @@ pub(crate) fn emit_store_int_op(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    if let Some(disp_size) = grp_display_size(c_target, data_items) {
+    if let Some(item) = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))
+        .filter(|item| item.is_numeric_edited)
+    {
+        let current = format!(
+            "cobol_func_numval((const uint8_t*){c_target}, {})",
+            find_data_item_size(c_target, data_items)
+        );
+        let value = format!("({current}) {op} ({value_expr})");
+        let pic = item
+            .picture
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "9".to_string());
+        let escaped_pic = escape_c_string(&pic);
+        let pic_len = pic.len();
+        let tgt_size = find_data_item_size(c_target, data_items);
+        out.push_str(&format!(
+            "{pad}{{ CobolDecimal _ned = {{ .value = ({value}), .scale = 0, .size = {tgt_size}, .is_signed = 1 }}; \
+             char _ned_buf[256]; uint32_t _ned_len = cobol_decimal_to_display(&_ned, (uint8_t*)_ned_buf, 256, \
+             (const uint8_t*)\"{escaped_pic}\", {pic_len}); cobol_move_string((const uint8_t*)_ned_buf, _ned_len, (uint8_t*){c_target}, {tgt_size}); }}\n"
+        ));
+    } else if let Some(disp_size) = grp_display_size(c_target, data_items) {
         let c_target_const_ptr = display_numeric_const_ptr(c_target);
         let c_target_ptr = display_numeric_ptr(c_target);
         out.push_str(&format!(
@@ -1232,7 +1295,7 @@ fn intrinsic_returns_double(name: &str) -> bool {
     )
 }
 
-fn expr_requires_double_precision(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+pub(crate) fn expr_requires_double_precision(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
         HirExpr::Literal(HirLiteral::Decimal(_)) => true,
         HirExpr::FunctionCall { name, args } => {
@@ -2418,6 +2481,15 @@ pub(crate) fn emit_alphanumeric_operand(
             let c_name = emit_data_ref_expr(data_ref);
             let base_name = data_name_to_c_name(&data_ref.name);
             let full_size = find_data_item_size(&base_name, data_items);
+            if data_ref.refmod.is_none() {
+                if let Some(item) = find_data_item_by_name(&data_ref.name, data_items) {
+                    if let Some(operand) = numeric_display_alphanumeric_operand(
+                        expr, &c_name, item, full_size, data_items,
+                    ) {
+                        return operand;
+                    }
+                }
+            }
             let size = if let Some(refmod) = &data_ref.refmod {
                 if let Some(length) = &refmod.length {
                     emit_expr_as_numeric(length)
@@ -2434,6 +2506,13 @@ pub(crate) fn emit_alphanumeric_operand(
         HirExpr::Variable(name) => {
             let c_name = data_name_to_c_name(name);
             let size = find_data_item_size(&c_name, data_items);
+            if let Some(item) = find_data_item_by_name(name, data_items) {
+                if let Some(operand) =
+                    numeric_display_alphanumeric_operand(expr, &c_name, item, size, data_items)
+                {
+                    return operand;
+                }
+            }
             let ptr = alphanumeric_operand_ptr_expr(expr, &c_name, data_items);
             (ptr, format!("{size}"))
         }
@@ -2475,6 +2554,19 @@ pub(crate) fn emit_alphanumeric_operand(
             } else {
                 format!("sizeof({c_name})")
             };
+            if let Some(name) = expr_data_name(expr) {
+                if let Some(item) = find_data_item_by_name(name, data_items) {
+                    if let Some(operand) = numeric_display_alphanumeric_operand(
+                        expr,
+                        &c_name,
+                        item,
+                        size.parse().unwrap_or(64),
+                        data_items,
+                    ) {
+                        return operand;
+                    }
+                }
+            }
             let ptr = alphanumeric_operand_ptr_expr(expr, &c_name, data_items);
             (ptr, size)
         }
@@ -2562,6 +2654,51 @@ pub(crate) fn emit_alphanumeric_operand(
     }
 }
 
+fn numeric_display_alphanumeric_operand(
+    expr: &HirExpr,
+    c_expr: &str,
+    item: &HirDataItem,
+    size: u32,
+    data_items: &[HirDataItem],
+) -> Option<(String, String)> {
+    match &item.data_type {
+        HirType::Numeric {
+            decimal_places: 0, ..
+        }
+        | HirType::Binary { .. }
+        | HirType::Index => {
+            let value = emit_int_compatible_expr(expr, data_items);
+            Some((
+                format!(
+                    "({{ static uint8_t _cmp_num_buf[64]; \
+                     cobol_move_numeric_to_display({value}, 0, _cmp_num_buf, {size}); \
+                     (const uint8_t*)_cmp_num_buf; }})"
+                ),
+                format!("{size}"),
+            ))
+        }
+        ty if needs_decimal(ty) => {
+            let pic_str = item
+                .picture
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| generate_pic_string(ty));
+            let escaped_pic = escape_c_string(&pic_str);
+            let pic_len = pic_str.len();
+            Some((
+                format!(
+                    "({{ static uint8_t _cmp_dec_buf[64]; \
+                     cobol_decimal_to_display(&{c_expr}, _cmp_dec_buf, 64, \
+                     (const uint8_t*)\"{escaped_pic}\", {pic_len}); \
+                     (const uint8_t*)_cmp_dec_buf; }})"
+                ),
+                format!("{size}"),
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Generate code to initialize a CobolDecimal _tcmp from a non-decimal expression.
 /// Handles decimal literals properly via cobol_decimal_from_string.
 pub(crate) fn emit_decimal_init_expr(expr: &HirExpr, c_expr: &str) -> String {
@@ -2569,6 +2706,18 @@ pub(crate) fn emit_decimal_init_expr(expr: &HirExpr, c_expr: &str) -> String {
         HirExpr::Literal(HirLiteral::Decimal(d)) => {
             let len = d.len();
             format!("cobol_decimal_from_string((const uint8_t*)\"{d}\", {len}, &_tcmp);")
+        }
+        HirExpr::UnaryOp {
+            op: HirUnaryOp::Neg,
+            operand,
+        } if matches!(operand.as_ref(), HirExpr::Literal(HirLiteral::Decimal(_))) => {
+            if let HirExpr::Literal(HirLiteral::Decimal(d)) = operand.as_ref() {
+                let literal = format!("-{d}");
+                let len = literal.len();
+                format!("cobol_decimal_from_string((const uint8_t*)\"{literal}\", {len}, &_tcmp);")
+            } else {
+                unreachable!()
+            }
         }
         _ => {
             format!("cobol_decimal_from_int({c_expr}, 0, &_tcmp);")
