@@ -33,7 +33,7 @@
 | TASK-008 | ✅ | COPYと診断仕様差分の代表reproを作る | TASK-002 |
 | TASK-009 | ✅ | REPORT/SORT/SEGMENT仕様差分を分離する | TASK-002,TASK-005 |
 | TASK-010 | ✅ | 100% passまでの実装ロードマップを確定する | TASK-003,TASK-004,TASK-005,TASK-006,TASK-007,TASK-008,TASK-009 |
-| TASK-011 | ⏳ | Backlogを実装タスクへ再編する | TASK-010 |
+| TASK-011 | ✅ | Backlogを実装タスクへ再編する | TASK-010 |
 
 ## タスク詳細（補足が必要な場合のみ）
 
@@ -1001,6 +1001,101 @@ TASK-010時点での判断:
   昇格、分割、並べ替えする。
 - 注意: 1タスクの粒度はレビュー可能な2から6時間程度に収める。
 - 成果物: M2以降の実装タスク一覧、依存関係、完了条件。
+
+#### TASK-011 成果物
+
+実行条件:
+
+- 実行日: 2026-05-03
+- 入力: TASK-010の実装マイルストーン、BACKLOG-001からBACKLOG-009
+- 目的: Backlogを実装開始可能な粒度へ分割し、依存関係と完了条件を固定する
+- 前提: 各実装タスクは、縮小e2e追加、実装修正、対象NIST再実行、
+  関連gate確認までを含む
+
+M2以降の実装タスク一覧:
+
+| ID | Milestone | Summary | DependsOn | Source |
+| ---- | ---- | ---- | ---- | ---- |
+| IMPL-001 | M2 | HIR data item初期化とcodegen構造体契約を修正する | TASK-003 | BACKLOG-001 |
+| IMPL-002 | M2 | scalar storageとbyte pointerのruntime ABIを分離する | IMPL-001 | BACKLOG-001 |
+| IMPL-003 | M2 | decimal/display値をhelper ABI単位で修正する | IMPL-001,TASK-006 | BACKLOG-001,BACKLOG-005 |
+| IMPL-004 | M2 | sort key flatten由来のCErrを修正する | IMPL-001,TASK-009 | BACKLOG-001,BACKLOG-008 |
+| IMPL-005 | M2 | linkage group layout由来のCErrを修正する | IMPL-001,TASK-006 | BACKLOG-001 |
+| IMPL-006 | M3 | NIST summary/first-fail parserを共通化する | TASK-002 | BACKLOG-002 |
+| IMPL-007 | M3 | warning countとcompile log分類を安定化する | IMPL-006,TASK-008 | BACKLOG-002,BACKLOG-007 |
+| IMPL-008 | M3 | print/report/stdout captureをrunnerへ統合する | IMPL-006,TASK-009 | BACKLOG-002,BACKLOG-008 |
+| IMPL-009 | M3 | blank reportとsummary不在のreasonを再分類する | IMPL-008 | BACKLOG-002 |
+| IMPL-010 | M4 | `PERFORM`/`PERFORM THRU`のHIR CFGを再設計する | IMPL-006,TASK-004 | BACKLOG-003 |
+| IMPL-011 | M4 | `GO TO`/`ALTER`/fallthroughのdispatch契約を実装する | IMPL-010,TASK-008 | BACKLOG-003 |
+| IMPL-012 | M4 | `USE FOR DEBUGGING`とdeclarative突入を実装する | IMPL-010 | BACKLOG-003 |
+| IMPL-013 | M4 | 例外句とprogram terminationの制御辺を実装する | IMPL-010 | BACKLOG-003 |
+| IMPL-014 | M5 | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 | BACKLOG-004 |
+| IMPL-015 | M5 | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 | BACKLOG-004 |
+| IMPL-016 | M5 | relative fileのrelative key/cursor/delete状態機械を実装する | IMPL-014 | BACKLOG-004 |
+| IMPL-017 | M5 | LINAGEとWRITE ADVANCINGのoutput positioningを実装する | IMPL-008,IMPL-014 | BACKLOG-004 |
+| IMPL-018 | M6 | PICTURE metadataをsemaからruntimeまで一貫して運ぶ | IMPL-003,TASK-006 | BACKLOG-005 |
+| IMPL-019 | M6 | MOVE conversionをsource/target category単位で一元化する | IMPL-018 | BACKLOG-005 |
+| IMPL-020 | M6 | decimal算術、丸め、SIZE ERRORを一元化する | IMPL-018 | BACKLOG-005 |
+| IMPL-021 | M6 | edited numeric formatter/parserを実装する | IMPL-019 | BACKLOG-005 |
+| IMPL-022 | M7 | intrinsic argument flattenと戻り値categoryを実装する | IMPL-018,TASK-007 | BACKLOG-006 |
+| IMPL-023 | M7 | numeric/math/aggregate intrinsicを実装する | IMPL-020,IMPL-022 | BACKLOG-006 |
+| IMPL-024 | M7 | ordinal/string/date/random intrinsicを実装する | IMPL-022 | BACKLOG-006 |
+| IMPL-025 | M8 | COPY REPLACINGのtoken単位置換を実装する | TASK-008 | BACKLOG-007 |
+| IMPL-026 | M8 | copybook library-nameとcontinuation/quote処理を実装する | IMPL-025 | BACKLOG-007 |
+| IMPL-027 | M8 | obsolete/non-conforming warning診断を構文単位で実装する | IMPL-007,IMPL-026 | BACKLOG-007 |
+| IMPL-028 | M9 | Report Writer lifecycleとcounterを実装する | IMPL-008,IMPL-017,TASK-009 | BACKLOG-008 |
+| IMPL-029 | M9 | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 | BACKLOG-008 |
+| IMPL-030 | M9 | MERGEとsame sort-merge areaを実装する | IMPL-029 | BACKLOG-008 |
+| IMPL-031 | M9 | segmentation runtime stateとdiagnostic境界を実装する | IMPL-011,IMPL-027,TASK-009 | BACKLOG-008 |
+| IMPL-032 | M10 | NIST full gateをCI必須checkへ昇格する | IMPL-001-IMPL-031 | BACKLOG-009 |
+| IMPL-033 | M10 | 残余未分類FAILを仕様カテゴリへ再分類して0にする | IMPL-032 | BACKLOG-009 |
+
+レビュー可能な粒度への分割結果:
+
+| Backlog | 分割後 | 判断 |
+| ---- | ---- | ---- |
+| BACKLOG-001 | IMPL-001からIMPL-005 | CErrはABIファミリごとに分け、M2で先行する |
+| BACKLOG-002 | IMPL-006からIMPL-009 | 判定器は実装修正より先に観測契約として固定する |
+| BACKLOG-003 | IMPL-010からIMPL-013 | CFGは`PERFORM`、dispatch、debug、例外/終端へ分ける |
+| BACKLOG-004 | IMPL-014からIMPL-017 | file organizationごとに状態機械を分ける |
+| BACKLOG-005 | IMPL-018からIMPL-021 | PICTURE metadata、MOVE、算術、editedを順に積む |
+| BACKLOG-006 | IMPL-022からIMPL-024 | intrinsicは共通call契約を先に置き、関数群を分ける |
+| BACKLOG-007 | IMPL-025からIMPL-027 | source操作と診断warningを別タスクにする |
+| BACKLOG-008 | IMPL-028からIMPL-031 | REPORT、SORT、MERGE、SEGMENTを固有runtime単位に分ける |
+| BACKLOG-009 | IMPL-032からIMPL-033 | CI gate化と残余分類を最後に分ける |
+
+各実装タスクの共通完了条件:
+
+- 対象仕様の縮小e2eを追加し、修正前に失敗を確認する。
+- 実装後、追加e2eと既存の直接影響テストがPASSする。
+- 対象NIST programまたはmoduleを再実行し、該当reasonが残っていないことを確認する。
+- 新しいFAIL/CErrが出た場合は、既存タスクへ紐づけるか、未分類としてIMPL-033へ送る。
+- `make nist-summary`の集計値を更新し、Pass/Fail/CErr/RErr/Readyの変化を記録する。
+
+マイルストーン別gate:
+
+| Milestone | 実装タスク | Gate |
+| ---- | ---- | ---- |
+| M2 | IMPL-001からIMPL-005 | `make nist-compile-errors`が0件 |
+| M3 | IMPL-006からIMPL-009 | `blank-or-empty-report`と`no-decisive-ccvs-summary`の誤分類が0 |
+| M4 | IMPL-010からIMPL-013 | DB/IF/NC/OBの制御reproが全PASS |
+| M5 | IMPL-014からIMPL-017 | IX/RL/SQのI/O reproが全PASS |
+| M6 | IMPL-018からIMPL-021 | NC/ICの数値reproが全PASS |
+| M7 | IMPL-022からIMPL-024 | IFのintrinsic reproが全PASS |
+| M8 | IMPL-025からIMPL-027 | SM/SG/SQ/RL/IXのCOPY/診断reproが全PASS |
+| M9 | IMPL-028からIMPL-031 | RW/ST/SG/SM/CMの固有reproが全PASS |
+| M10 | IMPL-032からIMPL-033 | `391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr` |
+
+TASK-011時点での判断:
+
+- Backlogは残タスク置き場としては維持するが、実装開始単位はIMPLタスクへ昇格する。
+  以後の実装着手はBacklog IDではなくIMPL IDを指定する。
+- M2のCErr修正は一括対応しない。ABIファミリ別に分割し、`COMPILE_ERROR -> FAIL`
+  だけの進捗を完了扱いにしない。
+- M3をM4以降より先に置く。判定器と出力捕捉が不確かなまま実装へ入ると、
+  根本原因と観測欠陥が再び混ざるためである。
+- M10のCI必須化は全実装完了後に行う。途中でgateだけ厳しくしても、
+  仕様実装の完了条件にはならない。
 
 ## Backlog一覧
 
