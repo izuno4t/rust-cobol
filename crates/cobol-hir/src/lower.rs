@@ -28,14 +28,14 @@ use smol_str::SmolStr;
 
 use crate::hir::{
     HirAcceptSource, HirAlternateKey, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType,
-    HirCommunicationMode, HirCompareOp, HirCondition, HirDataItem, HirDataName, HirDataRef,
-    HirDeclarative, HirDeclarativeUse, HirExpr, HirFileInfo, HirInspectKind, HirInspectReplacing,
-    HirInspectTallying, HirItemId, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
-    HirParagraph, HirParagraphId, HirParagraphKind, HirParam, HirParamMode, HirPerformKind,
-    HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind, HirScreenInfo,
-    HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder, HirStartRelation, HirStatement,
-    HirStringSource, HirTallyingKind, HirTransferTarget, HirType, HirUnaryOp, HirUnstringDelimiter,
-    HirVaryingAfter,
+    HirCloseOption, HirCommunicationMode, HirCompareOp, HirCondition, HirDataItem, HirDataName,
+    HirDataRef, HirDeclarative, HirDeclarativeUse, HirExpr, HirFileInfo, HirInspectKind,
+    HirInspectReplacing, HirInspectTallying, HirItemId, HirLiteral, HirMoveTarget, HirOpenEntry,
+    HirOpenMode, HirParagraph, HirParagraphId, HirParagraphKind, HirParam, HirParamMode,
+    HirPerformKind, HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind,
+    HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder, HirStartRelation,
+    HirStatement, HirStringSource, HirTallyingKind, HirTransferTarget, HirType, HirUnaryOp,
+    HirUnstringDelimiter, HirVaryingAfter,
 };
 
 #[derive(Debug, Clone)]
@@ -244,6 +244,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let file_records = extract_file_records(program);
     // Extract FD record aliases: additional record names → first record name.
     let fd_record_aliases = extract_fd_record_aliases(program);
+    let variable_record_files = extract_variable_record_files(program);
+    let variable_record_depending = extract_variable_record_depending(program);
 
     // Extract USING parameters from PROCEDURE DIVISION.
     let using_params = program
@@ -292,6 +294,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         declaratives,
         file_records,
         fd_record_aliases,
+        variable_record_files,
+        variable_record_depending,
         nested_programs: program.nested_programs.iter().map(lower_to_hir).collect(),
         span: program.span,
     };
@@ -2157,8 +2161,21 @@ fn lower_open(open: &cobol_ast::statement::OpenStatement) -> HirStatement {
 
 fn lower_close(close: &cobol_ast::statement::CloseStatement) -> HirStatement {
     let files = close.files.iter().map(|e| e.file_name.clone()).collect();
+    let close_options = close
+        .files
+        .iter()
+        .map(|entry| {
+            entry.close_option.map(|option| match option {
+                cobol_ast::statement::CloseOption::Reel => HirCloseOption::Reel,
+                cobol_ast::statement::CloseOption::Unit => HirCloseOption::Unit,
+                cobol_ast::statement::CloseOption::WithNoRewind => HirCloseOption::WithNoRewind,
+                cobol_ast::statement::CloseOption::WithLock => HirCloseOption::WithLock,
+            })
+        })
+        .collect();
     HirStatement::Close {
         files,
+        close_options,
         span: close.span,
     }
 }
@@ -3142,6 +3159,38 @@ fn extract_fd_record_aliases(program: &CobolProgram) -> HashMap<SmolStr, SmolStr
         }
     }
     aliases
+}
+
+fn extract_variable_record_files(program: &CobolProgram) -> std::collections::HashSet<SmolStr> {
+    let Some(data) = &program.data else {
+        return std::collections::HashSet::new();
+    };
+    data.file_section
+        .iter()
+        .filter(|fd| {
+            fd.record_varying.is_some()
+                || fd
+                    .record_contains
+                    .as_ref()
+                    .is_some_and(|record| record.min.is_some())
+        })
+        .map(|fd| fd.file_name.clone())
+        .collect()
+}
+
+fn extract_variable_record_depending(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
+    let Some(data) = &program.data else {
+        return HashMap::new();
+    };
+    data.file_section
+        .iter()
+        .filter_map(|fd| {
+            fd.record_varying
+                .as_ref()
+                .and_then(|varying| varying.depending_on.as_ref())
+                .map(|depending| (fd.file_name.clone(), depending.clone()))
+        })
+        .collect()
 }
 
 fn patch_open_entries(

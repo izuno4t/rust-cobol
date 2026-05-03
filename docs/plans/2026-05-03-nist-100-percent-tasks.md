@@ -51,8 +51,8 @@
 | IMPL-012C | ✅ | `ALL PROCEDURES`のsection/paragraph二重突入順を実装する | IMPL-011,IMPL-012A |
 | IMPL-010A | ✅ | `PERFORM section`復帰境界とsection内paragraph範囲を修正する | IMPL-010 |
 | IMPL-018A | ✅ | 添字付き数値項目とREDEFINESの更新/比較を修正する | IMPL-010A,IMPL-012 |
-| IMPL-013 | 🚧 | 例外句とprogram terminationの制御辺を実装する | IMPL-010 |
-| IMPL-014 | ⏳ | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 |
+| IMPL-013 | ✅ | 例外句とprogram terminationの制御辺を実装する | IMPL-010 |
+| IMPL-014 | 🚧 | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 |
 | IMPL-015 | ⏳ | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 |
 | IMPL-016 | ⏳ | relative fileのrelative key/cursor/delete状態機械を実装する | IMPL-014 |
 | IMPL-017 | ⏳ | LINAGEとWRITE ADVANCINGのoutput positioningを実装する | IMPL-008,IMPL-014 |
@@ -1366,6 +1366,164 @@ TASK-011時点での判断:
   `make nist-run MODULE=DB PROGRAM=DB104A`, `make nist-run MODULE=DB`を実行。
 - NIST確認: `DB104A`は`PASS (3 test(s) require inspection)`。
   DB全体は`15 total / 15 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+
+### IMPL-013 実施記録（完了）
+
+- 対象: `crates/cobol-codegen/src/codegen.rs`,
+  `crates/cobol-codegen/src/context.rs`, `crates/cobol-codegen/src/stmt.rs`
+- 根本原因: `EXIT PROGRAM`を副プログラム内の単なるC関数`return`として生成していたため、
+  section関数から副プログラムentry dispatcherへ戻った後に次paragraphへfallthroughし、
+  CALL先本体が二重実行されていた。さらに、識別子CALLは同一生成単位内のnested programを
+  `dlsym(RTLD_DEFAULT, ...)`だけで探しており、実行ファイルの動的symbol exportに依存していた。
+  CALL先WORKING-STORAGEも呼出しごとに初期化しており、COBOLの保持規則から外れていた。
+- 変更: 副プログラム内`EXIT PROGRAM`をCALLフレームへ戻す`cobol_goback()`として生成し、
+  nested programへの識別子CALLは解決済みプログラム名と照合して直接呼び出すようにした。
+  nested programのWORKING-STORAGE初期化は初回CALL時だけに限定した。
+- 確認: `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-driver --test e2e_test exit_program`,
+  `cargo test -p cobol-driver --test e2e_test call_on_exception`,
+  `make release`, `make nist-run MODULE=IC PROGRAM=IC223A`,
+  `make nist-run MODULE=IC`を実行。
+- NIST確認: `IC223A`は`PASS (11 passed)`。
+  IC全体は`25 total / 20 pass / 0 fail / 5 CErr / 0 RErr / 80%`。
+  残る`IC106A`, `IC114A`, `IC207A`, `IC228A`, `IC235A`はcompile errorであり、
+  IMPL-013の制御辺ではなく後続の個別実装タスクで扱う。
+
+### IMPL-014 実施記録（進行中）
+
+- 対象: `crates/cobol-parser/src/env_div.rs`, `crates/cobol-parser/src/lib.rs`,
+  `crates/cobol-codegen/src/codegen.rs`, `crates/cobol-codegen/src/stmt.rs`
+- 根本原因1: `SQ103A`では、`READ ... AT END`のEOF status更新直後に
+  `USE AFTER STANDARD EXCEPTION` declarativeを無条件dispatchしていた。
+  COBOLではstatement-levelの`AT END`句がEOFを処理する場合、file declarativeへ
+  先に入ってはならない。
+- 変更1: `READ`のfile status更新とdeclarative dispatchを分離し、
+  `AT END`句または`INVALID KEY`句が該当statusを処理する場合は
+  file declarative dispatchを抑止するようにした。
+- 根本原因2: `SQ205A`の`SELECT SQ-FS1 ... STATUS GRP-STATUS-KEY-1`を
+  `FILE STATUS`句として解析していなかったため、SQ-FS1のEOF statusが
+  status data itemへ反映されず、declarative内のEOF判定が成立しなかった。
+- 変更2: FILE-CONTROL内で標準形`FILE STATUS [IS] data-name`に加え、
+  省略形`STATUS [IS] data-name`も同じ`file_status` ASTへ格納するようにした。
+- 確認: `cargo test -p cobol-parser --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ103A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ205A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ103A`は`PASS (30 passed)`、`SQ205A`は`PASS (2 passed)`。
+  SQ全体は`84 total / 47 pass / 37 fail / 0 CErr / 0 RErr / 55%`。
+  残るFAILは`SQ105A`, `SQ107A`, `SQ108A`, `SQ109M`, `SQ110M`, `SQ116A`,
+  `SQ117A`, `SQ123A`, `SQ124A`, `SQ133A`, `SQ134A`, `SQ136A`, `SQ137A`,
+  `SQ138A`, `SQ144A`, `SQ156A`, `SQ201M`, `SQ206A`, `SQ208M`, `SQ209M`,
+  `SQ211A`, `SQ212A`, `SQ214A`, `SQ218A`, `SQ219A`, `SQ220A`, `SQ221A`,
+  `SQ222A`, `SQ223A`, `SQ224A`, `SQ225A`, `SQ226A`, `SQ227A`, `SQ228A`,
+  `SQ302M`, `SQ303M`, `SQ401M`。
+- 根本原因3: `USE AFTER ... INPUT/OUTPUT/I-O/EXTEND`のmode-based file declarativeを、
+  ファイルのOPEN modeと照合せず、先に現れたmode declarativeへ無条件dispatchしていた。
+  そのため`SQ105A`ではREAD EOFでOUTPUT declarativeが実行され、`SQ133A`では
+  I-O open中のREAD EOFでI-O declarativeへ入らなかった。
+- 変更3: 生成Cでファイルごとの現在OPEN modeを`FILE_MODE_*`として保持し、
+  file declarative dispatchへ渡すようにした。OPEN成功時にmodeを設定し、
+  CLOSE成功時に空へ戻す。
+- 根本原因4: sequential REWRITE/WRITEのruntime状態機械が、EOF後REWRITE、
+  REWRITE長さ不一致、sequential I-O modeでのWRITEを正常終了として扱っていた。
+  さらにWRITE/REWRITE codegenが実際の01-level record長ではなくFD最大長を渡していた。
+- 変更4: runtimeに「直前READが有効なrecordを選択しているか」を保持し、
+  EOF後REWRITEを`43`、長さ不一致を`44`、sequential/line sequential I-O WRITEを`48`にした。
+  codegenはWRITE/REWRITEに実record長を渡すようにした。
+- 追加確認: `cargo test -p cobol-runtime --all-targets`,
+  `cargo test -p cobol-runtime file_io::tests::test_sequential`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ105A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ133A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ134A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ137A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ138A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ144A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ156A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ226A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ228A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: 追加で`SQ105A`, `SQ133A`, `SQ134A`, `SQ137A`, `SQ138A`,
+  `SQ144A`, `SQ156A`, `SQ226A`, `SQ228A`がPASS。
+  SQ全体は`84 total / 55 pass / 29 fail / 0 CErr / 0 RErr / 65%`。
+  残るFAILは`SQ106A`, `SQ107A`, `SQ108A`, `SQ109M`, `SQ110M`, `SQ116A`,
+  `SQ117A`, `SQ123A`, `SQ124A`, `SQ136A`, `SQ201M`, `SQ206A`, `SQ208M`,
+  `SQ209M`, `SQ211A`, `SQ212A`, `SQ214A`, `SQ218A`, `SQ219A`, `SQ220A`,
+  `SQ221A`, `SQ222A`, `SQ223A`, `SQ224A`, `SQ225A`, `SQ227A`, `SQ302M`,
+  `SQ303M`, `SQ401M`。
+- 根本原因5: sequential READは一度AT ENDになった後の追加READでも常にstatus `10`を返していた。
+  COBOLでは、AT END到達後に有効な次レコードがない状態でさらにREADするとstatus `46`になる。
+- 変更5: runtimeのfile stateにAT END到達済みフラグを追加し、最初のEOFは`10`、
+  以後のREADは次の成功READまで`46`を返すようにした。
+- 追加確認: `cargo test -p cobol-runtime --all-targets`,
+  `make nist-run MODULE=SQ PROGRAM=SQ136A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ137A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ138A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ105A`を実行。
+- NIST確認: `SQ136A`がPASS。`SQ105A`, `SQ137A`, `SQ138A`はPASS維持。
+- 追加NIST確認: `make nist-run MODULE=SQ`を再実行し、
+  SQ全体は`84 total / 56 pass / 28 fail / 0 CErr / 0 RErr / 66%`。
+  残るFAILは`SQ106A`, `SQ107A`, `SQ108A`, `SQ109M`, `SQ110M`, `SQ116A`,
+  `SQ117A`, `SQ123A`, `SQ124A`, `SQ201M`, `SQ206A`, `SQ208M`, `SQ209M`,
+  `SQ211A`, `SQ212A`, `SQ214A`, `SQ218A`, `SQ219A`, `SQ220A`, `SQ221A`,
+  `SQ222A`, `SQ223A`, `SQ224A`, `SQ225A`, `SQ227A`, `SQ302M`, `SQ303M`,
+  `SQ401M`。
+- 根本原因6: `READ file INTO target`で、runtime READ先をFD recordではなく
+  `INTO` targetにしていた。そのためFD record areaが更新されず、READ後にFD recordを
+  参照するCCVS確認で古い内容が残っていた。
+- 変更6: `READ ... INTO`は常にFD recordへ読み込み、READ成功後にFD recordから
+  `INTO` targetへMOVE相当のcopy/truncate/padを行うようにした。
+- 根本原因7: 可変長sequential fileのrecord境界と実record長をruntimeが保持していなかった。
+  さらに`RECORD VARYING ... DEPENDING ON`のWRITE/REWRITEで、実record長として
+  DEPENDING項目値ではなく01-level項目長を渡していた。
+- 変更7: HIRへ可変長FD情報を追加し、`RECORD VARYING`および
+  `RECORD CONTAINS min TO max`を可変長fileとしてcodegenへ伝搬するようにした。
+  runtimeは可変長sequential recordを長さprefix付きで保存し、READ成功時の実record長を
+  `cobol_file_current_record_length`で返す。codegenはREAD成功時にDEPENDING項目を更新し、
+  WRITE/REWRITE時はDEPENDING項目値を実record長として渡す。
+- 追加確認: `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-runtime --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ106A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ108A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ227A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ106A`は`PASS (69 passed)`、`SQ108A`は`PASS (8 passed)`、
+  `SQ227A`は`PASS (16 passed)`。SQ全体は
+  `84 total / 59 pass / 25 fail / 0 CErr / 0 RErr / 70%`。
+  残るFAILは`SQ107A`, `SQ109M`, `SQ110M`, `SQ116A`, `SQ117A`,
+  `SQ123A`, `SQ124A`, `SQ201M`, `SQ206A`, `SQ208M`, `SQ209M`,
+  `SQ211A`, `SQ212A`, `SQ214A`, `SQ218A`, `SQ219A`, `SQ220A`,
+  `SQ221A`, `SQ222A`, `SQ223A`, `SQ224A`, `SQ225A`, `SQ302M`,
+  `SQ303M`, `SQ401M`。
+- 根本原因8: `WRITE record FROM source`を単純な`memcpy(record, source, record_len)`で
+  生成しており、FROM元がrecordより短い場合にCOBOLのMOVE相当の空白埋めが行われていなかった。
+- 変更8: `WRITE ... FROM`ではrecord領域を空白初期化し、FROM元の既知byte長だけcopyするようにした。
+- 追加確認: `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-runtime --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ117A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ117A`は`PASS (8 passed)`。SQ全体は
+  `84 total / 60 pass / 24 fail / 0 CErr / 0 RErr / 71%`。
+  残るFAILは`SQ107A`, `SQ109M`, `SQ110M`, `SQ116A`, `SQ123A`,
+  `SQ124A`, `SQ201M`, `SQ206A`, `SQ208M`, `SQ209M`, `SQ211A`,
+  `SQ212A`, `SQ214A`, `SQ218A`, `SQ219A`, `SQ220A`, `SQ221A`,
+  `SQ222A`, `SQ223A`, `SQ224A`, `SQ225A`, `SQ302M`, `SQ303M`,
+  `SQ401M`。
+- 根本原因9: `CLOSE file REEL` / `CLOSE file UNIT`の付加句をparser/HIRが捨てており、
+  通常の`CLOSE`として扱っていた。CCVSでは非reel/unit fileに対する該当CLOSEは
+  file status `07`を返し、fileはopenのまま、file declarativeは実行されない。
+- 変更9: parserが`CLOSE`付加句をASTへ保持し、HIR/codegenへ伝搬するようにした。
+  `REEL`/`UNIT`はruntime closeを呼ばずstatus `07`のみをFILE STATUSへ反映し、
+  declarative dispatchと`FILE_MODE_*`クリアを抑止する。
+- 追加確認: `cargo test -p cobol-parser --all-targets`,
+  `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ123A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ124A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ123A`は`PASS (9 passed)`、`SQ124A`は`PASS (19 passed)`。
+  SQ全体は`84 total / 62 pass / 22 fail / 0 CErr / 0 RErr / 73%`。
+  残るFAILは`SQ107A`, `SQ109M`, `SQ110M`, `SQ116A`, `SQ201M`,
+  `SQ206A`, `SQ208M`, `SQ209M`, `SQ211A`, `SQ212A`, `SQ214A`,
+  `SQ218A`, `SQ219A`, `SQ220A`, `SQ221A`, `SQ222A`, `SQ223A`,
+  `SQ224A`, `SQ225A`, `SQ302M`, `SQ303M`, `SQ401M`。
 
 ## Backlog一覧
 

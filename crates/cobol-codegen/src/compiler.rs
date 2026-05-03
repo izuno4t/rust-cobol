@@ -554,6 +554,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -626,6 +628,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -790,6 +794,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -827,6 +833,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -864,6 +872,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -897,6 +907,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1082,6 +1094,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1119,6 +1133,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1164,6 +1180,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1208,6 +1226,8 @@ PROCEDURE DIVISION.
             declaratives: Vec::new(),
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };

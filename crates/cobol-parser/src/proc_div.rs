@@ -2214,9 +2214,10 @@ impl Parser {
             && !self.at_eof()
         {
             let file_name = self.advance().text;
+            let close_option = self.parse_close_option();
             files.push(CloseEntry {
                 file_name,
-                close_option: None,
+                close_option,
             });
             // Skip optional comma separator between file names
             if self.check(TokenKind::Comma) {
@@ -2229,6 +2230,32 @@ impl Parser {
             files,
             span: start_span.merge(&end_span),
         }))
+    }
+
+    fn parse_close_option(&mut self) -> Option<CloseOption> {
+        if self.check_identifier("REEL") {
+            self.advance();
+            return Some(CloseOption::Reel);
+        }
+        if self.check_identifier("UNIT") {
+            self.advance();
+            return Some(CloseOption::Unit);
+        }
+        if self.check(TokenKind::With) || self.check_identifier("WITH") {
+            self.advance();
+            if self.check_identifier("NO") {
+                self.advance();
+                if self.check_identifier("REWIND") {
+                    self.advance();
+                }
+                return Some(CloseOption::WithNoRewind);
+            }
+            if self.check(TokenKind::Lock) || self.check_identifier("LOCK") {
+                self.advance();
+                return Some(CloseOption::WithLock);
+            }
+        }
+        None
     }
 
     // --- READ ---

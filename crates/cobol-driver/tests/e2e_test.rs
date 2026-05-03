@@ -2664,6 +2664,8 @@ fn test_c2_move_corresponding() {
         declaratives: Vec::new(),
         file_records: std::collections::HashMap::new(),
         fd_record_aliases: std::collections::HashMap::new(),
+        variable_record_files: std::collections::HashSet::new(),
+        variable_record_depending: std::collections::HashMap::new(),
         nested_programs: Vec::new(),
         span: Span::dummy(),
     };
@@ -2804,6 +2806,8 @@ fn test_c2_add_corresponding() {
         declaratives: Vec::new(),
         file_records: std::collections::HashMap::new(),
         fd_record_aliases: std::collections::HashMap::new(),
+        variable_record_files: std::collections::HashSet::new(),
+        variable_record_depending: std::collections::HashMap::new(),
         nested_programs: Vec::new(),
         span: Span::dummy(),
     };
@@ -5830,6 +5834,8 @@ fn test_typedef_codegen() {
             declaratives: vec![],
             file_records: std::collections::HashMap::new(),
             fd_record_aliases: std::collections::HashMap::new(),
+            variable_record_files: std::collections::HashSet::new(),
+            variable_record_depending: std::collections::HashMap::new(),
             nested_programs: Vec::new(),
             span: Span::new(0, 0, FileId(0)),
         };

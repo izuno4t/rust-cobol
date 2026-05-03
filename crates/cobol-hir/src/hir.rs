@@ -133,6 +133,10 @@ pub struct HirProgram {
     /// Maps each additional FD record name to the first record name.
     /// Multiple 01-level items under the same FD share the same record buffer.
     pub fd_record_aliases: std::collections::HashMap<SmolStr, SmolStr>,
+    /// FD file names with RECORD IS VARYING.
+    pub variable_record_files: std::collections::HashSet<SmolStr>,
+    /// FD file name → DEPENDING ON data item for RECORD IS VARYING.
+    pub variable_record_depending: std::collections::HashMap<SmolStr, SmolStr>,
     /// Nested programs (COBOL 85 inter-program communication).
     pub nested_programs: Vec<HirProgram>,
     pub span: Span,
@@ -161,6 +165,14 @@ pub struct HirCommunicationDescription {
 pub enum HirDeclarativeUse {
     AfterException,
     ForDebugging,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirCloseOption {
+    Reel,
+    Unit,
+    WithNoRewind,
+    WithLock,
 }
 
 /// A lowered DECLARATIVES section.
@@ -618,6 +630,7 @@ pub enum HirStatement {
     /// CLOSE statement.
     Close {
         files: Vec<SmolStr>,
+        close_options: Vec<Option<HirCloseOption>>,
         span: Span,
     },
     /// READ statement.

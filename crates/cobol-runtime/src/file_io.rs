@@ -15,7 +15,7 @@
 //   37 = permission denied
 //   41 = file already open
 //   42 = file not open
-//   43 = READ not permitted (output/extend mode)
+//   43 = sequential REWRITE without a valid preceding READ
 //   44 = record length mismatch (rewrite)
 //   46 = read error / no valid next record
 //   47 = READ on file not opened INPUT or I-O
@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -83,8 +83,14 @@ struct CobolFile {
     access: FileAccessMode,
     mode: FileOpenMode,
     record_len: u32,
+    variable_records: bool,
+    current_record_len: u32,
     /// For relative files: current relative record number (0-based).
     current_record: u64,
+    /// True only when the last positioning operation selected a concrete record.
+    last_read_valid: bool,
+    /// True after an AT END condition until another successful positioning operation.
+    at_end_seen: bool,
     /// For indexed files: active index used by sequential READ NEXT.
     current_index: usize,
     /// Last concrete record offset read/positioned for indexed rewrite/delete.
@@ -125,6 +131,16 @@ fn file_debug_preview(data: &[u8]) -> String {
         .collect()
 }
 
+fn mark_at_end(file: &mut CobolFile) -> u32 {
+    file.last_read_valid = false;
+    if file.at_end_seen {
+        FS_NO_VALID_NEXT_RECORD
+    } else {
+        file.at_end_seen = true;
+        FS_AT_END
+    }
+}
+
 fn with_file_table<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, CobolFile>) -> R,
@@ -146,6 +162,9 @@ const FS_IO_ERROR: u32 = 30;
 const FS_NOT_FOUND: u32 = 35;
 const FS_ALREADY_OPEN: u32 = 41;
 const FS_NOT_OPEN: u32 = 42;
+const FS_REWRITE_WITHOUT_READ: u32 = 43;
+const FS_RECORD_LENGTH_MISMATCH: u32 = 44;
+const FS_NO_VALID_NEXT_RECORD: u32 = 46;
 const FS_READ_NOT_PERMITTED: u32 = 47;
 const FS_WRITE_NOT_PERMITTED: u32 = 48;
 const FS_IO_MODE_REQUIRED: u32 = 49;
@@ -220,7 +239,11 @@ pub unsafe extern "C" fn cobol_file_open(
                         access,
                         mode,
                         record_len,
+                        variable_records: false,
+                        current_record_len: 0,
                         current_record: 0,
+                        last_read_valid: false,
+                        at_end_seen: false,
                         current_index: 0,
                         current_offset: None,
                         indices: Vec::new(),
@@ -243,6 +266,18 @@ pub unsafe extern "C" fn cobol_file_open(
                 rc
             }
         }
+    })
+}
+
+/// Mark an open file as using runtime-framed variable-length records.
+#[no_mangle]
+pub extern "C" fn cobol_file_set_variable(file_id: u32) -> u32 {
+    with_file_table(|table| {
+        let Some(file) = table.get_mut(&file_id) else {
+            return FS_NOT_OPEN;
+        };
+        file.variable_records = true;
+        FS_OK
     })
 }
 
@@ -502,15 +537,18 @@ pub unsafe extern "C" fn cobol_file_read_next(
                             }
                         }
                         if bytes_read_total == 0 {
-                            return FS_AT_END;
+                            return mark_at_end(file);
                         }
                         let bytes = line.as_bytes();
+                        file.current_record_len = bytes.len() as u32;
                         let copy_len = bytes.len().min(buf.len());
                         buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
                         for b in buf[copy_len..].iter_mut() {
                             *b = b' ';
                         }
                         file.current_record += 1;
+                        file.last_read_valid = true;
+                        file.at_end_seen = false;
                         file_debug_log(&format!(
                             "read-next id={file_id} org=line-sequential rec={} rc={FS_OK} preview={:?}",
                             file.current_record,
@@ -523,16 +561,19 @@ pub unsafe extern "C" fn cobol_file_read_next(
 
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
-                    Ok(0) => FS_AT_END,
+                    Ok(0) => mark_at_end(file),
                     Ok(_) => {
                         let trimmed = line.trim_end_matches(['\r', '\n']);
                         let bytes = trimmed.as_bytes();
+                        file.current_record_len = bytes.len() as u32;
                         let copy_len = bytes.len().min(buf.len());
                         buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
                         for b in buf[copy_len..].iter_mut() {
                             *b = b' ';
                         }
                         file.current_record += 1;
+                        file.last_read_valid = true;
+                        file.at_end_seen = false;
                         file_debug_log(&format!(
                             "read-next id={file_id} org=line-sequential rec={} rc={FS_OK} preview={:?}",
                             file.current_record,
@@ -544,15 +585,26 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 }
             }
             FileOrganization::Sequential => {
+                let variable_records = file.variable_records;
                 let reader = match &mut file.inner {
                     CobolFileInner::Reader(r) => r as &mut dyn Read,
                     CobolFileInner::ReadWrite(f) => f as &mut dyn Read,
                     _ => return FS_READ_NOT_PERMITTED,
                 };
 
-                match reader.read_exact(buf) {
-                    Ok(()) => {
+                let read_result = if variable_records {
+                    read_variable_record(reader, buf)
+                } else {
+                    reader.read_exact(buf).map(|()| Some(record_len))
+                };
+
+                match read_result {
+                    Ok(None) => mark_at_end(file),
+                    Ok(Some(actual_len)) => {
+                        file.current_record_len = actual_len;
                         file.current_record += 1;
+                        file.last_read_valid = true;
+                        file.at_end_seen = false;
                         file_debug_log(&format!(
                             "read-next id={file_id} org=sequential rec={} rc={FS_OK} preview={:?}",
                             file.current_record,
@@ -560,7 +612,7 @@ pub unsafe extern "C" fn cobol_file_read_next(
                         ));
                         FS_OK
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => FS_AT_END,
+                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => mark_at_end(file),
                     Err(_) => FS_IO_ERROR,
                 }
             }
@@ -575,7 +627,10 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 loop {
                     match reader.read_exact(buf) {
                         Ok(()) => {
+                            file.current_record_len = record_len;
                             file.current_record += 1;
+                            file.last_read_valid = true;
+                            file.at_end_seen = false;
                             if is_deleted_record(buf) {
                                 file_debug_log(&format!(
                                     "read-next id={file_id} org=relative rec={} rc=deleted-skip",
@@ -591,7 +646,7 @@ pub unsafe extern "C" fn cobol_file_read_next(
                             return FS_OK;
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                            return FS_AT_END;
+                            return mark_at_end(file);
                         }
                         Err(_) => return FS_IO_ERROR,
                     }
@@ -605,7 +660,7 @@ pub unsafe extern "C" fn cobol_file_read_next(
                     None => return FS_REC_NOT_FOUND,
                 };
                 if idx >= active.entries.len() {
-                    return FS_AT_END;
+                    return mark_at_end(file);
                 }
                 let offset = active.entries[idx].1;
 
@@ -620,7 +675,10 @@ pub unsafe extern "C" fn cobol_file_read_next(
                 }
                 match f.read_exact(buf) {
                     Ok(()) => {
+                        file.current_record_len = record_len;
                         file.current_record += 1;
+                        file.last_read_valid = true;
+                        file.at_end_seen = false;
                         file.current_offset = Some(offset);
                         file_debug_log(&format!(
                             "read-next id={file_id} org=indexed active_index={} idx={} rc={FS_OK} preview={:?}",
@@ -692,13 +750,20 @@ pub unsafe extern "C" fn cobol_file_read_key(
                 }
                 match f.read_exact(buf) {
                     Ok(()) => {
+                        file.current_record_len = record_len;
                         if is_deleted_record(buf) {
+                            file.last_read_valid = false;
                             return FS_REC_NOT_FOUND;
                         }
                         file.current_record = rec_num;
+                        file.last_read_valid = true;
+                        file.at_end_seen = false;
                         FS_OK
                     }
-                    Err(_) => FS_REC_NOT_FOUND,
+                    Err(_) => {
+                        file.last_read_valid = false;
+                        FS_REC_NOT_FOUND
+                    }
                 }
             }
             FileOrganization::Indexed => {
@@ -724,6 +789,7 @@ pub unsafe extern "C" fn cobol_file_read_key(
                     file_debug_log(&format!(
                         "read-key id={file_id} key_offset={key_offset} key_len={key_len} rc={FS_REC_NOT_FOUND}"
                     ));
+                    file.last_read_valid = false;
                     return FS_REC_NOT_FOUND;
                 }
                 let matched_offset = index.entries[lower].1;
@@ -731,6 +797,8 @@ pub unsafe extern "C" fn cobol_file_read_key(
                 // READ by key establishes the current record and advances the
                 // sequential cursor to the following entry in the same key order.
                 file.current_record = (lower + 1) as u64;
+                file.last_read_valid = true;
+                file.at_end_seen = false;
                 file.current_offset = Some(matched_offset);
                 let offset = matched_offset;
                 let f = match &mut file.inner {
@@ -795,7 +863,12 @@ pub unsafe extern "C" fn cobol_file_write(
         };
 
         match file.mode {
-            FileOpenMode::Output | FileOpenMode::Extend | FileOpenMode::IoMode => {}
+            FileOpenMode::Output | FileOpenMode::Extend => {}
+            FileOpenMode::IoMode
+                if !matches!(
+                    file.org,
+                    FileOrganization::Sequential | FileOrganization::LineSequential
+                ) => {}
             _ => {
                 file_debug_log(&format!(
                     "write id={file_id} len={record_len} rc={FS_WRITE_NOT_PERMITTED}"
@@ -812,6 +885,8 @@ pub unsafe extern "C" fn cobol_file_write(
                     w.write_all(trimmed)
                         .and_then(|()| w.write_all(b"\n"))
                         .and_then(|()| w.flush())
+                } else if file.org == FileOrganization::Sequential && file.variable_records {
+                    write_variable_record(w, data)
                 } else {
                     w.write_all(data)
                 }
@@ -820,6 +895,8 @@ pub unsafe extern "C" fn cobol_file_write(
                 if file.org == FileOrganization::LineSequential {
                     let trimmed = trim_trailing_spaces(data);
                     f.write_all(trimmed).and_then(|()| f.write_all(b"\n"))
+                } else if file.org == FileOrganization::Sequential && file.variable_records {
+                    write_variable_record(f, data)
                 } else {
                     f.write_all(data)
                 }
@@ -829,6 +906,7 @@ pub unsafe extern "C" fn cobol_file_write(
 
         match write_result {
             Ok(()) => {
+                file.current_record_len = record_len;
                 file.current_record += 1;
                 file_debug_log(&format!(
                     "write id={file_id} len={record_len} rc={FS_OK} preview={:?}",
@@ -970,6 +1048,12 @@ pub unsafe extern "C" fn cobol_file_rewrite(
         if file.mode != FileOpenMode::IoMode {
             return FS_IO_MODE_REQUIRED;
         }
+        if !file.last_read_valid {
+            return FS_REWRITE_WITHOUT_READ;
+        }
+        if record_len != file.record_len {
+            return FS_RECORD_LENGTH_MISMATCH;
+        }
 
         let rec_offset = match file.org {
             FileOrganization::Indexed => {
@@ -1106,6 +1190,16 @@ pub extern "C" fn cobol_file_current_record(file_id: u32) -> u64 {
     })
 }
 
+#[no_mangle]
+pub extern "C" fn cobol_file_current_record_length(file_id: u32) -> u32 {
+    with_file_table(|table| {
+        table
+            .get(&file_id)
+            .map(|file| file.current_record_len)
+            .unwrap_or(0)
+    })
+}
+
 /// START -- position the file for subsequent sequential reads.
 ///
 /// For relative/indexed files. Mode: 0=EQ, 1=GT, 2=GE, 3=LT, 4=LE.
@@ -1227,6 +1321,37 @@ fn trim_trailing_spaces(data: &[u8]) -> &[u8] {
     &data[..end]
 }
 
+fn write_variable_record(writer: &mut dyn Write, data: &[u8]) -> std::io::Result<()> {
+    let len = data.len() as u32;
+    writer
+        .write_all(&len.to_le_bytes())
+        .and_then(|()| writer.write_all(data))
+}
+
+fn read_variable_record(reader: &mut dyn Read, buf: &mut [u8]) -> std::io::Result<Option<u32>> {
+    let mut len_bytes = [0u8; 4];
+    let mut read_len = 0usize;
+    while read_len < len_bytes.len() {
+        match reader.read(&mut len_bytes[read_len..]) {
+            Ok(0) if read_len == 0 => return Ok(None),
+            Ok(0) => return Err(std::io::Error::from(ErrorKind::UnexpectedEof)),
+            Ok(n) => read_len += n,
+            Err(e) => return Err(e),
+        }
+    }
+
+    let actual_len = u32::from_le_bytes(len_bytes) as usize;
+    let mut record = vec![0u8; actual_len];
+    reader.read_exact(&mut record)?;
+
+    let copy_len = actual_len.min(buf.len());
+    buf[..copy_len].copy_from_slice(&record[..copy_len]);
+    for b in buf[copy_len..].iter_mut() {
+        *b = b' ';
+    }
+    Ok(Some(actual_len as u32))
+}
+
 fn is_deleted_record(data: &[u8]) -> bool {
     data.iter().all(|&b| b == 0)
 }
@@ -1339,6 +1464,66 @@ mod tests {
         }
 
         assert_eq!(cobol_file_close(201), FS_OK);
+    }
+
+    #[test]
+    fn test_variable_sequential_records_preserve_record_boundaries_and_lengths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("seq_variable.dat");
+        let path_str = path.to_str().unwrap();
+        let path_bytes = path_str.as_bytes();
+
+        let status = unsafe {
+            cobol_file_open(
+                202,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Sequential,
+                FileAccessMode::Sequential,
+                FileOpenMode::Output,
+                8,
+            )
+        };
+        assert_eq!(status, FS_OK);
+        assert_eq!(cobol_file_set_variable(202), FS_OK);
+
+        unsafe {
+            assert_eq!(cobol_file_write(202, b"ABC".as_ptr(), 3), FS_OK);
+            assert_eq!(cobol_file_write(202, b"DEFGH".as_ptr(), 5), FS_OK);
+        }
+        assert_eq!(cobol_file_close(202), FS_OK);
+
+        let status = unsafe {
+            cobol_file_open(
+                203,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Sequential,
+                FileAccessMode::Sequential,
+                FileOpenMode::Input,
+                8,
+            )
+        };
+        assert_eq!(status, FS_OK);
+        assert_eq!(cobol_file_set_variable(203), FS_OK);
+
+        let mut buf = [b'X'; 8];
+        unsafe {
+            assert_eq!(cobol_file_read_next(203, buf.as_mut_ptr(), 8), FS_OK);
+        }
+        assert_eq!(cobol_file_current_record_length(203), 3);
+        assert_eq!(&buf, b"ABC     ");
+
+        unsafe {
+            assert_eq!(cobol_file_read_next(203, buf.as_mut_ptr(), 8), FS_OK);
+        }
+        assert_eq!(cobol_file_current_record_length(203), 5);
+        assert_eq!(&buf, b"DEFGH   ");
+
+        unsafe {
+            assert_eq!(cobol_file_read_next(203, buf.as_mut_ptr(), 8), FS_AT_END);
+        }
+        assert_eq!(cobol_file_close(203), FS_OK);
     }
 
     #[test]
@@ -1627,6 +1812,149 @@ mod tests {
         let buf = *b"12345678";
         let rc = unsafe { cobol_file_rewrite(703, buf.as_ptr(), buf.len() as u32) };
         assert_eq!(rc, FS_IO_MODE_REQUIRED);
+    }
+
+    #[test]
+    fn test_sequential_rewrite_after_at_end_returns_43() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rewrite_after_at_end.dat");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"12345678").unwrap();
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 804u32;
+        let rc = unsafe {
+            cobol_file_open(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Sequential,
+                FileAccessMode::Sequential,
+                FileOpenMode::IoMode,
+                8,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) },
+            FS_OK
+        );
+        assert_eq!(
+            unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) },
+            FS_AT_END
+        );
+        let rc = unsafe { cobol_file_rewrite(fid, buf.as_ptr(), 8) };
+        assert_eq!(rc, FS_REWRITE_WITHOUT_READ);
+
+        let _ = cobol_file_close(fid);
+    }
+
+    #[test]
+    fn test_second_sequential_read_after_at_end_returns_46() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("second_read_after_at_end.dat");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"12345678").unwrap();
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 807u32;
+        let rc = unsafe {
+            cobol_file_open(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Sequential,
+                FileAccessMode::Sequential,
+                FileOpenMode::Input,
+                8,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) },
+            FS_OK
+        );
+        assert_eq!(
+            unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) },
+            FS_AT_END
+        );
+        assert_eq!(
+            unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) },
+            FS_NO_VALID_NEXT_RECORD
+        );
+
+        let _ = cobol_file_close(fid);
+    }
+
+    #[test]
+    fn test_sequential_rewrite_length_mismatch_returns_44() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rewrite_length_mismatch.dat");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"12345678").unwrap();
+        }
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 805u32;
+        let rc = unsafe {
+            cobol_file_open(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Sequential,
+                FileAccessMode::Sequential,
+                FileOpenMode::IoMode,
+                8,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            unsafe { cobol_file_read_next(fid, buf.as_mut_ptr(), 8) },
+            FS_OK
+        );
+        let short = *b"1234";
+        let rc = unsafe { cobol_file_rewrite(fid, short.as_ptr(), short.len() as u32) };
+        assert_eq!(rc, FS_RECORD_LENGTH_MISMATCH);
+
+        let _ = cobol_file_close(fid);
+    }
+
+    #[test]
+    fn test_sequential_write_on_io_mode_returns_48() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("write_io_mode.dat");
+        std::fs::File::create(&path).unwrap();
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let fid = 806u32;
+        let rc = unsafe {
+            cobol_file_open(
+                fid,
+                path_bytes.as_ptr(),
+                path_bytes.len() as u32,
+                FileOrganization::Sequential,
+                FileAccessMode::Sequential,
+                FileOpenMode::IoMode,
+                8,
+            )
+        };
+        assert_eq!(rc, FS_OK);
+
+        let buf = *b"12345678";
+        let rc = unsafe { cobol_file_write(fid, buf.as_ptr(), buf.len() as u32) };
+        assert_eq!(rc, FS_WRITE_NOT_PERMITTED);
+
+        let _ = cobol_file_close(fid);
     }
 
     #[test]

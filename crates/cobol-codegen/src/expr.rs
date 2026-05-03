@@ -3441,6 +3441,7 @@ pub(crate) fn emit_file_status_update(
     fs_val: &str,
     fs_map: &FileStatusMap,
     has_declaratives: bool,
+    declarative_mode_expr: &str,
     pad: &str,
 ) {
     if let Some(status_var) = fs_map.get(file_c_name) {
@@ -3454,7 +3455,7 @@ pub(crate) fn emit_file_status_update(
     if has_declaratives {
         let dispatch_fn = with_active_context(|ctx| ctx.file_declarative_dispatch_fn().to_string());
         out.push_str(&format!(
-            "{pad}{dispatch_fn}(\"{file_c_name}\", {fs_val});\n"
+            "{pad}{dispatch_fn}(\"{file_c_name}\", {declarative_mode_expr}, {fs_val});\n"
         ));
         out.push_str(&format!(
             "{pad}if ({fs_val} != 0 && _goto_target) goto _goto_dispatch;\n"

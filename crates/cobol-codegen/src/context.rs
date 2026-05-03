@@ -47,6 +47,8 @@ pub(crate) struct CodegenContext {
     file_record_map: FileRecordMap,
     file_organizations: HashMap<String, u32>,
     file_relative_keys: HashMap<String, String>,
+    variable_record_files: HashSet<String>,
+    variable_record_depending: HashMap<String, String>,
     file_declarative_dispatch_fn: String,
     communication_map: HashMap<String, CommunicationBinding>,
     nested_program_names: HashSet<String>,
@@ -84,6 +86,8 @@ impl CodegenContext {
             &program.file_records,
             &program.file_organizations,
             &program.file_relative_keys,
+            &program.variable_record_files,
+            &program.variable_record_depending,
             &program.communication_descriptions,
             &program.fd_record_aliases,
             "_check_file_declarative".to_string(),
@@ -124,6 +128,17 @@ impl CodegenContext {
                 .file_relative_keys
                 .iter()
                 .map(|(f, k)| (sanitize_name(f), sanitize_name(k))),
+        );
+
+        let mut variable_record_files = parent.variable_record_files.clone();
+        variable_record_files.extend(program.variable_record_files.iter().map(sanitize_name));
+
+        let mut variable_record_depending = parent.variable_record_depending.clone();
+        variable_record_depending.extend(
+            program
+                .variable_record_depending
+                .iter()
+                .map(|(f, d)| (sanitize_name(f), sanitize_name(d))),
         );
 
         let mut communication_map = parent.communication_map.clone();
@@ -174,6 +189,8 @@ impl CodegenContext {
             file_record_map,
             file_organizations,
             file_relative_keys,
+            variable_record_files,
+            variable_record_depending,
             file_declarative_dispatch_fn: format!(
                 "_check_file_declarative_{}",
                 sanitize_name(&program.name)
@@ -206,6 +223,8 @@ impl CodegenContext {
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         file_organizations_map: &HashMap<smol_str::SmolStr, u32>,
         file_relative_keys_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+        variable_record_files: &HashSet<smol_str::SmolStr>,
+        variable_record_depending: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         communication_descriptions: &[cobol_hir::HirCommunicationDescription],
         fd_record_aliases: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         file_declarative_dispatch_fn: String,
@@ -223,6 +242,11 @@ impl CodegenContext {
             file_relative_keys: file_relative_keys_map
                 .iter()
                 .map(|(f, k)| (sanitize_name(f), sanitize_name(k)))
+                .collect(),
+            variable_record_files: variable_record_files.iter().map(sanitize_name).collect(),
+            variable_record_depending: variable_record_depending
+                .iter()
+                .map(|(f, d)| (sanitize_name(f), sanitize_name(d)))
                 .collect(),
             file_declarative_dispatch_fn,
             communication_map: build_communication_map(communication_descriptions),
@@ -317,12 +341,28 @@ impl CodegenContext {
             .map(String::as_str)
     }
 
+    pub(crate) fn file_is_variable_record(&self, sanitized_file_name: &str) -> bool {
+        self.variable_record_files.contains(sanitized_file_name)
+    }
+
+    pub(crate) fn variable_record_depending(&self, sanitized_file_name: &str) -> Option<&str> {
+        self.variable_record_depending
+            .get(sanitized_file_name)
+            .map(String::as_str)
+    }
+
     pub(crate) fn file_declarative_dispatch_fn(&self) -> &str {
         &self.file_declarative_dispatch_fn
     }
 
     pub(crate) fn is_nested_program_name(&self, sanitized_name: &str) -> bool {
         self.nested_program_names.contains(sanitized_name)
+    }
+
+    pub(crate) fn nested_program_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.nested_program_names.iter().cloned().collect();
+        names.sort();
+        names
     }
 
     pub(crate) fn is_subprogram(&self) -> bool {

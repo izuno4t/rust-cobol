@@ -103,6 +103,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_file_control_abbreviated_status_clause() {
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-FILE-STATUS.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT SQ-FS1 ASSIGN TO \"D1\"
+               ORGANIZATION SEQUENTIAL
+               ACCESS SEQUENTIAL
+               STATUS GRP-STATUS-KEY-1.
+       PROCEDURE DIVISION.
+           STOP RUN.                                                     ";
+        let program = parse(src).unwrap();
+        let environment = program.environment.unwrap();
+        let io = environment.input_output.unwrap();
+        let file_control = &io.file_controls[0];
+        assert_eq!(file_control.file_name.as_str(), "SQ-FS1");
+        assert_eq!(
+            file_control
+                .file_status
+                .as_ref()
+                .map(|name| name.name.as_str()),
+            Some("GRP-STATUS-KEY-1")
+        );
+    }
+
+    #[test]
     fn test_parse_fixed_working_storage_with_integer_literal_level_after_header() {
         let src = "\
 000100 IDENTIFICATION DIVISION.

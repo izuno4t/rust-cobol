@@ -1548,13 +1548,30 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!(
                         "{inner_pad}    char _name[256]; cobol_resolve_call_name({call_name_ptr}, {call_name_len}, _name, sizeof(_name));\n"
                     ));
+                    let nested_names = with_active_context(|ctx| ctx.nested_program_names());
+                    let has_nested_resolution = !nested_names.is_empty();
+                    if has_nested_resolution {
+                        out.push_str(&format!("{inner_pad}    int _resolved = 0;\n"));
+                        for nested_name in &nested_names {
+                            out.push_str(&format!(
+                                "{inner_pad}    if (!_resolved && strcmp(_name, \"{nested_name}\") == 0) {{ _resolved = 1; jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {nested_name}(); cobol_call_leave(); }} }}\n"
+                            ));
+                        }
+                    }
                     out.push_str(&format!(
-                        "{inner_pad}    void (*_fp)(void) = (void(*)(void))dlsym(RTLD_DEFAULT, _name);\n"
+                        "{inner_pad}    void (*_fp)(void) = {}(void(*)(void))dlsym(RTLD_DEFAULT, _name);\n",
+                        if has_nested_resolution { "_resolved ? NULL : " } else { "" }
                     ));
                     if has_exception_handlers {
-                        out.push_str(&format!(
-                            "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp(); cobol_call_leave(); }} }} else {{ _call_failed = 1; }}\n"
-                        ));
+                        if has_nested_resolution {
+                            out.push_str(&format!(
+                                "{inner_pad}    if (!_resolved && _fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp(); cobol_call_leave(); }} }} else if (!_resolved) {{ _call_failed = 1; }}\n"
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp(); cobol_call_leave(); }} }} else {{ _call_failed = 1; }}\n"
+                            ));
+                        }
                     } else {
                         out.push_str(&format!(
                             "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp(); cobol_call_leave(); }} }}\n"
@@ -1595,13 +1612,30 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!(
                         "{inner_pad}    char _name[256]; cobol_resolve_call_name({call_name_ptr}, {call_name_len}, _name, sizeof(_name));\n"
                     ));
+                    let nested_names = with_active_context(|ctx| ctx.nested_program_names());
+                    let has_nested_resolution = !nested_names.is_empty();
+                    if has_nested_resolution {
+                        out.push_str(&format!("{inner_pad}    int _resolved = 0;\n"));
+                        for nested_name in &nested_names {
+                            out.push_str(&format!(
+                                "{inner_pad}    if (!_resolved && strcmp(_name, \"{nested_name}\") == 0) {{ _resolved = 1; jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {nested_name}({values_str}); cobol_call_leave(); }} }}\n"
+                            ));
+                        }
+                    }
                     out.push_str(&format!(
-                        "{inner_pad}    void (*_fp)({types_str}) = (void(*)({types_str}))dlsym(RTLD_DEFAULT, _name);\n"
+                        "{inner_pad}    void (*_fp)({types_str}) = {}(void(*)({types_str}))dlsym(RTLD_DEFAULT, _name);\n",
+                        if has_nested_resolution { "_resolved ? NULL : " } else { "" }
                     ));
                     if has_exception_handlers {
-                        out.push_str(&format!(
-                            "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp({values_str}); cobol_call_leave(); }} }} else {{ _call_failed = 1; }}\n"
-                        ));
+                        if has_nested_resolution {
+                            out.push_str(&format!(
+                                "{inner_pad}    if (!_resolved && _fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp({values_str}); cobol_call_leave(); }} }} else if (!_resolved) {{ _call_failed = 1; }}\n"
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp({values_str}); cobol_call_leave(); }} }} else {{ _call_failed = 1; }}\n"
+                            ));
+                        }
                     } else {
                         out.push_str(&format!(
                             "{inner_pad}    if (_fp) {{ jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); _fp({values_str}); cobol_call_leave(); }} }}\n"
@@ -1616,7 +1650,7 @@ pub(crate) fn emit_statement_with_ctx(
                 if is_nested_call {
                     if has_exception_handlers {
                         out.push_str(&format!(
-                            "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }} else {{ _call_failed = 1; }}\n"
+                            "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }}\n"
                         ));
                     } else {
                         out.push_str(&format!(
@@ -1679,7 +1713,7 @@ pub(crate) fn emit_statement_with_ctx(
                 if is_nested_call {
                     if has_exception_handlers {
                         out.push_str(&format!(
-                            "{call_pad}jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }} else {{ _call_failed = 1; }}\n"
+                            "{call_pad}jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
                         ));
                     } else {
                         out.push_str(&format!(
@@ -1774,6 +1808,14 @@ pub(crate) fn emit_statement_with_ctx(
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!("{pad}    uint32_t _fs = {open_call};\n"));
+                    out.push_str(&format!(
+                        "{pad}    if (_fs == 0) FILE_MODE_{c_name} = \"{mode_comment}\";\n"
+                    ));
+                    if ctx.file_is_variable_record(&c_name) {
+                        out.push_str(&format!(
+                            "{pad}    if (_fs == 0) cobol_file_set_variable(FILE_ID_{c_name});\n"
+                        ));
+                    }
                     if org_val == 3 && !entry.alternate_keys.is_empty() {
                         let record_var = resolve_file_record(&c_name);
                         for alt_key in &entry.alternate_keys {
@@ -1798,11 +1840,17 @@ pub(crate) fn emit_statement_with_ctx(
                         "_fs",
                         fs_map,
                         has_declaratives,
+                        &format!("\"{mode_comment}\""),
                         &format!("{pad}    "),
                     );
                     out.push_str(&format!("{pad}}}\n"));
                 } else {
                     out.push_str(&format!("{pad}{open_call};\n"));
+                    if ctx.file_is_variable_record(&c_name) {
+                        out.push_str(&format!(
+                            "{pad}cobol_file_set_variable(FILE_ID_{c_name});\n"
+                        ));
+                    }
                     if org_val == 3 && !entry.alternate_keys.is_empty() {
                         let record_var = resolve_file_record(&c_name);
                         for alt_key in &entry.alternate_keys {
@@ -1825,25 +1873,48 @@ pub(crate) fn emit_statement_with_ctx(
                 emit_debug_spaces_event(out, &pad, entry.file_name.as_str());
             }
         }
-        HirStatement::Close { files, .. } => {
-            for file in files {
+        HirStatement::Close {
+            files,
+            close_options,
+            ..
+        } => {
+            for (idx, file) in files.iter().enumerate() {
                 let c_name = sanitize_name(file);
                 out.push_str(&format!("{pad}/* CLOSE {c_name} */\n"));
                 let has_fs = fs_map.contains_key(&c_name);
+                let close_option = close_options.get(idx).copied().flatten();
+                let unsupported_reel_or_unit = matches!(
+                    close_option,
+                    Some(HirCloseOption::Reel | HirCloseOption::Unit)
+                );
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
-                    out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_close(FILE_ID_{c_name});\n"
-                    ));
+                    if unsupported_reel_or_unit {
+                        out.push_str(&format!("{pad}    uint32_t _fs = 7;\n"));
+                    } else {
+                        out.push_str(&format!(
+                            "{pad}    uint32_t _fs = cobol_file_close(FILE_ID_{c_name});\n"
+                        ));
+                    }
                     emit_file_status_update(
                         out,
                         &c_name,
                         "_fs",
                         fs_map,
-                        has_declaratives,
+                        has_declaratives && !unsupported_reel_or_unit,
+                        &format!("FILE_MODE_{c_name}"),
                         &format!("{pad}    "),
                     );
+                    if !unsupported_reel_or_unit {
+                        out.push_str(&format!(
+                            "{pad}    if (_fs == 0) FILE_MODE_{c_name} = \"\";\n"
+                        ));
+                    }
                     out.push_str(&format!("{pad}}}\n"));
+                } else if unsupported_reel_or_unit {
+                    out.push_str(&format!(
+                        "{pad}/* CLOSE REEL/UNIT unsupported for {c_name}; file remains open */\n"
+                    ));
                 } else {
                     out.push_str(&format!("{pad}cobol_file_close(FILE_ID_{c_name});\n"));
                 }
@@ -1862,10 +1933,9 @@ pub(crate) fn emit_statement_with_ctx(
             ..
         } => {
             let c_name = sanitize_name(file_name);
-            // Determine the target buffer: INTO variable if specified, else
-            // look up the FD record name for this file, falling back to the
-            // file name itself.
-            let (target, target_name) = if let Some((into_var, into_subs)) = into {
+            let record_var = resolve_file_record(&c_name);
+            let (read_target, event_target_name) = (record_var.clone(), record_var.clone());
+            let into_target = into.as_ref().map(|(into_var, into_subs)| {
                 if into_subs.is_empty() {
                     let n = sanitize_name(into_var);
                     (n.clone(), n)
@@ -1875,16 +1945,13 @@ pub(crate) fn emit_statement_with_ctx(
                     let n = sanitize_name(into_var);
                     (access, n)
                 }
-            } else {
-                let r = resolve_file_record(&c_name);
-                (r.clone(), r)
-            };
-            let rec_len = find_record_len(&target_name, data_items);
+            });
+            let rec_len = find_record_len(&record_var, data_items);
             out.push_str(&format!("{pad}/* READ {c_name} */\n"));
             out.push_str(&format!("{pad}{{\n"));
             if *is_next {
                 out.push_str(&format!(
-                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{target}, {rec_len});\n"
+                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{read_target}, {rec_len});\n"
                 ));
             } else if let Some(key_name) = key {
                 let c_key = sanitize_name(key_name);
@@ -1901,11 +1968,11 @@ pub(crate) fn emit_statement_with_ctx(
                     0
                 };
                 out.push_str(&format!(
-                    "{pad}    uint32_t _fs = cobol_file_read_key(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, {key_offset}, (uint8_t*)&{target}, {rec_len});\n"
+                    "{pad}    uint32_t _fs = cobol_file_read_key(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, {key_offset}, (uint8_t*)&{read_target}, {rec_len});\n"
                 ));
             } else {
                 out.push_str(&format!(
-                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{target}, {rec_len});\n"
+                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{read_target}, {rec_len});\n"
                 ));
             }
             emit_file_status_update(
@@ -1913,19 +1980,85 @@ pub(crate) fn emit_statement_with_ctx(
                 &c_name,
                 "_fs",
                 fs_map,
-                has_declaratives,
+                false,
+                &format!("FILE_MODE_{c_name}"),
                 &format!("{pad}    "),
             );
+            if has_declaratives {
+                let dispatch_fn =
+                    with_active_context(|ctx| ctx.file_declarative_dispatch_fn().to_string());
+                let at_end_guard = if at_end.is_empty() {
+                    "0".to_string()
+                } else {
+                    "(_fs == 10)".to_string()
+                };
+                let invalid_key_guard = if invalid_key.is_empty() {
+                    "0".to_string()
+                } else {
+                    "(_fs != 0)".to_string()
+                };
+                out.push_str(&format!(
+                    "{pad}    if (!({at_end_guard} || {invalid_key_guard})) {{\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}        {dispatch_fn}(\"{c_name}\", FILE_MODE_{c_name}, _fs);\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}        if (_fs != 0 && _goto_target) goto _goto_dispatch;\n"
+                ));
+                out.push_str(&format!("{pad}    }}\n"));
+            }
             emit_debug_data_name_event(
                 out,
                 &format!("{pad}    "),
                 file_name.as_str(),
-                &target_name,
+                &event_target_name,
                 data_items,
                 Some("_fs == 0"),
                 false,
                 true,
             );
+            if let Some(depending) = ctx.variable_record_depending(&c_name) {
+                out.push_str(&format!("{pad}    if (_fs == 0) {{\n"));
+                emit_store_int(
+                    out,
+                    depending,
+                    &format!("(int64_t)cobol_file_current_record_length(FILE_ID_{c_name})"),
+                    data_items,
+                    &format!("{pad}        "),
+                );
+                out.push_str(&format!("{pad}    }}\n"));
+            }
+            if let Some((into_t, into_name)) = &into_target {
+                let into_len = find_data_item_size(into_name, data_items);
+                out.push_str(&format!("{pad}    if (_fs == 0) {{\n"));
+                if ctx.file_is_variable_record(&c_name) {
+                    out.push_str(&format!(
+                        "{pad}        uint32_t _actual_len = cobol_file_current_record_length(FILE_ID_{c_name});\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}        uint32_t _copy_len = _actual_len < {into_len} ? _actual_len : {into_len};\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}        memcpy(&{into_t}, &{read_target}, _copy_len);\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}        if ({into_len} > _copy_len) memset(((uint8_t*)&{into_t}) + _copy_len, ' ', {into_len} - _copy_len);\n"
+                    ));
+                } else {
+                    let copy_len = rec_len.min(into_len);
+                    out.push_str(&format!(
+                        "{pad}        memcpy(&{into_t}, &{read_target}, {copy_len});\n"
+                    ));
+                    if into_len > copy_len {
+                        out.push_str(&format!(
+                            "{pad}        memset(((uint8_t*)&{into_t}) + {copy_len}, ' ', {});\n",
+                            into_len - copy_len
+                        ));
+                    }
+                }
+                out.push_str(&format!("{pad}    }}\n"));
+            }
             if *is_next && ctx.file_organization(&c_name) == Some(2) {
                 if let Some(relative_key) = ctx.relative_key_for_file(&c_name) {
                     out.push_str(&format!("{pad}    if (_fs == 0) {{\n"));
@@ -2018,15 +2151,19 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 sanitize_name(file_name)
             };
-            let rec_len = find_record_len(&c_name, data_items);
+            let rec_len = find_data_item_size(&c_name, data_items);
+            let write_len = variable_record_io_len_expr(ctx, &c_file, rec_len);
             let source = if let Some(from_expr) = from {
                 emit_expr(from_expr)
             } else {
                 c_name.clone()
             };
             out.push_str(&format!("{pad}/* WRITE {c_name} */\n"));
-            if from.is_some() {
-                out.push_str(&format!("{pad}memcpy(&{c_name}, &{source}, {rec_len});\n"));
+            if let Some(from_expr) = from {
+                let source_len = alphanumeric_expr_len(from_expr, data_items).unwrap_or(rec_len);
+                let copy_len = source_len.min(rec_len);
+                out.push_str(&format!("{pad}memset(&{c_name}, ' ', {rec_len});\n"));
+                out.push_str(&format!("{pad}memcpy(&{c_name}, &{source}, {copy_len});\n"));
             }
             emit_debug_data_name_event(
                 out,
@@ -2042,16 +2179,17 @@ pub(crate) fn emit_statement_with_ctx(
             if needs_rc {
                 out.push_str(&format!("{pad}{{\n"));
                 out.push_str(&format!(
-                    "{pad}    uint32_t _wrc = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
+                    "{pad}    uint32_t _wrc = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {write_len});\n"
                 ));
-                let has_fs = fs_map.contains_key(&c_name);
+                let has_fs = fs_map.contains_key(&c_file);
                 if has_fs {
                     emit_file_status_update(
                         out,
-                        &c_name,
+                        &c_file,
                         "_wrc",
                         fs_map,
                         has_declaratives,
+                        &format!("FILE_MODE_{c_file}"),
                         &format!("{pad}    "),
                     );
                 }
@@ -2091,7 +2229,7 @@ pub(crate) fn emit_statement_with_ctx(
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
+                        "{pad}    uint32_t _fs = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {write_len});\n"
                     ));
                     emit_file_status_update(
                         out,
@@ -2099,12 +2237,13 @@ pub(crate) fn emit_statement_with_ctx(
                         "_fs",
                         fs_map,
                         has_declaratives,
+                        &format!("FILE_MODE_{c_file}"),
                         &format!("{pad}    "),
                     );
                     out.push_str(&format!("{pad}}}\n"));
                 } else {
                     out.push_str(&format!(
-                        "{pad}cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
+                        "{pad}cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {write_len});\n"
                     ));
                 }
             }
@@ -2123,15 +2262,19 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 sanitize_name(file_name)
             };
-            let rec_len = find_record_len(&c_name, data_items);
+            let rec_len = find_data_item_size(&c_name, data_items);
+            let rewrite_len = variable_record_io_len_expr(ctx, &c_file, rec_len);
             let source = if let Some(from_expr) = from {
                 emit_expr(from_expr)
             } else {
                 c_name.clone()
             };
             out.push_str(&format!("{pad}/* REWRITE {c_name} */\n"));
-            if from.is_some() {
-                out.push_str(&format!("{pad}memcpy(&{c_name}, &{source}, {rec_len});\n"));
+            if let Some(from_expr) = from {
+                let source_len = alphanumeric_expr_len(from_expr, data_items).unwrap_or(rec_len);
+                let copy_len = source_len.min(rec_len);
+                out.push_str(&format!("{pad}memset(&{c_name}, ' ', {rec_len});\n"));
+                out.push_str(&format!("{pad}memcpy(&{c_name}, &{source}, {copy_len});\n"));
             }
             emit_debug_data_name_event(
                 out,
@@ -2148,7 +2291,7 @@ pub(crate) fn emit_statement_with_ctx(
             if needs_rc || has_fs {
                 out.push_str(&format!("{pad}{{\n"));
                 out.push_str(&format!(
-                    "{pad}    uint32_t _fs = cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
+                    "{pad}    uint32_t _fs = cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rewrite_len});\n"
                 ));
                 if has_fs {
                     emit_file_status_update(
@@ -2157,6 +2300,7 @@ pub(crate) fn emit_statement_with_ctx(
                         "_fs",
                         fs_map,
                         has_declaratives,
+                        &format!("FILE_MODE_{c_file}"),
                         &format!("{pad}    "),
                     );
                 }
@@ -2193,7 +2337,7 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}}}\n"));
             } else {
                 out.push_str(&format!(
-                    "{pad}cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
+                    "{pad}cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rewrite_len});\n"
                 ));
             }
         }
@@ -2213,6 +2357,7 @@ pub(crate) fn emit_statement_with_ctx(
                         "_fs",
                         fs_map,
                         has_declaratives,
+                        &format!("FILE_MODE_{c_name}"),
                         &format!("{pad}    "),
                     );
                     out.push_str(&format!("{pad}}}\n"));
@@ -3402,7 +3547,7 @@ pub(crate) fn emit_statement_with_ctx(
         }
         HirStatement::ExitProgram { .. } => {
             if ctx.is_subprogram() {
-                out.push_str(&format!("{pad}return; /* EXIT PROGRAM */\n"));
+                out.push_str(&format!("{pad}cobol_goback(); /* EXIT PROGRAM */\n"));
             } else {
                 out.push_str(&format!("{pad}cobol_stop_run(); /* EXIT PROGRAM */\n"));
             }
@@ -3577,6 +3722,7 @@ pub(crate) fn emit_statement_with_ctx(
                         "_src",
                         fs_map,
                         has_declaratives,
+                        &format!("FILE_MODE_{c_name}"),
                         &format!("{pad}    "),
                     );
                 }
@@ -3913,6 +4059,16 @@ pub(crate) fn emit_statement_with_ctx(
             }
         }
     }
+}
+
+fn variable_record_io_len_expr(ctx: &CodegenContext, c_file: &str, record_len: u32) -> String {
+    ctx.variable_record_depending(c_file)
+        .map(|depending| {
+            format!(
+                "((uint32_t)({depending} > {record_len} ? {record_len} : ({depending} < 0 ? 0 : {depending})))"
+            )
+        })
+        .unwrap_or_else(|| record_len.to_string())
 }
 
 fn emit_transfer_to_target(

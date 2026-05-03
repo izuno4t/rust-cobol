@@ -215,6 +215,11 @@ impl Parser {
                 self.advance(); // STATUS
                 self.eat_is();
                 file_status = Some(self.parse_qualified_name()?);
+            } else if self.check_identifier("STATUS") {
+                // COBOL permits the abbreviated form: STATUS IS variable-name.
+                self.advance(); // STATUS
+                self.eat_is();
+                file_status = Some(self.parse_qualified_name()?);
             } else if self.check(TokenKind::Mode) {
                 self.advance();
                 self.eat_is();

@@ -19,10 +19,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use cobol_hir::{
-    HirAcceptSource, HirBinOp, HirClassType, HirCompareOp, HirCondition, HirDataItem,
-    HirDeclarative, HirDeclarativeUse, HirExpr, HirFileInfo, HirLiteral, HirMoveTarget,
-    HirOpenMode, HirParagraph, HirParagraphId, HirParagraphKind, HirPerformKind, HirProgram,
-    HirStartRelation, HirStatement, HirTransferTarget, HirType, HirUnaryOp,
+    HirAcceptSource, HirBinOp, HirClassType, HirCloseOption, HirCompareOp, HirCondition,
+    HirDataItem, HirDeclarative, HirDeclarativeUse, HirExpr, HirFileInfo, HirLiteral,
+    HirMoveTarget, HirOpenMode, HirParagraph, HirParagraphId, HirParagraphKind, HirPerformKind,
+    HirProgram, HirStartRelation, HirStatement, HirTransferTarget, HirType, HirUnaryOp,
 };
 
 pub use self::compiler::compile_c_to_executable;
@@ -317,7 +317,7 @@ fn emit_file_declarative_dispatch(
     }
 
     out.push_str(&format!(
-        "static void {fn_name}(const char* file_c_name, int fs) {{\n"
+        "static void {fn_name}(const char* file_c_name, const char* declarative_mode, int fs) {{\n"
     ));
     out.push_str("    if (fs == 0) return;\n");
     for decl in declaratives
@@ -331,9 +331,26 @@ fn emit_file_declarative_dispatch(
             matches!(upper.as_str(), "I-O" | "INPUT" | "OUTPUT" | "EXTEND")
         });
         if is_mode_based {
+            let mut modes = Vec::new();
+            for f in &decl.file_names {
+                let upper = f.to_uppercase();
+                if matches!(upper.as_str(), "I-O" | "INPUT" | "OUTPUT" | "EXTEND") {
+                    modes.push(upper);
+                }
+            }
+            let mode_guard = modes
+                .iter()
+                .map(|mode| {
+                    format!(
+                        "strcmp(declarative_mode, \"{}\") == 0",
+                        escape_c_string(mode)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" || ");
             out.push_str(&format!(
-                "    _set_debug_event(\"{}\", \"USE PROCEDURE\", \"\"); decl_{c_decl}(); return;\n",
-                escape_c_string(&decl.name)
+                "    if ({mode_guard}) {{ _set_debug_event(\"{}\", \"USE PROCEDURE\", \"\"); decl_{c_decl}(); return; }}\n",
+                escape_c_string(&decl.name),
             ));
         } else {
             for fname in &decl.file_names {
@@ -409,6 +426,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                     "static const uint32_t FILE_ID_{c_name} = {};\n",
                     id + 1
                 ));
+                out.push_str(&format!("static const char* FILE_MODE_{c_name} = \"\";\n"));
             }
             out.push('\n');
         }
@@ -781,13 +799,15 @@ fn has_debug_declaratives(program: &HirProgram) -> bool {
 fn collect_debug_register_needs(program: &HirProgram) -> DebugRegisterNeeds {
     let hir_dump = format!("{program:#?}");
     let has_debug_decl = has_debug_declaratives(program);
+    let has_subscripted_reference =
+        hir_dump.contains("subscripts: [") || hir_dump.contains("Subscript");
     DebugRegisterNeeds {
         line: has_debug_decl || hir_dump.contains("DEBUG-LINE"),
         name: has_debug_decl || hir_dump.contains("DEBUG-NAME"),
         contents: has_debug_decl || hir_dump.contains("DEBUG-CONTENTS"),
-        sub_1: hir_dump.contains("DEBUG-SUB-1"),
-        sub_2: hir_dump.contains("DEBUG-SUB-2"),
-        sub_3: hir_dump.contains("DEBUG-SUB-3"),
+        sub_1: has_subscripted_reference || hir_dump.contains("DEBUG-SUB-1"),
+        sub_2: has_subscripted_reference || hir_dump.contains("DEBUG-SUB-2"),
+        sub_3: has_subscripted_reference || hir_dump.contains("DEBUG-SUB-3"),
     }
 }
 
@@ -1085,9 +1105,14 @@ fn emit_nested_program(
         out.push_str("    /* Nested program entry point */\n");
         emit_using_param_binding_setup(out, program, "    ");
 
-        // Initialize data items
+        // Initialize WORKING-STORAGE once per program lifetime.  COBOL
+        // subprograms retain their storage across CALLs until CANCEL.
+        out.push_str(&format!("    static int _{prog_name}_initialized = 0;\n"));
+        out.push_str(&format!("    if (!_{prog_name}_initialized) {{\n"));
         let excluded_inits = using_param_excluded_inits(program);
         emit_data_init_excluding(out, &program.data_items, &excluded_inits);
+        out.push_str(&format!("        _{prog_name}_initialized = 1;\n"));
+        out.push_str("    }\n");
 
         let use_top_level_entry_flow = !program.paragraphs.is_empty();
         let body_prefix = top_level_body_prefix(&program.body);
@@ -1708,12 +1733,16 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_variable_records: HashSet<smol_str::SmolStr> = HashSet::new();
+    let empty_variable_depending: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_aliases: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let ctx = CodegenContext::new(
         &[],
         &empty_records,
         &empty_orgs,
         &empty_relative_keys,
+        &empty_variable_records,
+        &empty_variable_depending,
         &[],
         &empty_aliases,
         "_check_file_declarative".to_string(),
@@ -1842,12 +1871,16 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_variable_records: HashSet<smol_str::SmolStr> = HashSet::new();
+    let empty_variable_depending: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_aliases: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let ctx = CodegenContext::new(
         &[],
         &empty_records,
         &empty_orgs,
         &empty_relative_keys,
+        &empty_variable_records,
+        &empty_variable_depending,
         &[],
         &empty_aliases,
         "_check_file_declarative".to_string(),
