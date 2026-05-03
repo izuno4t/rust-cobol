@@ -793,6 +793,12 @@ fn is_all_procedures_debug_decl(debug_items: &[smol_str::SmolStr]) -> bool {
         && debug_items[1].eq_ignore_ascii_case("PROCEDURES")
 }
 
+fn is_all_references_debug_decl(debug_items: &[smol_str::SmolStr]) -> bool {
+    debug_items
+        .windows(2)
+        .any(|w| w[0].eq_ignore_ascii_case("ALL") && w[1].eq_ignore_ascii_case("REFERENCES"))
+}
+
 fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
     if !has_debug_declaratives(program) {
         out.push_str("static void _set_debug_event(const char* name, const char* contents, const char* line) {\n");
@@ -807,6 +813,9 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
         out.push_str("}\n");
         out.push_str("static void _dispatch_debug_declarative(const char* paragraph_name) {\n");
         out.push_str("    (void)paragraph_name;\n");
+        out.push_str("}\n\n");
+        out.push_str("static void _dispatch_debug_reference(const char* data_name) {\n");
+        out.push_str("    (void)data_name;\n");
         out.push_str("}\n\n");
         return;
     }
@@ -854,6 +863,9 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
         if decl.use_kind != HirDeclarativeUse::ForDebugging {
             continue;
         }
+        if is_all_references_debug_decl(&decl.debug_items) {
+            continue;
+        }
         let c_decl = sanitize_name(&decl.name);
         if is_all_procedures_debug_decl(&decl.debug_items) {
             emit_debug_declarative_dispatch_call(out, &c_decl, needs);
@@ -870,6 +882,37 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
             let escaped = escape_c_string(debug_item);
             out.push_str(&format!(
                 "    if (strcmp(paragraph_name, \"{escaped}\") == 0) {{\n"
+            ));
+            emit_debug_declarative_dispatch_call(out, &c_decl, needs);
+            out.push_str("    }\n");
+        }
+    }
+    out.push_str("    _debug_event_explicit = 0;\n");
+    out.push_str("}\n\n");
+
+    out.push_str("static void _dispatch_debug_reference(const char* data_name) {\n");
+    out.push_str("    if (_suppress_debug_event) return;\n");
+    out.push_str("    if (!data_name || data_name[0] == '\\0') return;\n");
+    out.push_str("    const char* _debug_switch = getenv(\"COBOL_DEBUGGING_MODE\");\n");
+    out.push_str("    if (_debug_switch && (strcmp(_debug_switch, \"0\") == 0 || strcmp(_debug_switch, \"OFF\") == 0 || strcmp(_debug_switch, \"off\") == 0 || strcmp(_debug_switch, \"false\") == 0 || strcmp(_debug_switch, \"FALSE\") == 0)) { _debug_event_explicit = 0; return; }\n");
+    for decl in &program.declaratives {
+        if decl.use_kind != HirDeclarativeUse::ForDebugging
+            || !is_all_references_debug_decl(&decl.debug_items)
+        {
+            continue;
+        }
+        let c_decl = sanitize_name(&decl.name);
+        for debug_item in &decl.debug_items {
+            let upper = debug_item.to_uppercase();
+            if matches!(
+                upper.as_str(),
+                "ALL" | "PROCEDURES" | "REFERENCES" | "OF" | "IN"
+            ) {
+                continue;
+            }
+            let escaped = escape_c_string(debug_item);
+            out.push_str(&format!(
+                "    if (strcmp(data_name, \"{escaped}\") == 0) {{\n"
             ));
             emit_debug_declarative_dispatch_call(out, &c_decl, needs);
             out.push_str("    }\n");

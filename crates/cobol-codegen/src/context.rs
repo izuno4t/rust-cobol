@@ -592,7 +592,10 @@ pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap
             ..
         } = &item.data_type
         {
-            if item.redefines.is_some()
+            if item
+                .redefines
+                .as_ref()
+                .is_some_and(|name| redefines_target_requires_display(data_items, name))
                 || data_items.iter().any(|other| {
                     other
                         .redefines
@@ -629,7 +632,10 @@ pub(crate) fn build_display_numeric_scales(data_items: &[HirDataItem]) -> HashMa
             decimal_places: 0, ..
         } = &item.data_type
         {
-            if item.redefines.is_some()
+            if item
+                .redefines
+                .as_ref()
+                .is_some_and(|name| redefines_target_requires_display(data_items, name))
                 || data_items.iter().any(|other| {
                     other
                         .redefines
@@ -756,6 +762,18 @@ fn group_members_need_raw_display_layout(members: &[HirDataItem]) -> bool {
                     if group_members_need_raw_display_layout(sub_members)
             )
     })
+}
+
+fn redefines_target_requires_display(data_items: &[HirDataItem], target_name: &str) -> bool {
+    data_items
+        .iter()
+        .find(|item| item.name.eq_ignore_ascii_case(target_name))
+        .is_some_and(|target| {
+            matches!(
+                target.data_type,
+                HirType::Alphanumeric { .. } | HirType::Group { .. }
+            )
+        })
 }
 
 pub(crate) fn build_group_alpha_names(data_items: &[HirDataItem]) -> HashSet<String> {

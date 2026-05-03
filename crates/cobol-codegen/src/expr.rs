@@ -2673,6 +2673,56 @@ pub(crate) fn emit_inspect_replacing(
         return;
     }
     for (i, r) in replacing.iter().enumerate() {
+        if let cobol_hir::HirReplacingKind::Characters(to_expr) = &r.kind {
+            if r.before_after.len() == 1 {
+                let label = format!("rep_to{i}");
+                let marker_label = format!("rep_marker{i}");
+                let (to_ptr, to_len) = emit_inspect_operand(out, to_expr, &label, data_items, pad);
+                let (marker_ptr, marker_len) = emit_inspect_operand(
+                    out,
+                    &r.before_after[0].value,
+                    &marker_label,
+                    data_items,
+                    pad,
+                );
+                let replace_before = r.before_after[0].is_before;
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!(
+                    "{pad}    uint8_t* _insp_base = (uint8_t*){tgt_ptr};\n"
+                ));
+                out.push_str(&format!("{pad}    uint32_t _insp_len = {target_size};\n"));
+                out.push_str(&format!(
+                    "{pad}    const uint8_t* _insp_marker = {marker_ptr};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    uint32_t _insp_marker_len = {marker_len};\n"
+                ));
+                out.push_str(&format!("{pad}    uint32_t _insp_pos = _insp_len;\n"));
+                out.push_str(&format!(
+                    "{pad}    if (_insp_marker_len > 0 && _insp_marker_len <= _insp_len) {{\n"
+                ));
+                out.push_str(&format!("{pad}        for (uint32_t _i = 0; _i + _insp_marker_len <= _insp_len; _i++) {{\n"));
+                out.push_str(&format!("{pad}            if (memcmp(_insp_base + _i, _insp_marker, _insp_marker_len) == 0) {{ _insp_pos = _i; break; }}\n"));
+                out.push_str(&format!("{pad}        }}\n"));
+                out.push_str(&format!("{pad}    }}\n"));
+                if replace_before {
+                    out.push_str(&format!(
+                        "{pad}    cobol_inspect_replacing(_insp_base, _insp_pos, NULL, 0, {to_ptr}, {to_len}, 0);\n"
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}    if (_insp_pos < _insp_len) {{\n"));
+                    out.push_str(&format!(
+                        "{pad}        uint32_t _insp_start = _insp_pos + _insp_marker_len;\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}        cobol_inspect_replacing(_insp_base + _insp_start, _insp_len - _insp_start, NULL, 0, {to_ptr}, {to_len}, 0);\n"
+                    ));
+                    out.push_str(&format!("{pad}    }}\n"));
+                }
+                out.push_str(&format!("{pad}}}\n"));
+                continue;
+            }
+        }
         let (mode, search_ptr, search_len, replace_ptr, replace_len) = match &r.kind {
             cobol_hir::HirReplacingKind::Characters(to_expr) => {
                 let label = format!("rep_to{i}");

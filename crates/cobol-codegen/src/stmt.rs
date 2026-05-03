@@ -2140,6 +2140,19 @@ pub(crate) fn emit_statement_with_ctx(
             let alter_info = current_paragraph.and_then(|id| ctx.alterable_paragraph(id));
             if let Some(dep) = depending_on {
                 let c_dep = data_name_to_c_name(dep);
+                let dep_name = escape_c_string(dep.as_str());
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!("{pad}    char _debug_ref_contents[81];\n"));
+                out.push_str(&format!(
+                    "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%lld\", (long long){c_dep});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    _set_debug_event(\"{dep_name}\", _debug_ref_contents, \"\");\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    _dispatch_debug_reference(\"{dep_name}\");\n"
+                ));
+                out.push_str(&format!("{pad}}}\n"));
                 out.push_str(&format!("{pad}switch ((int){c_dep}) {{\n"));
                 for (i, target) in targets.iter().enumerate() {
                     out.push_str(&format!("{pad}    case {}:\n", i + 1));
@@ -3764,6 +3777,39 @@ fn emit_optional_debug_event(out: &mut String, pad: &str, name: &str, contents: 
     ));
 }
 
+fn emit_debug_identifier_value_event(
+    out: &mut String,
+    pad: &str,
+    name: &str,
+    c_value: &str,
+    width: u32,
+) {
+    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+        return;
+    }
+    out.push_str(&format!("{pad}{{\n"));
+    out.push_str(&format!("{pad}    char _debug_ref_contents[81];\n"));
+    if width > 0 {
+        out.push_str(&format!(
+            "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%0*lld\", {width}, (long long){c_value});\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%lld\", (long long){c_value});\n"
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}    _set_debug_event(\"{name}\", _debug_ref_contents, \"\");\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    _dispatch_debug_declarative(\"{name}\");\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    _dispatch_debug_reference(\"{name}\");\n"
+    ));
+    out.push_str(&format!("{pad}}}\n"));
+}
+
 fn emit_fallthrough_debug_event(out: &mut String, pad: &str, name: &str, contents: &str) {
     if with_active_context(|ctx| ctx.in_debug_declarative()) {
         return;
@@ -5385,8 +5431,22 @@ pub(crate) fn emit_perform(
             } else {
                 let c_from = emit_int_compatible_expr(from, data_items);
                 let c_by = emit_int_compatible_expr(by, data_items);
+                let debug_var_name = escape_c_string(var.as_str());
+                let debug_var_width = find_data_item(var, data_items)
+                    .and_then(|item| match item.data_type {
+                        HirType::Numeric { size, .. } => Some(size),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
                 // Initialize outer VARYING variable
                 emit_store_int(out, &c_var_target, &c_from, data_items, &pad);
+                emit_debug_identifier_value_event(
+                    out,
+                    &pad,
+                    &debug_var_name,
+                    &c_var_target,
+                    debug_var_width,
+                );
                 let loop_keyword = match test {
                     HirPerformTest::Before => format!("while (!({cond}))"),
                     HirPerformTest::After => "for (;;)".to_string(),
@@ -5443,6 +5503,13 @@ pub(crate) fn emit_perform(
                     out.push_str(&format!("{after_pad}if ({cond}) break;\n"));
                 }
                 emit_store_int_op(out, &c_var_target, "+", &c_by, data_items, &after_pad);
+                emit_debug_identifier_value_event(
+                    out,
+                    &after_pad,
+                    &debug_var_name,
+                    &c_var_target,
+                    debug_var_width,
+                );
                 out.push_str(&format!("{pad}}}\n"));
             }
         }
