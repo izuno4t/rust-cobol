@@ -2076,10 +2076,10 @@ impl Parser {
             self.expect(TokenKind::To)?;
         }
         let to = self.parse_alter_proc_name()?;
+        let mut pairs = vec![(from, to)];
         let mut end_span = self.span();
         // COBOL allows multiple ALTER pairs separated by optional commas:
         // ALTER proc-1 TO proc-2, proc-3 TO proc-4 ...
-        // Since ALTER is obsolete and lowered to a no-op, we just consume them.
         loop {
             let _ = self.eat(TokenKind::Comma);
             if !self.check(TokenKind::Identifier) && !self.check(TokenKind::IntegerLiteral) {
@@ -2096,12 +2096,12 @@ impl Parser {
                 self.advance();
                 self.expect(TokenKind::To)?;
             }
-            let _extra_to = self.parse_alter_proc_name()?;
+            let extra_to = self.parse_alter_proc_name()?;
+            pairs.push((_extra_from, extra_to));
             end_span = self.span();
         }
         Ok(Statement::Alter(AlterStatement {
-            from,
-            to,
+            pairs,
             span: start_span.merge(&end_span),
         }))
     }

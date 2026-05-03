@@ -342,6 +342,39 @@ pub struct HirDataItem {
     pub span: Span,
 }
 
+impl HirDataItem {
+    /// Creates a synthetic data item with neutral COBOL metadata defaults.
+    ///
+    /// Lowering real source data items should still fill source-derived
+    /// metadata explicitly. This constructor is for implicit registers and
+    /// codegen tests, where the HIR/data layout contract should not be copied
+    /// field-by-field at every call site.
+    pub fn new(name: impl Into<SmolStr>, data_type: HirType, span: Span) -> Self {
+        Self {
+            name: name.into(),
+            data_type,
+            picture: None,
+            is_numeric_edited: false,
+            blank_when_zero: false,
+            scale_adjustment: 0,
+            is_external: false,
+            initial_value: None,
+            occurs: None,
+            indexed_by: Vec::new(),
+            redefines: None,
+            renames: None,
+            screen_info: None,
+            justified: false,
+            span,
+        }
+    }
+
+    pub fn with_initial_value(mut self, initial_value: HirLiteral) -> Self {
+        self.initial_value = Some(initial_value);
+        self
+    }
+}
+
 /// HIR-level type representation, simplified from PICTURE/USAGE.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirType {
@@ -566,8 +599,7 @@ pub enum HirStatement {
         span: Span,
     },
     Alter {
-        from: HirTransferTarget,
-        to: HirTransferTarget,
+        pairs: Vec<(HirTransferTarget, HirTransferTarget)>,
         span: Span,
     },
     Continue {
@@ -1437,8 +1469,13 @@ fn write_stmt(
         HirStatement::ExitProgram { .. } => writeln!(f, "{pad}EXIT PROGRAM"),
         HirStatement::ExitParagraph { .. } => writeln!(f, "{pad}EXIT PARAGRAPH"),
         HirStatement::Goback { .. } => writeln!(f, "{pad}GOBACK"),
-        HirStatement::Alter { from, to, .. } => {
-            writeln!(f, "{pad}ALTER {} TO {}", from.name(), to.name())
+        HirStatement::Alter { pairs, .. } => {
+            let pairs = pairs
+                .iter()
+                .map(|(from, to)| format!("{} TO {}", from.name(), to.name()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(f, "{pad}ALTER {pairs}")
         }
         HirStatement::Continue { .. } => writeln!(f, "{pad}CONTINUE"),
         HirStatement::Label { target } => writeln!(f, "{pad}{}.", target.name()),
@@ -1701,4 +1738,44 @@ fn format_data_ref(data_ref: &HirDataRef) -> String {
         }
     }
     rendered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_data_item_uses_neutral_metadata_defaults() {
+        let item = HirDataItem::new("WS-FIELD", HirType::Alphanumeric { size: 4 }, Span::dummy());
+
+        assert_eq!(item.name.as_str(), "WS-FIELD");
+        assert_eq!(item.picture, None);
+        assert!(!item.is_numeric_edited);
+        assert!(!item.blank_when_zero);
+        assert_eq!(item.scale_adjustment, 0);
+        assert!(!item.is_external);
+        assert_eq!(item.initial_value, None);
+        assert_eq!(item.occurs, None);
+        assert!(item.indexed_by.is_empty());
+        assert_eq!(item.redefines, None);
+        assert_eq!(item.renames, None);
+        assert_eq!(item.screen_info, None);
+        assert!(!item.justified);
+    }
+
+    #[test]
+    fn synthetic_data_item_can_set_initial_value() {
+        let item = HirDataItem::new(
+            "SWITCH-STATE",
+            HirType::Numeric {
+                size: 1,
+                decimal_places: 0,
+                is_signed: false,
+            },
+            Span::dummy(),
+        )
+        .with_initial_value(HirLiteral::Integer(0));
+
+        assert_eq!(item.initial_value, Some(HirLiteral::Integer(0)));
+    }
 }

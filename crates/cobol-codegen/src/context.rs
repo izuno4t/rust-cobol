@@ -454,12 +454,14 @@ fn collect_alter_targets_from_block(
     altered_targets: &mut HashMap<HirParagraphId, Vec<HirTransferTarget>>,
 ) {
     for stmt in stmts {
-        if let HirStatement::Alter { from, to, .. } = stmt {
-            if let Some(paragraph_id) = from.paragraph_id() {
-                altered_targets
-                    .entry(paragraph_id)
-                    .or_default()
-                    .push(to.clone());
+        if let HirStatement::Alter { pairs, .. } = stmt {
+            for (from, to) in pairs {
+                if let Some(paragraph_id) = from.paragraph_id() {
+                    altered_targets
+                        .entry(paragraph_id)
+                        .or_default()
+                        .push(to.clone());
+                }
             }
         }
     }
@@ -662,8 +664,9 @@ pub(crate) fn collect_display_numeric_sizes(
     members: &[HirDataItem],
     raw_display_layout: bool,
 ) {
+    let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
-        let c_name = sanitize_name(&member.name);
+        let c_name = dedup_group_member_context_name(member, &mut member_name_counts);
         match &member.data_type {
             HirType::Numeric { size, .. } if raw_display_layout => {
                 map.insert(c_name, *size);
@@ -699,8 +702,9 @@ pub(crate) fn collect_display_numeric_scales(
     members: &[HirDataItem],
     raw_display_layout: bool,
 ) {
+    let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
-        let c_name = sanitize_name(&member.name);
+        let c_name = dedup_group_member_context_name(member, &mut member_name_counts);
         match &member.data_type {
             HirType::Numeric { decimal_places, .. } if raw_display_layout => {
                 map.insert(c_name, *decimal_places);
@@ -726,6 +730,20 @@ pub(crate) fn collect_display_numeric_scales(
                 }
             }
         }
+    }
+}
+
+fn dedup_group_member_context_name(
+    member: &HirDataItem,
+    member_name_counts: &mut HashMap<String, u32>,
+) -> String {
+    let base_c_name = sanitize_name(&member.name);
+    let count = member_name_counts.entry(base_c_name.clone()).or_insert(0);
+    *count += 1;
+    if *count > 1 {
+        format!("{}_{}", base_c_name, count)
+    } else {
+        base_c_name
     }
 }
 

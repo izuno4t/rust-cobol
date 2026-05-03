@@ -204,7 +204,10 @@ fn compute_redefines_max_sizes(items: &[HirDataItem]) -> HashMap<String, u32> {
     result
 }
 
-fn group_needs_raw_display_layout(item: &HirDataItem, all_items: &[HirDataItem]) -> bool {
+pub(crate) fn group_needs_raw_display_layout(
+    item: &HirDataItem,
+    all_items: &[HirDataItem],
+) -> bool {
     if item.redefines.is_some() {
         return true;
     }
@@ -218,7 +221,7 @@ fn group_needs_raw_display_layout(item: &HirDataItem, all_items: &[HirDataItem])
         }
 }
 
-fn group_members_need_raw_display_layout(members: &[HirDataItem]) -> bool {
+pub(crate) fn group_members_need_raw_display_layout(members: &[HirDataItem]) -> bool {
     members.iter().any(|member| {
         member.redefines.is_some()
             || matches!(
@@ -1263,7 +1266,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
             (
                 HirType::Numeric {
                     size,
-                    decimal_places: 0,
+                    decimal_places: _,
                     ..
                 },
                 HirLiteral::Zero,
@@ -1410,42 +1413,18 @@ mod tests {
 
     #[test]
     fn test_emit_fd_alias_macros_uses_primary_bytes_for_scalar_fd_alias() {
-        let items = vec![HirDataItem {
-            name: SmolStr::new("SHORT-OUT"),
-            data_type: HirType::Group {
-                members: vec![HirDataItem {
-                    name: SmolStr::new("FIELD-1"),
-                    data_type: HirType::Alphanumeric { size: 10 },
-                    picture: None,
-                    is_numeric_edited: false,
-                    blank_when_zero: false,
-                    scale_adjustment: 0,
-                    is_external: false,
-                    initial_value: None,
-                    occurs: None,
-                    indexed_by: Vec::new(),
-                    redefines: None,
-                    renames: None,
-                    screen_info: None,
-                    justified: false,
-                    span: Span::dummy(),
-                }],
+        let items = vec![HirDataItem::new(
+            "SHORT-OUT",
+            HirType::Group {
+                members: vec![HirDataItem::new(
+                    "FIELD-1",
+                    HirType::Alphanumeric { size: 10 },
+                    Span::dummy(),
+                )],
                 size: 10,
             },
-            picture: None,
-            is_numeric_edited: false,
-            blank_when_zero: false,
-            scale_adjustment: 0,
-            is_external: false,
-            initial_value: None,
-            occurs: None,
-            indexed_by: Vec::new(),
-            redefines: None,
-            renames: None,
-            screen_info: None,
-            justified: false,
-            span: Span::dummy(),
-        }];
+            Span::dummy(),
+        )];
         let aliases = std::collections::HashMap::from([(
             SmolStr::new("MEDIUM-OUT"),
             SmolStr::new("SHORT-OUT"),
@@ -1463,59 +1442,23 @@ mod tests {
     #[test]
     fn test_emit_fd_alias_macros_uses_primary_bytes_when_alias_item_is_scalar() {
         let items = vec![
-            HirDataItem {
-                name: SmolStr::new("SHORT-OUT"),
-                data_type: HirType::Group {
-                    members: vec![HirDataItem {
-                        name: SmolStr::new("FIELD-1"),
-                        data_type: HirType::Alphanumeric { size: 10 },
-                        picture: None,
-                        is_numeric_edited: false,
-                        blank_when_zero: false,
-                        scale_adjustment: 0,
-                        is_external: false,
-                        initial_value: None,
-                        occurs: None,
-                        indexed_by: Vec::new(),
-                        redefines: None,
-                        renames: None,
-                        screen_info: None,
-                        justified: false,
-                        span: Span::dummy(),
-                    }],
+            HirDataItem::new(
+                "SHORT-OUT",
+                HirType::Group {
+                    members: vec![HirDataItem::new(
+                        "FIELD-1",
+                        HirType::Alphanumeric { size: 10 },
+                        Span::dummy(),
+                    )],
                     size: 10,
                 },
-                picture: None,
-                is_numeric_edited: false,
-                blank_when_zero: false,
-                scale_adjustment: 0,
-                is_external: false,
-                initial_value: None,
-                occurs: None,
-                indexed_by: Vec::new(),
-                redefines: None,
-                renames: None,
-                screen_info: None,
-                justified: false,
-                span: Span::dummy(),
-            },
-            HirDataItem {
-                name: SmolStr::new("MEDIUM-OUT"),
-                data_type: HirType::Alphanumeric { size: 10 },
-                picture: None,
-                is_numeric_edited: false,
-                blank_when_zero: false,
-                scale_adjustment: 0,
-                is_external: false,
-                initial_value: None,
-                occurs: None,
-                indexed_by: Vec::new(),
-                redefines: None,
-                renames: None,
-                screen_info: None,
-                justified: false,
-                span: Span::dummy(),
-            },
+                Span::dummy(),
+            ),
+            HirDataItem::new(
+                "MEDIUM-OUT",
+                HirType::Alphanumeric { size: 10 },
+                Span::dummy(),
+            ),
         ];
         let aliases = std::collections::HashMap::from([(
             SmolStr::new("MEDIUM-OUT"),

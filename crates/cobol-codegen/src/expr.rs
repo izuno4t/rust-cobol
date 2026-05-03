@@ -986,11 +986,15 @@ fn aggregate_arg_requires_double(expr: &HirExpr, ctx: &CodegenContext) -> bool {
     match expr {
         HirExpr::DataRef(data_ref) => {
             let base_name = data_name_to_c_name(&data_ref.name);
-            ctx.is_decimal_name(&base_name) || ctx.is_decimal_name(extract_leaf_member(&base_name))
+            ctx.is_decimal_name(&base_name)
+                || (!is_qualified_c_name(&base_name)
+                    && ctx.is_decimal_name(extract_leaf_member(&base_name)))
         }
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
             let base_name = data_name_to_c_name(name);
-            ctx.is_decimal_name(&base_name) || ctx.is_decimal_name(extract_leaf_member(&base_name))
+            ctx.is_decimal_name(&base_name)
+                || (!is_qualified_c_name(&base_name)
+                    && ctx.is_decimal_name(extract_leaf_member(&base_name)))
         }
         HirExpr::UnaryOp { operand, .. } => aggregate_arg_requires_double(operand, ctx),
         HirExpr::BinaryOp { left, right, .. } => {
@@ -1358,21 +1362,62 @@ pub(crate) fn emit_store_int_op(
 pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
         HirExpr::DataRef(data_ref) => {
-            let c_name = data_name_to_c_name(&data_ref.name);
-            grp_display_size(&c_name, data_items).is_none()
-                && !with_active_context(|ctx| ctx.has_display_numeric(&c_name))
-                && find_data_item_by_name(&data_ref.name, data_items)
-                    .is_some_and(|i| needs_decimal(&i.data_type))
+            if data_ref.refmod.is_some() || expr_name_is_display_numeric(&data_ref.name) {
+                return false;
+            }
+            if expr_name_needs_decimal(&data_ref.name, data_items) {
+                return true;
+            }
+            false
         }
         HirExpr::Variable(name) | HirExpr::Subscript { variable: name, .. } => {
-            let c_name = data_name_to_c_name(name);
-            grp_display_size(&c_name, data_items).is_none()
-                && !with_active_context(|ctx| ctx.has_display_numeric(&c_name))
-                && find_data_item_by_name(name, data_items)
-                    .is_some_and(|i| needs_decimal(&i.data_type))
+            if expr_name_is_display_numeric(name) {
+                return false;
+            }
+            if expr_name_needs_decimal(name, data_items) {
+                return true;
+            }
+            false
         }
         _ => false,
     }
+}
+
+fn expr_name_is_display_numeric(name: &HirDataName) -> bool {
+    let c_name = data_name_to_c_name(name);
+    with_active_context(|ctx| {
+        ctx.has_display_numeric(&c_name)
+            || (!is_qualified_c_name(&c_name)
+                && ctx.has_display_numeric(extract_leaf_member(&c_name)))
+    })
+}
+
+fn expr_name_needs_decimal(name: &HirDataName, data_items: &[HirDataItem]) -> bool {
+    let c_name = data_name_to_c_name(name);
+    find_data_item_for_expr_name(name, data_items).is_some_and(|i| needs_decimal(&i.data_type))
+        || with_active_context(|ctx| {
+            ctx.is_decimal_name(&c_name)
+                || (!is_qualified_c_name(&c_name)
+                    && ctx.is_decimal_name(extract_leaf_member(&c_name)))
+        })
+}
+
+fn find_data_item_for_expr_name<'a>(
+    name: &HirDataName,
+    data_items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    let c_name = data_name_to_c_name(name);
+    let exact = find_data_item_by_name(name, data_items)
+        .or_else(|| find_data_item(&c_name, data_items))
+        .or_else(|| find_data_item_by_c_name(&c_name, data_items));
+    if exact.is_some() || is_qualified_c_name(&c_name) {
+        return exact;
+    }
+    find_original_data_item_by_sanitized_name(extract_leaf_member(&c_name), data_items)
+}
+
+fn is_qualified_c_name(c_name: &str) -> bool {
+    c_name.contains("__") || c_name.contains("._m_") || c_name.contains(".members.")
 }
 
 /// Check whether an expression refers to a group variable (emitted as a C union).
@@ -1432,6 +1477,14 @@ fn decimal_literal_has_fraction(literal: &str) -> bool {
 /// For compound expressions (BinaryOp etc), recursively converts sub-expressions.
 pub(crate) fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> String {
     match expr {
+        HirExpr::DataRef(data_ref) if data_ref.refmod.is_some() => {
+            let (ptr, len) = emit_alphanumeric_operand(expr, data_items);
+            format!("cobol_func_numval({ptr}, {len})")
+        }
+        HirExpr::ReferenceModification { .. } => {
+            let (ptr, len) = emit_alphanumeric_operand(expr, data_items);
+            format!("cobol_func_numval({ptr}, {len})")
+        }
         HirExpr::DataRef(_) | HirExpr::Variable(_) | HirExpr::Subscript { .. } => {
             if is_decimal_expr(expr, data_items) {
                 let c = emit_expr(expr);
@@ -1566,6 +1619,9 @@ fn emit_assign_scaled_int_to_decimal(
 ) {
     out.push_str(&format!(
         "{pad}{{ int64_t _dv = ({scaled_value_expr}); int32_t _ds = ({source_scale_expr}); \
+         if ({c_target}.size == 0 && {c_target}.scale == 0) {{ \
+             {c_target}.scale = _ds; {c_target}.size = 18; {c_target}.is_signed = 1; \
+         }} \
          if ({c_target}.size > {c_target}.scale && {c_target}.size <= 18 && _ds >= 0) {{ \
              int32_t _keep = {c_target}.size - {c_target}.scale + _ds; \
              if (_keep > 0 && _keep <= 18) {{ \
@@ -1594,6 +1650,10 @@ fn emit_assign_decimal_value_to_decimal(
 ) {
     out.push_str(&format!(
         "{pad}{{ int64_t _dv = {c_source}.value; int32_t _dd = {c_target}.scale - {c_source}.scale; \
+         if ({c_target}.size == 0 && {c_target}.scale == 0) {{ \
+             {c_target}.scale = {c_source}.scale; {c_target}.size = {c_source}.size; \
+             {c_target}.is_signed = {c_source}.is_signed; _dd = 0; \
+         }} \
          if ({c_target}.size > {c_target}.scale && {c_target}.size <= 18 && {c_source}.scale >= 0) {{ \
              int32_t _keep = {c_target}.size - {c_target}.scale + {c_source}.scale; \
              if (_keep > 0 && _keep <= 18) {{ \

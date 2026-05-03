@@ -28,6 +28,8 @@ SNAPSHOT_COBOLC=""
 
 mkdir -p "$RESULTS_DIR" "$NIST_WORK_ROOT" "$NIST_TMP_ROOT" "$NIST_TOOLCHAIN_ROOT"
 
+. "$VERIFIERS_DIR/lib.sh"
+
 cleanup_running_job() {
     if [ -n "${CURRENT_RUN_PID:-}" ] && kill -0 "$CURRENT_RUN_PID" 2>/dev/null; then
         kill -TERM -- "-$CURRENT_RUN_PID" 2>/dev/null || true
@@ -172,43 +174,7 @@ inspect_reason_for_program() {
 
 source_reason_for_program() {
     local src="$1"
-    if [ -f "$src" ] && perl -ne '
-        my $normalized = $_;
-        $normalized =~ s/\r?\n$//;
-        $normalized =~ s/^[0-9[:space:]]*//;
-        if ($normalized =~ /^PROGRAM-ID\./) {
-            $program_count++;
-            exit 0 if $program_count > 1;
-            $started = 1;
-        }
-        next unless $started;
-        if ($normalized =~ /^PROCEDURE DIVISION\b.*\bUSING\b/) {
-            exit 10;
-        }
-    ' "$src"; then
-        :
-    elif [ "$?" -eq 10 ]; then
-        printf 'subprogram-only\n'
-    elif [ -f "$src" ] && perl -ne '
-        my $normalized = $_;
-        $normalized =~ s/\r?\n$//;
-        $normalized =~ s/^[0-9[:space:]]*//;
-        if ($normalized =~ /^PROGRAM-ID\./) {
-            $program_count++;
-            exit 0 if $program_count > 1;
-            $started = 1;
-        }
-        next unless $started;
-        if (/DUMMY PROCEDURE|DUMMY PARAGRAPH/) {
-            exit 11;
-        }
-    ' "$src"; then
-        :
-    elif [ "$?" -eq 11 ]; then
-        printf 'dummy-display\n'
-    else
-        printf '%s\n' ""
-    fi
+    verifier_primary_program_source_reason "$src"
 }
 
 program_timeout_seconds() {
@@ -307,96 +273,27 @@ compute_preprocess_signature() {
 ccvs_summary_count() {
     local file="$1"
     local pattern="$2"
-    local value
-    value=$(
-        perl -ne '
-            our $pat;
-            BEGIN { $pat = shift @ARGV; }
-            if (/$pat/) {
-                my @fields = split " ", $_;
-                if (@fields) {
-                    print(($fields[0] eq "NO" ? 0 : $fields[0]) . "\n");
-                }
-            }
-        ' "$pattern" "$file" | tail -n 1
-    )
-    if [ -n "$value" ]; then
-        printf '%s\n' "$value"
-    else
-        printf '0\n'
-    fi
+    verifier_count_summary "$file" "$pattern"
 }
 
 ccvs_footer_error_count() {
     local file="$1"
-    local value
-    value=$(
-        perl -ne '
-            next unless /ERRORS ENCOUNTERED/;
-            my @fields = split " ", $_;
-            for my $field (@fields) {
-                if ($field eq "NO") {
-                    print "0\n";
-                    exit;
-                }
-                if ($field =~ /^[0-9]+$/) {
-                    print "$field\n";
-                    exit;
-                }
-            }
-            print "1\n";
-            exit;
-        ' "$file" 2>/dev/null | tail -n 1
-    )
-    if [ -n "$value" ]; then
-        printf '%s\n' "$value"
-    else
-        printf '%s\n' ""
-    fi
+    verifier_footer_errors "$file"
 }
 
 file_has_non_whitespace() {
     local file="$1"
-    [ -s "$file" ] || return 1
-    grep -q '[^[:space:]]' "$file" 2>/dev/null
+    verifier_has_non_whitespace "$file"
 }
 
 expected_flag_count() {
     local src="$1"
-    local value
-    value=$(
-        perl -ne '
-            next unless /TOTAL NUMBER OF FLAGS EXPECTED\s*=/;
-            my @fields = split " ", $_;
-            for my $field (@fields) {
-                if ($field =~ /^[0-9]+\.?$/) {
-                    $field =~ s/\.//g;
-                    print "$field\n";
-                    exit;
-                }
-            }
-        ' "$src" 2>/dev/null | tail -n 1
-    )
-    if [ -n "$value" ]; then
-        printf '%s\n' "$value"
-    else
-        printf '0\n'
-    fi
+    verifier_expected_flags "$src"
 }
 
 compile_warning_count() {
     local file="$1"
-    if [ ! -f "$file" ]; then
-        printf '0\n'
-        return
-    fi
-    local count
-    count="$(grep -c 'COB[C]-W' "$file" 2>/dev/null || true)"
-    if [ -n "$count" ]; then
-        printf '%s\n' "$count"
-    else
-        printf '0\n'
-    fi
+    verifier_compile_warnings "$file"
 }
 
 run_common_judge() {
@@ -429,59 +326,7 @@ judge_ccvs_result() {
     local src="$1"
     local result_file="$2"
     local compile_log="$3"
-    local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors
-    local inspect_reason expected_flags warning_count
-
-    pass=$(grep -ca " PASS " "$result_file" 2>/dev/null) || pass=0
-    fail=$(grep -ca "FAIL\*" "$result_file" 2>/dev/null) || fail=0
-    ccvs_pass=$(ccvs_summary_count "$result_file" 'TESTS WERE EXECUTED SUCCESSFULLY')
-    ccvs_failed=$(ccvs_summary_count "$result_file" 'TEST\(S\) FAILED')
-    ccvs_inspect=$(ccvs_summary_count "$result_file" 'TEST\(S\) REQUIRE INSPECTION')
-    footer_errors="$(ccvs_footer_error_count "$result_file")"
-
-    if [ "$ccvs_failed" -gt 0 ] || [ "$fail" -gt 0 ]; then
-        printf 'FAIL|%s passed, %s failed\n' "$ccvs_pass" "$ccvs_failed"
-    elif [ -n "$footer_errors" ] && [ "$footer_errors" -gt 0 ]; then
-        printf 'FAIL|%s error(s) reported in footer\n' "$footer_errors"
-    elif [ -n "$footer_errors" ] && [ "$footer_errors" -eq 0 ]; then
-        printf 'PASS|0 errors reported in footer\n'
-    elif [ "$ccvs_inspect" -gt 0 ]; then
-        printf 'PASS|%s test(s) require inspection\n' "$ccvs_inspect"
-    elif [ "$ccvs_pass" -gt 0 ]; then
-        printf 'PASS|%s passed\n' "$ccvs_pass"
-    elif [ "$pass" -gt 0 ] && [ "$fail" -eq 0 ]; then
-        printf 'PASS|%s passed\n' "$pass"
-    else
-        expected_flags="$(expected_flag_count "$src")"
-        warning_count="$(compile_warning_count "$compile_log")"
-        if [ "$expected_flags" -gt 0 ]; then
-            if [ "$warning_count" -eq "$expected_flags" ]; then
-                printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
-            else
-                printf 'FAIL|expected %s warning flag(s), got %s\n' "$expected_flags" "$warning_count"
-            fi
-            return
-        fi
-
-        inspect_reason="$(inspect_reason_for_program "$src" "$result_file")"
-        case "$inspect_reason" in
-            no-output|subprogram-only)
-                printf 'PASS|completed without report output\n'
-                ;;
-            dummy-display)
-                expected_flags="$(expected_flag_count "$src")"
-                warning_count="$(compile_warning_count "$compile_log")"
-                if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
-                    printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
-                else
-                    printf 'FAIL|expected %s warning flag(s), got %s\n' "$expected_flags" "$warning_count"
-                fi
-                ;;
-            *)
-                printf 'FAIL|no decisive CCVS summary (%s)\n' "$inspect_reason"
-                ;;
-        esac
-    fi
+    verifier_standard_ccvs "$src" "$result_file" "$compile_log"
 }
 
 print_status_group() {
@@ -959,6 +804,8 @@ execute_program_binary() {
     local comm_script="$5"
     local runtime_timeout="$6"
     local trace_log="${7:-}"
+    local program
+    program="$(basename "$program_tmpdir")"
 
     local exit_code=0
     (
@@ -983,6 +830,17 @@ execute_program_binary() {
         else
             unset COBOL_TEST_FAST_TIME_SCALE || true
         fi
+        case "$module/$program" in
+            DB/DB102A)
+                export COBOL_DEBUGGING_MODE=OFF
+                ;;
+            DB/DB101A)
+                export COBOL_DEBUGGING_MODE=ON
+                ;;
+            *)
+                unset COBOL_DEBUGGING_MODE || true
+                ;;
+        esac
         if command -v setsid >/dev/null 2>&1; then
             exec setsid timeout -k 5s "$runtime_timeout" perl -e '
                 chdir $ARGV[0] or die "chdir failed: $!";

@@ -55,6 +55,18 @@ fn parse_and_lower(source: &str) -> cobol_hir::HirProgram {
     lower_to_hir(&program)
 }
 
+fn parse_and_lower_fixed(source: &str) -> cobol_hir::HirProgram {
+    let mut lexer = Lexer::new(source, FileId(0), SourceFormat::Fixed);
+    let tokens = lexer.lex_all();
+    let mut parser = Parser::new(tokens, FileId(0));
+    let program = merge_compilation_unit_programs(
+        parser
+            .parse_compilation_unit()
+            .expect("parsing should succeed"),
+    );
+    lower_to_hir(&program)
+}
+
 /// Helper: run the full pipeline up to C code generation.
 fn compile_to_c(source: &str) -> String {
     let hir = compile_to_hir(source);
@@ -1060,6 +1072,10 @@ fn compile_and_run(source: &str) -> (String, String, i32) {
 /// Helper: compile COBOL source without sema (for programs that may
 /// use features sema doesn't fully support yet).
 fn compile_and_run_no_sema(source: &str) -> (String, String, i32) {
+    compile_and_run_no_sema_with_env(source, &[])
+}
+
+fn compile_and_run_no_sema_with_env(source: &str, envs: &[(&str, &str)]) -> (String, String, i32) {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
     let c_path = tmp.path().join("test.c");
     let exe_path = temp_exe_path(tmp.path(), "test_exe");
@@ -1074,9 +1090,11 @@ fn compile_and_run_no_sema(source: &str) -> (String, String, i32) {
     cobol_codegen::compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
         .expect("C compilation should succeed");
 
-    let output = Command::new(&exe_path)
-        .output()
-        .expect("execute compiled binary");
+    let mut command = Command::new(&exe_path);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().expect("execute compiled binary");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -5253,6 +5271,9 @@ fn test_use_for_debugging_is_lowered_into_hir_declaratives() {
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. DEBUG-DECL.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
 PROCEDURE DIVISION.
 DECLARATIVES.
 GO-TO SECTION.
@@ -5292,6 +5313,9 @@ fn test_debug_declaratives_codegen_uses_debug_suppression_helper() {
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. DEBUG-DECL.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
 PROCEDURE DIVISION.
 DECLARATIVES.
 DBG-SECTION SECTION.
@@ -5320,6 +5344,9 @@ fn test_native_use_for_debugging_start_program_sets_debug_registers() {
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TEST-DEBUG-START.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
 PROCEDURE DIVISION.
 DECLARATIVES.
 DBG-SECTION SECTION.
@@ -5350,6 +5377,9 @@ fn test_native_use_for_debugging_perform_sets_debug_context() {
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TEST-DEBUG-PERFORM.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
 PROCEDURE DIVISION.
 DECLARATIVES.
 DBG-SECTION SECTION.
@@ -5383,6 +5413,9 @@ fn test_native_use_for_debugging_go_to_sets_debug_context() {
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TEST-DEBUG-GOTO.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
 PROCEDURE DIVISION.
 DECLARATIVES.
 DBG-SECTION SECTION.
@@ -5423,6 +5456,9 @@ fn test_native_use_for_debugging_fallthrough_sets_debug_context() {
     let src = "\
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TEST-DEBUG-FALLTHROUGH.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
 PROCEDURE DIVISION.
 DECLARATIVES.
 DBG-SECTION SECTION.
@@ -5482,6 +5518,48 @@ ALTERED-TARGET.
 }
 
 #[test]
+fn test_native_alter_multiple_pairs_redirect_each_go_to_target() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-ALTER-MULTI.
+PROCEDURE DIVISION.
+    GO TO ALTER-INIT.
+ALTER-A.
+    GO TO ORIG-A.
+ALTER-B.
+    GO TO ORIG-B.
+ORIG-A.
+    DISPLAY \"ORIG-A\".
+    STOP RUN.
+ORIG-B.
+    DISPLAY \"ORIG-B\".
+    STOP RUN.
+ALTER-INIT.
+    ALTER ALTER-A TO PROCEED TO TARGET-A
+          ALTER-B TO PROCEED TO TARGET-B.
+    GO TO ALTER-A.
+TARGET-A.
+    DISPLAY \"TARGET-A\".
+    GO TO ALTER-B.
+TARGET-B.
+    DISPLAY \"TARGET-B\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "TARGET-A")
+            && stdout.lines().any(|line| line.trim() == "TARGET-B"),
+        "stdout should include both altered targets, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.lines().any(|line| line.trim() == "ORIG-A")
+            && !stdout.lines().any(|line| line.trim() == "ORIG-B"),
+        "stdout should not include original targets, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn test_native_use_for_debugging_alter_sets_debug_context() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -5526,6 +5604,165 @@ ALTERED-TARGET.
     assert!(
         lines.iter().any(|line| line.trim() == "ALTERED-TARGET"),
         "stdout should include DEBUG-CONTENTS for ALTER, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_use_for_debugging_section_start_keeps_start_program_contents() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-START.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 DBG-CONTENTS PIC X(20).
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SEC SECTION.
+    USE FOR DEBUGGING ON MAIN-SEC.
+DBG-PARA.
+    MOVE DEBUG-CONTENTS TO DBG-CONTENTS.
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    DISPLAY DBG-CONTENTS.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "START PROGRAM"),
+        "section entry debug contents should preserve START PROGRAM, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.lines().any(|line| line.trim() == "FALL THROUGH"),
+        "section entry should not overwrite START PROGRAM with FALL THROUGH, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_use_for_debugging_ignored_without_source_debugging_mode() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-OFF.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 RESULT PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SEC SECTION.
+    USE FOR DEBUGGING ON MAIN-SEC.
+DBG-PARA.
+    MOVE 7 TO RESULT.
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    DISPLAY RESULT.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    assert!(
+        hir.declaratives.is_empty(),
+        "debugging declaratives require SOURCE-COMPUTER WITH DEBUGGING MODE"
+    );
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "0"),
+        "debug declarative should not run without compile-time debugging mode, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_use_for_debugging_respects_object_time_switch_off() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-RUNTIME-OFF.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 RESULT PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SEC SECTION.
+    USE FOR DEBUGGING ON MAIN-SEC.
+DBG-PARA.
+    MOVE 7 TO RESULT.
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    DISPLAY RESULT.
+    STOP RUN.
+";
+    let (stdout, stderr, code) =
+        compile_and_run_no_sema_with_env(src, &[("COBOL_DEBUGGING_MODE", "OFF")]);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "0"),
+        "debug declarative should not run when object-time switch is OFF, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_use_for_debugging_all_procedures_does_not_reenter_declarative() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-ALL.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 COUNT-VALUE PIC 99 VALUE 0.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SEC SECTION.
+    USE FOR DEBUGGING ON ALL PROCEDURES.
+DBG-PARA.
+    ADD 1 TO COUNT-VALUE.
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    DISPLAY COUNT-VALUE.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "2"),
+        "ALL PROCEDURES should dispatch for section and paragraph without reentering itself, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_fixed_debug_lines_are_comments_without_source_debugging_mode() {
+    let src = "\
+000100 IDENTIFICATION DIVISION.
+000200 PROGRAM-ID. DBG-LINE-OFF.
+000300 ENVIRONMENT DIVISION.
+000400 CONFIGURATION SECTION.
+000500 SOURCE-COMPUTER. TEST.
+000600 PROCEDURE DIVISION.
+000700D    DISPLAY \"FAIL\".
+000800     DISPLAY \"OK\".
+000900     STOP RUN.
+";
+    let hir = parse_and_lower_fixed(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        !c_code.contains("FAIL"),
+        "fixed-format D lines are comments without SOURCE-COMPUTER WITH DEBUGGING MODE:\n{c_code}"
+    );
+    assert!(
+        c_code.contains("OK"),
+        "non-debug line should remain in generated code:\n{c_code}"
     );
 }
 

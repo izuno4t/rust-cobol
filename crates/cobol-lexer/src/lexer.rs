@@ -70,7 +70,8 @@ impl Lexer {
 
         // Build flattened content and offset map from non-comment, non-blank lines.
         // Continuation lines (indicator '-') are merged with the preceding line.
-        let segments = Self::build_segments(reader.lines());
+        let include_debug_lines = source_has_debugging_mode(reader.lines());
+        let segments = Self::build_segments(reader.lines(), include_debug_lines);
 
         let mut content = String::new();
         let mut offset_map: Vec<u32> = Vec::new();
@@ -232,10 +233,15 @@ impl Lexer {
     /// continuation line are removed so that the string content is seamlessly
     /// joined. For non-string continuations, the continuation line's content
     /// is appended after trimming trailing whitespace from the previous line.
-    fn build_segments(lines: &[crate::source_reader::SourceLine]) -> Vec<ContentSegment> {
+    fn build_segments(
+        lines: &[crate::source_reader::SourceLine],
+        include_debug_lines: bool,
+    ) -> Vec<ContentSegment> {
         let filtered: Vec<_> = lines
             .iter()
-            .filter(|line| !line.is_comment() && !line.is_blank())
+            .filter(|line| {
+                !line.is_comment() && !line.is_blank() && (include_debug_lines || !line.is_debug())
+            })
             .collect();
 
         let mut segments: Vec<ContentSegment> = Vec::new();
@@ -849,6 +855,32 @@ impl Lexer {
             _ => None,
         }
     }
+}
+
+fn source_has_debugging_mode(lines: &[crate::source_reader::SourceLine]) -> bool {
+    let configuration_text = lines
+        .iter()
+        .filter(|line| !line.is_comment())
+        .map(|line| line.content_text().to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let Some(source_start) = configuration_text.find("SOURCE-COMPUTER") else {
+        return false;
+    };
+    let source_tail = &configuration_text[source_start..];
+    let source_end = [
+        "OBJECT-COMPUTER",
+        "SPECIAL-NAMES",
+        "INPUT-OUTPUT",
+        "DATA DIVISION",
+        "PROCEDURE DIVISION",
+    ]
+    .iter()
+    .filter_map(|marker| source_tail.find(marker))
+    .filter(|idx| *idx > 0)
+    .min()
+    .unwrap_or(source_tail.len());
+    source_tail[..source_end].contains("WITH DEBUGGING MODE")
 }
 
 #[cfg(test)]

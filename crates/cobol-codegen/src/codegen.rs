@@ -64,11 +64,6 @@ fn compute_group_fingerprint(members: &[HirDataItem]) -> u32 {
     (hasher.finish() & 0xFFFF_FFFF) as u32
 }
 
-/// Generate the typedef name for a group struct, unique per member layout.
-fn group_typedef_name(c_name: &str, members: &[HirDataItem]) -> String {
-    group_typedef_name_for_layout(c_name, members, false)
-}
-
 fn group_typedef_name_for_layout(
     c_name: &str,
     members: &[HirDataItem],
@@ -136,7 +131,9 @@ fn emit_using_param_bindings(out: &mut String, program: &HirProgram) {
                 ));
             }
             HirType::Group { members, .. } => {
-                let td = group_typedef_name(&c_name, members);
+                let raw_display_layout = find_data_item(&c_name, &program.data_items)
+                    .is_some_and(|item| group_needs_raw_display_layout(item, &program.data_items));
+                let td = group_typedef_name_for_layout(&c_name, members, raw_display_layout);
                 let binding_ty = format!("_link_{c_name}_t");
                 out.push_str(&format!(
                     "typedef union {{ {td} members; uint8_t _bytes[sizeof({td})]; }} {binding_ty};\n"
@@ -849,7 +846,10 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
     out.push_str("    _debug_copy_text_field(_debug_event_line, sizeof(_debug_event_line), line ? line : \"\");\n");
     out.push_str("}\n");
     out.push_str("static void _dispatch_debug_declarative(const char* paragraph_name) {\n");
+    out.push_str("    if (_suppress_debug_event) return;\n");
     out.push_str("    if (!paragraph_name || paragraph_name[0] == '\\0') return;\n");
+    out.push_str("    const char* _debug_switch = getenv(\"COBOL_DEBUGGING_MODE\");\n");
+    out.push_str("    if (_debug_switch && (strcmp(_debug_switch, \"0\") == 0 || strcmp(_debug_switch, \"OFF\") == 0 || strcmp(_debug_switch, \"off\") == 0 || strcmp(_debug_switch, \"false\") == 0 || strcmp(_debug_switch, \"FALSE\") == 0)) { _debug_event_explicit = 0; return; }\n");
     for decl in &program.declaratives {
         if decl.use_kind != HirDeclarativeUse::ForDebugging {
             continue;
@@ -1168,14 +1168,6 @@ fn emit_program_paragraph_definitions(
                 ctx.set_label_map(merged_label_map.clone());
 
                 out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
-                out.push_str(&format!(
-                    "    _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\");\n",
-                    escape_c_string(&section_paras[0].name)
-                ));
-                out.push_str(&format!(
-                    "    _dispatch_debug_declarative(\"{}\");\n",
-                    escape_c_string(&section_paras[0].name)
-                ));
                 out.push_str(&format!(
                     "    cobol_trace_paragraph(\"{}\", \"{}\");\n",
                     sanitize_name(&program.name),

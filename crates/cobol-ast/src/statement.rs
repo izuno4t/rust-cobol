@@ -1048,7 +1048,6 @@ pub struct TerminateStatement {
 /// `ALTER proc-name-1 TO [PROCEED TO] proc-name-2`
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlterStatement {
-    pub from: SmolStr,
-    pub to: SmolStr,
+    pub pairs: Vec<(SmolStr, SmolStr)>,
     pub span: Span,
 }

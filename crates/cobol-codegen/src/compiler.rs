@@ -376,6 +376,15 @@ PROCEDURE DIVISION.
             c_code[..incr_pos].contains("break;"),
             "TEST AFTER inner condition must be checked before increment: {c_code}"
         );
+        let after_increment = &c_code[incr_pos..];
+        assert!(
+            after_increment.contains("cobol_store_numeric_display((2)")
+                || after_increment.contains("cobol_store_numeric_display(2")
+                || after_increment.contains("J = (2)")
+                || after_increment.contains("J = 2")
+                || (after_increment.contains("J = llabs") && after_increment.contains("% 100")),
+            "AFTER varying variable must be reset to FROM value after inner loop exits: {c_code}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -523,27 +532,15 @@ PROCEDURE DIVISION.
                     span: Span::dummy(),
                 }],
                 factory_data: Vec::new(),
-                instance_data: vec![HirDataItem {
-                    name: "MY-FIELD".into(),
-                    data_type: HirType::Numeric {
+                instance_data: vec![HirDataItem::new(
+                    "MY-FIELD",
+                    HirType::Numeric {
                         size: 5,
                         decimal_places: 0,
                         is_signed: false,
                     },
-                    picture: None,
-                    is_numeric_edited: false,
-                    blank_when_zero: false,
-                    scale_adjustment: 0,
-                    is_external: false,
-                    initial_value: None,
-                    occurs: None,
-                    indexed_by: Vec::new(),
-                    redefines: None,
-                    renames: None,
-                    screen_info: None,
-                    justified: false,
-                    span: Span::dummy(),
-                }],
+                    Span::dummy(),
+                )],
                 span: Span::dummy(),
             }],
             functions: Vec::new(),
@@ -770,23 +767,11 @@ PROCEDURE DIVISION.
 
         let hir = HirProgram {
             name: "TEST-VALIDATE".into(),
-            data_items: vec![HirDataItem {
-                name: "WS-NAME".into(),
-                data_type: HirType::Alphanumeric { size: 20 },
-                picture: None,
-                is_numeric_edited: false,
-                blank_when_zero: false,
-                scale_adjustment: 0,
-                is_external: false,
-                initial_value: None,
-                occurs: None,
-                indexed_by: Vec::new(),
-                redefines: None,
-                renames: None,
-                screen_info: None,
-                justified: false,
-                span: Span::dummy(),
-            }],
+            data_items: vec![HirDataItem::new(
+                "WS-NAME",
+                HirType::Alphanumeric { size: 20 },
+                Span::dummy(),
+            )],
             communication_descriptions: Vec::new(),
             paragraphs: Vec::new(),
             body: vec![HirStatement::Validate {
@@ -1011,6 +996,63 @@ PROCEDURE DIVISION.
                 && c_code.contains("SRC_KEY")
                 && c_code.contains("DST_KEY"),
             "DISPLAY numeric to alphanumeric MOVE should copy source bytes: {c_code}"
+        );
+    }
+
+    #[test]
+    fn test_qualified_numeric_name_not_classified_by_decimal_leaf_duplicate() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-QUAL-DECIMAL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  CORR-DATA-5.
+    05 XYZ-1 PIC 9(2).
+01  CORR-DATA-7.
+    05 XYZ-1 PIC 9V9.
+PROCEDURE DIVISION.
+    IF XYZ-1 OF CORR-DATA-5 = 1
+        DISPLAY 'OK'
+    END-IF.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("CORR_DATA_5__XYZ_1")
+                && c_code.contains("== ((int64_t)1)")
+                && !c_code.contains("cobol_decimal_cmp(&CORR_DATA_5__XYZ_1"),
+            "integer qualified item should not be compared through CobolDecimal: {c_code}"
+        );
+        assert!(
+            !c_code.contains("CobolDecimal _cmp_l = CORR_DATA_5__XYZ_1"),
+            "integer qualified item inherited decimal classification from duplicate leaf: {c_code}"
+        );
+    }
+
+    #[test]
+    fn test_numeric_occurs_function_argument_uses_value_not_numval_pointer() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-NUM-OCCURS-FUNC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  IDX PIC 9 VALUE 1.
+01  ARR.
+    05 IND PIC 9 OCCURS 2 VALUE 1.
+01  OUT PIC S9V9(6).
+PROCEDURE DIVISION.
+    COMPUTE OUT = FUNCTION ACOS(IND(IDX) - 1).
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            !c_code.contains("cobol_func_numval((const uint8_t*)ARR.members._m_IND"),
+            "numeric OCCURS element must not be treated as a byte pointer: {c_code}"
+        );
+        assert!(
+            c_code.contains("(double)ARR.members._m_IND[(IDX) - 1]")
+                || c_code.contains("(double)(ARR.members._m_IND[(IDX) - 1])"),
+            "numeric OCCURS element should be passed as a numeric value: {c_code}"
         );
     }
 

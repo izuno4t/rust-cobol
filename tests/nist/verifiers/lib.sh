@@ -339,14 +339,17 @@ verifier_standard_ccvs() {
                 if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
                     printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
                 else
-                    printf 'FAIL|blank-or-empty-report\n'
+                    printf 'FAIL|empty-report|source=dummy-display|expected-flags=%s|warning-flags=%s\n' "$expected_flags" "$warning_count"
                 fi
                 ;;
             *)
                 if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
                     printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
                 else
-                    printf 'FAIL|blank-or-empty-report\n'
+                    if [ -z "$source_reason" ]; then
+                        source_reason="primary-program"
+                    fi
+                    printf 'FAIL|empty-report|source=%s|expected-flags=%s|warning-flags=%s\n' "$source_reason" "$expected_flags" "$warning_count"
                 fi
                 ;;
         esac
@@ -451,7 +454,7 @@ verifier_standard_ccvs() {
         return 0
     fi
 
-    printf 'FAIL|no-decisive-ccvs-summary\n'
+    printf 'FAIL|undecidable-ccvs-output|nonempty-report-without-summary\n'
 }
 
 verifier_subprogram_standalone() {

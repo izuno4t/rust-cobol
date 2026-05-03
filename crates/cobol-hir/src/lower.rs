@@ -84,6 +84,15 @@ type OpenMetadataMap = HashMap<SmolStr, OpenMetadata>;
 type ReadMetadata = (u32, u32, Option<SmolStr>, Option<SmolStr>);
 type ReadMetadataMap = HashMap<SmolStr, ReadMetadata>;
 
+fn source_computer_has_debugging_mode(program: &CobolProgram) -> bool {
+    program
+        .environment
+        .as_ref()
+        .and_then(|env| env.configuration.as_ref())
+        .and_then(|config| config.source_computer.as_ref())
+        .is_some_and(|source| source.to_ascii_uppercase().contains("WITH DEBUGGING MODE"))
+}
+
 /// Lowers a COBOL AST program into the HIR.
 pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let name = program.identification.program_id.clone();
@@ -106,27 +115,15 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     if let Some(data) = &program.data {
         let has_linage = data.file_section.iter().any(|fd| fd.linage.is_some());
         if has_linage {
-            data_items.push(HirDataItem {
-                name: SmolStr::new("LINAGE-COUNTER"),
-                data_type: HirType::Numeric {
+            data_items.push(HirDataItem::new(
+                "LINAGE-COUNTER",
+                HirType::Numeric {
                     size: 6,
                     decimal_places: 0,
                     is_signed: false,
                 },
-                picture: None,
-                is_numeric_edited: false,
-                blank_when_zero: false,
-                scale_adjustment: 0,
-                is_external: false,
-                initial_value: None,
-                redefines: None,
-                renames: None,
-                occurs: None,
-                indexed_by: Vec::new(),
-                screen_info: None,
-                justified: false,
-                span: program.span,
-            });
+                program.span,
+            ));
         }
     }
 
@@ -136,61 +133,45 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         if let Some(ref config) = env.configuration {
             for entry in &config.special_names {
                 if let Some(user_name) = &entry.user_name {
-                    data_items.push(HirDataItem {
-                        name: user_name.clone(),
-                        data_type: HirType::Numeric {
-                            size: 1,
-                            decimal_places: 0,
-                            is_signed: false,
-                        },
-                        picture: None,
-                        is_numeric_edited: false,
-                        blank_when_zero: false,
-                        scale_adjustment: 0,
-                        is_external: false,
-                        initial_value: Some(HirLiteral::Integer(0)),
-                        redefines: None,
-                        renames: None,
-                        occurs: None,
-                        indexed_by: Vec::new(),
-                        screen_info: None,
-                        justified: false,
-                        span: entry.span,
-                    });
+                    data_items.push(
+                        HirDataItem::new(
+                            user_name.clone(),
+                            HirType::Numeric {
+                                size: 1,
+                                decimal_places: 0,
+                                is_signed: false,
+                            },
+                            entry.span,
+                        )
+                        .with_initial_value(HirLiteral::Integer(0)),
+                    );
                 }
                 for cond_name in entry.on_condition.iter().chain(entry.off_condition.iter()) {
-                    data_items.push(HirDataItem {
-                        name: cond_name.clone(),
-                        data_type: HirType::Numeric {
-                            size: 1,
-                            decimal_places: 0,
-                            is_signed: false,
-                        },
-                        picture: None,
-                        is_numeric_edited: false,
-                        blank_when_zero: false,
-                        scale_adjustment: 0,
-                        is_external: false,
-                        initial_value: Some(HirLiteral::Integer(0)),
-                        redefines: None,
-                        renames: None,
-                        occurs: None,
-                        indexed_by: Vec::new(),
-                        screen_info: None,
-                        justified: false,
-                        span: entry.span,
-                    });
+                    data_items.push(
+                        HirDataItem::new(
+                            cond_name.clone(),
+                            HirType::Numeric {
+                                size: 1,
+                                decimal_places: 0,
+                                is_signed: false,
+                            },
+                            entry.span,
+                        )
+                        .with_initial_value(HirLiteral::Integer(0)),
+                    );
                 }
             }
         }
     }
+
+    let debugging_mode_enabled = source_computer_has_debugging_mode(program);
 
     if let Some(proc) = &program.procedure {
         let has_debugging_use = proc
             .declaratives
             .iter()
             .any(|decl| matches!(decl.use_statement, UseStatement::ForDebugging { .. }));
-        if has_debugging_use {
+        if debugging_mode_enabled && has_debugging_use {
             for name in [
                 "DEBUG-LINE",
                 "DEBUG-NAME",
@@ -199,23 +180,11 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                 "DEBUG-SUB-2",
                 "DEBUG-SUB-3",
             ] {
-                data_items.push(HirDataItem {
-                    name: SmolStr::new(name),
-                    data_type: HirType::Alphanumeric { size: 80 },
-                    picture: None,
-                    is_numeric_edited: false,
-                    blank_when_zero: false,
-                    scale_adjustment: 0,
-                    is_external: false,
-                    initial_value: None,
-                    redefines: None,
-                    renames: None,
-                    occurs: None,
-                    indexed_by: Vec::new(),
-                    screen_info: None,
-                    justified: false,
-                    span: program.span,
-                });
+                data_items.push(HirDataItem::new(
+                    name,
+                    HirType::Alphanumeric { size: 80 },
+                    program.span,
+                ));
             }
         }
     }
@@ -247,7 +216,12 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Also collect individual paragraphs defined inside declarative sections
     // so they get proper forward declarations and function definitions in codegen.
     let (declaratives, decl_paragraphs) = with_resolved_data_catalog(data_catalog, || {
-        lower_declaratives(program, &condition_names, next_paragraph_id)
+        lower_declaratives(
+            program,
+            &condition_names,
+            next_paragraph_id,
+            debugging_mode_enabled,
+        )
     });
     // Only add declarative paragraphs that don't already exist in the main
     // paragraph list (some COBOL programs reuse paragraph names across
@@ -694,48 +668,19 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
     }
     // Implicit Report Writer special registers
     if !data.report.is_empty() {
-        items.push(HirDataItem {
-            name: SmolStr::new("LINE-COUNTER"),
-            data_type: HirType::Numeric {
-                size: 6,
-                decimal_places: 0,
-                is_signed: false,
-            },
-            picture: None,
-            is_numeric_edited: false,
-            blank_when_zero: false,
-            scale_adjustment: 0,
-            is_external: false,
-            initial_value: Some(HirLiteral::Integer(0)),
-            occurs: None,
-            indexed_by: Vec::new(),
-            redefines: None,
-            renames: None,
-            screen_info: None,
-            justified: false,
-            span: Span::dummy(),
-        });
-        items.push(HirDataItem {
-            name: SmolStr::new("PAGE-COUNTER"),
-            data_type: HirType::Numeric {
-                size: 6,
-                decimal_places: 0,
-                is_signed: false,
-            },
-            picture: None,
-            is_numeric_edited: false,
-            blank_when_zero: false,
-            scale_adjustment: 0,
-            is_external: false,
-            initial_value: Some(HirLiteral::Integer(0)),
-            occurs: None,
-            indexed_by: Vec::new(),
-            redefines: None,
-            renames: None,
-            screen_info: None,
-            justified: false,
-            span: Span::dummy(),
-        });
+        let counter_type = HirType::Numeric {
+            size: 6,
+            decimal_places: 0,
+            is_signed: false,
+        };
+        items.push(
+            HirDataItem::new("LINE-COUNTER", counter_type.clone(), Span::dummy())
+                .with_initial_value(HirLiteral::Integer(0)),
+        );
+        items.push(
+            HirDataItem::new("PAGE-COUNTER", counter_type, Span::dummy())
+                .with_initial_value(HirLiteral::Integer(0)),
+        );
     }
     items
 }
@@ -793,23 +738,11 @@ fn lower_data_item_with_usage(
     // Emit INDEXED BY names as Index-typed data items.
     if let Some(ref occurs) = item.occurs {
         for idx_name in &occurs.indexed_by {
-            out.push(HirDataItem {
-                name: idx_name.clone(),
-                data_type: HirType::Index,
-                picture: None,
-                is_numeric_edited: false,
-                blank_when_zero: false,
-                scale_adjustment: 0,
-                is_external: false,
-                initial_value: None,
-                occurs: None,
-                indexed_by: Vec::new(),
-                redefines: None,
-                renames: None,
-                screen_info: None,
-                justified: false,
-                span: occurs.span,
-            });
+            out.push(HirDataItem::new(
+                idx_name.clone(),
+                HirType::Index,
+                occurs.span,
+            ));
         }
     }
 
@@ -1476,8 +1409,11 @@ fn lower_statement(
             })
         }
         Statement::Alter(alter) => Some(HirStatement::Alter {
-            from: resolve_transfer_target(&alter.from),
-            to: resolve_transfer_target(&alter.to),
+            pairs: alter
+                .pairs
+                .iter()
+                .map(|(from, to)| (resolve_transfer_target(from), resolve_transfer_target(to)))
+                .collect(),
             span: alter.span,
         }),
         Statement::NextSentence => {
@@ -3368,6 +3304,7 @@ fn lower_declaratives(
     program: &CobolProgram,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
     next_paragraph_id_start: u32,
+    debugging_mode_enabled: bool,
 ) -> (Vec<HirDeclarative>, Vec<HirParagraph>) {
     let Some(proc) = &program.procedure else {
         return (Vec::new(), Vec::new());
@@ -3481,6 +3418,9 @@ fn lower_declaratives(
                     });
                 }
                 UseStatement::ForDebugging { debug_items } => {
+                    if !debugging_mode_enabled {
+                        continue;
+                    }
                     decls.push(HirDeclarative {
                         name: decl.name.clone(),
                         use_kind: HirDeclarativeUse::ForDebugging,

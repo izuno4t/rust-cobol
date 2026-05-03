@@ -84,7 +84,8 @@ pub fn preprocess(
     // This prevents text like "SM2064.2" in columns 73-80 from corrupting
     // copybook names (e.g., "COPY K5SDA" + "SM2064.2" → "K5SDASM2064").
     let source = if config.source_format == SourceFormat::Fixed {
-        strip_fixed_format_columns(source)
+        let source = strip_fixed_format_columns(source);
+        filter_inactive_fixed_debug_lines(&source)
     } else {
         source.to_string()
     };
@@ -446,6 +447,56 @@ fn choose_fixed_split(text: &str, limit: usize) -> Option<usize> {
 
 fn is_valid_fixed_indicator(ch: char) -> bool {
     matches!(ch, ' ' | '*' | '/' | '-' | 'D' | 'd' | '$')
+}
+
+fn filter_inactive_fixed_debug_lines(source: &str) -> String {
+    if fixed_source_has_debugging_mode(source) {
+        return source.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    for line in source.split_inclusive('\n') {
+        let line_no_newline = line.trim_end_matches('\n').trim_end_matches('\r');
+        let indicator = line_no_newline.as_bytes().get(6).copied().map(char::from);
+        if matches!(indicator, Some('D' | 'd')) {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+fn fixed_source_has_debugging_mode(source: &str) -> bool {
+    let configuration_text = source
+        .split('\n')
+        .filter_map(|line| {
+            let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
+            let indicator = line_no_cr.as_bytes().get(6).copied().map(char::from);
+            if matches!(indicator, Some('*' | '/')) {
+                None
+            } else {
+                Some(line_no_cr.get(7..).unwrap_or("").to_ascii_uppercase())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let Some(source_start) = configuration_text.find("SOURCE-COMPUTER") else {
+        return false;
+    };
+    let source_tail = &configuration_text[source_start..];
+    let source_end = [
+        "OBJECT-COMPUTER",
+        "SPECIAL-NAMES",
+        "INPUT-OUTPUT",
+        "DATA DIVISION",
+        "PROCEDURE DIVISION",
+    ]
+    .iter()
+    .filter_map(|marker| source_tail.find(marker))
+    .filter(|idx| *idx > 0)
+    .min()
+    .unwrap_or(source_tail.len());
+    source_tail[..source_end].contains("WITH DEBUGGING MODE")
 }
 
 fn ends_inside_string_with_quote(text: &str, quote: u8) -> bool {

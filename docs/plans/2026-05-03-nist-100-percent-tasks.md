@@ -34,18 +34,18 @@
 | TASK-009 | ✅ | REPORT/SORT/SEGMENT仕様差分を分離する | TASK-002,TASK-005 |
 | TASK-010 | ✅ | 100% passまでの実装ロードマップを確定する | TASK-003,TASK-004,TASK-005,TASK-006,TASK-007,TASK-008,TASK-009 |
 | TASK-011 | ✅ | Backlogを実装タスクへ再編する | TASK-010 |
-| IMPL-001 | ⏳ | HIR data item初期化とcodegen構造体契約を修正する | TASK-003 |
-| IMPL-002 | ⏳ | scalar storageとbyte pointerのruntime ABIを分離する | IMPL-001 |
-| IMPL-003 | ⏳ | decimal/display値をhelper ABI単位で修正する | IMPL-001,TASK-006 |
-| IMPL-004 | ⏳ | sort key flatten由来のCErrを修正する | IMPL-001,TASK-009 |
-| IMPL-005 | ⏳ | linkage group layout由来のCErrを修正する | IMPL-001,TASK-006 |
-| IMPL-006 | ⏳ | NIST summary/first-fail parserを共通化する | TASK-002 |
-| IMPL-007 | ⏳ | warning countとcompile log分類を安定化する | IMPL-006,TASK-008 |
-| IMPL-008 | ⏳ | print/report/stdout captureをrunnerへ統合する | IMPL-006,TASK-009 |
-| IMPL-009 | ⏳ | blank reportとsummary不在のreasonを再分類する | IMPL-008 |
-| IMPL-010 | ⏳ | `PERFORM`/`PERFORM THRU`のHIR CFGを再設計する | IMPL-006,TASK-004 |
-| IMPL-011 | ⏳ | `GO TO`/`ALTER`/fallthroughのdispatch契約を実装する | IMPL-010,TASK-008 |
-| IMPL-012 | ⏳ | `USE FOR DEBUGGING`とdeclarative突入を実装する | IMPL-010 |
+| IMPL-001 | ✅ | HIR data item初期化とcodegen構造体契約を修正する | TASK-003 |
+| IMPL-002 | ✅ | scalar storageとbyte pointerのruntime ABIを分離する | IMPL-001 |
+| IMPL-003 | ✅ | decimal/display値をhelper ABI単位で修正する | IMPL-001,TASK-006 |
+| IMPL-004 | ✅ | sort key flatten由来のCErrを修正する | IMPL-001,TASK-009 |
+| IMPL-005 | ✅ | linkage group layout由来のCErrを修正する | IMPL-001,TASK-006 |
+| IMPL-006 | ✅ | NIST summary/first-fail parserを共通化する | TASK-002 |
+| IMPL-007 | ✅ | warning countとcompile log分類を安定化する | IMPL-006,TASK-008 |
+| IMPL-008 | ✅ | print/report/stdout captureをrunnerへ統合する | IMPL-006,TASK-009 |
+| IMPL-009 | ✅ | blank reportとsummary不在のreasonを再分類する | IMPL-008 |
+| IMPL-010 | ✅ | `PERFORM`/`PERFORM THRU`のHIR CFGを再設計する | IMPL-006,TASK-004 |
+| IMPL-011 | ✅ | `GO TO`/`ALTER`/fallthroughのdispatch契約を実装する | IMPL-010,TASK-008 |
+| IMPL-012 | 🚧 | `USE FOR DEBUGGING`とdeclarative突入を実装する | IMPL-010 |
 | IMPL-013 | ⏳ | 例外句とprogram terminationの制御辺を実装する | IMPL-010 |
 | IMPL-014 | ⏳ | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 |
 | IMPL-015 | ⏳ | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 |
@@ -1129,6 +1129,148 @@ TASK-011時点での判断:
   根本原因と観測欠陥が再び混ざるためである。
 - M10のCI必須化は全実装完了後に行う。途中でgateだけ厳しくしても、
   仕様実装の完了条件にはならない。
+
+## 実装タスク詳細
+
+### IMPL-001
+
+- 実施日: 2026-05-03
+- 対象: `crates/cobol-hir/src/hir.rs`, `crates/cobol-hir/src/lower.rs`,
+  `crates/cobol-codegen/src/compiler.rs`, `crates/cobol-codegen/src/data.rs`
+- 変更: 合成HIR用の`HirDataItem::new`と`with_initial_value`を追加し、
+  暗黙レジスタ、INDEXED BY項目、codegenテスト用データを共通初期化契約へ寄せた。
+- 完了条件: `HirDataItem`へ`picture`や`is_numeric_edited`のようなmetadataが追加されても、
+  合成HIRやcodegenテストの初期化漏れでE0063が再発しない。
+- 確認: `cargo check -p cobol-codegen --tests`,
+  `cargo test -p cobol-hir -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-driver --test e2e_test`,
+  `make clean test lint`がPASS。
+- NIST確認: `make nist-compile-errors`は19件のまま。残件はscalar/pointer ABI、
+  decimal/display helper ABI、sort key flatten、linkage group layoutであり、
+  IMPL-002からIMPL-005へ継続する。
+
+### IMPL-005 実施記録
+
+- 対象: `crates/cobol-codegen/src/context.rs`,
+  `crates/cobol-codegen/src/codegen.rs`, `crates/cobol-codegen/src/data.rs`,
+  `crates/cobol-codegen/src/stmt.rs`, `crates/cobol-codegen/src/expr.rs`
+- 変更: raw display layoutを持つlinkage/group memberについて、display numeric
+  metadataのmember名をdedup済みC名へ合わせ、linkage parameterのtypedefをraw layoutへ
+  切り替えた。加えてraw display numeric targetを`CobolDecimal` targetから除外し、
+  参照修飾値を数値表示へ渡す前に`NUMVAL`相当のint互換式へ正規化した。
+- 完了条件: linkage group layout、raw display numeric、reference modification由来の
+  CErrが残らず、CErr集計が0件になる。
+- 確認: `cargo test -p cobol-codegen --all-targets`、`make release`、
+  `make nist-run MODULE=NC PROGRAM=NC125A`,
+  `make nist-run MODULE=NC PROGRAM=NC224A`,
+  `make nist-compile-errors`が完了。`make nist-compile-errors`は`Total: 0`。
+- NIST確認: NC125A/NC224Aは`COMPILE_ERROR`ではなくFAILへ進んだ。残件はedited
+  numericの期待値差分と実行時segfaultであり、後続のIMPL-018からIMPL-021および
+  IMPL-033の分類対象へ送る。
+
+### IMPL-006からIMPL-009 実施記録
+
+- 対象: `tests/nist/run_nist.sh`, `tests/nist/verifiers/lib.sh`
+- 変更: `run_nist.sh`に残っていた古いCCVS summary判定を
+  `verifiers/lib.sh`の`verifier_standard_ccvs`へ委譲し、summary count、
+  footer error、expected warning、compile warning countも同じlib関数へ寄せた。
+  さらに空出力と非CCVS出力を`empty-report|...`、
+  `undecidable-ccvs-output|...`へ再分類し、後続実装タスクへ紐づくreasonを残すようにした。
+- 完了条件: first-fail detail、warning count、空出力、summary不在の分類がrunner内で
+  二重実装にならず、`blank-or-empty-report`と`no-decisive-ccvs-summary`の汎用reasonが
+  残らない。
+- 確認: `bash -n tests/nist/run_nist.sh`,
+  `bash -n tests/nist/verifiers/lib.sh`,
+  `make nist-run MODULE=NC PROGRAM=NC125A`,
+  `make nist-run MODULE=CM PROGRAM=CM201M`,
+  `make nist-run MODULE=NC PROGRAM=NC224A`,
+  `make nist-run`, `make nist-compile-errors`を実行。
+- NIST確認: 全体は`391 total / 114 pass / 277 fail / 0 ready / 0 CErr / 0 RErr`。
+  `blank-or-empty-report`と`no-decisive-ccvs-summary`の完全一致reasonは0件。
+  warning不足は`warning-flags-missing`として残り、診断実装不足としてIMPL-027へ送る。
+
+### IMPL-010 実施記録
+
+- 対象: `crates/cobol-codegen/src/stmt.rs`,
+  `crates/cobol-codegen/src/expr.rs`,
+  `crates/cobol-codegen/src/compiler.rs`
+- 変更: `PERFORM VARYING ... AFTER ...`の内側制御変数をループ終了後に
+  `FROM`値へ戻す処理を追加し、NC201AのPERFORM入れ子期待を満たすようにした。
+  併せて制御フローreproを塞いでいたnumeric OCCURS要素の関数引数変換を修正し、
+  `IND(B)`のような数値配列要素を`NUMVAL`のポインタ引数ではなく数値値として扱うようにした。
+- 完了条件: `PERFORM`/`PERFORM THRU`由来の代表到達不足を解消し、
+  残ったFAILを制御フロー以外の仕様カテゴリへ送る。
+- 確認: `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=NC PROGRAM=NC201A`,
+  `make nist-run MODULE=NC PROGRAM=NC202A`,
+  `make nist-run MODULE=IF PROGRAM=IF101A`,
+  `make nist-compile-errors`を実行。
+- NIST確認: `NC201A`は`PASS (59 passed)`。`IF101A`はsegfaultと
+  `detail-paragraph-mismatch|expected 26 paragraph case(s), got 16`が消え、
+  `25 passed, 1 failed`へ移行した。残りの`F-ACOS-18`は`IND(5) / 9`の
+  数値除算/関数値差分であり、IMPL-022からIMPL-023へ送る。
+  `NC202A`はCErrではなく通常FAILへ移行し、`make nist-compile-errors`は0件。
+
+### IMPL-011 実施記録
+
+- 対象: `crates/cobol-ast/src/statement.rs`,
+  `crates/cobol-parser/src/proc_div.rs`, `crates/cobol-hir/src/hir.rs`,
+  `crates/cobol-hir/src/lower.rs`, `crates/cobol-codegen/src/context.rs`,
+  `crates/cobol-codegen/src/stmt.rs`,
+  `crates/cobol-driver/tests/e2e_test.rs`
+- 変更: `ALTER A TO B C TO D ...` の複数ペアをparserで捨てず、
+  AST/HIR/codegenまで保持して、各alterable paragraphのdispatch stateを更新するようにした。
+  単一ALTER、複数ALTER、debug declarative連携の縮小e2eを確認した。
+- 完了条件: `GO TO`、`GO TO DEPENDING ON`、単一ALTER、複数ALTERが
+  `_goto_target`とalter dispatch stateで一貫して遷移する。
+- 確認: `cargo test -p cobol-driver --test e2e_test test_native_alter_multiple_pairs_redirect_each_go_to_target`,
+  `cargo test -p cobol-driver --test e2e_test test_native_alter_redirects_go_to_target`,
+  `cargo test -p cobol-driver --test e2e_test test_native_use_for_debugging_alter_sets_debug_context`,
+  `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-parser --all-targets`, `make release`,
+  `make nist-run MODULE=NC PROGRAM=NC303M`,
+  `make nist-run MODULE=NC PROGRAM=NC401M`,
+  `make nist-compile-errors`を実行。
+- NIST確認: `NC303M`は`PASS (4 warning flag(s) matched expected count)`。
+  `NC401M`は実行意味論ではなく`warning-flags-missing|expected 40 warning flag(s), got 4`
+  として残り、IMPL-027へ送る。`make nist-compile-errors`は0件。
+
+### IMPL-012 実施記録（進行中）
+
+- 対象: `crates/cobol-lexer/src/lexer.rs`,
+  `crates/cobol-preprocessor/src/lib.rs`,
+  `crates/cobol-hir/src/lower.rs`,
+  `crates/cobol-codegen/src/codegen.rs`,
+  `crates/cobol-driver/tests/e2e_test.rs`,
+  `tests/nist/run_nist.sh`
+- 変更: `SOURCE-COMPUTER ... WITH DEBUGGING MODE`をコンパイル時debug modeとして扱い、
+  modeなしの固定形式`D`行をpreprocessor/lexerでコメント相当にした。
+  `USE FOR DEBUGGING`はmodeありの場合だけHIRへ下ろし、
+  実行時debug switchは`COBOL_DEBUGGING_MODE=OFF`でdeclarative dispatchを抑止する。
+  さらに`ALL PROCEDURES`がdebug declarative自身へ再入しないよう、
+  `_dispatch_debug_declarative`で`suppress`中のdispatchを無効化した。
+- 根本原因: 旧実装は`USE FOR DEBUGGING`の存在だけでdebug declarativeを有効化し、
+  compile-time mode、object-time switch、固定形式`D`行を分離していなかった。
+  またpreprocessorが固定形式をFreeへ正規化するため、D行判定をlexerだけに置くと
+  NIST実行経路ではindicator情報が消えていた。
+- 確認: `cargo test -p cobol-preprocessor --all-targets`,
+  `cargo test -p cobol-driver --test e2e_test use_for_debugging`,
+  `cargo test -p cobol-driver --test e2e_test test_fixed_debug_lines_are_comments_without_source_debugging_mode`,
+  `cargo test -p cobol-driver --test e2e_test test_native_use_for_debugging_all_procedures_does_not_reenter_declarative`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=DB PROGRAM=DB101A`,
+  `make nist-run MODULE=DB PROGRAM=DB102A`,
+  `make nist-run MODULE=DB PROGRAM=DB103M`,
+  `make nist-run MODULE=DB PROGRAM=DB105A`,
+  `make nist-run MODULE=DB`を実行。
+- NIST確認: `DB101A`, `DB102A`, `DB103M`はPASS。
+  `DB105A`はsegfaultが消え、通常の`ccvs-first-fail`へ移行した。
+  DB全体は`15 total / 8 pass / 7 fail / 0 CErr / 0 RErr`。
+- 未完了: `DB104A`は`GEN-LOOP`でSORT/DEBUG以前に止まるため、
+  添字付き数値項目の更新または比較の欠陥としてIMPL-018以降へ再分類する。
+  `DB201A`から`DB205A`と`DB105A`の残りは、
+  debug-itemの`ALL REFERENCES`、ファイル名指定、通信/merge/sort/input-output procedure連動、
+  section/paragraph二重突入順の精度不足として、IMPL-012内で継続する。
 
 ## Backlog一覧
 
