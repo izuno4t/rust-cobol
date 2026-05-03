@@ -34,6 +34,39 @@
 | TASK-009 | ✅ | REPORT/SORT/SEGMENT仕様差分を分離する | TASK-002,TASK-005 |
 | TASK-010 | ✅ | 100% passまでの実装ロードマップを確定する | TASK-003,TASK-004,TASK-005,TASK-006,TASK-007,TASK-008,TASK-009 |
 | TASK-011 | ✅ | Backlogを実装タスクへ再編する | TASK-010 |
+| IMPL-001 | ⏳ | HIR data item初期化とcodegen構造体契約を修正する | TASK-003 |
+| IMPL-002 | ⏳ | scalar storageとbyte pointerのruntime ABIを分離する | IMPL-001 |
+| IMPL-003 | ⏳ | decimal/display値をhelper ABI単位で修正する | IMPL-001,TASK-006 |
+| IMPL-004 | ⏳ | sort key flatten由来のCErrを修正する | IMPL-001,TASK-009 |
+| IMPL-005 | ⏳ | linkage group layout由来のCErrを修正する | IMPL-001,TASK-006 |
+| IMPL-006 | ⏳ | NIST summary/first-fail parserを共通化する | TASK-002 |
+| IMPL-007 | ⏳ | warning countとcompile log分類を安定化する | IMPL-006,TASK-008 |
+| IMPL-008 | ⏳ | print/report/stdout captureをrunnerへ統合する | IMPL-006,TASK-009 |
+| IMPL-009 | ⏳ | blank reportとsummary不在のreasonを再分類する | IMPL-008 |
+| IMPL-010 | ⏳ | `PERFORM`/`PERFORM THRU`のHIR CFGを再設計する | IMPL-006,TASK-004 |
+| IMPL-011 | ⏳ | `GO TO`/`ALTER`/fallthroughのdispatch契約を実装する | IMPL-010,TASK-008 |
+| IMPL-012 | ⏳ | `USE FOR DEBUGGING`とdeclarative突入を実装する | IMPL-010 |
+| IMPL-013 | ⏳ | 例外句とprogram terminationの制御辺を実装する | IMPL-010 |
+| IMPL-014 | ⏳ | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 |
+| IMPL-015 | ⏳ | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 |
+| IMPL-016 | ⏳ | relative fileのrelative key/cursor/delete状態機械を実装する | IMPL-014 |
+| IMPL-017 | ⏳ | LINAGEとWRITE ADVANCINGのoutput positioningを実装する | IMPL-008,IMPL-014 |
+| IMPL-018 | ⏳ | PICTURE metadataをsemaからruntimeまで一貫して運ぶ | IMPL-003,TASK-006 |
+| IMPL-019 | ⏳ | MOVE conversionをsource/target category単位で一元化する | IMPL-018 |
+| IMPL-020 | ⏳ | decimal算術、丸め、SIZE ERRORを一元化する | IMPL-018 |
+| IMPL-021 | ⏳ | edited numeric formatter/parserを実装する | IMPL-019 |
+| IMPL-022 | ⏳ | intrinsic argument flattenと戻り値categoryを実装する | IMPL-018,TASK-007 |
+| IMPL-023 | ⏳ | numeric/math/aggregate intrinsicを実装する | IMPL-020,IMPL-022 |
+| IMPL-024 | ⏳ | ordinal/string/date/random intrinsicを実装する | IMPL-022 |
+| IMPL-025 | ⏳ | COPY REPLACINGのtoken単位置換を実装する | TASK-008 |
+| IMPL-026 | ⏳ | copybook library-nameとcontinuation/quote処理を実装する | IMPL-025 |
+| IMPL-027 | ⏳ | obsolete/non-conforming warning診断を構文単位で実装する | IMPL-007,IMPL-026 |
+| IMPL-028 | ⏳ | Report Writer lifecycleとcounterを実装する | IMPL-008,IMPL-017,TASK-009 |
+| IMPL-029 | ⏳ | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 |
+| IMPL-030 | ⏳ | MERGEとsame sort-merge areaを実装する | IMPL-029 |
+| IMPL-031 | ⏳ | segmentation runtime stateとdiagnostic境界を実装する | IMPL-011,IMPL-027,TASK-009 |
+| IMPL-032 | ⏳ | NIST full gateをCI必須checkへ昇格する | IMPL-001-IMPL-031 |
+| IMPL-033 | ⏳ | 残余未分類FAILを仕様カテゴリへ再分類して0にする | IMPL-032 |
 
 ## タスク詳細（補足が必要な場合のみ）
 
