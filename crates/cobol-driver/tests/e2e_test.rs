@@ -3338,6 +3338,35 @@ D.
 }
 
 #[test]
+fn test_native_section_perform_thru_honors_goto_to_end_paragraph() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. THRU-SECTION-GOTO-END.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-COUNT PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+MAIN SECTION.
+START-PARA.
+    PERFORM CHECK-PARA THRU CHECK-EXIT.
+    DISPLAY WS-COUNT.
+    STOP RUN.
+CHECK-PARA.
+    GO TO CHECK-EXIT.
+CHECK-FAIL.
+    ADD 1 TO WS-COUNT.
+CHECK-EXIT.
+    EXIT.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.trim() == "0" || stdout.contains("000"),
+        "GO TO the THRU end paragraph inside a section should skip intervening paragraphs: got '{stdout}'"
+    );
+}
+
+#[test]
 fn test_native_reversed_perform_thru_keeps_goto_return() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3675,6 +3704,58 @@ PROCEDURE DIVISION.
         "Should read back written record: got '{}'",
         stdout.trim()
     );
+}
+
+#[test]
+fn test_native_fd_multiple_record_lengths_are_variable_records() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FD-VARREC-TEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT MIX-FILE ASSIGN TO '/tmp/cobol_fd_varrec_test.dat'.
+DATA DIVISION.
+FILE SECTION.
+FD MIX-FILE.
+01 SHORT-REC.
+   05 SHORT-KIND PIC X.
+   05 SHORT-DATA PIC X(4).
+01 LONG-REC.
+   05 LONG-KIND PIC X.
+   05 LONG-DATA PIC X(8).
+WORKING-STORAGE SECTION.
+01 WS-OUT PIC X(9) VALUE SPACES.
+PROCEDURE DIVISION.
+    OPEN OUTPUT MIX-FILE.
+    MOVE 'SABCD' TO SHORT-REC.
+    WRITE SHORT-REC.
+    MOVE 'L12345678' TO LONG-REC.
+    WRITE LONG-REC.
+    CLOSE MIX-FILE.
+    OPEN INPUT MIX-FILE.
+    READ MIX-FILE INTO WS-OUT.
+    DISPLAY WS-OUT.
+    READ MIX-FILE INTO WS-OUT.
+    DISPLAY WS-OUT.
+    CLOSE MIX-FILE.
+    STOP RUN.
+";
+    let _ = std::fs::remove_file("/tmp/cobol_fd_varrec_test.dat");
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_fd_varrec_test.dat");
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected two variable records, got:\n{stdout}"
+    );
+    assert!(
+        lines[0].starts_with("SABCD"),
+        "short record drifted: {stdout}"
+    );
+    assert_eq!(lines[1], "L12345678", "long record drifted: {stdout}");
 }
 
 #[test]

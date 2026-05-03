@@ -21,7 +21,7 @@ use cobol_ast::{
         PerformKind, PerformStatement, PerformTest, PurgeStatement, ReceiveStatement, SendOption,
         SendStatement, SetStatement, SubtractStatement,
     },
-    CobolProgram, DataDivision, DataItem, Expr, Literal, Statement, Usage,
+    CobolProgram, DataDivision, DataItem, Expr, FileDescription, Literal, Statement, Usage,
 };
 use cobol_common::Span;
 use smol_str::SmolStr;
@@ -3173,9 +3173,46 @@ fn extract_variable_record_files(program: &CobolProgram) -> std::collections::Ha
                     .record_contains
                     .as_ref()
                     .is_some_and(|record| record.min.is_some())
+                || fd_has_multiple_record_sizes(fd)
         })
         .map(|fd| fd.file_name.clone())
         .collect()
+}
+
+fn fd_has_multiple_record_sizes(fd: &FileDescription) -> bool {
+    let mut sizes = fd.items.iter().filter(|item| item.level == 1).map(|item| {
+        hir_type_record_size(&determine_hir_type_with_usage(item, None))
+            * item.occurs.as_ref().map_or(1, |occurs| occurs.max)
+    });
+    let Some(first_size) = sizes.next() else {
+        return false;
+    };
+    sizes.any(|size| size != first_size)
+}
+
+fn hir_type_record_size(data_type: &HirType) -> u32 {
+    match data_type {
+        HirType::Alphanumeric { size } => *size,
+        HirType::Numeric { size, .. } => *size,
+        HirType::Group { size, .. } => *size,
+        HirType::Comp3 { size, .. } => (*size + 2) / 2,
+        HirType::Binary { size } => {
+            if *size <= 4 {
+                2
+            } else if *size <= 9 {
+                4
+            } else {
+                8
+            }
+        }
+        HirType::Index => 4,
+        HirType::Pointer => 8,
+        HirType::Boolean => 1,
+        HirType::FloatShort => 4,
+        HirType::FloatLong => 8,
+        HirType::FloatExtended => 16,
+        HirType::National { size } => *size * 2,
+    }
 }
 
 fn extract_variable_record_depending(program: &CobolProgram) -> HashMap<SmolStr, SmolStr> {
@@ -4025,6 +4062,50 @@ PROCEDURE DIVISION.
         };
         assert_eq!(entries[0].organization, 2);
         assert_eq!(entries[0].relative_key.as_deref(), Some("RL-FS1-KEY"));
+    }
+
+    #[test]
+    fn test_lower_marks_fd_with_multiple_record_lengths_as_variable() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VARREC.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SQ-VS7 ASSIGN TO \"sq-vs7.dat\".
+DATA DIVISION.
+FILE SECTION.
+FD SQ-VS7.
+01 SHORT-REC PIC X(120).
+01 LONG-REC.
+   05 LONG-PREFIX PIC X(120).
+   05 LONG-SUFFIX PIC X(31).
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(hir.variable_record_files.contains("SQ-VS7"));
+    }
+
+    #[test]
+    fn test_lower_keeps_equal_length_fd_records_fixed() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FIXREC.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SAME-FILE ASSIGN TO \"same.dat\".
+DATA DIVISION.
+FILE SECTION.
+FD SAME-FILE.
+01 FIRST-REC PIC X(10).
+01 SECOND-REC PIC 9(10).
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert!(!hir.variable_record_files.contains("SAME-FILE"));
     }
 
     #[test]

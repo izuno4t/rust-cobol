@@ -6327,10 +6327,17 @@ pub(crate) fn emit_perform(
                     let thru_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
                         thru_paras
                             .iter()
-                            .filter_map(|paragraph| {
-                                ctx.label_id(paragraph.id)
-                                    .or_else(|| ctx.body_label_id(paragraph.id))
-                                    .map(|id| (paragraph.id, id))
+                            .flat_map(|paragraph| {
+                                let mut ids = Vec::new();
+                                if let Some(id) = ctx.label_id(paragraph.id) {
+                                    ids.push((paragraph.id, id));
+                                }
+                                if let Some(id) = ctx.body_label_id(paragraph.id) {
+                                    if !ids.iter().any(|(_, existing)| *existing == id) {
+                                        ids.push((paragraph.id, id));
+                                    }
+                                }
+                                ids
                             })
                             .collect()
                     });

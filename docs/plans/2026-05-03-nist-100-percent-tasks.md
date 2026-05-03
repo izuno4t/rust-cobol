@@ -1524,6 +1524,69 @@ TASK-011時点での判断:
   `SQ206A`, `SQ208M`, `SQ209M`, `SQ211A`, `SQ212A`, `SQ214A`,
   `SQ218A`, `SQ219A`, `SQ220A`, `SQ221A`, `SQ222A`, `SQ223A`,
   `SQ224A`, `SQ225A`, `SQ302M`, `SQ303M`, `SQ401M`。
+- 根本原因10: `SQ116A`の`REWRITE ... FROM`残差はfile rewriteではなく、
+  section内に畳み込まれたparagraph列での`PERFORM A THRU B`制御フローだった。
+  monolithic section内の`PERFORM THRU` dispatcherはsectionローカルlabel idだけを
+  範囲内遷移として扱っていた一方、呼び出された個別paragraph関数の`GO TO B`は
+  top-level label idを返していた。そのため`GO TO CHECK-RECORD-EXIT`が
+  PERFORM範囲外遷移として外側へ漏れ、後続paragraphが通常fallthroughで実行され、
+  `RECORDS-IN-ERROR`を汚染していた。
+- 変更10: `PERFORM ... THRU`の範囲内dispatch idに、sectionローカルidだけでなく
+  top-level body label idも登録するようにした。これにより、section内から呼んだ
+  個別paragraph関数が返す`GO TO`も同じPERFORM範囲内遷移として処理される。
+  回帰確認として、section内`PERFORM CHECK-PARA THRU CHECK-EXIT`で
+  `GO TO CHECK-EXIT`が中間paragraphを実行しないe2eを追加した。
+- 追加確認: `cargo test -p cobol-driver --test e2e_test
+  test_native_section_perform_thru_honors_goto_to_end_paragraph`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ116A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ116A`は`PASS (10 passed)`。SQ全体は
+  `84 total / 70 pass / 14 fail / 0 CErr / 0 RErr / 83%`。
+  残るFAILは`SQ107A`, `SQ109M`, `SQ110M`, `SQ201M`, `SQ206A`,
+  `SQ208M`, `SQ209M`, `SQ211A`, `SQ212A`, `SQ214A`, `SQ225A`,
+  `SQ302M`, `SQ303M`, `SQ401M`。
+- 根本原因11: `SQ107A`は明示的な`RECORD VARYING`なしで同一FD配下に
+  120 byteと151 byteの01レベルレコードを定義している。COBOLのFDでは
+  複数の01レベルレコード記述が同じfile record areaを共有し、サイズが異なる場合は
+  実レコード長がwrite/readごとに変わる。一方、HIRは可変長ファイル判定を
+  `RECORD VARYING`または`RECORD CONTAINS min TO max`の明示句だけに限定していた。
+  そのためruntimeは固定長151 byteとして読み、最初の120 byte短レコード後に
+  sequential record境界がずれていた。
+- 変更11: HIR loweringでFD配下の01レベルレコードサイズを比較し、サイズ差がある
+  fileを`variable_record_files`へ追加するようにした。既存runtimeの可変長frame
+  read/writeをそのまま使い、同長の複数01レコードは固定長のまま維持する。
+  回帰確認として、複数01レコード長を持つFDのHIR判定テストと、短長2レコードを
+  write/readするnative e2eを追加した。
+- 追加確認: `cargo test -p cobol-hir multiple_record`,
+  `cargo test -p cobol-hir equal_length`,
+  `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_fd_multiple_record_lengths_are_variable_records`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ107A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ107A`は`PASS (6 passed)`。SQ全体は
+  `84 total / 71 pass / 13 fail / 0 CErr / 0 RErr / 84%`。
+  残るFAILは`SQ109M`, `SQ110M`, `SQ201M`, `SQ206A`, `SQ208M`,
+  `SQ209M`, `SQ211A`, `SQ212A`, `SQ214A`, `SQ225A`, `SQ302M`,
+  `SQ303M`, `SQ401M`。
+- 根本原因12: `SQ109M`と`SQ110M`は実行時のfile I/Oではなく、NIST固定形式
+  preprocessed sourceの制御構造破壊だった。CCVSの実行対象切替用indicatorである
+  `H`/`E`行を通常行へ戻さず、`I`/`F`行もコメント化していなかったため、
+  lexerでは`H`/`E`/`I`/`F`が非標準indicatorとしてコメント扱いになった。
+  その結果、`IF record-number = 325/196`の本体と終端periodが消え、次の独立した
+  `IF record-number = 750/649`を誤って内側へ飲み込んだ。脱出条件が同時に成立しない
+  nested IFとなり、CCVS帳票はヘッダだけでsummaryへ到達しなかった。
+- 変更12: NIST preprocessorで`H`/`E`を通常行、`I`/`F`をコメント行へ正規化する
+  ようにした。これによりCCVSのreel/unit系オプション行が意図通り有効化され、
+  削除通知行は実行されない。
+- 追加確認: `bash -n tests/nist/preprocess.sh`,
+  `make nist-run MODULE=SQ PROGRAM=SQ109M`,
+  `make nist-run MODULE=SQ PROGRAM=SQ110M`,
+  `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ109M`と`SQ110M`はいずれも`PASS (6 passed)`。SQ全体は
+  `84 total / 73 pass / 11 fail / 0 CErr / 0 RErr / 86%`。
+  残るFAILは`SQ201M`, `SQ206A`, `SQ208M`, `SQ209M`, `SQ211A`,
+  `SQ212A`, `SQ214A`, `SQ225A`, `SQ302M`, `SQ303M`, `SQ401M`。
 
 ## Backlog一覧
 
