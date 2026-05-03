@@ -141,6 +141,7 @@ pub struct HirProgram {
 #[derive(Debug, Clone)]
 pub struct HirCommunicationDescription {
     pub name: SmolStr,
+    pub record_name: Option<SmolStr>,
     pub symbolic_queue: Option<SmolStr>,
     pub symbolic_sub_queue_1: Option<SmolStr>,
     pub symbolic_sub_queue_2: Option<SmolStr>,

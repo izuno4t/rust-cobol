@@ -69,6 +69,7 @@ pub(crate) fn emit_statement_with_ctx(
             }
         }
         HirStatement::Move { from, to, .. } => {
+            emit_debug_numeric_identifier_source_event(out, &pad, from, data_items);
             for target in to {
                 match target {
                     HirMoveTarget::DataRef(data_ref) => {
@@ -85,11 +86,29 @@ pub(crate) fn emit_statement_with_ctx(
                         } else {
                             let c_target = data_ref_base_c_name(data_ref);
                             emit_move_to(out, from, &data_ref.name, &c_target, data_items, &pad);
+                            if !data_ref.subscripts.is_empty() {
+                                emit_debug_subscript_values(
+                                    out,
+                                    &pad,
+                                    &data_ref.subscripts,
+                                    data_items,
+                                );
+                            }
+                            emit_debug_numeric_identifier_target_event(
+                                out,
+                                &pad,
+                                &data_ref.name,
+                                &c_target,
+                                data_items,
+                            );
                         }
                     }
                     HirMoveTarget::Variable(name) => {
                         let c_target = data_name_to_c_name(name);
                         emit_move_to(out, from, name, &c_target, data_items, &pad);
+                        emit_debug_numeric_identifier_target_event(
+                            out, &pad, name, &c_target, data_items,
+                        );
                     }
                     HirMoveTarget::ReferenceModification {
                         variable,
@@ -104,6 +123,10 @@ pub(crate) fn emit_statement_with_ctx(
                     } => {
                         let c_target = emit_subscript_access(variable, subscripts);
                         emit_move_to(out, from, variable, &c_target, data_items, &pad);
+                        emit_debug_subscript_values(out, &pad, subscripts, data_items);
+                        emit_debug_numeric_identifier_target_event(
+                            out, &pad, variable, &c_target, data_items,
+                        );
                     }
                 }
             }
@@ -219,6 +242,21 @@ pub(crate) fn emit_statement_with_ctx(
             not_on_size_error,
             ..
         } => {
+            let receiving_names: Vec<String> = if giving.is_empty() {
+                to.iter()
+                    .filter_map(expr_data_name)
+                    .map(|name| name.name.to_string())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            emit_debug_numeric_unique_source_events(
+                out,
+                &pad,
+                operands,
+                data_items,
+                &receiving_names,
+            );
             let has_size_error = !on_size_error.is_empty() || !not_on_size_error.is_empty();
             if has_size_error {
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
@@ -319,6 +357,20 @@ pub(crate) fn emit_statement_with_ctx(
                             );
                         } else {
                             emit_store_int_op(out, &c_target, "+", &sum_expr, data_items, &pad);
+                        }
+                        if let Some(target_name) = target_name {
+                            if operands.iter().any(|operand| {
+                                expr_data_name(operand)
+                                    .is_some_and(|name| name.name == target_name.name)
+                            }) {
+                                emit_debug_numeric_identifier_target_event(
+                                    out,
+                                    &pad,
+                                    target_name,
+                                    &c_target,
+                                    data_items,
+                                );
+                            }
                         }
                     }
                 }
@@ -1770,6 +1822,7 @@ pub(crate) fn emit_statement_with_ctx(
                         }
                     }
                 }
+                emit_debug_spaces_event(out, &pad, entry.file_name.as_str());
             }
         }
         HirStatement::Close { files, .. } => {
@@ -1794,6 +1847,7 @@ pub(crate) fn emit_statement_with_ctx(
                 } else {
                     out.push_str(&format!("{pad}cobol_file_close(FILE_ID_{c_name});\n"));
                 }
+                emit_debug_spaces_event(out, &pad, file.as_str());
             }
         }
         HirStatement::Read {
@@ -1861,6 +1915,16 @@ pub(crate) fn emit_statement_with_ctx(
                 fs_map,
                 has_declaratives,
                 &format!("{pad}    "),
+            );
+            emit_debug_data_name_event(
+                out,
+                &format!("{pad}    "),
+                file_name.as_str(),
+                &target_name,
+                data_items,
+                Some("_fs == 0"),
+                false,
+                true,
             );
             if *is_next && ctx.file_organization(&c_name) == Some(2) {
                 if let Some(relative_key) = ctx.relative_key_for_file(&c_name) {
@@ -1961,11 +2025,24 @@ pub(crate) fn emit_statement_with_ctx(
                 c_name.clone()
             };
             out.push_str(&format!("{pad}/* WRITE {c_name} */\n"));
+            if from.is_some() {
+                out.push_str(&format!("{pad}memcpy(&{c_name}, &{source}, {rec_len});\n"));
+            }
+            emit_debug_data_name_event(
+                out,
+                &pad,
+                record_name.as_str(),
+                &c_name,
+                data_items,
+                None,
+                true,
+                true,
+            );
             let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
             if needs_rc {
                 out.push_str(&format!("{pad}{{\n"));
                 out.push_str(&format!(
-                    "{pad}    uint32_t _wrc = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
+                    "{pad}    uint32_t _wrc = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
                 ));
                 let has_fs = fs_map.contains_key(&c_name);
                 if has_fs {
@@ -2014,7 +2091,7 @@ pub(crate) fn emit_statement_with_ctx(
                 if has_fs {
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
+                        "{pad}    uint32_t _fs = cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
                     ));
                     emit_file_status_update(
                         out,
@@ -2027,7 +2104,7 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!("{pad}}}\n"));
                 } else {
                     out.push_str(&format!(
-                        "{pad}cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
+                        "{pad}cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
                     ));
                 }
             }
@@ -2053,12 +2130,25 @@ pub(crate) fn emit_statement_with_ctx(
                 c_name.clone()
             };
             out.push_str(&format!("{pad}/* REWRITE {c_name} */\n"));
+            if from.is_some() {
+                out.push_str(&format!("{pad}memcpy(&{c_name}, &{source}, {rec_len});\n"));
+            }
+            emit_debug_data_name_event(
+                out,
+                &pad,
+                record_name.as_str(),
+                &c_name,
+                data_items,
+                None,
+                true,
+                true,
+            );
             let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
             let has_fs = fs_map.contains_key(&c_file);
             if needs_rc || has_fs {
                 out.push_str(&format!("{pad}{{\n"));
                 out.push_str(&format!(
-                    "{pad}    uint32_t _fs = cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
+                    "{pad}    uint32_t _fs = cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
                 ));
                 if has_fs {
                     emit_file_status_update(
@@ -2103,7 +2193,7 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}}}\n"));
             } else {
                 out.push_str(&format!(
-                    "{pad}cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{source}, {rec_len});\n"
+                    "{pad}cobol_file_rewrite(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {rec_len});\n"
                 ));
             }
         }
@@ -2130,6 +2220,7 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!("{pad}cobol_file_delete(FILE_ID_{c_name});\n"));
                 }
             }
+            emit_debug_spaces_event(out, &pad, file_name.as_str());
         }
         HirStatement::GoTo {
             targets,
@@ -2199,7 +2290,7 @@ pub(crate) fn emit_statement_with_ctx(
                     "{pad}_set_debug_event(\"{from_name}\", \"{to_name}\", \"\");\n"
                 ));
                 out.push_str(&format!(
-                    "{pad}_dispatch_debug_declarative(\"{from_name}\");\n"
+                    "{pad}_dispatch_debug_procedure(\"{from_name}\");\n"
                 ));
             }
         }
@@ -2576,7 +2667,24 @@ pub(crate) fn emit_statement_with_ctx(
                                 data_items,
                                 &format!("{pad}    "),
                             );
+                            emit_debug_communication_event(
+                                out,
+                                &format!("{pad}    "),
+                                target.as_str(),
+                                Some(&binding),
+                                data_items,
+                                None,
+                            );
                             out.push_str(&format!("{pad}}}\n"));
+                        } else {
+                            emit_debug_communication_event(
+                                out,
+                                pad.as_str(),
+                                target.as_str(),
+                                Some(&binding),
+                                data_items,
+                                None,
+                            );
                         }
                     }
                 }
@@ -2611,11 +2719,30 @@ pub(crate) fn emit_statement_with_ctx(
                                 data_items,
                                 &format!("{pad}    "),
                             );
+                            emit_debug_communication_event(
+                                out,
+                                &format!("{pad}    "),
+                                target.as_str(),
+                                Some(&binding),
+                                data_items,
+                                None,
+                            );
                             out.push_str(&format!("{pad}}}\n"));
                         }
                     }
                 }
-                HirAcceptSource::Console => {}
+                HirAcceptSource::Console => {
+                    if size == 0 {
+                        emit_debug_communication_event(
+                            out,
+                            pad.as_str(),
+                            target.as_str(),
+                            comm_binding.as_ref(),
+                            data_items,
+                            None,
+                        );
+                    }
+                }
             }
         }
         HirStatement::Enable {
@@ -2701,6 +2828,14 @@ pub(crate) fn emit_statement_with_ctx(
                 None,
                 data_items,
                 &format!("{pad}    "),
+            );
+            emit_debug_communication_event(
+                out,
+                &format!("{pad}    "),
+                target.as_str(),
+                binding.as_ref(),
+                data_items,
+                None,
             );
             out.push_str(&format!("{pad}}}\n"));
         }
@@ -2788,6 +2923,14 @@ pub(crate) fn emit_statement_with_ctx(
                 data_items,
                 &format!("{pad}    "),
             );
+            emit_debug_communication_event(
+                out,
+                &format!("{pad}    "),
+                target.as_str(),
+                binding.as_ref(),
+                data_items,
+                None,
+            );
             out.push_str(&format!("{pad}}}\n"));
         }
         HirStatement::Send {
@@ -2871,6 +3014,14 @@ pub(crate) fn emit_statement_with_ctx(
                 data_items,
                 &format!("{pad}    "),
             );
+            emit_debug_communication_event(
+                out,
+                &format!("{pad}    "),
+                target.as_str(),
+                binding.as_ref(),
+                data_items,
+                None,
+            );
             out.push_str(&format!("{pad}}}\n"));
         }
         HirStatement::Receive {
@@ -2912,6 +3063,19 @@ pub(crate) fn emit_statement_with_ctx(
                 Some("_text_len"),
                 data_items,
                 &format!("{pad}    "),
+            );
+            let receive_debug_condition = if no_data.is_empty() {
+                None
+            } else {
+                Some("_rc != 10")
+            };
+            emit_debug_communication_event(
+                out,
+                &format!("{pad}    "),
+                target.as_str(),
+                binding.as_ref(),
+                data_items,
+                receive_debug_condition,
             );
             if let Some(binding) = env.ctx.communication_binding(&c_target) {
                 if let Some(end_key) = binding.end_key {
@@ -3068,9 +3232,13 @@ pub(crate) fn emit_statement_with_ctx(
                 // If there's an input procedure too (USING + INPUT PROCEDURE)
                 if let Some((proc_name, thru)) = input_procedure {
                     let c_proc = sanitize_name(proc_name);
+                    let event_name = escape_c_string(proc_name);
                     out.push_str(&format!("{pad}    /* INPUT PROCEDURE {c_proc} */\n"));
                     out.push_str(&format!(
                         "{pad}    _sort_buf_id = cobol_sort_buffer_init({rec_len});\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    _set_debug_event(\"{event_name}\", \"SORT INPUT\", \"\");\n"
                     ));
                     out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                     if let Some(thru_name) = thru {
@@ -3116,6 +3284,7 @@ pub(crate) fn emit_statement_with_ctx(
                 }
                 if let Some((proc_name, thru)) = output_procedure {
                     let c_proc = sanitize_name(proc_name);
+                    let event_name = escape_c_string(proc_name);
                     out.push_str(&format!("{pad}    /* OUTPUT PROCEDURE {c_proc} */\n"));
                     // Copy sorted display-format records into sort buffer for RETURN
                     out.push_str(&format!(
@@ -3128,6 +3297,9 @@ pub(crate) fn emit_statement_with_ctx(
                         "{pad}        cobol_sort_buffer_release(_sort_buf_id, &_sort_buf[_si * {rec_len}], {rec_len});\n"
                     ));
                     out.push_str(&format!("{pad}    }}\n"));
+                    out.push_str(&format!(
+                        "{pad}    _set_debug_event(\"{event_name}\", \"SORT OUTPUT\", \"\");\n"
+                    ));
                     out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                     if let Some(thru_name) = thru {
                         let c_thru = sanitize_name(thru_name);
@@ -3143,7 +3315,11 @@ pub(crate) fn emit_statement_with_ctx(
                 ));
                 if let Some((proc_name, thru)) = input_procedure {
                     let c_proc = sanitize_name(proc_name);
+                    let event_name = escape_c_string(proc_name);
                     out.push_str(&format!("{pad}    /* INPUT PROCEDURE {c_proc} */\n"));
+                    out.push_str(&format!(
+                        "{pad}    _set_debug_event(\"{event_name}\", \"SORT INPUT\", \"\");\n"
+                    ));
                     out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                     if let Some(thru_name) = thru {
                         let c_thru = sanitize_name(thru_name);
@@ -3155,7 +3331,11 @@ pub(crate) fn emit_statement_with_ctx(
                 ));
                 if let Some((proc_name, thru)) = output_procedure {
                     let c_proc = sanitize_name(proc_name);
+                    let event_name = escape_c_string(proc_name);
                     out.push_str(&format!("{pad}    /* OUTPUT PROCEDURE {c_proc} */\n"));
+                    out.push_str(&format!(
+                        "{pad}    _set_debug_event(\"{event_name}\", \"SORT OUTPUT\", \"\");\n"
+                    ));
                     out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                     if let Some(thru_name) = thru {
                         let c_thru = sanitize_name(thru_name);
@@ -3400,6 +3580,7 @@ pub(crate) fn emit_statement_with_ctx(
                         &format!("{pad}    "),
                     );
                 }
+                emit_debug_spaces_event(out, &format!("{pad}    "), file_name.as_str());
                 if !invalid_key.is_empty() {
                     out.push_str(&format!("{pad}    if (_src != 0) {{\n"));
                     for s in invalid_key {
@@ -3432,6 +3613,7 @@ pub(crate) fn emit_statement_with_ctx(
                 }
             } else {
                 out.push_str(&format!("{pad}    {start_call};\n"));
+                emit_debug_spaces_event(out, &format!("{pad}    "), file_name.as_str());
             }
             out.push_str(&format!("{pad}}}\n"));
         }
@@ -3545,6 +3727,7 @@ pub(crate) fn emit_statement_with_ctx(
             keys,
             using,
             giving,
+            output_procedure,
             ..
         } => {
             let c_name = sanitize_name(file_name);
@@ -3595,6 +3778,20 @@ pub(crate) fn emit_statement_with_ctx(
             out.push_str(&format!(
                 "{pad}    cobol_merge(_merge_inputs, {input_count}, {output_file_id}, _merge_keys, {key_count}, {rec_len});\n"
             ));
+            if let Some((proc_name, thru)) = output_procedure {
+                let proc_debug_name = escape_c_string(proc_name);
+                out.push_str(&format!(
+                    "{pad}    _set_debug_event(\"{proc_debug_name}\", \"MERGE OUTPUT\", \"\");\n"
+                ));
+                let c_proc = sanitize_name(proc_name);
+                out.push_str(&format!("{pad}    para_{c_proc}();\n"));
+                if let Some(thru_name) = thru {
+                    let c_thru = sanitize_name(thru_name);
+                    if c_thru != c_proc {
+                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
+                    }
+                }
+            }
             out.push_str(&format!("{pad}}}\n"));
         }
         HirStatement::Release {
@@ -3777,37 +3974,405 @@ fn emit_optional_debug_event(out: &mut String, pad: &str, name: &str, contents: 
     ));
 }
 
+fn emit_debug_raw_contents_event(
+    out: &mut String,
+    pad: &str,
+    name: &str,
+    ptr_expr: &str,
+    len_expr: &str,
+    condition: Option<&str>,
+    dispatch_reference: bool,
+) {
+    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+        return;
+    }
+    let event_name = escape_c_string(name);
+    out.push_str(&format!("{pad}{{\n"));
+    if let Some(condition) = condition {
+        out.push_str(&format!("{pad}    if ({condition}) {{\n"));
+        out.push_str(&format!(
+            "{pad}        size_t _debug_ref_len = ({len_expr}) < (sizeof(_debug_event_contents) - 1) ? ({len_expr}) : (sizeof(_debug_event_contents) - 1);\n"
+        ));
+        out.push_str(&format!("{pad}        _debug_event_explicit = 1;\n"));
+        out.push_str(&format!(
+            "{pad}        _debug_copy_text_field(_debug_event_name, sizeof(_debug_event_name), \"{event_name}\");\n"
+        ));
+        out.push_str(&format!(
+            "{pad}        memset(_debug_event_contents, ' ', sizeof(_debug_event_contents));\n"
+        ));
+        out.push_str(&format!(
+            "{pad}        memcpy(_debug_event_contents, (const uint8_t*){ptr_expr}, _debug_ref_len);\n"
+        ));
+        out.push_str(&format!(
+            "{pad}        _debug_event_contents[sizeof(_debug_event_contents) - 1] = '\\0';\n"
+        ));
+        out.push_str(&format!(
+            "{pad}        _debug_copy_text_field(_debug_event_line, sizeof(_debug_event_line), \"\");\n"
+        ));
+        out.push_str(&format!(
+            "{pad}        _dispatch_debug_declarative(\"{event_name}\");\n"
+        ));
+        if dispatch_reference {
+            out.push_str(&format!(
+                "{pad}        _dispatch_debug_reference(\"{event_name}\");\n"
+            ));
+        }
+        out.push_str(&format!("{pad}    }}\n"));
+    } else {
+        out.push_str(&format!(
+            "{pad}    size_t _debug_ref_len = ({len_expr}) < (sizeof(_debug_event_contents) - 1) ? ({len_expr}) : (sizeof(_debug_event_contents) - 1);\n"
+        ));
+        out.push_str(&format!("{pad}    _debug_event_explicit = 1;\n"));
+        out.push_str(&format!(
+            "{pad}    _debug_copy_text_field(_debug_event_name, sizeof(_debug_event_name), \"{event_name}\");\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    memset(_debug_event_contents, ' ', sizeof(_debug_event_contents));\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    memcpy(_debug_event_contents, (const uint8_t*){ptr_expr}, _debug_ref_len);\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    _debug_event_contents[sizeof(_debug_event_contents) - 1] = '\\0';\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    _debug_copy_text_field(_debug_event_line, sizeof(_debug_event_line), \"\");\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    _dispatch_debug_declarative(\"{event_name}\");\n"
+        ));
+        if dispatch_reference {
+            out.push_str(&format!(
+                "{pad}    _dispatch_debug_reference(\"{event_name}\");\n"
+            ));
+        }
+    }
+    out.push_str(&format!("{pad}}}\n"));
+}
+
+fn emit_debug_spaces_event(out: &mut String, pad: &str, name: &str) {
+    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+        return;
+    }
+    let event_name = escape_c_string(name);
+    out.push_str(&format!("{pad}{{\n"));
+    out.push_str(&format!(
+        "{pad}    _set_debug_event(\"{event_name}\", \"\", \"\");\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    _dispatch_debug_declarative(\"{event_name}\");\n"
+    ));
+    out.push_str(&format!("{pad}}}\n"));
+}
+
+fn emit_debug_data_name_event(
+    out: &mut String,
+    pad: &str,
+    event_name: &str,
+    data_name: &str,
+    data_items: &[HirDataItem],
+    condition: Option<&str>,
+    dispatch_reference: bool,
+    serialize_group: bool,
+) {
+    let c_name = sanitize_name(data_name);
+    let size = find_data_item_storage_size(&c_name, data_items);
+    if size == 0 {
+        emit_debug_spaces_event(out, pad, event_name);
+        return;
+    }
+    if serialize_group
+        && find_data_item(&c_name, data_items)
+            .is_some_and(|item| matches!(item.data_type, HirType::Group { .. }))
+    {
+        out.push_str(&format!("{pad}{{\n"));
+        out.push_str(&format!(
+            "{pad}    uint8_t _debug_group_contents[{size}];\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    memset(_debug_group_contents, ' ', {size});\n"
+        ));
+        emit_sort_record_serialize(
+            out,
+            &c_name,
+            data_items,
+            "_debug_group_contents",
+            &format!("{pad}    "),
+        );
+        emit_debug_raw_contents_event(
+            out,
+            &format!("{pad}    "),
+            event_name,
+            "_debug_group_contents",
+            &size.to_string(),
+            condition,
+            dispatch_reference,
+        );
+        out.push_str(&format!("{pad}}}\n"));
+        return;
+    }
+    let ptr = c_ptr_expr(&c_name, data_items);
+    emit_debug_raw_contents_event(
+        out,
+        pad,
+        event_name,
+        &ptr,
+        &size.to_string(),
+        condition,
+        dispatch_reference,
+    );
+}
+
+fn emit_debug_communication_event(
+    out: &mut String,
+    pad: &str,
+    target_name: &str,
+    binding: Option<&CommunicationBinding>,
+    data_items: &[HirDataItem],
+    condition: Option<&str>,
+) {
+    if let Some(record_name) = binding.and_then(|binding| binding.record_name.as_deref()) {
+        emit_debug_data_name_event(
+            out,
+            pad,
+            target_name,
+            record_name,
+            data_items,
+            condition,
+            false,
+            false,
+        );
+    } else {
+        emit_debug_spaces_event(out, pad, target_name);
+    }
+}
+
 fn emit_debug_identifier_value_event(
     out: &mut String,
     pad: &str,
     name: &str,
     c_value: &str,
     width: u32,
+    data_items: &[HirDataItem],
+    include_redefines_declarative: bool,
 ) {
     if with_active_context(|ctx| ctx.in_debug_declarative()) {
         return;
     }
+    let dispatch_names = if include_redefines_declarative {
+        debug_identifier_dispatch_names(name, data_items)
+    } else {
+        vec![name.to_string()]
+    };
+    let debug_value =
+        if find_data_item(name, data_items).is_some_and(|item| needs_decimal(&item.data_type)) {
+            format!("({c_value}).value")
+        } else {
+            c_value.to_string()
+        };
+    let event_name = escape_c_string(name);
     out.push_str(&format!("{pad}{{\n"));
     out.push_str(&format!("{pad}    char _debug_ref_contents[81];\n"));
     if width > 0 {
         out.push_str(&format!(
-            "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%0*lld\", {width}, (long long){c_value});\n"
+            "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%0*lld\", {width}, (long long){debug_value});\n"
         ));
     } else {
         out.push_str(&format!(
-            "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%lld\", (long long){c_value});\n"
+            "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%lld\", (long long){debug_value});\n"
         ));
     }
     out.push_str(&format!(
-        "{pad}    _set_debug_event(\"{name}\", _debug_ref_contents, \"\");\n"
+        "{pad}    _set_debug_event(\"{event_name}\", _debug_ref_contents, \"\");\n"
     ));
+    for dispatch_name in dispatch_names {
+        let escaped = escape_c_string(&dispatch_name);
+        out.push_str(&format!(
+            "{pad}    _dispatch_debug_declarative(\"{escaped}\");\n"
+        ));
+    }
     out.push_str(&format!(
-        "{pad}    _dispatch_debug_declarative(\"{name}\");\n"
-    ));
-    out.push_str(&format!(
-        "{pad}    _dispatch_debug_reference(\"{name}\");\n"
+        "{pad}    _dispatch_debug_reference(\"{event_name}\");\n"
     ));
     out.push_str(&format!("{pad}}}\n"));
+}
+
+fn debug_identifier_dispatch_names(name: &str, data_items: &[HirDataItem]) -> Vec<String> {
+    let mut names = vec![name.to_string()];
+    if let Some(item) = find_data_item(name, data_items) {
+        if let Some(redefines) = &item.redefines {
+            if !names.iter().any(|candidate| candidate == redefines) {
+                names.push(redefines.to_string());
+            }
+        }
+    }
+    names
+}
+
+fn emit_debug_numeric_identifier_target_event(
+    out: &mut String,
+    pad: &str,
+    name: &HirDataName,
+    c_target: &str,
+    data_items: &[HirDataItem],
+) {
+    let Some(item) = find_data_item_by_name(name, data_items) else {
+        return;
+    };
+    match item.data_type {
+        HirType::Numeric { size, .. } => {
+            let target_expr =
+                if expr_name_is_display_numeric(name) || c_expr_is_display_numeric(c_target) {
+                    format!("cobol_display_to_int64((const uint8_t*)&({c_target}), {size})")
+                } else {
+                    c_target.to_string()
+                };
+            emit_debug_identifier_value_event(
+                out,
+                pad,
+                name.name.as_str(),
+                &target_expr,
+                size,
+                data_items,
+                false,
+            );
+        }
+        HirType::Alphanumeric { .. } | HirType::Group { .. } => {
+            if with_active_context(|ctx| ctx.in_debug_declarative()) {
+                return;
+            }
+            let event_name = escape_c_string(&debug_data_display_name(name));
+            let declarative_name = escape_c_string(name.name.as_str());
+            let reference_name = escape_c_string(&debug_data_display_name(name));
+            let size = find_data_item_storage_size(&data_name_to_c_name(name), data_items);
+            let ptr = c_ptr_expr(c_target, data_items);
+            out.push_str(&format!("{pad}{{\n"));
+            out.push_str(&format!("{pad}    char _debug_ref_contents[81];\n"));
+            out.push_str(&format!(
+                "{pad}    size_t _debug_ref_len = {size} < 80 ? {size} : 80;\n"
+            ));
+            out.push_str(&format!(
+                "{pad}    memcpy(_debug_ref_contents, (const uint8_t*){ptr}, _debug_ref_len);\n"
+            ));
+            out.push_str(&format!(
+                "{pad}    _debug_ref_contents[_debug_ref_len] = '\\0';\n"
+            ));
+            out.push_str(&format!(
+                "{pad}    _set_debug_event(\"{event_name}\", _debug_ref_contents, \"\");\n"
+            ));
+            out.push_str(&format!(
+                "{pad}    _dispatch_debug_declarative(\"{declarative_name}\");\n"
+            ));
+            out.push_str(&format!(
+                "{pad}    _dispatch_debug_reference(\"{reference_name}\");\n"
+            ));
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        _ => {}
+    }
+}
+
+fn debug_data_display_name(name: &HirDataName) -> String {
+    if name.qualifiers.is_empty() {
+        return name.name.to_string();
+    }
+    let mut display = name.name.to_string();
+    for qualifier in name
+        .qualifiers
+        .iter()
+        .filter(|qualifier| !qualifier.ends_with("-GROUP"))
+    {
+        display.push_str(" OF ");
+        display.push_str(qualifier);
+    }
+    display
+}
+
+fn emit_debug_numeric_identifier_source_event(
+    out: &mut String,
+    pad: &str,
+    expr: &HirExpr,
+    data_items: &[HirDataItem],
+) {
+    let Some(name) = expr_data_name(expr) else {
+        return;
+    };
+    let Some(item) = find_data_item_by_name(name, data_items) else {
+        return;
+    };
+    let HirType::Numeric { size, .. } = item.data_type else {
+        return;
+    };
+    let c_name = data_name_to_c_name(name);
+    let source_expr = if expr_name_is_display_numeric(name) || c_expr_is_display_numeric(&c_name) {
+        format!("cobol_display_to_int64((const uint8_t*)&({c_name}), {size})")
+    } else {
+        emit_expr(expr)
+    };
+    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+        return;
+    }
+    let event_name = escape_c_string(&debug_data_display_name(name));
+    out.push_str(&format!("{pad}{{\n"));
+    out.push_str(&format!("{pad}    char _debug_ref_contents[81];\n"));
+    out.push_str(&format!(
+        "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%0*lld\", {size}, (long long){source_expr});\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    _set_debug_event(\"{event_name}\", _debug_ref_contents, \"\");\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    _dispatch_debug_reference(\"{event_name}\");\n"
+    ));
+    out.push_str(&format!("{pad}}}\n"));
+}
+
+fn emit_debug_numeric_unique_source_events(
+    out: &mut String,
+    pad: &str,
+    exprs: &[HirExpr],
+    data_items: &[HirDataItem],
+    excluded_names: &[String],
+) {
+    let mut seen = Vec::new();
+    for expr in exprs {
+        let Some(name) = expr_data_name(expr) else {
+            continue;
+        };
+        if excluded_names
+            .iter()
+            .any(|excluded_name| excluded_name == &name.name)
+        {
+            continue;
+        }
+        if seen
+            .iter()
+            .any(|seen_name: &String| seen_name == &name.name)
+        {
+            continue;
+        }
+        seen.push(name.name.to_string());
+        emit_debug_numeric_identifier_source_event(out, pad, expr, data_items);
+    }
+}
+
+fn emit_debug_subscript_values(
+    out: &mut String,
+    pad: &str,
+    subscripts: &[HirExpr],
+    data_items: &[HirDataItem],
+) {
+    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+        return;
+    }
+    for (idx, subscript) in subscripts.iter().take(3).enumerate() {
+        let c_expr = emit_int_compatible_expr(subscript, data_items);
+        out.push_str(&format!("{pad}memset(DEBUG_SUB_{}, ' ', 80);\n", idx + 1));
+        out.push_str(&format!(
+            "{pad}snprintf(DEBUG_SUB_{}, 6, \"%04lld \", (long long)({c_expr}));\n",
+            idx + 1
+        ));
+    }
 }
 
 fn emit_fallthrough_debug_event(out: &mut String, pad: &str, name: &str, contents: &str) {
@@ -5431,7 +5996,7 @@ pub(crate) fn emit_perform(
             } else {
                 let c_from = emit_int_compatible_expr(from, data_items);
                 let c_by = emit_int_compatible_expr(by, data_items);
-                let debug_var_name = escape_c_string(var.as_str());
+                let debug_var_name = var.as_str();
                 let debug_var_width = find_data_item(var, data_items)
                     .and_then(|item| match item.data_type {
                         HirType::Numeric { size, .. } => Some(size),
@@ -5446,18 +6011,47 @@ pub(crate) fn emit_perform(
                     &debug_var_name,
                     &c_var_target,
                     debug_var_width,
+                    data_items,
+                    true,
                 );
-                let loop_keyword = match test {
-                    HirPerformTest::Before => format!("while (!({cond}))"),
-                    HirPerformTest::After => "for (;;)".to_string(),
-                };
-                out.push_str(&format!("{pad}{loop_keyword} {{\n"));
-                let after_indent = indent + 1;
-                let after_pad = "    ".repeat(after_indent);
                 for ac in after_clauses {
                     let ac_var = varying_target_c_expr(&ac.var, &ac.var_expr, &ac.until);
                     let ac_from = emit_int_compatible_expr(&ac.from, data_items);
-                    emit_store_int(out, &ac_var, &ac_from, data_items, &after_pad);
+                    emit_store_int(out, &ac_var, &ac_from, data_items, &pad);
+                    let ac_debug_var_name = ac.var.as_str();
+                    let ac_debug_var_width = find_data_item(&ac.var, data_items)
+                        .and_then(|item| match item.data_type {
+                            HirType::Numeric { size, .. } => Some(size),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    emit_debug_identifier_value_event(
+                        out,
+                        &pad,
+                        &ac_debug_var_name,
+                        &ac_var,
+                        ac_debug_var_width,
+                        data_items,
+                        true,
+                    );
+                }
+                out.push_str(&format!("{pad}for (;;) {{\n"));
+                let after_indent = indent + 1;
+                let after_pad = "    ".repeat(after_indent);
+                let until_mentions_debug_var = condition_mentions_var(until, var);
+                if matches!(test, HirPerformTest::Before) {
+                    if until_mentions_debug_var {
+                        emit_debug_identifier_value_event(
+                            out,
+                            &after_pad,
+                            &debug_var_name,
+                            &c_var_target,
+                            debug_var_width,
+                            data_items,
+                            true,
+                        );
+                    }
+                    out.push_str(&format!("{after_pad}if ({cond}) break;\n"));
                 }
                 let mut current_indent = after_indent;
                 for ac in after_clauses {
@@ -5495,11 +6089,47 @@ pub(crate) fn emit_perform(
                         out.push_str(&format!("{lpad}if ({ac_cond}) break;\n"));
                     }
                     emit_store_int_op(out, &ac_var, "+", &ac_by, data_items, &lpad);
+                    let ac_debug_var_name = ac.var.as_str();
+                    let ac_debug_var_width = find_data_item(&ac.var, data_items)
+                        .and_then(|item| match item.data_type {
+                            HirType::Numeric { size, .. } => Some(size),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    emit_debug_identifier_value_event(
+                        out,
+                        &lpad,
+                        &ac_debug_var_name,
+                        &ac_var,
+                        ac_debug_var_width,
+                        data_items,
+                        true,
+                    );
                     let lpad_close = "    ".repeat(current_indent);
                     out.push_str(&format!("{lpad_close}}}\n"));
                     emit_store_int(out, &ac_var, &ac_from, data_items, &lpad_close);
+                    emit_debug_identifier_value_event(
+                        out,
+                        &lpad_close,
+                        &ac_debug_var_name,
+                        &ac_var,
+                        ac_debug_var_width,
+                        data_items,
+                        true,
+                    );
                 }
                 if matches!(test, HirPerformTest::After) {
+                    if until_mentions_debug_var {
+                        emit_debug_identifier_value_event(
+                            out,
+                            &after_pad,
+                            &debug_var_name,
+                            &c_var_target,
+                            debug_var_width,
+                            data_items,
+                            true,
+                        );
+                    }
                     out.push_str(&format!("{after_pad}if ({cond}) break;\n"));
                 }
                 emit_store_int_op(out, &c_var_target, "+", &c_by, data_items, &after_pad);
@@ -5509,6 +6139,8 @@ pub(crate) fn emit_perform(
                     &debug_var_name,
                     &c_var_target,
                     debug_var_width,
+                    data_items,
+                    true,
                 );
                 out.push_str(&format!("{pad}}}\n"));
             }
@@ -5533,15 +6165,6 @@ pub(crate) fn emit_perform(
                     let thru_paras: Vec<_> = if reversed {
                         let group_end = paragraph_group_end(paragraphs, si);
                         effective_perform_thru_paragraphs(&paragraphs[si..group_end])
-                    } else if !matches!(paragraphs[si].kind, HirParagraphKind::Section)
-                        && !matches!(paragraphs[ei].kind, HirParagraphKind::Section)
-                    {
-                        paragraphs[si..=ei]
-                            .iter()
-                            .filter(|paragraph| {
-                                !matches!(paragraph.kind, HirParagraphKind::Section)
-                            })
-                            .collect()
                     } else {
                         effective_perform_thru_paragraphs(&paragraphs[si..=ei])
                     };
@@ -6299,6 +6922,19 @@ fn expr_mentions_var(expr: &HirExpr, var: &str) -> bool {
                     .is_some_and(|len| expr_mentions_var(len, var))
         }
         _ => false,
+    }
+}
+
+fn condition_mentions_var(cond: &HirCondition, var: &str) -> bool {
+    match cond {
+        HirCondition::Compare { left, right, .. } => {
+            expr_mentions_var(left, var) || expr_mentions_var(right, var)
+        }
+        HirCondition::ClassCondition { operand, .. } => expr_mentions_var(operand, var),
+        HirCondition::And(a, b) | HirCondition::Or(a, b) => {
+            condition_mentions_var(a, var) || condition_mentions_var(b, var)
+        }
+        HirCondition::Not(inner) => condition_mentions_var(inner, var),
     }
 }
 

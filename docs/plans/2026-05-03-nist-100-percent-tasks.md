@@ -45,8 +45,13 @@
 | IMPL-009 | ✅ | blank reportとsummary不在のreasonを再分類する | IMPL-008 |
 | IMPL-010 | ✅ | `PERFORM`/`PERFORM THRU`のHIR CFGを再設計する | IMPL-006,TASK-004 |
 | IMPL-011 | ✅ | `GO TO`/`ALTER`/fallthroughのdispatch契約を実装する | IMPL-010,TASK-008 |
-| IMPL-012 | 🚧 | `USE FOR DEBUGGING`とdeclarative突入を実装する | IMPL-010 |
-| IMPL-013 | ⏳ | 例外句とprogram terminationの制御辺を実装する | IMPL-010 |
+| IMPL-012 | ✅ | `USE FOR DEBUGGING`とdeclarative突入を実装する | IMPL-010 |
+| IMPL-012A | ✅ | `ALL REFERENCES`と識別子debug対象を文脈別に実装する | IMPL-010 |
+| IMPL-012B | ✅ | `USE FOR DEBUGGING`のOPEN/MERGE/DISABLE対象イベントを実装する | IMPL-012A,IMPL-014,IMPL-029 |
+| IMPL-012C | ✅ | `ALL PROCEDURES`のsection/paragraph二重突入順を実装する | IMPL-011,IMPL-012A |
+| IMPL-010A | ✅ | `PERFORM section`復帰境界とsection内paragraph範囲を修正する | IMPL-010 |
+| IMPL-018A | ✅ | 添字付き数値項目とREDEFINESの更新/比較を修正する | IMPL-010A,IMPL-012 |
+| IMPL-013 | 🚧 | 例外句とprogram terminationの制御辺を実装する | IMPL-010 |
 | IMPL-014 | ⏳ | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 |
 | IMPL-015 | ⏳ | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 |
 | IMPL-016 | ⏳ | relative fileのrelative key/cursor/delete状態機械を実装する | IMPL-014 |
@@ -1267,10 +1272,100 @@ TASK-011時点での判断:
   `DB105A`はsegfaultが消え、通常の`ccvs-first-fail`へ移行した。
   DB全体は`15 total / 8 pass / 7 fail / 0 CErr / 0 RErr`。
 - 未完了: `DB104A`は`GEN-LOOP`でSORT/DEBUG以前に止まるため、
-  添字付き数値項目の更新または比較の欠陥としてIMPL-018以降へ再分類する。
-  `DB201A`から`DB205A`と`DB105A`の残りは、
-  debug-itemの`ALL REFERENCES`、ファイル名指定、通信/merge/sort/input-output procedure連動、
-  section/paragraph二重突入順の精度不足として、IMPL-012内で継続する。
+  添字付き数値項目の更新または比較の欠陥として`IMPL-018A`へ再分類する。
+  `DB201A`の残りは識別子debug発火タイミングとして`IMPL-012A`で継続する。
+  `DB202A`から`DB205A`はOPEN/MERGE/DISABLE対象イベントとして`IMPL-012B`へ送る。
+  `DB105A`の残りはsection/paragraph二重突入順として`IMPL-012C`へ送る。
+
+### IMPL-012A 実施記録（完了）
+
+- 対象: `crates/cobol-codegen/src/codegen.rs`,
+  `crates/cobol-codegen/src/stmt.rs`
+- 変更: `ALL REFERENCES OF data-name`を通常のprocedure-name debug対象から分離し、
+  データ参照専用の`_dispatch_debug_reference`を追加した。
+  `GO TO ... DEPENDING ON data-name`、`PERFORM VARYING/AFTER/UNTIL`、
+  `MOVE`、`ADD`で識別子参照と更新後値を文脈別にdebug特殊レジスタへ設定する。
+  `REDEFINES` aliasは通常declarativeだけへ発火させ、`ALL REFERENCES`の過剰発火を避ける。
+  添字付き対象では`DEBUG-SUB-1`から`DEBUG-SUB-3`を空白埋め形式で設定する。
+  修飾名は`ABC1 OF AB2 OF A1`のように保持し、`ALL REFERENCES OF AB2 OF A2`が
+  `AB2 OF A1`へ誤発火しないようdebug対象を完全修飾単位で照合する。
+- 確認: `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=DB PROGRAM=DB201A`,
+  `make nist-run MODULE=DB`を実行。
+- NIST確認: `DB201A`は`PASS (8 test(s) require inspection)`へ到達した。
+  DB全体は`15 total / 9 pass / 5 fail / 1 CErr / 0 RErr / 60%`。
+- 残件分類: `DB104A`は`IMPL-018A`、`DB202A`から`DB205A`は`IMPL-012B`、
+  `DB105A`は`IMPL-012C`で継続する。
+
+### IMPL-012B 実施記録（完了）
+
+- 対象: `crates/cobol-hir/src/hir.rs`, `crates/cobol-hir/src/lower.rs`,
+  `crates/cobol-codegen/src/codegen.rs`, `crates/cobol-codegen/src/context.rs`,
+  `crates/cobol-codegen/src/stmt.rs`
+- 変更: `USE FOR DEBUGGING ON file-name`がOPEN/CLOSE/READ/WRITE/REWRITE/DELETE/STARTを
+  監視するようにし、`WRITE/REWRITE ... FROM`では暗黙MOVE後のrecord内容を
+  `DEBUG-CONTENTS`へ設定する。`MERGE ... OUTPUT PROCEDURE`ではprocedure入口で
+  `MERGE OUTPUT`内容を保持する。通信CD名ではENABLE/DISABLE/ACCEPT/SEND/RECEIVEの
+  debugイベントを発火し、CDのrecord領域を`DEBUG-CONTENTS`へ設定する。
+- 補足: `DEBUG-CONTENTS`は80文字固定ではなく長いrecord/CD内容とNULを含むgroup表現を
+  保持できる内部バッファへ拡張した。
+- 確認: `cargo fmt --all --check`, `cargo test -p cobol-codegen --all-targets`,
+  `make release`, `make nist-run MODULE=DB PROGRAM=DB202A`,
+  `make nist-run MODULE=DB PROGRAM=DB203A`,
+  `make nist-run MODULE=DB PROGRAM=DB204A`,
+  `make nist-run MODULE=DB PROGRAM=DB205A`,
+  `make nist-run MODULE=DB`を実行。
+- NIST確認: `DB202A`, `DB203A`, `DB204A`, `DB205A`はPASS。
+  DB全体は`15 total / 13 pass / 1 fail / 1 CErr / 0 RErr / 86%`。
+- 残件分類: `DB104A`は`IMPL-018A`、`DB105A`は`IMPL-012C`で継続する。
+
+### IMPL-012C 実施記録（完了）
+
+- 対象: `crates/cobol-codegen/src/codegen.rs`,
+  `crates/cobol-codegen/src/data.rs`, `crates/cobol-codegen/src/stmt.rs`
+- 変更: `ALL PROCEDURES`用に`_dispatch_debug_procedure`を追加し、
+  data/file/CD用の`_dispatch_debug_declarative`と分離した。
+  declarative呼び出し後に`_debug_event_explicit`を必ずリセットし、
+  明示転送イベント後のfallthrough eventが古い`DEBUG-NAME`を引きずらないようにした。
+  `ALTER proc TO ...`はprocedure-name debug eventとしてdispatchする。
+- 変更: group内の`USAGE DISPLAY` numericをCOBOL物理レイアウト通り`char[]`で保持するようにし、
+  `MOVE DEBUG-NAME TO PROC-NAME (i)`後に`BASE-NUMBER`が構造体paddingではなく
+  文字位置6-8を参照するようにした。
+- 確認: `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=DB PROGRAM=DB105A`, `make nist-run MODULE=DB`を実行。
+- NIST確認: `DB105A`は`PASS (227 passed)`。
+  DB全体は`15 total / 14 pass / 1 fail / 0 CErr / 0 RErr / 93%`。
+- 残件分類: DBモジュールの残りは`DB104A`のみ。
+  `DB104A`は添字付き数値項目またはREDEFINES/group比較の問題として`IMPL-018A`で継続する。
+
+### IMPL-010A 実施記録（完了）
+
+- 対象: `crates/cobol-codegen/src/stmt.rs`
+- 変更: `PERFORM procedure THRU procedure`の範囲内にsectionが挟まる場合も
+  section-awareな範囲展開を使うようにした。
+  これにより`PERFORM PROC-118 THRU PROC-120`でsection entryの`PROC-119`を飛ばさず、
+  section本体を呼んで直後paragraphも実行する。
+- 確認: `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=DB PROGRAM=DB105A`を実行。
+- NIST確認: `DB105A`の残り2件
+  `PROC-119-PFM-C-10`, `PROC-139-PFM-C-11`が解消し、`DB105A`はPASS。
+
+### IMPL-018A 実施記録（完了）
+
+- 対象: `crates/cobol-codegen/src/codegen.rs`,
+  `crates/cobol-codegen/src/stmt.rs`
+- 根本原因: `DB104A`の`GEN-LOOP`は、添字付きDISPLAY numericの減算/比較ではなく、
+  `PERFORM GEN-LOOP`内の`GO TO GEN-LOOP`が同一paragraph内ジャンプとして処理されず、
+  外側entry dispatchの`_goto_target`へ漏れて呼び出し元が`GEN-LOOP`を再実行し続けていた。
+- 変更: 孤立paragraph関数にも自分自身のローカルラベルを登録し、
+  同一paragraphへの`GO TO`を関数内の`goto lbl_*`として解決するようにした。
+  併せて`SORT ... INPUT PROCEDURE`/`OUTPUT PROCEDURE`突入時の
+  `DEBUG-CONTENTS`を`SORT INPUT`/`SORT OUTPUT`に設定し、
+  `USE AFTER ERROR PROCEDURE`突入時のdebug内容を`USE PROCEDURE`に設定した。
+- 確認: `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=DB PROGRAM=DB104A`, `make nist-run MODULE=DB`を実行。
+- NIST確認: `DB104A`は`PASS (3 test(s) require inspection)`。
+  DB全体は`15 total / 15 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
 
 ## Backlog一覧
 

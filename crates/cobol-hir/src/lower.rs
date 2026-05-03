@@ -175,7 +175,6 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
             for name in [
                 "DEBUG-LINE",
                 "DEBUG-NAME",
-                "DEBUG-CONTENTS",
                 "DEBUG-SUB-1",
                 "DEBUG-SUB-2",
                 "DEBUG-SUB-3",
@@ -186,6 +185,11 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                     program.span,
                 ));
             }
+            data_items.push(HirDataItem::new(
+                "DEBUG-CONTENTS",
+                HirType::Alphanumeric { size: 1024 },
+                program.span,
+            ));
         }
     }
 
@@ -489,6 +493,7 @@ fn lower_communication_descriptions(
             }
             crate::hir::HirCommunicationDescription {
                 name: cd.name.clone(),
+                record_name: cd.data_items.first().and_then(|item| item.name.clone()),
                 symbolic_queue: cd
                     .symbolic_queue
                     .clone()

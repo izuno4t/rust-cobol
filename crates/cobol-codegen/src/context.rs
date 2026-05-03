@@ -7,6 +7,7 @@ pub(crate) type FileRecordMap = HashMap<String, String>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CommunicationBinding {
+    pub(crate) record_name: Option<String>,
     pub(crate) symbolic_queue: Option<String>,
     pub(crate) symbolic_sub_queue_1: Option<String>,
     pub(crate) symbolic_sub_queue_2: Option<String>,
@@ -476,6 +477,7 @@ fn build_communication_map(
             (
                 sanitize_name(&cd.name),
                 CommunicationBinding {
+                    record_name: cd.record_name.as_ref().map(sanitize_name),
                     symbolic_queue: cd.symbolic_queue.as_ref().map(sanitize_name),
                     symbolic_sub_queue_1: cd.symbolic_sub_queue_1.as_ref().map(sanitize_name),
                     symbolic_sub_queue_2: cd.symbolic_sub_queue_2.as_ref().map(sanitize_name),

@@ -331,12 +331,16 @@ fn emit_file_declarative_dispatch(
             matches!(upper.as_str(), "I-O" | "INPUT" | "OUTPUT" | "EXTEND")
         });
         if is_mode_based {
-            out.push_str(&format!("    decl_{c_decl}(); return;\n"));
+            out.push_str(&format!(
+                "    _set_debug_event(\"{}\", \"USE PROCEDURE\", \"\"); decl_{c_decl}(); return;\n",
+                escape_c_string(&decl.name)
+            ));
         } else {
             for fname in &decl.file_names {
                 let c_file = sanitize_name(fname);
                 out.push_str(&format!(
-                    "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ decl_{c_decl}(); return; }}\n"
+                    "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ _set_debug_event(\"{}\", \"USE PROCEDURE\", \"\"); decl_{c_decl}(); return; }}\n",
+                    escape_c_string(&decl.name)
                 ));
             }
         }
@@ -462,14 +466,13 @@ pub fn generate_c(program: &HirProgram) -> String {
             }
             out.push('\n');
         }
+        emit_debug_declarative_support(&mut out, program);
         emit_file_declarative_dispatch(
             &mut out,
             "_check_file_declarative",
             &program.declaratives,
             &[],
         );
-
-        emit_debug_declarative_support(&mut out, program);
 
         // XML PARSE support: emit special registers and callback functions
         let xml_procs = collect_xml_parse_procedures(program);
@@ -749,7 +752,8 @@ fn emit_debug_special_registers(out: &mut String, program: &HirProgram) {
             out.push_str("/* Debug special registers */\n");
             emitted_any = true;
         }
-        out.push_str(&format!("static char {c_name}[81];\n"));
+        let size = if c_name == "DEBUG_CONTENTS" { 1025 } else { 81 };
+        out.push_str(&format!("static char {c_name}[{size}];\n"));
     }
 
     if emitted_any {
@@ -800,30 +804,10 @@ fn is_all_references_debug_decl(debug_items: &[smol_str::SmolStr]) -> bool {
 }
 
 fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
-    if !has_debug_declaratives(program) {
-        out.push_str("static void _set_debug_event(const char* name, const char* contents, const char* line) {\n");
-        out.push_str("    (void)name;\n");
-        out.push_str("    (void)contents;\n");
-        out.push_str("    (void)line;\n");
-        out.push_str("}\n");
-        out.push_str("static void _set_fallthrough_debug_event(const char* name, const char* contents, const char* line) {\n");
-        out.push_str("    (void)name;\n");
-        out.push_str("    (void)contents;\n");
-        out.push_str("    (void)line;\n");
-        out.push_str("}\n");
-        out.push_str("static void _dispatch_debug_declarative(const char* paragraph_name) {\n");
-        out.push_str("    (void)paragraph_name;\n");
-        out.push_str("}\n\n");
-        out.push_str("static void _dispatch_debug_reference(const char* data_name) {\n");
-        out.push_str("    (void)data_name;\n");
-        out.push_str("}\n\n");
-        return;
-    }
-
     let needs = collect_debug_register_needs(program);
     out.push_str("/* Debug declarative dispatch support */\n");
     out.push_str("static char _debug_event_name[81];\n");
-    out.push_str("static char _debug_event_contents[81];\n");
+    out.push_str("static char _debug_event_contents[1025];\n");
     out.push_str("static char _debug_event_line[81];\n");
     out.push_str("static int _suppress_debug_event = 0;\n");
     out.push_str("static int _debug_event_explicit = 0;\n");
@@ -854,7 +838,7 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
     out.push_str("    _debug_copy_text_field(_debug_event_contents, sizeof(_debug_event_contents), contents ? contents : \"\");\n");
     out.push_str("    _debug_copy_text_field(_debug_event_line, sizeof(_debug_event_line), line ? line : \"\");\n");
     out.push_str("}\n");
-    out.push_str("static void _dispatch_debug_declarative(const char* paragraph_name) {\n");
+    out.push_str("static void _dispatch_debug_procedure(const char* paragraph_name) {\n");
     out.push_str("    if (_suppress_debug_event) return;\n");
     out.push_str("    if (!paragraph_name || paragraph_name[0] == '\\0') return;\n");
     out.push_str("    const char* _debug_switch = getenv(\"COBOL_DEBUGGING_MODE\");\n");
@@ -890,14 +874,15 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
     out.push_str("    _debug_event_explicit = 0;\n");
     out.push_str("}\n\n");
 
-    out.push_str("static void _dispatch_debug_reference(const char* data_name) {\n");
+    out.push_str("static void _dispatch_debug_declarative(const char* object_name) {\n");
     out.push_str("    if (_suppress_debug_event) return;\n");
-    out.push_str("    if (!data_name || data_name[0] == '\\0') return;\n");
+    out.push_str("    if (!object_name || object_name[0] == '\\0') return;\n");
     out.push_str("    const char* _debug_switch = getenv(\"COBOL_DEBUGGING_MODE\");\n");
     out.push_str("    if (_debug_switch && (strcmp(_debug_switch, \"0\") == 0 || strcmp(_debug_switch, \"OFF\") == 0 || strcmp(_debug_switch, \"off\") == 0 || strcmp(_debug_switch, \"false\") == 0 || strcmp(_debug_switch, \"FALSE\") == 0)) { _debug_event_explicit = 0; return; }\n");
     for decl in &program.declaratives {
         if decl.use_kind != HirDeclarativeUse::ForDebugging
-            || !is_all_references_debug_decl(&decl.debug_items)
+            || is_all_references_debug_decl(&decl.debug_items)
+            || is_all_procedures_debug_decl(&decl.debug_items)
         {
             continue;
         }
@@ -912,6 +897,30 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
             }
             let escaped = escape_c_string(debug_item);
             out.push_str(&format!(
+                "    if (strcmp(object_name, \"{escaped}\") == 0) {{\n"
+            ));
+            emit_debug_declarative_dispatch_call(out, &c_decl, needs);
+            out.push_str("    }\n");
+        }
+    }
+    out.push_str("    _debug_event_explicit = 0;\n");
+    out.push_str("}\n\n");
+
+    out.push_str("static void _dispatch_debug_reference(const char* data_name) {\n");
+    out.push_str("    if (_suppress_debug_event) return;\n");
+    out.push_str("    if (!data_name || data_name[0] == '\\0') return;\n");
+    out.push_str("    const char* _debug_switch = getenv(\"COBOL_DEBUGGING_MODE\");\n");
+    out.push_str("    if (_debug_switch && (strcmp(_debug_switch, \"0\") == 0 || strcmp(_debug_switch, \"OFF\") == 0 || strcmp(_debug_switch, \"off\") == 0 || strcmp(_debug_switch, \"false\") == 0 || strcmp(_debug_switch, \"FALSE\") == 0)) { _debug_event_explicit = 0; return; }\n");
+    for decl in &program.declaratives {
+        if decl.use_kind != HirDeclarativeUse::ForDebugging
+            || !is_all_references_debug_decl(&decl.debug_items)
+        {
+            continue;
+        }
+        let c_decl = sanitize_name(&decl.name);
+        for debug_item in debug_reference_targets(&decl.debug_items) {
+            let escaped = escape_c_string(&debug_item);
+            out.push_str(&format!(
                 "    if (strcmp(data_name, \"{escaped}\") == 0) {{\n"
             ));
             emit_debug_declarative_dispatch_call(out, &c_decl, needs);
@@ -920,6 +929,32 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
     }
     out.push_str("    _debug_event_explicit = 0;\n");
     out.push_str("}\n\n");
+}
+
+fn debug_reference_targets(debug_items: &[smol_str::SmolStr]) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut index = 0;
+    while index < debug_items.len() {
+        let upper = debug_items[index].to_uppercase();
+        if upper == "ALL" || upper == "REFERENCES" || upper == "OF" || upper == "IN" {
+            index += 1;
+            continue;
+        }
+        let mut parts = vec![debug_items[index].to_string()];
+        index += 1;
+        while index + 1 < debug_items.len()
+            && matches!(debug_items[index].to_uppercase().as_str(), "OF" | "IN")
+            && !matches!(
+                debug_items[index + 1].to_uppercase().as_str(),
+                "ALL" | "REFERENCES"
+            )
+        {
+            parts.push(debug_items[index + 1].to_string());
+            index += 2;
+        }
+        targets.push(parts.join(" OF "));
+    }
+    targets
 }
 
 fn emit_debug_declarative_dispatch_call(out: &mut String, c_decl: &str, needs: DebugRegisterNeeds) {
@@ -934,11 +969,13 @@ fn emit_debug_declarative_dispatch_call(out: &mut String, c_decl: &str, needs: D
         );
     }
     if needs.contents {
+        out.push_str("        memset(DEBUG_CONTENTS, ' ', sizeof(DEBUG_CONTENTS));\n");
         out.push_str(
-            "        _debug_copy_text_field(DEBUG_CONTENTS, sizeof(DEBUG_CONTENTS), _debug_event_contents);\n",
+            "        memcpy(DEBUG_CONTENTS, _debug_event_contents, sizeof(DEBUG_CONTENTS) < sizeof(_debug_event_contents) ? sizeof(DEBUG_CONTENTS) : sizeof(_debug_event_contents));\n",
         );
     }
     out.push_str(&format!("        decl_{c_decl}();\n"));
+    out.push_str("        _debug_event_explicit = 0;\n");
     out.push_str("        return;\n");
 }
 
@@ -1225,7 +1262,7 @@ fn emit_program_paragraph_definitions(
                     ));
                     out.push_str(&format!("lbl_{paragraph_c_name}:;\n"));
                     out.push_str(&format!(
-                        "    _dispatch_debug_declarative(\"{}\");\n",
+                        "    _dispatch_debug_procedure(\"{}\");\n",
                         escape_c_string(&paragraph.name)
                     ));
                     ctx.set_in_body_context(true);
@@ -1312,7 +1349,7 @@ fn emit_isolated_paragraph_definition(
         escape_c_string(&paragraph.name)
     ));
     out.push_str(&format!(
-        "    _dispatch_debug_declarative(\"{}\");\n",
+        "    _dispatch_debug_procedure(\"{}\");\n",
         escape_c_string(&paragraph.name)
     ));
     out.push_str(&format!(
@@ -1573,6 +1610,8 @@ fn build_entry_label_map(
 fn build_paragraph_label_map(paragraph: &HirParagraph) -> HashMap<HirParagraphId, usize> {
     let mut map = HashMap::new();
     let mut id = 1usize;
+    map.insert(paragraph.id, id);
+    id += 1;
     for stmt in &paragraph.body {
         if let HirStatement::Label { target } = stmt {
             if let Some(paragraph_id) = target.paragraph_id() {

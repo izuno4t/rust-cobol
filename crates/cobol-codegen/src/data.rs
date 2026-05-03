@@ -224,11 +224,14 @@ pub(crate) fn group_needs_raw_display_layout(
 pub(crate) fn group_members_need_raw_display_layout(members: &[HirDataItem]) -> bool {
     members.iter().any(|member| {
         member.redefines.is_some()
-            || matches!(
-                &member.data_type,
-                HirType::Group { members: sub_members, .. }
-                    if group_members_need_raw_display_layout(sub_members)
-            )
+            || match &member.data_type {
+                HirType::Numeric { .. } => true,
+                HirType::Group {
+                    members: sub_members,
+                    ..
+                } => group_members_need_raw_display_layout(sub_members),
+                _ => false,
+            }
     })
 }
 
