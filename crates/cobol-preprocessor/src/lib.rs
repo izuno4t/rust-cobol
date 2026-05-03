@@ -198,7 +198,7 @@ fn reflow_fixed_format_source(source: &str) -> String {
                 || line_no_cr.as_bytes()[..6].iter().all(|b| *b == b' '));
         let (indicator, content) = if has_fixed_prefix {
             let indicator = line_no_cr.as_bytes()[6] as char;
-            if is_valid_fixed_indicator(indicator) {
+            if let Some(indicator) = normalize_fixed_indicator(indicator) {
                 (indicator, &line_no_cr[7..])
             } else {
                 ('*', line_no_cr)
@@ -303,7 +303,7 @@ fn normalize_fixed_format_source(source: &str) -> String {
                 || line_no_cr.as_bytes()[..6].iter().all(|b| *b == b' '));
         let (indicator, content) = if has_fixed_prefix {
             let indicator = line_no_cr.as_bytes()[6] as char;
-            if is_valid_fixed_indicator(indicator) {
+            if let Some(indicator) = normalize_fixed_indicator(indicator) {
                 (indicator, &line_no_cr[7..])
             } else {
                 ('*', line_no_cr)
@@ -445,8 +445,13 @@ fn choose_fixed_split(text: &str, limit: usize) -> Option<usize> {
     Some(split.max(1))
 }
 
-fn is_valid_fixed_indicator(ch: char) -> bool {
-    matches!(ch, ' ' | '*' | '/' | '-' | 'D' | 'd' | '$')
+fn normalize_fixed_indicator(ch: char) -> Option<char> {
+    match ch {
+        'T' | 't' => Some(' '),
+        'U' | 'u' => Some('*'),
+        ' ' | '*' | '/' | '-' | 'D' | 'd' | '$' => Some(ch),
+        _ => None,
+    }
 }
 
 fn filter_inactive_fixed_debug_lines(source: &str) -> String {
@@ -458,7 +463,7 @@ fn filter_inactive_fixed_debug_lines(source: &str) -> String {
     for line in source.split_inclusive('\n') {
         let line_no_newline = line.trim_end_matches('\n').trim_end_matches('\r');
         let indicator = line_no_newline.as_bytes().get(6).copied().map(char::from);
-        if matches!(indicator, Some('D' | 'd')) {
+        if matches!(indicator, Some('D' | 'd' | 'U' | 'u')) {
             continue;
         }
         out.push_str(line);
@@ -702,7 +707,7 @@ fn normalize_fixed_format_copybook(source: &str, first_line_inline: bool) -> Str
             line_no_cr
         };
         let indicator = if line_no_id.len() >= 7 {
-            line_no_id.as_bytes()[6] as char
+            normalize_fixed_indicator(line_no_id.as_bytes()[6] as char).unwrap_or('*')
         } else {
             ' '
         };
@@ -949,6 +954,37 @@ mod tests {
         assert!(
             result.source.contains("01 WS-NAME PIC X(20)."),
             "expanded source: {:?}",
+            result.source
+        );
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_fixed_ccvs_t_lines_active_and_u_lines_inactive() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("test.cob");
+        fs::write(&source_path, "").unwrap();
+
+        let source = "000100 IDENTIFICATION DIVISION.\n\
+000200 PROGRAM-ID. TEST.\n\
+000300 DATA DIVISION.\n\
+000400 WORKING-STORAGE SECTION.\n\
+000500T01 ACTIVE-ITEM PIC X.\n\
+000600U01 INACTIVE-ITEM PIC X.\n";
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            source_format: SourceFormat::Fixed,
+            ..Default::default()
+        };
+        let result = preprocess(source, &source_path, &config);
+        assert!(
+            result.source.contains("01 ACTIVE-ITEM PIC X."),
+            "preprocessed source: {:?}",
+            result.source
+        );
+        assert!(
+            !result.source.contains("INACTIVE-ITEM"),
+            "preprocessed source: {:?}",
             result.source
         );
         assert_no_errors(&result);

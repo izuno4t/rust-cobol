@@ -45,10 +45,12 @@ pub(crate) struct AlterableParagraphInfo {
 pub(crate) struct CodegenContext {
     subscript_paths: HashMap<String, SubscriptPathInfo>,
     file_record_map: FileRecordMap,
+    same_record_peers: HashMap<String, Vec<String>>,
     file_organizations: HashMap<String, u32>,
     file_relative_keys: HashMap<String, String>,
     variable_record_files: HashSet<String>,
     variable_record_depending: HashMap<String, String>,
+    variable_record_bounds: HashMap<String, (u32, u32)>,
     file_declarative_dispatch_fn: String,
     communication_map: HashMap<String, CommunicationBinding>,
     nested_program_names: HashSet<String>,
@@ -88,8 +90,10 @@ impl CodegenContext {
             &program.file_relative_keys,
             &program.variable_record_files,
             &program.variable_record_depending,
+            &program.variable_record_bounds,
             &program.communication_descriptions,
             &program.fd_record_aliases,
+            &program.same_record_areas,
             "_check_file_declarative".to_string(),
         );
         ctx.nested_program_names.extend(
@@ -113,6 +117,11 @@ impl CodegenContext {
                 .iter()
                 .map(|(f, r)| (sanitize_name(f), sanitize_name(r))),
         );
+        let mut same_record_peers = parent.same_record_peers.clone();
+        same_record_peers.extend(build_same_record_peers(
+            &program.file_records,
+            &program.same_record_areas,
+        ));
 
         let mut file_organizations = parent.file_organizations.clone();
         file_organizations.extend(
@@ -139,6 +148,14 @@ impl CodegenContext {
                 .variable_record_depending
                 .iter()
                 .map(|(f, d)| (sanitize_name(f), sanitize_name(d))),
+        );
+
+        let mut variable_record_bounds = parent.variable_record_bounds.clone();
+        variable_record_bounds.extend(
+            program
+                .variable_record_bounds
+                .iter()
+                .map(|(f, bounds)| (sanitize_name(f), *bounds)),
         );
 
         let mut communication_map = parent.communication_map.clone();
@@ -187,10 +204,12 @@ impl CodegenContext {
         Self {
             subscript_paths,
             file_record_map,
+            same_record_peers,
             file_organizations,
             file_relative_keys,
             variable_record_files,
             variable_record_depending,
+            variable_record_bounds,
             file_declarative_dispatch_fn: format!(
                 "_check_file_declarative_{}",
                 sanitize_name(&program.name)
@@ -225,8 +244,10 @@ impl CodegenContext {
         file_relative_keys_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         variable_record_files: &HashSet<smol_str::SmolStr>,
         variable_record_depending: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+        variable_record_bounds: &HashMap<smol_str::SmolStr, (u32, u32)>,
         communication_descriptions: &[cobol_hir::HirCommunicationDescription],
         fd_record_aliases: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+        same_record_areas: &[Vec<smol_str::SmolStr>],
         file_declarative_dispatch_fn: String,
     ) -> Self {
         Self {
@@ -235,6 +256,7 @@ impl CodegenContext {
                 .iter()
                 .map(|(f, r)| (sanitize_name(f), sanitize_name(r)))
                 .collect(),
+            same_record_peers: build_same_record_peers(file_records, same_record_areas),
             file_organizations: file_organizations_map
                 .iter()
                 .map(|(f, org)| (sanitize_name(f), *org))
@@ -247,6 +269,10 @@ impl CodegenContext {
             variable_record_depending: variable_record_depending
                 .iter()
                 .map(|(f, d)| (sanitize_name(f), sanitize_name(d)))
+                .collect(),
+            variable_record_bounds: variable_record_bounds
+                .iter()
+                .map(|(f, bounds)| (sanitize_name(f), *bounds))
                 .collect(),
             file_declarative_dispatch_fn,
             communication_map: build_communication_map(communication_descriptions),
@@ -331,6 +357,13 @@ impl CodegenContext {
             .unwrap_or_else(|| sanitized_file_name.to_string())
     }
 
+    pub(crate) fn same_record_peers(&self, sanitized_file_name: &str) -> &[String] {
+        self.same_record_peers
+            .get(sanitized_file_name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     pub(crate) fn file_organization(&self, sanitized_file_name: &str) -> Option<u32> {
         self.file_organizations.get(sanitized_file_name).copied()
     }
@@ -349,6 +382,12 @@ impl CodegenContext {
         self.variable_record_depending
             .get(sanitized_file_name)
             .map(String::as_str)
+    }
+
+    pub(crate) fn variable_record_bounds(&self, sanitized_file_name: &str) -> Option<(u32, u32)> {
+        self.variable_record_bounds
+            .get(sanitized_file_name)
+            .copied()
     }
 
     pub(crate) fn file_declarative_dispatch_fn(&self) -> &str {
@@ -798,11 +837,14 @@ fn dedup_group_member_context_name(
 fn group_members_need_raw_display_layout(members: &[HirDataItem]) -> bool {
     members.iter().any(|member| {
         member.redefines.is_some()
-            || matches!(
-                &member.data_type,
-                HirType::Group { members: sub_members, .. }
-                    if group_members_need_raw_display_layout(sub_members)
-            )
+            || match &member.data_type {
+                HirType::Numeric { .. } => true,
+                HirType::Group {
+                    members: sub_members,
+                    ..
+                } => group_members_need_raw_display_layout(sub_members),
+                _ => false,
+            }
     })
 }
 
@@ -1018,4 +1060,39 @@ fn build_fd_max_record_sizes(
         }
     }
     result
+}
+
+fn build_same_record_peers(
+    file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+    same_record_areas: &[Vec<smol_str::SmolStr>],
+) -> HashMap<String, Vec<String>> {
+    let mut peers: HashMap<String, Vec<String>> = HashMap::new();
+    for group in same_record_areas {
+        let records = group
+            .iter()
+            .filter_map(|file_name| {
+                file_records
+                    .get(file_name)
+                    .map(|record| (sanitize_name(file_name), sanitize_name(record)))
+            })
+            .collect::<Vec<_>>();
+
+        for (file_name, record_name) in &records {
+            for (_, peer_record) in &records {
+                if peer_record != record_name {
+                    peers
+                        .entry(file_name.clone())
+                        .or_default()
+                        .push(peer_record.clone());
+                }
+            }
+        }
+    }
+
+    for peer_records in peers.values_mut() {
+        peer_records.sort();
+        peer_records.dedup();
+    }
+
+    peers
 }

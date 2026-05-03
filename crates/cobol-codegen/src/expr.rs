@@ -6,7 +6,7 @@ pub(crate) fn emit_expr(expr: &HirExpr) -> String {
 }
 
 pub(crate) fn display_numeric_ptr(expr: &str) -> String {
-    if expr.starts_with('(') && expr.contains(" + (") {
+    if is_pointer_like_c_expr(expr) {
         format!("(uint8_t*)({expr})")
     } else {
         format!("(uint8_t*)&({expr})")
@@ -14,11 +14,17 @@ pub(crate) fn display_numeric_ptr(expr: &str) -> String {
 }
 
 pub(crate) fn display_numeric_const_ptr(expr: &str) -> String {
-    if expr.starts_with('(') && expr.contains(" + (") {
+    if is_pointer_like_c_expr(expr) {
         format!("(const uint8_t*)({expr})")
     } else {
         format!("(const uint8_t*)&({expr})")
     }
+}
+
+fn is_pointer_like_c_expr(expr: &str) -> bool {
+    let trimmed = expr.trim_start();
+    (trimmed.starts_with('(') && trimmed.contains(" + ("))
+        || (trimmed.starts_with("((") && trimmed.contains("*)&"))
 }
 
 fn alphanumeric_operand_ptr_expr(
@@ -1386,9 +1392,7 @@ pub(crate) fn is_decimal_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> boo
 fn expr_name_is_display_numeric(name: &HirDataName) -> bool {
     let c_name = data_name_to_c_name(name);
     with_active_context(|ctx| {
-        ctx.has_display_numeric(&c_name)
-            || (!is_qualified_c_name(&c_name)
-                && ctx.has_display_numeric(extract_leaf_member(&c_name)))
+        ctx.has_display_numeric(&c_name) || ctx.has_display_numeric(extract_leaf_member(&c_name))
     })
 }
 
@@ -1558,9 +1562,50 @@ pub(crate) fn emit_assign_to_decimal(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
+    let target_scale_adjustment = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))
+        .map_or(0, |item| item.scale_adjustment);
+    if let Some((target_size, target_scale)) = display_numeric_c_expr_info(c_target, data_items) {
+        let c_target_ptr = display_numeric_ptr(c_target);
+        match from {
+            HirExpr::Literal(HirLiteral::Integer(n)) => {
+                let scaled = scale_decimal_to_target(*n, 0, target_scale);
+                out.push_str(&format!(
+                    "{pad}cobol_store_numeric_display({scaled}, {c_target_ptr}, {target_size});\n"
+                ));
+            }
+            HirExpr::Literal(HirLiteral::Decimal(d)) => {
+                let (scaled, scale) = parse_decimal_literal(d);
+                let scaled = scale_decimal_to_target(scaled, scale, target_scale);
+                out.push_str(&format!(
+                    "{pad}cobol_store_numeric_display({scaled}, {c_target_ptr}, {target_size});\n"
+                ));
+            }
+            HirExpr::Literal(HirLiteral::Zero) | HirExpr::Literal(HirLiteral::Null) => {
+                out.push_str(&format!(
+                    "{pad}cobol_store_numeric_display(0, {c_target_ptr}, {target_size});\n"
+                ));
+            }
+            _ => {
+                let init = decimal_temp_init_from_expr("_src_dec", from, data_items);
+                out.push_str(&format!(
+                    "{pad}{{ {init} cobol_store_numeric_display(_src_dec.value, {c_target_ptr}, {target_size}); }}\n"
+                ));
+            }
+        }
+        return;
+    }
+
     match from {
         HirExpr::Literal(HirLiteral::Integer(n)) => {
-            emit_assign_scaled_int_to_decimal(out, c_target, &n.to_string(), "0", pad);
+            emit_assign_scaled_int_to_decimal(
+                out,
+                c_target,
+                &n.to_string(),
+                "0",
+                target_scale_adjustment,
+                pad,
+            );
         }
         HirExpr::Literal(HirLiteral::Decimal(d)) => {
             let (scaled, scale) = parse_decimal_literal(d);
@@ -1569,6 +1614,7 @@ pub(crate) fn emit_assign_to_decimal(
                 c_target,
                 &scaled.to_string(),
                 &scale.to_string(),
+                target_scale_adjustment,
                 pad,
             );
         }
@@ -1590,7 +1636,13 @@ pub(crate) fn emit_assign_to_decimal(
             if is_decimal_expr(from, data_items) {
                 // Preserve the target PICTURE metadata; only move the scaled value.
                 let c_src = emit_expr(from);
-                emit_assign_decimal_value_to_decimal(out, c_target, &c_src, pad);
+                emit_assign_decimal_value_to_decimal(
+                    out,
+                    c_target,
+                    &c_src,
+                    target_scale_adjustment,
+                    pad,
+                );
             } else if expr_requires_double_precision(from, data_items) {
                 // Expression contains decimal sub-expressions or fractional
                 // literals: use double arithmetic to preserve precision, then
@@ -1604,7 +1656,14 @@ pub(crate) fn emit_assign_to_decimal(
                 // Integer variable or expression -> CobolDecimal. Preserve
                 // the target PICTURE metadata and scale the integer value into it.
                 let e = emit_int_compatible_expr(from, data_items);
-                emit_assign_scaled_int_to_decimal(out, c_target, &e, "0", pad);
+                emit_assign_scaled_int_to_decimal(
+                    out,
+                    c_target,
+                    &e,
+                    "0",
+                    target_scale_adjustment,
+                    pad,
+                );
             }
         }
     }
@@ -1615,8 +1674,11 @@ fn emit_assign_scaled_int_to_decimal(
     c_target: &str,
     scaled_value_expr: &str,
     source_scale_expr: &str,
+    target_scale_adjustment: i32,
     pad: &str,
 ) {
+    let leading_p_limit =
+        leading_p_decimal_value_limit_statement(c_target, target_scale_adjustment);
     out.push_str(&format!(
         "{pad}{{ int64_t _dv = ({scaled_value_expr}); int32_t _ds = ({source_scale_expr}); \
          if ({c_target}.size == 0 && {c_target}.scale == 0) {{ \
@@ -1633,6 +1695,7 @@ fn emit_assign_scaled_int_to_decimal(
          int32_t _dd = {c_target}.scale - _ds; \
          if (_dd > 0) _dv *= (int64_t)pow(10.0, _dd); \
          else if (_dd < 0) _dv /= (int64_t)pow(10.0, -_dd); \
+         {leading_p_limit} \
          if ({c_target}.size > 0 && {c_target}.size <= 18) {{ \
              int64_t _limit = 1; \
              for (int32_t _i = 0; _i < {c_target}.size; _i++) _limit *= 10; \
@@ -1646,8 +1709,11 @@ fn emit_assign_decimal_value_to_decimal(
     out: &mut String,
     c_target: &str,
     c_source: &str,
+    target_scale_adjustment: i32,
     pad: &str,
 ) {
+    let leading_p_limit =
+        leading_p_decimal_value_limit_statement(c_target, target_scale_adjustment);
     out.push_str(&format!(
         "{pad}{{ int64_t _dv = {c_source}.value; int32_t _dd = {c_target}.scale - {c_source}.scale; \
          if ({c_target}.size == 0 && {c_target}.scale == 0) {{ \
@@ -1664,6 +1730,7 @@ fn emit_assign_decimal_value_to_decimal(
          }} \
          if (_dd > 0) _dv *= (int64_t)pow(10.0, _dd); \
          else if (_dd < 0) _dv /= (int64_t)pow(10.0, -_dd); \
+         {leading_p_limit} \
          if ({c_target}.size > 0 && {c_target}.size <= 18) {{ \
              int64_t _limit = 1; \
              for (int32_t _i = 0; _i < {c_target}.size; _i++) _limit *= 10; \
@@ -1671,6 +1738,21 @@ fn emit_assign_decimal_value_to_decimal(
          }} \
          {c_target}.value = _dv; }}\n"
     ));
+}
+
+fn leading_p_decimal_value_limit_statement(c_target: &str, target_scale_adjustment: i32) -> String {
+    if target_scale_adjustment >= 0 {
+        return String::new();
+    }
+    let leading_p_count = -target_scale_adjustment;
+    format!(
+        "if ({c_target}.size > {leading_p_count} && {c_target}.size <= 18) {{ \
+             int32_t _visible = {c_target}.size - {leading_p_count}; \
+             int64_t _p_limit = 1; \
+             for (int32_t _i = 0; _i < _visible; _i++) _p_limit *= 10; \
+             _dv = (_dv >= 0) ? (_dv % _p_limit) : -((-_dv) % _p_limit); \
+         }}"
+    )
 }
 
 fn intrinsic_returns_double(name: &str) -> bool {
@@ -2327,6 +2409,24 @@ pub(crate) fn emit_decimal_arith(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
+    if let Some((target_size, target_scale, target_signed)) =
+        display_numeric_c_expr_metadata(c_target, data_items)
+    {
+        let c_target_const_ptr = display_numeric_const_ptr(c_target);
+        let c_target_ptr = display_numeric_ptr(c_target);
+        let operand_init = decimal_temp_init_from_expr("_rhs", operand, data_items);
+        let signed = c_bool(target_signed);
+        out.push_str(&format!(
+            "{pad}{{ CobolDecimal _lhs; \
+             cobol_decimal_from_int(cobol_display_to_int64({c_target_const_ptr}, {target_size}), {target_scale}, &_lhs); \
+             _lhs.size = {target_size}; _lhs.scale = {target_scale}; _lhs.is_signed = {signed}; \
+             {operand_init} \
+             {func}(&_lhs, &_rhs, &_lhs); \
+             cobol_store_numeric_display(_lhs.value, {c_target_ptr}, {target_size}); }}\n"
+        ));
+        return;
+    }
+
     // Check if operand is already a decimal variable
     let op_is_decimal = is_decimal_expr(operand, data_items);
 
@@ -2353,7 +2453,7 @@ pub(crate) fn emit_decimal_arith(
                 _ if expr_contains_decimal(operand) => {
                     let c_op = emit_expr_as_double(operand);
                     out.push_str(&format!(
-                        "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_double({c_op}, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
+                        "{pad}{{ CobolDecimal _tmp = {{ .value = 0, .scale = 9, .size = 18, .is_signed = 1 }}; cobol_decimal_from_double({c_op}, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
                     ));
                 }
                 _ => {
@@ -2368,6 +2468,144 @@ pub(crate) fn emit_decimal_arith(
     }
 }
 
+pub(crate) fn display_numeric_c_expr_info(
+    c_expr: &str,
+    data_items: &[HirDataItem],
+) -> Option<(u32, u32)> {
+    display_numeric_c_expr_metadata(c_expr, data_items).map(|(size, scale, _)| (size, scale))
+}
+
+fn c_bool(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+pub(crate) fn display_numeric_c_expr_metadata(
+    c_expr: &str,
+    data_items: &[HirDataItem],
+) -> Option<(u32, u32, bool)> {
+    let leaf = extract_leaf_member(c_expr);
+    let item = display_numeric_c_expr_item(c_expr, data_items);
+    let item_numeric = item.and_then(|item| match &item.data_type {
+        HirType::Numeric {
+            size,
+            decimal_places,
+            is_signed,
+        } => Some((*size, *decimal_places, *is_signed)),
+        _ => None,
+    });
+    let size = grp_display_size(c_expr, data_items).or_else(|| {
+        with_active_context(|ctx| {
+            ctx.display_numeric_size(c_expr)
+                .or_else(|| ctx.display_numeric_size(leaf))
+        })
+    })?;
+    let scale = item_numeric
+        .map(|(_, scale, _)| scale)
+        .or_else(|| {
+            with_active_context(|ctx| {
+                ctx.display_numeric_scale(c_expr)
+                    .or_else(|| ctx.display_numeric_scale(leaf))
+            })
+        })
+        .unwrap_or(0);
+    let is_signed = item_numeric
+        .map(|(_, _, is_signed)| is_signed)
+        .unwrap_or(false);
+    Some((size, scale, is_signed))
+}
+
+fn display_numeric_c_expr_item<'a>(
+    c_expr: &str,
+    data_items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    find_data_item_by_c_name(c_expr, data_items).or_else(|| {
+        find_original_data_item_by_sanitized_name(extract_leaf_member(c_expr), data_items)
+    })
+}
+
+fn decimal_temp_init_from_expr(
+    temp_name: &str,
+    expr: &HirExpr,
+    data_items: &[HirDataItem],
+) -> String {
+    if let Some((scaled, scale)) = signed_decimal_literal_expr(expr) {
+        return format!(
+            "CobolDecimal {temp_name}; cobol_decimal_from_int({scaled}, {scale}, &{temp_name});"
+        );
+    }
+
+    let c_expr = emit_expr(expr);
+    if let Some((size, scale, is_signed)) = display_numeric_c_expr_metadata(&c_expr, data_items) {
+        let c_ptr = display_numeric_const_ptr(&c_expr);
+        let signed = c_bool(is_signed);
+        return format!(
+            "CobolDecimal {temp_name}; cobol_decimal_from_int(cobol_display_to_int64({c_ptr}, {size}), {scale}, &{temp_name}); {temp_name}.size = {size}; {temp_name}.scale = {scale}; {temp_name}.is_signed = {signed};"
+        );
+    }
+
+    if is_decimal_expr(expr, data_items) {
+        return format!("CobolDecimal {temp_name} = {c_expr};");
+    }
+
+    match expr {
+        HirExpr::Literal(HirLiteral::String(s)) => {
+            let escaped = escape_c_string(s);
+            let len = s.len();
+            format!(
+                "CobolDecimal {temp_name}; cobol_decimal_from_string((const uint8_t*)\"{escaped}\", {len}, &{temp_name});"
+            )
+        }
+        _ if expr_contains_decimal(expr) => {
+            let c_op = emit_expr_as_double(expr);
+            format!(
+                "CobolDecimal {temp_name} = {{ .value = 0, .scale = 9, .size = 18, .is_signed = 1 }}; cobol_decimal_from_double({c_op}, &{temp_name});"
+            )
+        }
+        _ => {
+            let c_op = emit_int_compatible_expr(expr, data_items);
+            format!("CobolDecimal {temp_name}; cobol_decimal_from_int({c_op}, 0, &{temp_name});")
+        }
+    }
+}
+
+pub(crate) fn expr_is_scaled_display_numeric(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
+    let c_expr = emit_expr(expr);
+    display_numeric_c_expr_metadata(&c_expr, data_items).is_some_and(|(_, scale, _)| scale > 0)
+}
+
+fn decimal_add_exact_statement(acc: &str, rhs: &str) -> String {
+    format!(
+        "{{ int32_t _scale = {acc}.scale > {rhs}.scale ? {acc}.scale : {rhs}.scale; \
+           __int128 _av = {acc}.value; \
+           for (int32_t _i = 0; _i < _scale - {acc}.scale; _i++) _av *= 10; \
+           __int128 _bv = {rhs}.value; \
+           for (int32_t _i = 0; _i < _scale - {rhs}.scale; _i++) _bv *= 10; \
+           {acc}.value = (int64_t)(_av + _bv); \
+           {acc}.scale = _scale; \
+           {acc}.size = {acc}.size > {rhs}.size ? {acc}.size : {rhs}.size; \
+           {acc}.is_signed = {acc}.is_signed || {rhs}.is_signed; }} "
+    )
+}
+
+fn decimal_rescale_to_scale_statement(source: &str, target_scale: u32) -> String {
+    format!(
+        "int64_t _result = {source}.value; \
+         if ({source}.scale > {target_scale}) {{ \
+             int64_t _factor = 1; \
+             for (int32_t _i = 0; _i < {source}.scale - {target_scale}; _i++) _factor *= 10; \
+             _result = {source}.value / _factor; \
+         }} else if ({source}.scale < {target_scale}) {{ \
+             int64_t _factor = 1; \
+             for (int32_t _i = 0; _i < {target_scale} - {source}.scale; _i++) _factor *= 10; \
+             _result = {source}.value * _factor; \
+         }} "
+    )
+}
+
 /// Emit ADD GIVING for decimal: add all operands and TO values, store in GIVING target.
 pub(crate) fn emit_decimal_giving_add(
     out: &mut String,
@@ -2377,44 +2615,79 @@ pub(crate) fn emit_decimal_giving_add(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    // Start by copying the first addend to the target
-    let mut first = true;
-    for op in operands {
-        if first {
-            // Initialize target with first operand
-            let op_is_decimal = is_decimal_expr(op, data_items);
-            if op_is_decimal {
-                let c_op = emit_expr(op);
-                out.push_str(&format!("{pad}{c_target} = {c_op};\n"));
-            } else {
-                let c_op = emit_expr(op);
+    if let Some((target_size, target_scale, _)) =
+        display_numeric_c_expr_metadata(c_target, data_items)
+    {
+        let terms: Vec<&HirExpr> = operands.iter().chain(to.iter()).collect();
+        let Some((first_term, rest_terms)) = terms.split_first() else {
+            return;
+        };
+        let init = decimal_temp_init_from_expr("_sum", first_term, data_items);
+        out.push_str(&format!("{pad}{{ {init} "));
+        out.push_str("_sum.size = 18; _sum.is_signed = 1; ");
+        for (idx, term) in rest_terms.iter().enumerate() {
+            let rhs = format!("_rhs{idx}");
+            out.push_str(&decimal_temp_init_from_expr(&rhs, term, data_items));
+            out.push_str(&decimal_add_exact_statement("_sum", &rhs));
+        }
+        let c_target_ptr = display_numeric_ptr(c_target);
+        out.push_str(&decimal_rescale_to_scale_statement("_sum", target_scale));
+        out.push_str(&format!(
+            "cobol_store_numeric_display(_result, {c_target_ptr}, {target_size}); }}\n"
+        ));
+        return;
+    }
+
+    let terms: Vec<&HirExpr> = operands.iter().chain(to.iter()).collect();
+    let Some((first_term, rest_terms)) = terms.split_first() else {
+        return;
+    };
+    let init = decimal_temp_init_from_expr("_sum", first_term, data_items);
+    out.push_str(&format!("{pad}{{ {init} "));
+    out.push_str("_sum.size = 18; _sum.is_signed = 1; ");
+    for (idx, term) in rest_terms.iter().enumerate() {
+        let rhs = format!("_rhs{idx}");
+        out.push_str(&decimal_temp_init_from_expr(&rhs, term, data_items));
+        out.push_str(&decimal_add_exact_statement("_sum", &rhs));
+    }
+    if let Some(item) = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))
+    {
+        match &item.data_type {
+            HirType::Numeric {
+                size,
+                decimal_places,
+                is_signed,
+            } => {
                 out.push_str(&format!(
-                    "{pad}cobol_decimal_from_int({c_op}, 0, &{c_target});\n"
+                    "if (_sum.scale < {decimal_places}) {{ for (int32_t _i = 0; _i < {decimal_places} - _sum.scale; _i++) _sum.value *= 10; }} else if (_sum.scale > {decimal_places}) {{ for (int32_t _i = 0; _i < _sum.scale - {decimal_places}; _i++) _sum.value /= 10; }} "
+                ));
+                out.push_str(&format!("{c_target} = _sum; "));
+                out.push_str(&format!(
+                    "{c_target}.size = {size}; {c_target}.scale = {decimal_places}; {c_target}.is_signed = {}; ",
+                    i32::from(*is_signed)
                 ));
             }
-            first = false;
-        } else {
-            emit_decimal_arith(out, c_target, op, "cobol_decimal_add", data_items, pad);
-        }
-    }
-    for t in to {
-        if first {
-            let c_t = emit_expr(t);
-            let t_is_decimal = expr_data_name(t)
-                .and_then(|name| find_data_item(name, data_items))
-                .is_some_and(|i| needs_decimal(&i.data_type));
-            if t_is_decimal {
-                out.push_str(&format!("{pad}{c_target} = {c_t};\n"));
-            } else {
+            HirType::Comp3 {
+                size,
+                decimal_places,
+            } => {
                 out.push_str(&format!(
-                    "{pad}cobol_decimal_from_int({c_t}, 0, &{c_target});\n"
+                    "if (_sum.scale < {decimal_places}) {{ for (int32_t _i = 0; _i < {decimal_places} - _sum.scale; _i++) _sum.value *= 10; }} else if (_sum.scale > {decimal_places}) {{ for (int32_t _i = 0; _i < _sum.scale - {decimal_places}; _i++) _sum.value /= 10; }} "
+                ));
+                out.push_str(&format!("{c_target} = _sum; "));
+                out.push_str(&format!(
+                    "{c_target}.size = {size}; {c_target}.scale = {decimal_places}; {c_target}.is_signed = 1; "
                 ));
             }
-            first = false;
-        } else {
-            emit_decimal_arith(out, c_target, t, "cobol_decimal_add", data_items, pad);
+            _ => {
+                out.push_str(&format!("{c_target} = _sum; "));
+            }
         }
+    } else {
+        out.push_str(&format!("{c_target} = _sum; "));
     }
+    out.push_str("}\n");
 }
 
 /// Parse a decimal literal string like "123.45" into (scaled_value, scale).
@@ -2440,6 +2713,16 @@ pub(crate) fn parse_decimal_literal(s: &str) -> (i64, u32) {
         } else {
             (abs_value, 0)
         }
+    }
+}
+
+pub(crate) fn scale_decimal_to_target(scaled: i64, scale: u32, target_scale: u32) -> i64 {
+    match target_scale.cmp(&scale) {
+        std::cmp::Ordering::Greater => {
+            scaled.saturating_mul(10_i64.saturating_pow(target_scale - scale))
+        }
+        std::cmp::Ordering::Less => scaled / 10_i64.saturating_pow(scale - target_scale),
+        std::cmp::Ordering::Equal => scaled,
     }
 }
 
@@ -3192,10 +3475,19 @@ fn numeric_display_alphanumeric_operand(
                 } else {
                     String::new()
                 };
+                let pic = item
+                    .picture
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| generate_pic_string(&item.data_type));
+                let escaped_pic = escape_c_string(&pic);
+                let pic_len = pic.len();
                 Some((
                     format!(
                         "({{ static uint8_t _cmp_num_buf[64]; \
-                         {blank_when_zero}{{ cobol_move_numeric_to_display({value}, 0, _cmp_num_buf, {size}); }} \
+                         {blank_when_zero}{{ CobolDecimal _cmp_dec = {{ .value = ({value}), .scale = 0, .size = {size}, .is_signed = 0 }}; \
+                         cobol_decimal_to_display(&_cmp_dec, _cmp_num_buf, 64, \
+                         (const uint8_t*)\"{escaped_pic}\", {pic_len}); }} \
                          (const uint8_t*)_cmp_num_buf; }})"
                     ),
                     format!("{size}"),
@@ -3235,52 +3527,6 @@ fn numeric_display_alphanumeric_operand(
     }
 }
 
-/// Generate code to initialize a CobolDecimal _tcmp from a non-decimal expression.
-/// Handles decimal literals properly via cobol_decimal_from_string.
-pub(crate) fn emit_decimal_init_expr(
-    expr: &HirExpr,
-    c_expr: &str,
-    data_items: &[HirDataItem],
-    scale_source: Option<&str>,
-) -> String {
-    match expr {
-        HirExpr::Literal(HirLiteral::Decimal(d)) => {
-            let len = d.len();
-            format!("cobol_decimal_from_string((const uint8_t*)\"{d}\", {len}, &_tcmp);")
-        }
-        HirExpr::UnaryOp {
-            op: HirUnaryOp::Neg,
-            operand,
-        } if matches!(operand.as_ref(), HirExpr::Literal(HirLiteral::Decimal(_))) => {
-            if let HirExpr::Literal(HirLiteral::Decimal(d)) = operand.as_ref() {
-                let literal = format!("-{d}");
-                let len = literal.len();
-                format!("cobol_decimal_from_string((const uint8_t*)\"{literal}\", {len}, &_tcmp);")
-            } else {
-                unreachable!()
-            }
-        }
-        _ if expr_requires_double_precision(expr, data_items) || expr_contains_decimal(expr) => {
-            let init = scale_source.map_or_else(
-                || {
-                    "_tcmp = (CobolDecimal){ .value = 0, .scale = 9, .size = 18, .is_signed = 1 };"
-                        .to_string()
-                },
-                |source| {
-                    format!(
-                        "_tcmp = (CobolDecimal){{ .value = 0, .scale = {source}.scale, \
-                         .size = {source}.size, .is_signed = 1 }};"
-                    )
-                },
-            );
-            format!("{init} cobol_decimal_from_double((double)({c_expr}), &_tcmp);")
-        }
-        _ => {
-            format!("cobol_decimal_from_int({c_expr}, 0, &_tcmp);")
-        }
-    }
-}
-
 pub(crate) fn emit_condition(cond: &HirCondition, data_items: &[HirDataItem]) -> String {
     with_active_context(|ctx| emit_condition_with_ctx(cond, data_items, ctx))
 }
@@ -3290,7 +3536,6 @@ pub(crate) fn emit_condition_with_ctx(
     data_items: &[HirDataItem],
     ctx: &CodegenContext,
 ) -> String {
-    let emit_expr = |expr| super::emit_expr_with_ctx(expr, ctx);
     let emit_expr_as_double = |expr| super::emit_expr_as_double_with_ctx(expr, ctx);
     match cond {
         HirCondition::Compare { left, op, right } => {
@@ -3324,23 +3569,12 @@ pub(crate) fn emit_condition_with_ctx(
                     HirCompareOp::Le => "<= 0",
                 };
                 format!("({cmp} {op_str})")
-            } else if is_decimal_expr(left, data_items) || is_decimal_expr(right, data_items) {
+            } else if is_decimal_expr(left, data_items)
+                || is_decimal_expr(right, data_items)
+                || expr_is_scaled_display_numeric(left, data_items)
+                || expr_is_scaled_display_numeric(right, data_items)
+            {
                 // CobolDecimal comparison via runtime function
-                let left_is_dec = is_decimal_expr(left, data_items);
-                let right_is_dec = is_decimal_expr(right, data_items);
-                // For decimal sides, use emit_expr to get the struct;
-                // for non-decimal sides, use emit_int_compatible_expr to
-                // ensure CobolDecimal sub-expressions are converted to int64.
-                let l = if left_is_dec {
-                    emit_expr(left)
-                } else {
-                    emit_int_compatible_expr(left, data_items)
-                };
-                let r = if right_is_dec {
-                    emit_expr(right)
-                } else {
-                    emit_int_compatible_expr(right, data_items)
-                };
                 let op_str = match op {
                     HirCompareOp::Eq => "== 0",
                     HirCompareOp::Ne => "!= 0",
@@ -3349,23 +3583,12 @@ pub(crate) fn emit_condition_with_ctx(
                     HirCompareOp::Ge => ">= 0",
                     HirCompareOp::Le => "<= 0",
                 };
-                if left_is_dec && right_is_dec {
-                    format!("(cobol_decimal_cmp(&{l}, &{r}) {op_str})")
-                } else if left_is_dec {
-                    // left is decimal, right is not: convert right to temp
-                    let init = emit_decimal_init_expr(right, &r, data_items, Some(&l));
-                    format!(
-                        "(({{ CobolDecimal _tcmp; {init} \
-                         cobol_decimal_cmp(&{l}, &_tcmp); }}) {op_str})"
-                    )
-                } else {
-                    // right is decimal, left is not: convert left to temp
-                    let init = emit_decimal_init_expr(left, &l, data_items, Some(&r));
-                    format!(
-                        "(({{ CobolDecimal _tcmp; {init} \
-                         cobol_decimal_cmp(&_tcmp, &{r}); }}) {op_str})"
-                    )
-                }
+                let left_init = decimal_temp_init_from_expr("_lcmp", left, data_items);
+                let right_init = decimal_temp_init_from_expr("_rcmp", right, data_items);
+                format!(
+                    "(({{ {left_init} {right_init} \
+                     cobol_decimal_cmp(&_lcmp, &_rcmp); }}) {op_str})"
+                )
             } else if expr_contains_decimal(left) || expr_contains_decimal(right) {
                 let l = emit_expr_as_double(left);
                 let r = emit_expr_as_double(right);

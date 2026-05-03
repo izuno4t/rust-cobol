@@ -78,9 +78,13 @@ pub fn emit_c_declarations(out: &mut String) {
         "extern uint32_t cobol_file_open_indexed(uint32_t file_id, const uint8_t* path_ptr, uint32_t path_len, uint32_t access, uint32_t mode, uint32_t record_len, uint32_t key_offset, uint32_t key_len);\n",
     );
     out.push_str(
+        "extern uint32_t cobol_file_open_indexed_optional(uint32_t file_id, const uint8_t* path_ptr, uint32_t path_len, uint32_t access, uint32_t mode, uint32_t record_len, uint32_t key_offset, uint32_t key_len, uint32_t optional);\n",
+    );
+    out.push_str(
         "extern uint32_t cobol_file_add_alternate_index(uint32_t file_id, uint32_t key_offset, uint32_t key_len, uint32_t duplicates);\n",
     );
     out.push_str("extern uint32_t cobol_file_close(uint32_t file_id);\n");
+    out.push_str("extern uint32_t cobol_file_close_with_lock(uint32_t file_id);\n");
     out.push_str("extern uint32_t cobol_file_set_variable(uint32_t file_id);\n");
     out.push_str(
         "extern uint32_t cobol_file_read_next(uint32_t file_id, uint8_t* record_ptr, uint32_t record_len);\n",
@@ -89,16 +93,31 @@ pub fn emit_c_declarations(out: &mut String) {
         "extern uint32_t cobol_file_read_key(uint32_t file_id, const uint8_t* key_ptr, uint32_t key_len, uint32_t key_offset, uint8_t* record_ptr, uint32_t record_len);\n",
     );
     out.push_str(
+        "extern uint32_t cobol_file_read_relative(uint32_t file_id, uint64_t rec_num, uint8_t* record_ptr, uint32_t record_len);\n",
+    );
+    out.push_str(
         "extern uint32_t cobol_file_write(uint32_t file_id, const uint8_t* record_ptr, uint32_t record_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_file_write_relative(uint32_t file_id, uint64_t rec_num, const uint8_t* record_ptr, uint32_t record_len);\n",
     );
     out.push_str(
         "extern uint32_t cobol_file_rewrite(uint32_t file_id, const uint8_t* record_ptr, uint32_t record_len);\n",
     );
     out.push_str("extern uint32_t cobol_file_delete(uint32_t file_id);\n");
+    out.push_str(
+        "extern uint32_t cobol_file_delete_record(uint32_t file_id, const uint8_t* record_ptr, uint32_t record_len);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_file_delete_relative(uint32_t file_id, uint64_t rec_num);\n",
+    );
     out.push_str("extern uint64_t cobol_file_current_record(uint32_t file_id);\n");
     out.push_str("extern uint32_t cobol_file_current_record_length(uint32_t file_id);\n");
     out.push_str(
         "extern uint32_t cobol_file_start(uint32_t file_id, const uint8_t* key_ptr, uint32_t key_len, uint32_t key_offset, uint32_t mode);\n",
+    );
+    out.push_str(
+        "extern uint32_t cobol_file_start_relative(uint32_t file_id, uint64_t rec_num, uint32_t mode);\n",
     );
     out.push_str("/* Class condition runtime declarations */\n");
     out.push_str("extern int32_t cobol_is_numeric(const uint8_t* ptr, uint32_t len);\n");
@@ -370,6 +389,8 @@ mod tests {
         assert!(out.contains("cobol_json_parse"));
         assert!(out.contains("cobol_xml_generate"));
         assert!(out.contains("cobol_xml_parse"));
+        assert!(out.contains("cobol_file_open_indexed_optional"));
+        assert!(out.contains("cobol_file_close_with_lock"));
         assert!(out.contains("cobol_sort_buffer_sort"));
     }
 }

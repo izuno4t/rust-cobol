@@ -191,6 +191,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_open_with_multiple_mode_groups() {
+        let src = "\
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-OPEN.
+       PROCEDURE DIVISION.
+           OPEN INPUT FILE-A, FILE-B OUTPUT FILE-C.
+           STOP RUN.";
+        let program = parse(src).unwrap();
+        let proc = program.procedure.unwrap();
+        let stmts: Vec<_> = proc
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.sentences.iter())
+            .flat_map(|s| s.statements.iter())
+            .collect();
+        let Statement::Open(open) = &stmts[0] else {
+            panic!("expected OPEN statement");
+        };
+        assert_eq!(open.entries.len(), 3);
+        assert_eq!(open.entries[0].file_name.as_str(), "FILE-A");
+        assert_eq!(open.entries[0].mode, statement::OpenMode::Input);
+        assert_eq!(open.entries[1].file_name.as_str(), "FILE-B");
+        assert_eq!(open.entries[1].mode, statement::OpenMode::Input);
+        assert_eq!(open.entries[2].file_name.as_str(), "FILE-C");
+        assert_eq!(open.entries[2].mode, statement::OpenMode::Output);
+    }
+
+    #[test]
     fn test_parse_if_with_and_function_condition_continuation() {
         let src = "\
        IDENTIFICATION DIVISION.
@@ -534,6 +562,48 @@ PROCEDURE DIVISION.
             .unwrap();
         if let Statement::Add(a) = add {
             assert!(!a.on_size_error.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_parse_add_signed_decimal_operands_are_separate() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-ADD-SIGNED.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-A PIC S9V99.
+01  WS-B PIC S9V99.
+01  WS-C PIC S9V99.
+01  WS-R PIC S9V99.
+PROCEDURE DIVISION.
+    ADD WS-A WS-B -.34 -.01 GIVING WS-R.
+    STOP RUN.
+";
+        let program = parse_free(src).unwrap();
+        let proc = program.procedure.unwrap();
+        let stmts: Vec<_> = proc
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.sentences.iter())
+            .flat_map(|s| s.statements.iter())
+            .collect();
+        let add = stmts
+            .iter()
+            .find(|s| matches!(s, Statement::Add(_)))
+            .unwrap();
+        if let Statement::Add(a) = add {
+            assert_eq!(a.operands.len(), 4);
+            assert!(
+                matches!(&a.operands[2], Expr::UnaryOp { .. }),
+                "signed decimal literal must not be folded into the previous operand: {:#?}",
+                a.operands
+            );
+            assert!(
+                matches!(&a.operands[3], Expr::UnaryOp { .. }),
+                "signed decimal literal must remain a separate operand: {:#?}",
+                a.operands
+            );
         }
     }
 

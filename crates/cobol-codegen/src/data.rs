@@ -399,6 +399,7 @@ pub(crate) fn emit_single_data_item(
             _ => {
                 if item.occurs.is_some() {
                     // REDEFINES + OCCURS: cast to pointer so it acts as an array base
+                    let c_type = c_type_for_redefines_occurs_item(item);
                     out.push_str(&format!(
                         "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} OCCURS */\n"
                     ));
@@ -845,6 +846,7 @@ pub(crate) fn emit_group_redefines(
                 _ => {
                     if member.occurs.is_some() {
                         // REDEFINES + OCCURS: pointer cast (acts as array base)
+                        let c_type = c_type_for_redefines_occurs_item(member);
                         let alias_expr = format!(
                             "(({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} OCCURS */"
                         );
@@ -909,6 +911,13 @@ pub(crate) fn c_type_for_hir_type(ty: &HirType) -> &'static str {
         HirType::FloatLong => "double",
         HirType::FloatExtended => "long double",
         HirType::National { .. } => "uint16_t",
+    }
+}
+
+fn c_type_for_redefines_occurs_item(item: &HirDataItem) -> &'static str {
+    match item.data_type {
+        HirType::Numeric { .. } => "char",
+        _ => c_type_for_hir_type(&item.data_type),
     }
 }
 

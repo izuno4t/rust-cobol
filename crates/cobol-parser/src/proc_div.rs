@@ -700,7 +700,7 @@ impl Parser {
 
         let mut operands = Vec::new();
         while !self.check(TokenKind::To) && !self.check(TokenKind::Giving) && !self.at_eof() {
-            operands.push(self.parse_expr()?);
+            operands.push(self.parse_arithmetic_operand()?);
             let _ = self.eat(TokenKind::Comma); // Optional comma separator
         }
 
@@ -2185,6 +2185,7 @@ impl Parser {
 
             while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
                 && !self.at_statement_terminator()
+                && !Self::is_open_mode_token(self.current().kind)
             {
                 let file_name = self.advance().text;
                 entries.push(OpenEntry { mode, file_name });
@@ -2200,6 +2201,13 @@ impl Parser {
             entries,
             span: start_span.merge(&end_span),
         }))
+    }
+
+    fn is_open_mode_token(kind: TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::Input | TokenKind::Output | TokenKind::IoMode | TokenKind::Extend
+        )
     }
 
     // --- CLOSE ---

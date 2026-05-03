@@ -468,8 +468,13 @@ impl Parser {
                     // RECORD [IS] VARYING [IN SIZE] [FROM n] [TO m]
                     //   [CHARACTERS] [DEPENDING [ON] data-name]
                     // Also: RECORD VARYING n TO m [DEPENDING [ON] data-name]
+                    let warning_span = self.span();
                     self.eat_is();
                     self.eat(TokenKind::Varying);
+                    self.warning_at(
+                        warning_span,
+                        "RECORD IS VARYING is a non-conforming file description feature",
+                    );
                     self.eat_identifier("IN");
                     self.eat(TokenKind::SizeKw);
                     let min = if self.check(TokenKind::From) {

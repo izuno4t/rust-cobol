@@ -542,9 +542,10 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     // Count digit positions before and after the decimal point in the PICTURE.
     let pic_upper = expand_picture_repeats(pic).to_uppercase();
     let chars: Vec<char> = pic_upper.chars().collect();
+    let display_abs_value = apply_picture_p_scaling(abs_value, &chars);
     if chars.iter().all(|&c| c == '$' || c == 'W') && !chars.is_empty() {
         let symbol = chars[0];
-        let digits = abs_value.to_string();
+        let digits = display_abs_value.to_string();
         let mut result = String::with_capacity(chars.len());
         let occupied = (digits.len() + 1).min(chars.len());
         result.push_str(&" ".repeat(chars.len().saturating_sub(occupied)));
@@ -557,15 +558,11 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
         return result;
     }
 
-    // Find the decimal point position. When both "." and "," appear in an
-    // edited picture, the rightmost separator is the decimal separator and the
-    // other is a grouping insertion.
-    let actual_decimal_char =
-        chars
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(_, &c)| if c == '.' || c == ',' { Some(c) } else { None });
+    // In the default COBOL convention, period is the actual decimal point and
+    // comma is an insertion character. DECIMAL-POINT IS COMMA is handled while
+    // parsing numeric literals, but edited output currently follows the default
+    // convention.
+    let actual_decimal_char = chars.iter().find(|&&c| c == '.').copied();
     let decimal_pos = chars
         .iter()
         .position(|&c| c == 'V' || Some(c) == actual_decimal_char);
@@ -574,9 +571,17 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
         .iter()
         .take_while(|&&c| c != 'V' && c != '.')
         .any(|&c| c == '9');
-    let zero_asterisk_fill = abs_value == 0 && chars.contains(&'*') && !has_mandatory_integer_digit;
+    if display_abs_value == 0
+        && chars.contains(&'Z')
+        && !chars.iter().any(|&c| c == '9' || c == '*')
+    {
+        return " ".repeat(chars.len());
+    }
+    let zero_asterisk_fill =
+        display_abs_value == 0 && chars.contains(&'*') && !has_mandatory_integer_digit;
 
     // Count integer and fractional digit positions.
+    let floating_symbol = numeric_edited_floating_symbol(&chars, actual_decimal_char);
     let mut int_digits = 0usize;
     let mut frac_digits = 0usize;
     let mut found_decimal = false;
@@ -585,7 +590,7 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
             found_decimal = true;
             continue;
         }
-        if c == '9' || c == 'Z' || c == '*' {
+        if c == '9' || c == 'Z' || c == '*' || Some(c) == floating_symbol {
             if found_decimal {
                 frac_digits += 1;
             } else {
@@ -596,8 +601,8 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
 
     // Extract integer and fractional parts from the value.
     let frac_factor = pow10_i64(dec.scale.max(0) as u32) as u64;
-    let int_val = abs_value / frac_factor;
-    let frac_val = abs_value % frac_factor;
+    let int_val = display_abs_value / frac_factor;
+    let frac_val = display_abs_value % frac_factor;
 
     // Pad to the expected number of digits.
     let int_str = format!("{:0>width$}", int_val, width = int_digits);
@@ -612,6 +617,12 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     } else {
         String::new()
     };
+
+    if let Some(formatted) =
+        format_floating_numeric_edited(&chars, actual_decimal_char, int_val, &frac_str, negative)
+    {
+        return formatted;
+    }
 
     // Now walk the PICTURE and build the output.
     let mut int_idx = 0usize;
@@ -636,12 +647,19 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
                 result.push(if negative { 'D' } else { ' ' });
                 forced_next = Some(if negative { 'B' } else { ' ' });
             }
-            '$' | 'W' | '*' | 'C' | 'R' if zero_asterisk_fill => {
+            '*' | 'C' | 'R' if zero_asterisk_fill => {
                 result.push('*');
                 if c == '*' && !in_frac {
                     int_idx += 1;
                 } else if c == '*' {
                     frac_idx += 1;
+                }
+            }
+            '$' | 'W' if zero_asterisk_fill => {
+                if chars.get(idx + 1).is_some_and(|next| *next == '*') {
+                    result.push(c);
+                } else {
+                    result.push('*');
                 }
             }
             'S' => {
@@ -733,9 +751,14 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
                 if let Some(symbol) = pending_floating_symbol.take() {
                     result.push(symbol);
                     suppress_zeros = false;
+                } else if suppress_zeros && chars[..idx].contains(&'*') {
+                    result.push('*');
                 } else {
                     result.push(' ');
                 }
+            }
+            'P' => {
+                result.push(' ');
             }
             '9' => {
                 if !in_frac {
@@ -794,6 +817,182 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let _ = has_actual_point;
 
     result
+}
+
+fn format_floating_numeric_edited(
+    chars: &[char],
+    actual_decimal_char: Option<char>,
+    int_val: u64,
+    frac_str: &str,
+    negative: bool,
+) -> Option<String> {
+    let decimal_idx = chars
+        .iter()
+        .position(|&c| c == 'V' || Some(c) == actual_decimal_char)
+        .unwrap_or(chars.len());
+    let int_pic = &chars[..decimal_idx];
+    let floating_symbol = ['$', '+', '-']
+        .into_iter()
+        .find(|symbol| int_pic.iter().filter(|&&c| c == *symbol).count() > 1)?;
+
+    let emitted_symbol = match floating_symbol {
+        '$' => Some('$'),
+        '+' => Some(if negative { '-' } else { '+' }),
+        '-' if negative => Some('-'),
+        '-' => None,
+        _ => None,
+    };
+
+    let frac_pic = if decimal_idx < chars.len() {
+        &chars[decimal_idx + 1..]
+    } else {
+        &[]
+    };
+    let mandatory_int_digits = int_pic
+        .iter()
+        .filter(|&&c| c == '9' || c == 'Z' || c == '*')
+        .count();
+    let floating_frac_digits = frac_pic.iter().any(|&c| c == floating_symbol);
+    let mandatory_frac_digits = frac_pic.iter().any(|&c| c == '9' || c == 'Z' || c == '*');
+    let all_zero = int_val == 0 && frac_str.chars().all(|ch| ch == '0');
+    if all_zero && mandatory_int_digits == 0 && !mandatory_frac_digits {
+        return Some(" ".repeat(chars.len()));
+    }
+
+    let digit_text = floating_integer_text(int_val, mandatory_int_digits, int_pic.contains(&','));
+    let mut integer_text = String::with_capacity(digit_text.len() + 1);
+    if let Some(symbol) = emitted_symbol {
+        integer_text.push(symbol);
+    }
+    integer_text.push_str(&digit_text);
+    let mut result = right_align_floating_text(&integer_text, int_pic.len(), emitted_symbol);
+    if decimal_idx < chars.len() {
+        match chars[decimal_idx] {
+            'V' => {}
+            c if Some(c) == actual_decimal_char => result.push(c),
+            _ => {}
+        }
+        let mut frac_idx = 0usize;
+        let mut idx = decimal_idx + 1;
+        while idx < chars.len() {
+            let c = chars[idx];
+            match c {
+                '9' | 'Z' | '*' => {
+                    let digit = frac_str.as_bytes().get(frac_idx).copied().unwrap_or(b'0');
+                    result.push(digit as char);
+                    frac_idx += 1;
+                }
+                c if c == floating_symbol && floating_frac_digits => {
+                    let digit = frac_str.as_bytes().get(frac_idx).copied().unwrap_or(b'0');
+                    result.push(digit as char);
+                    frac_idx += 1;
+                }
+                '+' => result.push(if negative { '-' } else { '+' }),
+                '-' => result.push(if negative { '-' } else { ' ' }),
+                'C' if chars.get(idx + 1).is_some_and(|next| *next == 'R') => {
+                    result.push(if negative { 'C' } else { ' ' });
+                    result.push(if negative { 'R' } else { ' ' });
+                    idx += 1;
+                }
+                'D' if chars.get(idx + 1).is_some_and(|next| *next == 'B') => {
+                    result.push(if negative { 'D' } else { ' ' });
+                    result.push(if negative { 'B' } else { ' ' });
+                    idx += 1;
+                }
+                'S' => {}
+                other => result.push(other),
+            }
+            idx += 1;
+        }
+    }
+    Some(result)
+}
+
+fn numeric_edited_floating_symbol(
+    chars: &[char],
+    actual_decimal_char: Option<char>,
+) -> Option<char> {
+    let decimal_idx = chars
+        .iter()
+        .position(|&c| c == 'V' || Some(c) == actual_decimal_char)
+        .unwrap_or(chars.len());
+    let int_pic = &chars[..decimal_idx];
+    ['$', '+', '-']
+        .into_iter()
+        .find(|symbol| int_pic.iter().filter(|&&c| c == *symbol).count() > 1)
+}
+
+fn floating_integer_text(value: u64, mandatory_digits: usize, grouped: bool) -> String {
+    let digits = if mandatory_digits > 0 {
+        format!("{value:0>mandatory_digits$}")
+    } else {
+        plain_integer_text(value)
+    };
+    if grouped && digits.len() > 3 {
+        grouped_digits(&digits)
+    } else {
+        digits
+    }
+}
+
+fn grouped_digits(digits: &str) -> String {
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (idx, ch) in digits.chars().enumerate() {
+        if idx > 0 && (digits.len() - idx) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn plain_integer_text(value: u64) -> String {
+    if value == 0 {
+        String::new()
+    } else {
+        value.to_string()
+    }
+}
+
+fn right_align_text(text: &str, width: usize) -> String {
+    let len = text.chars().count();
+    if len >= width {
+        return text.chars().skip(len - width).collect();
+    }
+    let mut out = String::with_capacity(width);
+    out.push_str(&" ".repeat(width - len));
+    out.push_str(text);
+    out
+}
+
+fn right_align_floating_text(text: &str, width: usize, symbol: Option<char>) -> String {
+    let len = text.chars().count();
+    if len <= width {
+        return right_align_text(text, width);
+    }
+    if let Some(symbol) = symbol {
+        let mut out = String::with_capacity(width);
+        out.push(symbol);
+        out.extend(
+            text.chars()
+                .rev()
+                .take(width.saturating_sub(1))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev(),
+        );
+        return out;
+    }
+    right_align_text(text, width)
+}
+
+fn apply_picture_p_scaling(value: u64, chars: &[char]) -> u64 {
+    let trailing_p = chars.iter().rev().take_while(|&&c| c == 'P').count() as u32;
+    if trailing_p == 0 {
+        value
+    } else {
+        value / 10u64.pow(trailing_p)
+    }
 }
 
 fn expand_picture_repeats(pic: &str) -> String {
@@ -874,6 +1073,128 @@ mod tests {
     }
 
     #[test]
+    fn test_floating_numeric_edited_long_pictures() {
+        let pic = b"$$,$$$,$$$,$$$,$$$,$$$.99";
+        let mut out = [0u8; 32];
+        let zero = make_dec(0, 2, 18, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                pic.as_ptr(),
+                pic.len() as u32,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "                     $.00"
+        );
+
+        let one = make_dec(100, 2, 18, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &one,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                pic.as_ptr(),
+                pic.len() as u32,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "                    $1.00"
+        );
+
+        let hundreds = make_dec(11111, 2, 18, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &hundreds,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                pic.as_ptr(),
+                pic.len() as u32,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "                  $111.11"
+        );
+
+        let amount = make_dec(999911, 2, 18, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &amount,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                pic.as_ptr(),
+                pic.len() as u32,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "                $9,999.11"
+        );
+
+        let overflow = make_dec(1234, 0, 4, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &overflow,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"$$99".as_ptr(),
+                4,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "$234");
+
+        let plus_pic = b"++,+++,+++,+++,+++,+++.99";
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                plus_pic.as_ptr(),
+                plus_pic.len() as u32,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "                     +.00"
+        );
+
+        let minus_pic = b"--,---,---,---,---,---.99";
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                minus_pic.as_ptr(),
+                minus_pic.len() as u32,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "                      .00"
+        );
+
+        let negative = make_dec(-100, 2, 18, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &negative,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                minus_pic.as_ptr(),
+                minus_pic.len() as u32,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "                    -1.00"
+        );
+    }
+
+    #[test]
     fn test_asterisk_picture_replaces_suppressed_zeroes() {
         let mut out = [0u8; 16];
         let d = make_dec(1000, 2, 6, true);
@@ -898,7 +1219,7 @@ mod tests {
                 6,
             )
         };
-        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "***.00");
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "$**.00");
 
         let len = unsafe {
             cobol_decimal_to_display(
@@ -922,8 +1243,20 @@ mod tests {
         };
         assert_eq!(
             std::str::from_utf8(&out[..len as usize]).unwrap(),
-            "***.****"
+            "$**.****"
         );
+
+        let negative = make_dec(-42, 0, 6, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &negative,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"-*B*99".as_ptr(),
+                6,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "-***42");
 
         let positive = make_dec(55, 2, 5, true);
         let len = unsafe {
@@ -938,6 +1271,147 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(&out[..len as usize]).unwrap(),
             "  $.55  "
+        );
+    }
+
+    #[test]
+    fn test_trailing_comma_is_numeric_edited_insertion() {
+        let mut out = [0u8; 32];
+        let d = make_dec(123456789012, 0, 12, true);
+        let pic = b"9,9,9,9,9,9,9,9,9,9,9,9,";
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &d,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                pic.as_ptr(),
+                pic.len() as u32,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "1,2,3,4,5,6,7,8,9,0,1,2,"
+        );
+    }
+
+    #[test]
+    fn test_z_only_picture_zero_suppresses_decimal() {
+        let mut out = [0u8; 8];
+        let zero = make_dec(0, 0, 4, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"ZZ.ZZ".as_ptr(),
+                5,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "     ");
+    }
+
+    #[test]
+    fn test_p_positions_are_not_literal_output() {
+        let mut out = [0u8; 8];
+        let d = make_dec(900, 0, 5, true);
+        let len = unsafe {
+            cobol_decimal_to_display(&d, out.as_mut_ptr(), out.len() as u32, b"ZZZPP".as_ptr(), 5)
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "  9  ");
+    }
+
+    #[test]
+    fn test_floating_sign_fraction_positions() {
+        let mut out = [0u8; 16];
+        let zero = make_dec(0, 0, 5, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"++++9".as_ptr(),
+                5,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "   +0");
+
+        let twelve = make_dec(12, 0, 5, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &twelve,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"++++9".as_ptr(),
+                5,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "  +12");
+
+        let large = make_dec(1234, 0, 5, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &large,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"++++9".as_ptr(),
+                5,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "+1234");
+
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"+++++.".as_ptr(),
+                6,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "      ");
+
+        let d = make_dec(12, 0, 7, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &d,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"+++++.++".as_ptr(),
+                8,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "  +12.00"
+        );
+
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &d,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"--,---.--".as_ptr(),
+                9,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "    12.00"
+        );
+
+        let negative = make_dec(-1298, 2, 8, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &negative,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"---,999.99".as_ptr(),
+                10,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "   -012.98"
         );
     }
 

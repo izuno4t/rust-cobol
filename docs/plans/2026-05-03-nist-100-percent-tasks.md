@@ -52,12 +52,12 @@
 | IMPL-010A | ✅ | `PERFORM section`復帰境界とsection内paragraph範囲を修正する | IMPL-010 |
 | IMPL-018A | ✅ | 添字付き数値項目とREDEFINESの更新/比較を修正する | IMPL-010A,IMPL-012 |
 | IMPL-013 | ✅ | 例外句とprogram terminationの制御辺を実装する | IMPL-010 |
-| IMPL-014 | 🚧 | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 |
-| IMPL-015 | ⏳ | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 |
-| IMPL-016 | ⏳ | relative fileのrelative key/cursor/delete状態機械を実装する | IMPL-014 |
+| IMPL-014 | ✅ | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 |
+| IMPL-015 | ✅ | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 |
+| IMPL-016 | ✅ | relative fileのrelative key/cursor/delete状態機械を実装する | IMPL-014 |
 | IMPL-017 | ⏳ | LINAGEとWRITE ADVANCINGのoutput positioningを実装する | IMPL-008,IMPL-014 |
-| IMPL-018 | ⏳ | PICTURE metadataをsemaからruntimeまで一貫して運ぶ | IMPL-003,TASK-006 |
-| IMPL-019 | ⏳ | MOVE conversionをsource/target category単位で一元化する | IMPL-018 |
+| IMPL-018 | 🚧 | PICTURE metadataをsemaからruntimeまで一貫して運ぶ | IMPL-003,TASK-006 |
+| IMPL-019 | 🚧 | MOVE conversionをsource/target category単位で一元化する | IMPL-018 |
 | IMPL-020 | ⏳ | decimal算術、丸め、SIZE ERRORを一元化する | IMPL-018 |
 | IMPL-021 | ⏳ | edited numeric formatter/parserを実装する | IMPL-019 |
 | IMPL-022 | ⏳ | intrinsic argument flattenと戻り値categoryを実装する | IMPL-018,TASK-007 |
@@ -65,7 +65,7 @@
 | IMPL-024 | ⏳ | ordinal/string/date/random intrinsicを実装する | IMPL-022 |
 | IMPL-025 | ⏳ | COPY REPLACINGのtoken単位置換を実装する | TASK-008 |
 | IMPL-026 | ⏳ | copybook library-nameとcontinuation/quote処理を実装する | IMPL-025 |
-| IMPL-027 | ⏳ | obsolete/non-conforming warning診断を構文単位で実装する | IMPL-007,IMPL-026 |
+| IMPL-027 | ✅ | obsolete/non-conforming warning診断を構文単位で実装する | IMPL-007 |
 | IMPL-028 | ⏳ | Report Writer lifecycleとcounterを実装する | IMPL-008,IMPL-017,TASK-009 |
 | IMPL-029 | ⏳ | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 |
 | IMPL-030 | ⏳ | MERGEとsame sort-merge areaを実装する | IMPL-029 |
@@ -1587,12 +1587,478 @@ TASK-011時点での判断:
   `84 total / 73 pass / 11 fail / 0 CErr / 0 RErr / 86%`。
   残るFAILは`SQ201M`, `SQ206A`, `SQ208M`, `SQ209M`, `SQ211A`,
   `SQ212A`, `SQ214A`, `SQ225A`, `SQ302M`, `SQ303M`, `SQ401M`。
+- 分類13: `SQ201M`は`LINAGE IS ... WITH FOOTING ... LINES AT TOP/BOTTOM`と
+  `WRITE ... ADVANCING`に対する`LINAGE-COUNTER`更新が未実装で、
+  `LINAGE-COUNTER`がopen後もwrite後も0のままになる。これはfile open/read/writeの
+  状態機械ではなく、既存タスク`IMPL-017`のLINAGE/output positioning範囲として扱う。
+  IMPL-014では次のfile I/O系残件`SQ206A`へ進む。
+- 根本原因14: `SQ206A`は`SAME RECORD AREA`そのものではなく、
+  `OPEN INPUT SQ-FS1, SQ-FS3 OUTPUT SQ-FS4`のような複数mode groupを持つ
+  `OPEN`文のparser不備だった。parserは`OUTPUT`を次のmode開始ではなく
+  file-nameとして消費していたため、後続fileも前のmodeでHIR/codegenへ渡されていた。
+  その結果、SQ-FS4/SQ-FS2がINPUTとして開かれ、作成対象fileのtruncate/writeが
+  正しく行われていなかった。
+- 変更14: `OPEN`文のfile-name列を読む際、`INPUT`/`OUTPUT`/`I-O`/`EXTEND`を
+  次のmode group境界として扱うようにした。回帰確認として、
+  `OPEN INPUT FILE-A, FILE-B OUTPUT FILE-C`が3 entriesかつFILE-CだけOUTPUTに
+  なるparserテストを追加した。
+- 追加確認: `cargo test -p cobol-parser test_parse_open_with_multiple_mode_groups`,
+  `cargo test -p cobol-parser --all-targets`,
+  `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ206A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ206A`は`PASS (4 passed)`。SQ全体は
+  `84 total / 74 pass / 10 fail / 0 CErr / 0 RErr / 88%`。
+  残るFAILは`SQ201M`, `SQ208M`, `SQ209M`, `SQ211A`, `SQ212A`,
+  `SQ214A`, `SQ225A`, `SQ302M`, `SQ303M`, `SQ401M`。
+- 分類15: `SQ208M`も`LINAGE`と`WRITE ... BEFORE/AFTER ADVANCING`の
+  output positioningを目視確認するプログラムで、CCVS detail paragraph不足は
+  `LINAGE-COUNTER`/ページ送り未実装に起因する。`SQ201M`と同じく`IMPL-017`範囲。
+- 分類16: `SQ209M`も最小構成`LINAGE 40`と`WRITE ... ADVANCING PAGE/EOP`を
+  目視確認するプログラムで、`PERFORM ... UNTIL LINAGE-COUNTER EQUAL 39`などが
+  `LINAGE-COUNTER`未更新に依存して帳票summaryへ到達していない。`IMPL-017`範囲。
+- 根本原因17: `SQ211A`の`CLOSE ... WITH LOCK`はparser/HIRまでは
+  `WithLock`として保持されていたが、codegen/runtimeでは通常`CLOSE`と同じ
+  `cobol_file_close`を呼んでいた。そのため`CLOSE WITH LOCK`後の再`OPEN INPUT`が
+  成功し、期待file status `38`ではなく`00`になっていた。
+- 変更17: runtimeにprocess-localなlocked path集合と
+  `cobol_file_close_with_lock` ABIを追加し、`WithLock`時だけcodegenがこのABIを
+  呼ぶようにした。再`OPEN`時にlocked pathを検出した場合はfile status `38`を返す。
+  回帰確認として、`CLOSE WITH LOCK`後の再`OPEN`が`38`になるruntime/e2eを追加した。
+- 追加確認: `cargo test -p cobol-runtime test_close_with_lock_blocks_reopen`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_close_with_lock_sets_reopen_status_38`,
+  `cargo test -p cobol-runtime --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ211A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ211A`は`PASS (4 passed)`。この時点のSQ全体は
+  `84 total / 75 pass / 9 fail / 0 CErr / 0 RErr / 89%`。
+  残るFAILは`SQ201M`, `SQ208M`, `SQ209M`, `SQ212A`, `SQ214A`,
+  `SQ225A`, `SQ302M`, `SQ303M`, `SQ401M`。
+- 根本原因18: `SQ212A`は`RECORD IS VARYING IN SIZE FROM 18 TO 2048
+  DEPENDING ON RECORD-LENGTH`の境界違反を検証しているが、codegenは
+  DEPENDING値を`0..最大record長`へ丸めるだけで、下限未満/上限超過を
+  file status `44`にせず実際にwriteしていた。そのため15/16/17 byteの不正recordが
+  fileへ混入し、後続readのrecord長検証が3件ずれていた。
+- 変更18: HIRへ可変長recordの下限/上限を伝搬し、WRITE/REWRITE時に
+  DEPENDING値が境界外ならruntime I/Oを呼ばずfile status `44`を設定するようにした。
+  FILE STATUSおよびDECLARATIVESは既存のstatus更新経路を使う。回帰確認として、
+  可変長record境界をHIRへ保持するtestと、境界外WRITEが`44`になるnative e2eを追加した。
+- 根本原因19: 変更18の初回実装では、`RECORD VARYING DEPENDING data-name`のように
+  明示`FROM`/`TO`がないFDで、下限を最大01-level record長にしていた。その結果、
+  `SQ221A`の120 byte/151 byte混在recordのうち120 byte recordを誤って境界違反扱いにした。
+- 変更19: 明示`FROM`/`TO`がない可変長FDでは、FD配下の01-level record記述から
+  最小record長と最大record長を推定するようにした。回帰確認として、
+  120/151 byteの複数01-level recordから`(120, 151)`を推定するHIR testを追加した。
+- 追加確認: `cargo test -p cobol-hir variable_record_bounds`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_variable_record_write_bounds_set_status_44`,
+  `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ212A`,
+  `make nist-run MODULE=SQ PROGRAM=SQ221A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ212A`は`PASS (1 passed)`、`SQ221A`は`PASS (6 passed)`。
+  SQ全体は`84 total / 76 pass / 8 fail / 0 CErr / 0 RErr / 90%`。
+  残るFAILは`SQ201M`, `SQ208M`, `SQ209M`, `SQ214A`, `SQ225A`,
+  `SQ302M`, `SQ303M`, `SQ401M`。
+- 根本原因20: `SQ214A`はsequential file自体ではなく、`WRITE record FROM group`で
+  `OCCURS 1 TO 9 TIMES DEPENDING ON`を含む親groupを参照したときの有効長計算が
+  仕様とずれていた。COBOLでは親group item参照時、ODO tableはDEPENDING現在値で
+  指定されたoccurrenceだけが操作対象になるが、HIRはOCCURSの最大回数だけを保持し、
+  DEPENDING項目名を捨てていた。そのためcodegenは最大サイズ全体をrecordへcopyし、
+  `3 ACTIVE: 123`で止まるべきrecordに`456789`まで混入していた。
+- 変更20: HIR data itemに`occurs_depending_on`を追加し、loweringで
+  `OCCURS ... DEPENDING ON`の依存項目名を保持するようにした。codegenは
+  `WRITE`/`REWRITE ... FROM`のsource長として、ODOを含むgroupの実効byte長を
+  DEPENDING現在値から生成C式で計算する。通常の固定長groupやREAD INTOの既存挙動は
+  変更しない。
+- 追加確認: `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_variable_record_write_bounds_set_status_44`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ214A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ214A`は`PASS (5 passed)`。SQ全体は
+  `84 total / 77 pass / 7 fail / 0 CErr / 0 RErr / 91%`。
+  残るFAILは`SQ201M`, `SQ208M`, `SQ209M`, `SQ225A`, `SQ302M`,
+  `SQ303M`, `SQ401M`。
+- 根本原因21: `SQ225A`は`OPEN EXTEND`対象fileが存在しない場合のfile statusを
+  検証しているが、runtimeは`Extend`を`create(true).append(true)`で開いていた。
+  COBOLの`OPEN EXTEND`は既存sequential fileを追記用に開く操作であり、未存在fileを
+  暗黙作成してはならない。そのため期待status `35`ではなく`00`になり、
+  `USE AFTER STANDARD ERROR PROCEDURE` declarativeにも入らなかった。
+- 変更21: runtimeの`FileOpenMode::Extend`から未存在file作成を除き、OSのnot foundを
+  既存のfile status `35`経路へ流すようにした。回帰確認として、
+  未存在fileの`OPEN EXTEND`が`35`を返すruntime testを追加した。
+- 追加確認: `cargo test -p cobol-runtime test_extend_missing_file_returns_not_found`,
+  `cargo test -p cobol-runtime --all-targets`, `make release`,
+  `make nist-run MODULE=SQ PROGRAM=SQ225A`, `make nist-run MODULE=SQ`を実行。
+- NIST確認: `SQ225A`は`PASS (3 passed)`。SQ全体は
+  `84 total / 78 pass / 6 fail / 0 CErr / 0 RErr / 92%`。
+  残るFAILは`SQ201M`, `SQ208M`, `SQ209M`, `SQ302M`, `SQ303M`,
+  `SQ401M`。
+- 分類22: 残る`SQ302M`, `SQ303M`, `SQ401M`はsequential file runtimeではなく、
+  CCVSが期待するobsolete/non-conforming warningの未出力である。`.reason`は
+  `SQ302M`が`warning-flags-missing|expected 4 warning flag(s), got 0`、
+  `SQ303M`が`empty-report|expected-flags=2|warning-flags=0`、
+  `SQ401M`が`empty-report|expected-flags=18|warning-flags=0`で、compile logには
+  対応warningが出ていない。対象featureは`LABEL RECORDS`, `VALUE OF`,
+  `DATA RECORDS`, `MULTIPLE FILE TAPE`, `OPEN INPUT ... REVERSED`,
+  `CLOSE ... WITH NO REWIND`, `OPEN ... WITH NO REWIND`, `READ ... NEXT`,
+  `WRITE ... AT END-OF-PAGE`等の診断仕様であり、`IMPL-027`の
+  obsolete/non-conforming warning診断範囲として扱う。
+- 分類23: 残る`SQ201M`, `SQ208M`, `SQ209M`は既に分類済みのとおり
+  `LINAGE`/`WRITE ... ADVANCING`のoutput positioning未実装であり、`IMPL-017`範囲。
+- 完了判断: IMPL-014対象のsequential file open/read/write/status状態機械に起因する
+  SQ残件は0になった。SQ残6件は`IMPL-017`または`IMPL-027`へ分類済みのため、
+  IMPL-014は完了とする。
+
+### IMPL-015 実施記録（進行中）
+
+- 対象: `crates/cobol-ast/src/env_div.rs`, `crates/cobol-parser/src/env_div.rs`,
+  `crates/cobol-hir/src/hir.rs`, `crates/cobol-hir/src/lower.rs`,
+  `crates/cobol-codegen/src/codegen.rs`, `crates/cobol-codegen/src/stmt.rs`,
+  `crates/cobol-runtime/src/abi.rs`, `crates/cobol-runtime/src/file_io.rs`
+- 初期確認: IMPL-015着手時点のIXは`29 total / 5 pass / 24 fail / 0 CErr / 0 RErr / 17%`。
+  主な先頭差分はindexed fileの`OPEN I-O`/`OPEN EXTEND` status、可変長indexed record、
+  alternate key/START、same record area、warning診断だった。
+- 根本原因1: parserは`SELECT OPTIONAL`を読み飛ばすだけでAST/HIRへ保持していなかった。
+  そのためcodegen/runtimeはoptional indexed fileかどうかを判定できず、未存在fileに対する
+  `OPEN I-O`/`OPEN EXTEND`でCOBOL期待の「fileを作成しつつstatus `05`」を実装できなかった。
+  `IX216A`は`OPEN EXTEND`が`00`、`IX217A`は`OPEN I-O`が`35`になっていた。
+- 変更1: `FileControlEntry`と`HirOpenEntry`へ`optional`を追加し、
+  SELECT OPTIONALをAST→HIR→codegenへ伝搬した。runtimeには
+  `cobol_file_open_indexed_optional`を追加し、optional indexed fileの未存在
+  `OPEN I-O`/`OPEN EXTEND`ではfileを作成してstatus `05`を返すようにした。
+  status `05`は正常open扱いとして`FILE_MODE`設定と可変長設定を行い、
+  file declarative dispatchの対象外にした。
+- 根本原因2: indexed fileでも`RECORD VARYING`がある場合はrecord境界を保持する必要があるが、
+  runtimeの可変長record frame read/writeはsequential専用だった。`IX217A`は25件の240 byte recordと
+  25件の200 byte recordを同じindexed fileへ書くため、固定240 byte境界でindex scan/readすると
+  26件目以降のrecord番号がずれていた。
+- 変更2: indexed fileでも`cobol_file_set_variable`後は長さprefix付き可変長frameでwrite/readし、
+  index構築時もframeを読んで実record offsetを保持するようにした。可変長設定時にはindexed
+  in-memory indexを再構築する。
+- 根本原因3: `IX215A`のCErrはindexed runtimeではなく、debug event用group serializationが
+  `REDEFINES`項目を通常の実体memberとして二重にcopyしようとしていたことだった。
+  `REDEFINES`は同一storage上の別名なので、C structには対象memberが存在しない。
+- 変更3: sort/debug group serialize/deserializeで`REDEFINES`項目を直列化対象から除外し、
+  offsetも進めないようにした。
+- 追加確認: `cargo test -p cobol-hir test_lower_select_optional_metadata`,
+  `cargo test -p cobol-runtime test_optional_indexed_io_missing_file_creates_with_status_05`,
+  `cargo test -p cobol-runtime test_variable_indexed_records_preserve_record_boundaries`,
+  `cargo test -p cobol-parser --all-targets`, `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`, `cargo test -p cobol-runtime --all-targets`,
+  `make release`, `make nist-run MODULE=IX PROGRAM=IX216A`,
+  `make nist-run MODULE=IX PROGRAM=IX217A`,
+  `make nist-run MODULE=IX PROGRAM=IX215A`, `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX216A`は`PASS (14 passed)`、`IX217A`は`PASS (6 passed)`。
+  `IX215A`はCOMPILE_ERRORから実行FAILへ進み、CErrは0になった。
+  IX全体は`29 total / 17 pass / 12 fail / 0 CErr / 0 RErr / 58%`。
+  残るFAILは`IX106A`, `IX108A`, `IX109A`, `IX112A`, `IX205A`, `IX206A`,
+  `IX207A`, `IX208A`, `IX211A`, `IX215A`, `IX218A`, `IX401M`。
+- 根本原因4: `IX109A`/`IX112A`はACCESS SEQUENTIAL indexed fileへの
+  `WRITE`でprimary keyの昇順制約違反を検証しているが、runtimeのgeneric
+  `cobol_file_write`はindexed fileでも単なるappendとして扱い、OPEN時に保持した
+  primary key indexを参照していなかった。そのため降順keyのWRITEでもstatus `21`ではなく
+  `00`になり、後続READの件数とEOF statusも連鎖して崩れていた。
+- 変更4: indexed fileのgeneric `WRITE`をindexed key状態機械へ分岐し、
+  ACCESS SEQUENTIALでは直前primary key以上でないWRITEをstatus `21`にした。
+  同じ経路でduplicate keyをstatus `22`として検出し、成功時はin-memory indexを
+  追記更新する。回帰確認として、降順keyのsequential indexed WRITEが`21`になる
+  runtime testを追加した。
+- 追加確認: `cargo test -p cobol-runtime
+  test_sequential_indexed_write_rejects_descending_key`,
+  `cargo test -p cobol-runtime --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=IX PROGRAM=IX109A`,
+  `make nist-run MODULE=IX PROGRAM=IX112A`, `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX109A`は`PASS (13 passed)`、`IX112A`は`PASS (7 passed)`。
+  IX全体は`29 total / 19 pass / 10 fail / 0 CErr / 0 RErr / 65%`。
+  残るFAILは`IX106A`, `IX108A`, `IX205A`, `IX206A`, `IX207A`, `IX208A`,
+  `IX211A`, `IX215A`, `IX218A`, `IX401M`。
+- 根本原因5: `IX108A`のDELETE系3件は、runtimeの削除失敗ではなく
+  `DELETE ... INVALID KEY/NOT INVALID KEY`本文がHIRで破棄されていたことが原因だった。
+  parser/ASTは両句を保持していたが、`HirStatement::Delete`には本文フィールドがなく、
+  codegenも`cobol_file_delete`呼び出しとfile status更新だけを生成していた。
+  そのためDELETE成功時に`NOT INVALID KEY`本文が実行されず、CCVSのswitch更新が欠落した。
+- 変更5: `HirStatement::Delete`へ`invalid_key`/`not_invalid_key`を追加し、
+  AST→HIR loweringで本文を保持するようにした。codegenはDELETE戻りstatusを使って
+  `INVALID KEY`を非0、`NOT INVALID KEY`を0で分岐実行する。回帰確認として
+  DELETE codegen testで両句本文が生成Cに残ることを確認した。
+- 追加確認: `cargo test -p cobol-driver test_delete_statement_codegen`,
+  `cargo test -p cobol-hir --all-targets`, `cargo test -p cobol-codegen --all-targets`,
+  `make release`, `make nist-run MODULE=IX PROGRAM=IX108A`,
+  `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX108A`は`PASS (32 passed)`。
+  IX全体は`29 total / 20 pass / 9 fail / 0 CErr / 0 RErr / 68%`。
+  残るFAILは`IX106A`, `IX205A`, `IX206A`, `IX207A`, `IX208A`,
+  `IX211A`, `IX215A`, `IX218A`, `IX401M`。
+- 分類6: `IX106A`はindexed file単独ではなく、relative/indexed/sequentialを同時に扱う
+  統合ケースである。trace付き再実行では`SECT-0002-RIS101`の
+  `WRITE-TEST-GF-02-01`でsegfaultし、生成Cはrelative fileの`READ RL-FR1`を
+  `cobol_file_read_key(FILE_ID_RL_FR1, (const uint8_t*)RL_KEY, 3, ...)`としていた。
+  整数のrelative keyをポインタ扱いしているためrecord key `1`がアドレス`0x1`になり、
+  runtimeがkey bytesを読む時点で破綻する。これはrelative key ABI/codegenの欠陥であり、
+  `IMPL-016`範囲へ分類する。
+- 根本原因7: `IX205A`の`READ-TEST-F1-10`は`I-O-CONTROL. SAME RECORD IX-FD1 IX-FD2.`
+  の共有record area検証である。parserはI-O-CONTROL paragraphを丸ごとskipしていたため、
+  HIR/codegenは`IX-FD1`と`IX-FD2`のrecord bufferを独立させていた。
+  その結果、直前の`READ IX-FD2 NEXT RECORD`で取得した内容が`IX-FD1R1-F-G-240`へ
+  反映されず、CCVSは`IX-FD1`の古いrecord内容を観測していた。
+- 変更7: `InputOutputSection`/`HirProgram`へ`same_record_areas`を追加し、
+  I-O-CONTROLの`SAME RECORD`グループをAST→HIR→codegen contextへ伝搬した。
+  codegenではREAD成功時に同じSAME RECORDグループ内のpeer record bufferへ
+  読み取ったbytesをcopyする。
+- 追加確認: `cargo test -p cobol-parser --all-targets`,
+  `cargo test -p cobol-hir --all-targets`, `cargo test -p cobol-codegen --all-targets`,
+  `make release`, `make nist-run MODULE=IX PROGRAM=IX205A`,
+  `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX205A`は`PASS (12 passed)`。同じSAME RECORD欠陥に依存していた
+  `IX206A`もPASSに戻った。IX全体は
+  `29 total / 22 pass / 7 fail / 0 CErr / 0 RErr / 75%`。
+  残るFAILは`IX106A`, `IX207A`, `IX208A`, `IX211A`, `IX215A`, `IX218A`,
+  `IX401M`。
+- 根本原因8: `IX207A`の最初の残差は`WRITE ... FROM FILE-RECORD-INFO (1)`ではなく、
+  CCVS固定形式sourceのindicator列`T`/`U`を標準indicatorとして扱っていなかったことだった。
+  NIST抽出sourceでは`T`行が有効行、`U`行が無効行として使われるが、lexer/preprocessorが
+  両方を通常の無効indicatorとして落としていた。その結果、FD内のFILLER行が欠落し、
+  alternate key offset/lengthが期待の`166/29`ではなく`142/5`として生成され、
+  `START`後のcursor windowが誤っていた。
+- 変更8: fixed-format normalize処理で`T/t`を通常行、`U/u`をcomment行へ正規化した。
+  preprocessorとlexerの両方に同じ規則を入れ、`U`行はdebug line filterでもinactiveとして扱う。
+  回帰確認として、preprocessor/lexerそれぞれに`T`行が残り`U`行が消えるテストを追加した。
+- 根本原因9: `IX207A`の次の残差は、alternate key duplicatesの`READ NEXT`がstatus `02`を
+  返したときに、codegenが成功扱いで後続処理を実行しながら同時に
+  `USE AFTER STANDARD EXCEPTION` declarativeも呼んでいたことだった。COBOLの`02`は
+  duplicate key付き成功状態であり、例外宣言手続きの対象ではない。`IX207A`ではこの誤発火が
+  2回起き、CCVSのfail counterがちょうど2増えていた。
+- 変更9: READの成功ガードを`_fs == 0 || _fs == 2`へ統一し、declarative dispatch、
+  `READ INTO`/SAME RECORD copy、`NOT INVALID KEY`を同じ成功定義で分岐するようにした。
+  回帰確認として、`READ`でstatus `02`がdeclarative dispatch条件から除外されるcodegen testを
+  追加した。
+- 追加確認: `cargo test -p cobol-lexer --all-targets`,
+  `cargo test -p cobol-preprocessor --all-targets`,
+  `cargo test -p cobol-driver test_write_from_subscripted_group_moves_to_record_area`,
+  `cargo test -p cobol-driver test_read_duplicate_key_status_does_not_dispatch_declarative`,
+  `cargo test -p cobol-codegen --all-targets`, `make release`,
+  `make nist-run MODULE=IX PROGRAM=IX207A`, `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX207A`は`PASS (8 passed)`。IX全体は
+  `29 total / 23 pass / 6 fail / 0 CErr / 0 RErr / 79%`。
+  残るFAILは`IX106A`, `IX208A`, `IX211A`, `IX215A`, `IX218A`, `IX401M`。
+- 根本原因10: `IX208A`の`START-TEST-GF-01`は`START IX-FS2.`のKEY句省略形を検証する。
+  COBOLではKEY句を省略したindexed fileのSTARTは、FD record area内の主record keyを
+  暗黙キーとして使う必要がある。現行HIRは`START`の省略KEYをそのまま`None`として保持し、
+  codegenが`cobol_file_start(..., NULL, 0, 0, ...)`を生成していたため、runtimeはcursorを
+  設定できず、後続`READ`が期待recordではなく単なる次recordを返していた。
+- 変更10: HIR loweringの後処理で、indexed/relative fileの`START`省略KEYを
+  FILE-CONTROLの`RECORD KEY`/`RELATIVE KEY`から補完するようにした。indexed fileでは
+  `START file-name.`を`START file-name KEY IS EQUAL TO record-key.`相当のHIRへ正規化する。
+  回帰確認として、HIR testとcodegen testで省略KEYがrecord key呼び出しへ変換されることを確認した。
+- 追加確認: `cargo test -p cobol-hir test_lower_start_without_key_uses_indexed_record_key`,
+  `cargo test -p cobol-driver test_start_without_key_uses_indexed_record_key`,
+  `cargo test -p cobol-hir --all-targets`, `cargo test -p cobol-codegen --all-targets`,
+  `make release`, `make nist-run MODULE=IX PROGRAM=IX208A`,
+  `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX208A`は`PASS (29 passed)`。IX全体は
+  `29 total / 24 pass / 5 fail / 0 CErr / 0 RErr / 82%`。
+  残るFAILは`IX106A`, `IX211A`, `IX215A`, `IX218A`, `IX401M`。
+- 根本原因11: `IX211A`はalternate keyでSTART/READしたrecordをREWRITEし、
+  alternate key値が変更されても「現在のrecord pointer」はREWRITEで変更されないことを検証する。
+  runtimeはREWRITE後にindexを再構築するだけで、active alternate index上の
+  「次に読むべきentry」を保存していなかった。そのため、変更recordがkey順で後方へ移動すると、
+  cursorが移動後のindex位置に引きずられ、次の`READ NEXT`が期待のrecord 183ではなく
+  record 184を返していた。
+- 変更11: indexed REWRITEでは、直前READで保持している`current_offset`を更新対象offsetとして使い、
+  index再構築前にactive index上のnext entry offsetを保存する。再構築後は同じnext entry offsetの
+  新しいindex位置へcursorを戻し、REWRITEでcurrent record pointerが変わらないようにした。
+  回帰確認として、alternate key順でrecordが移動するREWRITE後も次のREAD NEXTが旧順序の
+  次recordを返すruntime testを追加した。
+- 追加確認: `cargo test -p cobol-runtime
+  test_rewrite_preserves_next_position_in_active_alternate_index`,
+  `cargo test -p cobol-runtime --all-targets`, `make release`,
+  `make nist-run MODULE=IX PROGRAM=IX211A`, `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX211A`は`PASS (17 passed)`。IX全体は
+  `29 total / 25 pass / 4 fail / 0 CErr / 0 RErr / 86%`。
+  残るFAILは`IX106A`, `IX215A`, `IX218A`, `IX401M`。
+- 根本原因12: `IX218A`は未存在OPTIONAL indexed fileに対する
+  `OPEN INPUT`後の`READ`/`START`/random `READ`のfile statusと、処理済み例外句で
+  USE宣言手続きが実行されないことを検証する。runtimeはOPTIONAL `OPEN INPUT`の
+  未存在fileをopen済み空fileとして保持せず、後続READが`47`、STARTが`42`になっていた。
+  またSTART codegenは`INVALID KEY`句がある場合でもfile status更新時にdeclarative dispatchを
+  先に実行していた。
+- 変更12: OPTIONAL indexed `OPEN INPUT`で未存在fileを空fileとしてopenし、status `05`で
+  tableへ登録するようにした。これにより順READは`10`、START/random READは`23`を返す。
+  START codegenはfile status更新ではdeclarativeを発火せず、`INVALID KEY`句がない未処理失敗時だけ
+  USE宣言手続きを呼ぶようにした。
+- 追加確認: `cargo test -p cobol-runtime
+  test_optional_indexed_input_missing_file_behaves_as_empty_file`,
+  `cargo test -p cobol-driver test_start_invalid_key_phrase_does_not_dispatch_declarative`,
+  `cargo test -p cobol-runtime --all-targets`, `cargo test -p cobol-codegen --all-targets`,
+  `make release`, `make nist-run MODULE=IX PROGRAM=IX218A`,
+  `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX218A`は`PASS (6 passed)`。IX全体は
+  `29 total / 26 pass / 3 fail / 0 CErr / 0 RErr / 89%`。
+  残るFAILは`IX106A`, `IX215A`, `IX401M`。
+- 根本原因13: `IX215A`の`START-TEST-GF-10`以降は、indexed `DELETE`が
+  record area内のprimary keyではなく、直前cursorをprimary index位置として読み替えて
+  削除対象を決めていたことが原因だった。CCVSは`MOVE key TO record-key; DELETE file`
+  の形式で対象recordを指定するため、直前READ/STARTのcursorが別recordを指していると
+  削除対象が取り違えられ、削除済みrecordへの`START`がinvalid keyにならなかった。
+- 変更13: runtime ABIへ`cobol_file_delete_record(file, record_ptr, len)`を追加し、
+  indexed DELETEのcodegenはFD record areaを渡すようにした。runtimeはprimary key offset/lengthを
+  open時のindex定義から取り出し、record area内のkeyで削除対象offsetを決める。
+  併せてDELETE後のcursorを削除entry位置へ戻し、次の`READ NEXT`が削除recordの直後を返すようにした。
+- 根本原因14: `IX215A`のREWRITE系は、別の初期化READを挟んだあとに
+  保存済みrecord内容をFD record areaへ戻して`REWRITE`する。indexed REWRITEもrecord area内の
+  primary keyで更新対象を決める必要があるが、runtimeは直前READの`current_offset`を使っていたため、
+  初期化READでcursorが別recordへ移動した後のREWRITEがduplicate/invalid key扱いになっていた。
+- 変更14: indexed REWRITEはrecord area内のprimary keyから既存record offsetを検索して更新する。
+  duplicate key検査もそのoffsetを自recordとして除外する。既存のalternate index cursor保持は維持し、
+  REWRITE後の`READ NEXT`がREWRITE前のnext entryへ戻るようにした。
+- 根本原因15: duplicateありalternate keyでは、同一key内の順序が「そのkeyへ入った順」である必要がある。
+  旧実装はREWRITE後に全indexを物理file順で再構築していたため、record 176をduplicate keyへ入れた後に
+  record 4を同じkeyへ入れるケースで、物理順のrecord 4が先に読まれていた。
+- 変更15: indexed REWRITE後、duplicates指定のalternate indexでは更新recordを同一key groupの末尾へ
+  再配置する。これにより、write/rewriteでduplicate keyへ入った順序を保持する。
+- 根本原因16: `IX215A`のFD3は`IX-FD3-KEY`という同名項目をrecord key/alternate keyで
+  親group修飾して使う。HIR loweringはqualified data nameをbase名だけに潰していたため、
+  `IX-FD3-KEY OF IX-FD3-ALTKEY1-AREA`も`IX-FD3-KEY IN IX-FD3-RECKEY-AREA`も同じ
+  `IX-FD3-KEY`になり、open時のalternate index offsetもREAD/START時のkey pointerも
+  primary key側へ寄っていた。
+- 変更16: FILE-CONTROL key句、random READ補完、START key句のloweringで、
+  key名が親groupで修飾されている場合は含有key areaをHIR key名として保持する。
+  これによりcodegenはkey areaの正しいpointer/length/offsetを使う。
+- 追加確認: `cargo test -p cobol-runtime
+  test_indexed_delete_record_uses_primary_key_from_record_area`,
+  `cargo test -p cobol-runtime
+  test_indexed_delete_record_positions_next_read_after_deleted_record`,
+  `cargo test -p cobol-runtime
+  test_indexed_rewrite_uses_primary_key_from_record_area_after_other_read`,
+  `cargo test -p cobol-runtime
+  test_indexed_rewrite_moves_duplicate_alternate_key_to_end_of_equal_key_group`,
+  `cargo test -p cobol-hir test_lower_qualified_indexed_keys_use_containing_key_area`,
+  `cargo test -p cobol-hir --all-targets`, `cargo test -p cobol-runtime --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-driver test_delete_statement_codegen`, `make release`,
+  `make nist-run MODULE=IX PROGRAM=IX212A`,
+  `make nist-run MODULE=IX PROGRAM=IX215A`, `make nist-run MODULE=IX`を実行。
+- NIST確認: `IX212A`は副作用修正後に`PASS (24 passed)`。
+  `IX215A`は`PASS (33 passed)`。IX全体は
+  `29 total / 27 pass / 2 fail / 0 CErr / 0 RErr / 93%`。
+  残るFAILは`IX106A`, `IX401M`。`IX106A`はrelative key ABI/codegenで`IMPL-016`へ、
+  `IX401M`はwarning診断で`IMPL-027`へ分類済み。
+
+### IMPL-016 実施記録
+
+- 対象: relative fileのrelative key/cursor/delete状態機械。
+- 引き継ぎ: `IX106A`はindexed file単独ではなく、relative/indexed/sequential統合ケース。
+  trace付き再実行では`SECT-0002-RIS101`の`WRITE-TEST-GF-02-01`でsegfaultし、
+  生成Cはrelative fileの`READ RL-FR1`を
+  `cobol_file_read_key(FILE_ID_RL_FR1, (const uint8_t*)RL_KEY, 3, ...)`としていた。
+  整数relative keyをポインタ扱いしているためrecord key `1`がアドレス`0x1`になり、
+  runtimeがkey bytesを読む時点で破綻する。
+- 根本原因17: relative fileのrandom `READ`/`WRITE`/`DELETE`/`START`は、
+  COBOLのrelative key数値をrecord numberとして渡す必要がある。しかしcodegenは
+  indexed key向けのbyte pointer ABIへ同じ値を渡していたため、数値`1`などをCポインタとして
+  解釈してsegfaultまたは不正record参照になっていた。
+- 変更17: runtime ABIへrelative専用の
+  `cobol_file_read_relative`/`cobol_file_write_relative`/
+  `cobol_file_delete_relative`/`cobol_file_start_relative`を追加し、
+  codegenはrelative organizationのrandom I/Oで数値式を`uint64_t` record numberとして渡す。
+- 根本原因18: `IX106A`の初期化表は`RECORD-KEY-CONTENT`を
+  `RECORD-KEY-DATA REDEFINES`で75要素tableとして参照する。生成Cは別struct pointerへのcastで
+  `REDEFINES`を表現しており、最適化時のstrict aliasingでtable参照が壊れる余地があった。
+- 変更18: native Cコンパイル時に`-fno-strict-aliasing`を付与し、
+  COBOLの同一storage別名参照をC最適化で破壊しないようにした。回帰確認として、
+  `REDEFINES`された`OCCURS`表を最適化native compileで読み取るe2e testを追加した。
+- 根本原因19: NIST外部前処理の`XXXXXnnn`置換が単独プレースホルダではなく、
+  文字列リテラル内部のデータ部分にも無条件適用されていた。`IX106A`では
+  `"SSSSSTTTTT166WWWWWXXXXX060ALTKEY1..."`の`XXXXX060`が一時ファイルパスへ置換され、
+  VALUE表そのものが壊れて225件中216件しかrelative fileへ書けなかった。
+- 変更19: `tests/nist/preprocess.sh`のNIST placeholder置換を境界付きにし、
+  文字列リテラル内部のテストデータを保持しつつ、単独の`XXXXX060`/`XXXXX063`などは
+  従来通りファイルパスや環境値へ置換するようにした。
+- 追加確認: `tests/nist/preprocess.sh`で`IX106A`のVALUE表が保持されること、
+  `ST147A`の単独`XXXXX060`/`XXXXX063`が置換されることを確認した。
+  `cargo test -p cobol-driver test_redefines_occurs_table_survives_optimized_native_compile`,
+  `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-runtime --all-targets -- --test-threads=1`,
+  `make release`, `NIST_COMPILE_CACHE=0 make nist-run MODULE=IX PROGRAM=IX106A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=IX`を実行。
+- NIST確認: `IX106A`は`PASS (10 passed)`。IX全体は
+  `29 total / 28 pass / 1 fail / 0 CErr / 0 RErr / 96%`。
+  残るFAILは`IX401M`のみで、warning診断不足として`IMPL-027`へ移行する。
+
+### IMPL-027 実施記録
+
+- 判断: `IMPL-027`の依存にあった`IMPL-026`はCOPY/library-name実装後の広い診断整備を想定したもの。
+  現在の残件`IX401M`はNIST前処理後のindexed dynamic/non-conforming warning不足であり、
+  COPY処理に依存しないため、DependsOnを`IMPL-007`へ縮小して着手可能にした。
+- 根本原因20: `IX401M`は実行結果ではなくcompile warning flag数の検査である。
+  期待10件に対して、parserはindexed intermediate相当の
+  `ORGANIZATION IS INDEXED`、`ACCESS MODE IS DYNAMIC`、`RECORD KEY`、
+  `READ ... INVALID KEY`など6件だけを出していた。
+  high subsetで追加期待される`SELECT OPTIONAL`、`RESERVE n AREAS`、
+  `ALTERNATE RECORD KEY`、`RECORD IS VARYING`には診断がなかった。
+- 変更20: FILE-CONTROL解析で`SELECT OPTIONAL`、`RESERVE AREAS`、
+  `ALTERNATE RECORD KEY`にwarningを追加した。FD解析では
+  `RECORD IS VARYING`にwarningを追加した。
+- 追加確認: `cargo test -p cobol-parser --all-targets`,
+  `cargo test -p cobol-driver test_redefines_occurs_table_survives_optimized_native_compile`,
+  `make release`, `NIST_COMPILE_CACHE=0 make nist-run MODULE=IX PROGRAM=IX401M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=IX`を実行。
+- NIST確認: `IX401M`は`PASS (10 warning flag(s) matched expected count)`。
+  IX全体は`29 total / 29 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+
+### IMPL-018/IMPL-019 実施記録（進行中）
+
+- 最新ベースライン: `make nist-summary`を実行し、全体は
+  `391 total / 262 pass / 129 fail / 0 ready / 0 CErr / 0 RErr / 67%`。
+  `DB`, `IF`, `IX`は100% pass。残る最大阻害はruntime FAILである。
+- CErr分類: `make nist-compile-errors`は`Total: 0`。
+  DISPLAY numericを`char[]`として保持する経路と、`CobolDecimal`構造体として扱う
+  算術・MOVE・debug codegen経路の契約不一致を解消した。
+- 判断: 実行FAILの深掘りより先に、CErrを潰して未実行領域を実行可能にする。
+  まずPICTURE/数値categoryの実装かい離として`IMPL-018`/`IMPL-019`へ戻し、
+  `CobolDecimal`とdisplay numeric storageの生成C契約を修正する。
+- 進捗: `NC118A`, `NC119A`, `NC117A`, `NC120A`は個別再実行でPASS。
+  原因はDISPLAY numericを`char[]`として保持する経路と`CobolDecimal`構造体として扱う
+  算術codegen経路の契約不一致、およびADD operand列で符号付き小数リテラルを前項の
+  二項演算へ畳み込むparser解釈だった。
+- 進捗: `NC132A`, `NC140A`, `RL105A`, `RL106A`は個別再実行でPASS。
+  原因は`REDEFINES ... OCCURS`のDISPLAY numericを`int64_t*`へcastする
+  data macro契約誤りと、cast rvalueに`&`を付けるdebug pointer生成だった。
+- 進捗: `CM401M`はPASS。`IC235A`, `NC201A`, `NC202A`, `NC246A`,
+  `NC250A`, `NC253A`はCErrからruntime FAILへ移行した。
+- 進捗: `NC125A`は個別再実行でPASS。原因はnumeric-edited MOVE/ADDで
+  DISPLAY numeric sourceのscaleを落としていたこと、浮動編集記号を整数桁として
+  数えずに正規化で値を切り捨てていたこと、末尾カンマを小数点として扱っていたこと。
+- 進捗: `NC124A`は個別再実行でPASS。原因はnumeric-editedの`+`/`-`/`$`浮動編集記号、
+  `Z`だけのzero suppression、`P`の出力抑止とscale調整がPICTURE仕様とずれていたこと。
+  さらに`PP9`などleading `P`のnumeric-to-numeric MOVEで、target scaleへ揃えた後に
+  可視桁数だけを残す処理がなく、`.567`を`.007`へ切り詰められていなかった。
+- 進捗: `NC126A`は個別再実行でPASS。原因は`*` zero suppression中の`B`挿入が
+  空白のまま残り、`-*B*99`を`-***42`ではなく`-* *42`へ整形していたこと。
+- 進捗: `NC170A`は個別再実行でPASS。原因は`$**.99`の固定通貨記号を
+  zero-fill対象として`*`へ潰していたこと。`$`の直後に整数部`*`が続く場合は
+  通貨記号を保持し、後続のzero suppression位置だけ`*`で埋めるようにした。
+- 進捗: `NC105A`は個別再実行でPASS。原因はDISPLAY numeric targetへのMOVEで
+  source/targetの小数桁を揃えず`9(5)V99`へ`99`を`.99`として格納していたこと、
+  符号付きsourceから符号なしDISPLAY targetへMOVEする際に絶対値化していなかったこと、
+  `---,999.99`の浮動`-`編集で固定整数`9`桁をゼロ埋めしていなかったこと。
+- 進捗: `NC114M`は個別再実行でPASS。原因は数値sourceからalphanumeric-edited targetへ
+  MOVEする経路で、符号付きsourceの表示符号を編集元文字列へ含めていたこと。
+  `PIC XBXXX/XXX/XXX/XXX/XXXBXX`などのalphanumeric editedでは、挿入編集対象を
+  数字列として扱い、source signは格納しない。
+- 次の作業: runtime FAIL 129件を、numeric edited formatter/parser、
+  decimal算術/SIZE ERROR、MOVE CORRESPONDING、REDEFINES、PERFORM制御、
+  REPORT/SORT/COMMUNICATIONへ再分類して、件数の大きい順に潰す。
 
 ## Backlog一覧
 
 | ID | Status | Summary | DependsOn |
 | ---- | ---- | ---- | ---- |
-| BACKLOG-001 | ⏳ | CErrファミリをcodegen契約単位で修正する | TASK-003 |
+| BACKLOG-001 | ✅ | CErrファミリをcodegen契約単位で修正する | TASK-003 |
 | BACKLOG-002 | ⏳ | 共通CCVSパーサをrunnerへ導入する | TASK-002 |
 | BACKLOG-003 | ⏳ | COBOL制御フローをHIR契約として再設計する | TASK-004 |
 | BACKLOG-004 | ⏳ | ファイルI/O runtime状態機械を実装する | TASK-005 |

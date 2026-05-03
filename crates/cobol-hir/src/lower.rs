@@ -12,7 +12,10 @@ use std::{
 
 use cobol_ast::{
     data_div::ValueClause,
-    expr::{ArithOp, ClassType, CompareOp, Condition, FigurativeConstant, SignType, UnaryArithOp},
+    expr::{
+        ArithOp, ClassType, CompareOp, Condition, FigurativeConstant, QualifiedName, SignType,
+        UnaryArithOp,
+    },
     proc_div::{Paragraph, ProcedureDivision, UseStatement},
     statement::{
         AcceptStatement, AddStatement, CallStatement, CommunicationMode, ComputeStatement,
@@ -79,10 +82,23 @@ struct SectionPlan {
     paragraphs: Vec<ParagraphPlan>,
 }
 
-type OpenMetadata = (u32, Option<SmolStr>, Vec<HirAlternateKey>, Option<SmolStr>);
+type OpenMetadata = (
+    u32,
+    Option<SmolStr>,
+    Vec<HirAlternateKey>,
+    Option<SmolStr>,
+    bool,
+);
 type OpenMetadataMap = HashMap<SmolStr, OpenMetadata>;
 type ReadMetadata = (u32, u32, Option<SmolStr>, Option<SmolStr>);
 type ReadMetadataMap = HashMap<SmolStr, ReadMetadata>;
+
+fn key_data_name(q: &QualifiedName) -> SmolStr {
+    q.qualifiers
+        .first()
+        .cloned()
+        .unwrap_or_else(|| q.name.clone())
+}
 
 fn source_computer_has_debugging_mode(program: &CobolProgram) -> bool {
     program
@@ -246,6 +262,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let fd_record_aliases = extract_fd_record_aliases(program);
     let variable_record_files = extract_variable_record_files(program);
     let variable_record_depending = extract_variable_record_depending(program);
+    let variable_record_bounds = extract_variable_record_bounds(program);
+    let same_record_areas = extract_same_record_areas(program);
 
     // Extract USING parameters from PROCEDURE DIVISION.
     let using_params = program
@@ -296,6 +314,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         fd_record_aliases,
         variable_record_files,
         variable_record_depending,
+        variable_record_bounds,
+        same_record_areas,
         nested_programs: program.nested_programs.iter().map(lower_to_hir).collect(),
         span: program.span,
     };
@@ -314,11 +334,14 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
 
     let read_meta_map = extract_read_metadata(program);
     patch_read_keys(&mut hir.body, &read_meta_map);
+    patch_start_keys(&mut hir.body, &read_meta_map);
     for para in &mut hir.paragraphs {
         patch_read_keys(&mut para.body, &read_meta_map);
+        patch_start_keys(&mut para.body, &read_meta_map);
     }
     for decl in &mut hir.declaratives {
         patch_read_keys(&mut decl.body, &read_meta_map);
+        patch_start_keys(&mut decl.body, &read_meta_map);
     }
 
     // Post-process: resolve Write/Rewrite record_name → file_name
@@ -713,6 +736,10 @@ fn lower_data_item_with_usage(
         let data_type = determine_hir_type_with_usage(item, inherited_usage);
         let initial_value = item.value.as_ref().map(lower_value_clause);
         let occurs = item.occurs.as_ref().map(|o| o.max);
+        let occurs_depending_on = item
+            .occurs
+            .as_ref()
+            .and_then(|o| o.depending_on.as_ref().map(|name| name.name.clone()));
 
         let renames = item
             .renames
@@ -735,6 +762,7 @@ fn lower_data_item_with_usage(
             is_external: inherited_external || item.is_external,
             initial_value,
             occurs,
+            occurs_depending_on,
             indexed_by: indexed_by.clone(),
             redefines: item.redefines.clone(),
             renames,
@@ -777,6 +805,10 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
         let data_type = determine_hir_type(item);
         let initial_value = item.value.as_ref().map(lower_value_clause);
         let occurs = item.occurs.as_ref().map(|o| o.max);
+        let occurs_depending_on = item
+            .occurs
+            .as_ref()
+            .and_then(|o| o.depending_on.as_ref().map(|name| name.name.clone()));
 
         let renames = item
             .renames
@@ -826,6 +858,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             is_external: false,
             initial_value,
             occurs,
+            occurs_depending_on,
             indexed_by: Vec::new(),
             redefines: item.redefines.clone(),
             renames,
@@ -862,6 +895,10 @@ fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage
             let data_type = determine_hir_type_with_usage(child, child_usage);
             let initial_value = child.value.as_ref().map(lower_value_clause);
             let occurs = child.occurs.as_ref().map(|o| o.max);
+            let occurs_depending_on = child
+                .occurs
+                .as_ref()
+                .and_then(|o| o.depending_on.as_ref().map(|name| name.name.clone()));
             let renames = child
                 .renames
                 .as_ref()
@@ -881,6 +918,7 @@ fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage
                 is_external: child.is_external,
                 initial_value,
                 occurs,
+                occurs_depending_on,
                 indexed_by: indexed_by_child,
                 redefines: child.redefines.clone(),
                 renames,
@@ -1579,17 +1617,21 @@ fn lower_add(
         .iter()
         .map(|t| lower_qualified_name_to_expr(&t.target))
         .collect();
+    let to_rounded = add.to.iter().map(|t| t.rounded).collect();
     let giving = add
         .giving
         .iter()
         .map(|t| lower_qualified_name_to_expr(&t.target))
         .collect();
+    let giving_rounded = add.giving.iter().map(|t| t.rounded).collect();
     let on_size_error = lower_statements(&add.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&add.not_on_size_error, condition_names);
     HirStatement::Add {
         operands,
         to,
+        to_rounded,
         giving,
+        giving_rounded,
         on_size_error,
         not_on_size_error,
         span: add.span,
@@ -2145,6 +2187,7 @@ fn lower_open(open: &cobol_ast::statement::OpenStatement) -> HirStatement {
                 mode,
                 file_name: e.file_name.clone(),
                 assign_to: SmolStr::default(), // will be updated post-lowering
+                optional: false,               // will be updated post-lowering
                 organization: 1,               // will be updated post-lowering
                 access_mode: 0,                // will be updated post-lowering
                 record_key: None,              // will be updated post-lowering
@@ -2188,7 +2231,7 @@ fn lower_read(
         let subs: Vec<_> = q.subscripts.iter().map(lower_expr).collect();
         (q.name.clone(), subs)
     });
-    let key = read.key.as_ref().map(|q| q.name.clone());
+    let key = read.key.as_ref().map(key_data_name);
     let at_end: Vec<_> = read
         .at_end
         .iter()
@@ -2247,8 +2290,13 @@ fn lower_rewrite(rewrite: &cobol_ast::statement::RewriteStatement) -> HirStateme
 }
 
 fn lower_delete(delete: &cobol_ast::statement::DeleteStatement) -> HirStatement {
+    let condition_names = HashMap::new();
+    let invalid_key = lower_statements(&delete.invalid_key, &condition_names);
+    let not_invalid_key = lower_statements(&delete.not_invalid_key, &condition_names);
     HirStatement::Delete {
         file_name: delete.file_name.clone(),
+        invalid_key,
+        not_invalid_key,
         span: delete.span,
     }
 }
@@ -2288,7 +2336,9 @@ fn lower_set(
                 cobol_ast::statement::SetDirection::Up => HirStatement::Add {
                     operands: vec![hir_value],
                     to: target_exprs,
+                    to_rounded: Vec::new(),
                     giving: Vec::new(),
+                    giving_rounded: Vec::new(),
                     on_size_error: Vec::new(),
                     not_on_size_error: Vec::new(),
                     span: set.span,
@@ -2553,7 +2603,10 @@ fn lower_start(
     start: &cobol_ast::statement::StartStatement,
     condition_names: &HashMap<SmolStr, ConditionNameInfo>,
 ) -> HirStatement {
-    let key = start.key_condition.as_ref().map(|kc| kc.key.name.clone());
+    let key = start
+        .key_condition
+        .as_ref()
+        .map(|kc| key_data_name(&kc.key));
     let op = start
         .key_condition
         .as_ref()
@@ -3053,15 +3106,16 @@ fn extract_open_metadata(program: &CobolProgram) -> OpenMetadataMap {
                 fc.file_name.clone(),
                 (
                     access_mode,
-                    fc.record_key.as_ref().map(|q| q.name.clone()),
+                    fc.record_key.as_ref().map(key_data_name),
                     fc.alternate_keys
                         .iter()
                         .map(|q| HirAlternateKey {
-                            name: q.name.name.clone(),
+                            name: key_data_name(&q.name),
                             duplicates: q.duplicates,
                         })
                         .collect(),
-                    fc.relative_key.as_ref().map(|q| q.name.clone()),
+                    fc.relative_key.as_ref().map(key_data_name),
+                    fc.optional,
                 ),
             )
         })
@@ -3113,8 +3167,8 @@ fn extract_read_metadata(program: &CobolProgram) -> ReadMetadataMap {
                 (
                     organization,
                     access_mode,
-                    fc.record_key.as_ref().map(|q| q.name.clone()),
-                    fc.relative_key.as_ref().map(|q| q.name.clone()),
+                    fc.record_key.as_ref().map(key_data_name),
+                    fc.relative_key.as_ref().map(key_data_name),
                 ),
             )
         })
@@ -3159,6 +3213,15 @@ fn extract_fd_record_aliases(program: &CobolProgram) -> HashMap<SmolStr, SmolStr
         }
     }
     aliases
+}
+
+fn extract_same_record_areas(program: &CobolProgram) -> Vec<Vec<SmolStr>> {
+    program
+        .environment
+        .as_ref()
+        .and_then(|env| env.input_output.as_ref())
+        .map(|io| io.same_record_areas.clone())
+        .unwrap_or_default()
 }
 
 fn extract_variable_record_files(program: &CobolProgram) -> std::collections::HashSet<SmolStr> {
@@ -3230,6 +3293,34 @@ fn extract_variable_record_depending(program: &CobolProgram) -> HashMap<SmolStr,
         .collect()
 }
 
+fn extract_variable_record_bounds(program: &CobolProgram) -> HashMap<SmolStr, (u32, u32)> {
+    let Some(data) = &program.data else {
+        return HashMap::new();
+    };
+    data.file_section
+        .iter()
+        .filter_map(|fd| {
+            let varying = fd.record_varying.as_ref()?;
+            let mut item_sizes = fd
+                .items
+                .iter()
+                .filter(|item| item.level == 1)
+                .map(|item| hir_type_record_size(&determine_hir_type_with_usage(item, None)));
+            let first_size = item_sizes.next();
+            let (inferred_min, inferred_max) = if let Some(first_size) = first_size {
+                item_sizes.fold((first_size, first_size), |(min, max), size| {
+                    (min.min(size), max.max(size))
+                })
+            } else {
+                (1, 1)
+            };
+            let min = varying.min.unwrap_or(inferred_min);
+            let max = varying.max.unwrap_or(inferred_max);
+            Some((fd.file_name.clone(), (min, max)))
+        })
+        .collect()
+}
+
 fn patch_open_entries(
     stmts: &mut [HirStatement],
     org_map: &HashMap<SmolStr, u32>,
@@ -3245,13 +3336,14 @@ fn patch_open_entries(
                 if let Some(path) = assign_map.get(&entry.file_name) {
                     entry.assign_to = path.clone();
                 }
-                if let Some((access_mode, record_key, alternate_keys, relative_key)) =
+                if let Some((access_mode, record_key, alternate_keys, relative_key, optional)) =
                     open_meta_map.get(&entry.file_name)
                 {
                     entry.access_mode = *access_mode;
                     entry.record_key = record_key.clone();
                     entry.alternate_keys = alternate_keys.clone();
                     entry.relative_key = relative_key.clone();
+                    entry.optional = *optional;
                 }
             }
         }
@@ -3297,6 +3389,46 @@ fn patch_read_keys(stmts: &mut [HirStatement], read_meta_map: &ReadMetadataMap) 
                     HirPerformKind::ProcedureName { .. } => &mut [],
                 };
                 patch_read_keys(body, read_meta_map);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn patch_start_keys(stmts: &mut [HirStatement], read_meta_map: &ReadMetadataMap) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            HirStatement::Start { file_name, key, .. } => {
+                if key.is_some() {
+                    continue;
+                }
+                if let Some((organization, _, record_key, relative_key)) =
+                    read_meta_map.get(file_name)
+                {
+                    match *organization {
+                        3 => *key = record_key.clone(),
+                        2 => *key = relative_key.clone(),
+                        _ => {}
+                    }
+                }
+            }
+            HirStatement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                patch_start_keys(then_body, read_meta_map);
+                patch_start_keys(else_body, read_meta_map);
+            }
+            HirStatement::Perform { kind, .. } => {
+                let body = match kind.as_mut() {
+                    HirPerformKind::Inline { body } => body.as_mut_slice(),
+                    HirPerformKind::Times { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::Until { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::Varying { body, .. } => body.as_mut_slice(),
+                    HirPerformKind::ProcedureName { .. } => &mut [],
+                };
+                patch_start_keys(body, read_meta_map);
             }
             _ => {}
         }
@@ -4065,6 +4197,115 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_lower_select_optional_metadata() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IXTEST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT OPTIONAL IX-FS1 ASSIGN TO \"ix.dat\"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IX-KEY.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FS1.
+01 IX-REC.
+   05 IX-KEY PIC X(4).
+   05 FILLER PIC X(12).
+PROCEDURE DIVISION.
+    OPEN I-O IX-FS1.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        let HirStatement::Open { entries, .. } = &hir.body[0] else {
+            panic!("Expected OPEN statement");
+        };
+        assert!(entries[0].optional);
+        assert_eq!(entries[0].organization, 3);
+        assert_eq!(entries[0].access_mode, 2);
+        assert_eq!(entries[0].record_key.as_deref(), Some("IX-KEY"));
+    }
+
+    #[test]
+    fn test_lower_start_without_key_uses_indexed_record_key() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IXSTART.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FS1 ASSIGN TO \"ix.dat\"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS SEQUENTIAL
+        RECORD KEY IS IX-KEY.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FS1.
+01 IX-REC.
+   05 IX-KEY PIC X(4).
+   05 FILLER PIC X(12).
+PROCEDURE DIVISION.
+    START IX-FS1.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        let HirStatement::Start { key, .. } = &hir.body[0] else {
+            panic!("Expected START statement");
+        };
+        assert_eq!(key.as_deref(), Some("IX-KEY"));
+    }
+
+    #[test]
+    fn test_lower_qualified_indexed_keys_use_containing_key_area() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IXQUAL.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FS1 ASSIGN TO \"ix.dat\"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IX-KEY IN IX-REC-KEY-AREA
+        ALTERNATE RECORD KEY IS IX-KEY OF IX-ALT-KEY-AREA.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FS1.
+01 IX-REC.
+   05 IX-REC-KEY-AREA.
+      10 IX-KEY PIC X(4).
+   05 IX-ALT-KEY-AREA.
+      10 IX-KEY PIC X(4).
+PROCEDURE DIVISION.
+    OPEN I-O IX-FS1.
+    READ IX-FS1.
+    START IX-FS1 KEY IS EQUAL TO IX-KEY OF IX-ALT-KEY-AREA.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        let HirStatement::Open { entries, .. } = &hir.body[0] else {
+            panic!("Expected OPEN statement");
+        };
+        assert_eq!(entries[0].record_key.as_deref(), Some("IX-REC-KEY-AREA"));
+        assert_eq!(
+            entries[0].alternate_keys[0].name.as_str(),
+            "IX-ALT-KEY-AREA"
+        );
+
+        let HirStatement::Read { key, .. } = &hir.body[1] else {
+            panic!("Expected READ statement");
+        };
+        assert_eq!(key.as_deref(), Some("IX-REC-KEY-AREA"));
+
+        let HirStatement::Start { key, .. } = &hir.body[2] else {
+            panic!("Expected START statement");
+        };
+        assert_eq!(key.as_deref(), Some("IX-ALT-KEY-AREA"));
+    }
+
+    #[test]
     fn test_lower_marks_fd_with_multiple_record_lengths_as_variable() {
         let src = "\
 IDENTIFICATION DIVISION.
@@ -4085,6 +4326,62 @@ PROCEDURE DIVISION.
 ";
         let hir = parse_and_lower(src);
         assert!(hir.variable_record_files.contains("SQ-VS7"));
+    }
+
+    #[test]
+    fn test_lower_records_variable_record_bounds() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VARBND.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SQ-VS7 ASSIGN TO \"sq-vs7.dat\".
+DATA DIVISION.
+FILE SECTION.
+FD SQ-VS7
+    RECORD IS VARYING IN SIZE FROM 18 TO 2048 CHARACTERS
+    DEPENDING ON RECORD-LENGTH.
+01 SQ-REC PIC X(2048).
+WORKING-STORAGE SECTION.
+01 RECORD-LENGTH PIC 9(4).
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert_eq!(
+            hir.variable_record_depending
+                .get("SQ-VS7")
+                .map(SmolStr::as_str),
+            Some("RECORD-LENGTH")
+        );
+        assert_eq!(hir.variable_record_bounds.get("SQ-VS7"), Some(&(18, 2048)));
+    }
+
+    #[test]
+    fn test_lower_infers_variable_record_bounds_from_fd_records() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VARINF.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SQ-VS7 ASSIGN TO \"sq-vs7.dat\".
+DATA DIVISION.
+FILE SECTION.
+FD SQ-VS7
+    RECORD VARYING DEPENDING RECORD-LENGTH.
+01 SHORT-REC PIC X(120).
+01 LONG-REC.
+   05 LONG-PREFIX PIC X(120).
+   05 LONG-SUFFIX PIC X(31).
+WORKING-STORAGE SECTION.
+01 RECORD-LENGTH PIC 9(3).
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let hir = parse_and_lower(src);
+        assert_eq!(hir.variable_record_bounds.get("SQ-VS7"), Some(&(120, 151)));
     }
 
     #[test]

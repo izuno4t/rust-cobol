@@ -75,6 +75,7 @@ pub fn compile_c_to_executable(
 
     let mut cmd = std::process::Command::new(&compiler);
     cmd.arg("-O2")
+        .arg("-fno-strict-aliasing")
         .arg(c_source_path)
         .arg("-o")
         .arg(output_path)
@@ -556,6 +557,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -630,6 +633,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -796,6 +801,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -835,6 +842,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -874,6 +883,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -909,6 +920,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1012,6 +1025,28 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_move_numeric_to_alphanumeric_edited_strips_sign() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-NUM-TO-ALPHA-EDIT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC S9P(3) SIGN LEADING SEPARATE VALUE -1000.
+01  DST PIC XBXXX.
+PROCEDURE DIVISION.
+    MOVE SRC TO DST.
+    STOP RUN.
+";
+        let c_code = parse_lower_generate(src);
+        assert!(
+            c_code.contains("snprintf(_nbuf")
+                && c_code.contains("llabs(")
+                && c_code.contains("cobol_move_alphanumeric_edited"),
+            "numeric to alphanumeric-edited MOVE should format source without sign: {c_code}"
+        );
+    }
+
+    #[test]
     fn test_qualified_numeric_name_not_classified_by_decimal_leaf_duplicate() {
         let src = "\
 IDENTIFICATION DIVISION.
@@ -1062,9 +1097,10 @@ PROCEDURE DIVISION.
             "numeric OCCURS element must not be treated as a byte pointer: {c_code}"
         );
         assert!(
-            c_code.contains("(double)ARR.members._m_IND[(IDX) - 1]")
-                || c_code.contains("(double)(ARR.members._m_IND[(IDX) - 1])"),
-            "numeric OCCURS element should be passed as a numeric value: {c_code}"
+            c_code.contains(
+                "cobol_display_to_int64((const uint8_t*)&(ARR.members._m_IND[(IDX) - 1]), 1)"
+            ),
+            "numeric OCCURS element stored in a group must be decoded from DISPLAY bytes: {c_code}"
         );
     }
 
@@ -1096,6 +1132,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1135,6 +1173,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1182,6 +1222,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1228,6 +1270,8 @@ PROCEDURE DIVISION.
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };

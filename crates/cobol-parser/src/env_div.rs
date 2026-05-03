@@ -92,6 +92,7 @@ impl Parser {
         self.expect(TokenKind::Period)?;
 
         let mut file_controls = Vec::new();
+        let mut same_record_areas = Vec::new();
 
         if self.check(TokenKind::FileControl) {
             self.advance();
@@ -109,15 +110,67 @@ impl Parser {
         if self.check(TokenKind::IoControl) {
             self.advance();
             self.expect(TokenKind::Period)?;
-            self.skip_to_next_paragraph();
+            same_record_areas = self.parse_io_control_paragraph();
         }
 
         let end_span = self.span();
 
         Ok(InputOutputSection {
             file_controls,
+            same_record_areas,
             span: start_span.merge(&end_span),
         })
+    }
+
+    fn parse_io_control_paragraph(&mut self) -> Vec<Vec<SmolStr>> {
+        let mut same_record_areas = Vec::new();
+
+        while !self.at_eof() {
+            if self.at_division_header()
+                || self.check(TokenKind::FileControl)
+                || self.check(TokenKind::IoControl)
+                || self.at_data_section_header()
+            {
+                break;
+            }
+
+            if self.check_identifier("SAME") {
+                self.advance();
+                self.eat(TokenKind::Record);
+                if self.check_identifier("AREA") || self.check_identifier("AREAS") {
+                    self.advance();
+                }
+
+                let mut files = Vec::new();
+                while !self.check(TokenKind::Period)
+                    && !self.at_eof()
+                    && !self.at_division_header()
+                    && !self.at_data_section_header()
+                {
+                    if self.check(TokenKind::Comma) {
+                        self.advance();
+                        continue;
+                    }
+                    if let Ok(name) = self.expect_identifier() {
+                        files.push(name);
+                    } else {
+                        self.advance();
+                    }
+                }
+                if files.len() > 1 {
+                    same_record_areas.push(files);
+                }
+                self.eat(TokenKind::Period);
+                continue;
+            }
+
+            while !self.check(TokenKind::Period) && !self.at_eof() {
+                self.advance();
+            }
+            self.eat(TokenKind::Period);
+        }
+
+        same_record_areas
     }
 
     fn parse_file_control_entry(&mut self) -> Result<FileControlEntry, ()> {
@@ -125,9 +178,17 @@ impl Parser {
 
         self.expect(TokenKind::Select)?;
 
-        if self.check_identifier("OPTIONAL") {
+        let optional = if self.check_identifier("OPTIONAL") {
+            let warning_span = self.span();
             self.advance();
-        }
+            self.warning_at(
+                warning_span,
+                "SELECT OPTIONAL is a non-conforming file-control feature",
+            );
+            true
+        } else {
+            false
+        };
 
         let file_name = self.expect_identifier()?;
 
@@ -189,10 +250,15 @@ impl Parser {
                 self.eat_is();
                 relative_key = Some(self.parse_qualified_name()?);
             } else if self.check(TokenKind::AlternateRecordKey) {
+                let warning_span = self.span();
                 self.advance();
                 self.eat(TokenKind::Record);
                 self.eat(TokenKind::Key);
                 self.eat_is();
+                self.warning_at(
+                    warning_span,
+                    "ALTERNATE RECORD KEY is a non-conforming indexed file feature",
+                );
                 let name = self.parse_qualified_name()?;
                 let duplicates = if self.check(TokenKind::With) || self.check(TokenKind::Duplicates)
                 {
@@ -220,6 +286,19 @@ impl Parser {
                 self.advance(); // STATUS
                 self.eat_is();
                 file_status = Some(self.parse_qualified_name()?);
+            } else if self.check_identifier("RESERVE") {
+                let warning_span = self.span();
+                self.advance();
+                if self.check(TokenKind::IntegerLiteral) {
+                    self.advance();
+                }
+                if self.check_identifier("AREA") || self.check_identifier("AREAS") {
+                    self.advance();
+                }
+                self.warning_at(
+                    warning_span,
+                    "RESERVE AREAS is a non-conforming file-control feature",
+                );
             } else if self.check(TokenKind::Mode) {
                 self.advance();
                 self.eat_is();
@@ -237,6 +316,7 @@ impl Parser {
 
         Ok(FileControlEntry {
             file_name,
+            optional,
             assign_to,
             organization,
             access_mode,

@@ -1138,6 +1138,52 @@ fn temp_exe_path(dir: &std::path::Path, stem: &str) -> PathBuf {
 }
 
 #[test]
+fn test_redefines_occurs_table_survives_optimized_native_compile() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-REDEF-ALIAS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  I PIC 9(2) VALUE 0.
+01  TOTAL PIC 9(5) VALUE 0.
+01  RAW-DATA.
+    05 FILLER PIC X(53) VALUE \"SSSSSTTTTT166WWWWWXXXXX060ALTKEY1FFFFFEEEEE135ALTKEY2\".
+    05 FILLER PIC X(53) VALUE \"SSSSTTTTTT165WWWWXXXXXX061ALTKEY1FFFFEEEEEE136ALTKEY2\".
+    05 FILLER PIC X(53) VALUE \"SSSTTTTTTT164WWWXXXXXXX062ALTKEY1FFFEEEEEEE137ALTKEY2\".
+    05 FILLER PIC X(53) VALUE \"SSTTTTTTTT163WWXXXXXXXX063ALTKEY1FFEEEEEEEE138ALTKEY2\".
+01  TABLE-DATA REDEFINES RAW-DATA.
+    05 ROWS OCCURS 4 TIMES.
+       10 RKEY.
+          15 FILLER PIC X(10).
+          15 RKEY-N PIC 9(3).
+       10 AKEY1.
+          15 FILLER PIC X(10).
+          15 AKEY1-N PIC 9(3).
+          15 FILLER PIC X(7).
+       10 AKEY2.
+          15 FILLER PIC X(10).
+          15 AKEY2-N PIC 9(3).
+          15 FILLER PIC X(7).
+PROCEDURE DIVISION.
+    PERFORM VARYING I FROM 1 BY 1 UNTIL I > 4
+        ADD RKEY-N OF ROWS(I) TO TOTAL
+        ADD AKEY1-N OF ROWS(I) TO TOTAL
+        ADD AKEY2-N OF ROWS(I) TO TOTAL
+    END-PERFORM.
+    DISPLAY TOTAL.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("1450"),
+        "REDEFINES table values should remain stable under optimized native compile; stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
 fn test_native_hello_world() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -2544,6 +2590,7 @@ fn test_c2_move_corresponding() {
                             is_external: false,
                             initial_value: None,
                             occurs: None,
+                            occurs_depending_on: None,
                             indexed_by: Vec::new(),
                             redefines: None,
                             renames: None,
@@ -2561,6 +2608,7 @@ fn test_c2_move_corresponding() {
                             is_external: false,
                             initial_value: None,
                             occurs: None,
+                            occurs_depending_on: None,
                             indexed_by: Vec::new(),
                             redefines: None,
                             renames: None,
@@ -2578,6 +2626,7 @@ fn test_c2_move_corresponding() {
                 is_external: false,
                 initial_value: None,
                 occurs: None,
+                occurs_depending_on: None,
                 indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
@@ -2603,6 +2652,7 @@ fn test_c2_move_corresponding() {
                             is_external: false,
                             initial_value: None,
                             occurs: None,
+                            occurs_depending_on: None,
                             indexed_by: Vec::new(),
                             redefines: None,
                             renames: None,
@@ -2620,6 +2670,7 @@ fn test_c2_move_corresponding() {
                             is_external: false,
                             initial_value: None,
                             occurs: None,
+                            occurs_depending_on: None,
                             indexed_by: Vec::new(),
                             redefines: None,
                             renames: None,
@@ -2637,6 +2688,7 @@ fn test_c2_move_corresponding() {
                 is_external: false,
                 initial_value: None,
                 occurs: None,
+                occurs_depending_on: None,
                 indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
@@ -2666,6 +2718,8 @@ fn test_c2_move_corresponding() {
         fd_record_aliases: std::collections::HashMap::new(),
         variable_record_files: std::collections::HashSet::new(),
         variable_record_depending: std::collections::HashMap::new(),
+        variable_record_bounds: std::collections::HashMap::new(),
+        same_record_areas: Vec::new(),
         nested_programs: Vec::new(),
         span: Span::dummy(),
     };
@@ -2721,6 +2775,7 @@ fn test_c2_add_corresponding() {
                         is_external: false,
                         initial_value: None,
                         occurs: None,
+                        occurs_depending_on: None,
                         indexed_by: Vec::new(),
                         redefines: None,
                         renames: None,
@@ -2737,6 +2792,7 @@ fn test_c2_add_corresponding() {
                 is_external: false,
                 initial_value: None,
                 occurs: None,
+                occurs_depending_on: None,
                 indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
@@ -2761,6 +2817,7 @@ fn test_c2_add_corresponding() {
                         is_external: false,
                         initial_value: None,
                         occurs: None,
+                        occurs_depending_on: None,
                         indexed_by: Vec::new(),
                         redefines: None,
                         renames: None,
@@ -2777,6 +2834,7 @@ fn test_c2_add_corresponding() {
                 is_external: false,
                 initial_value: None,
                 occurs: None,
+                occurs_depending_on: None,
                 indexed_by: Vec::new(),
                 redefines: None,
                 renames: None,
@@ -2808,6 +2866,8 @@ fn test_c2_add_corresponding() {
         fd_record_aliases: std::collections::HashMap::new(),
         variable_record_files: std::collections::HashSet::new(),
         variable_record_depending: std::collections::HashMap::new(),
+        variable_record_bounds: std::collections::HashMap::new(),
+        same_record_areas: Vec::new(),
         nested_programs: Vec::new(),
         span: Span::dummy(),
     };
@@ -4588,6 +4648,85 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_close_with_lock_sets_reopen_status_38() {
+    let _ = std::fs::remove_file("/tmp/cobol_close_lock_test.dat");
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. LOCKTST.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT TEST-FILE ASSIGN TO '/tmp/cobol_close_lock_test.dat'
+        ORGANIZATION IS SEQUENTIAL
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD TEST-FILE.
+01 TEST-RECORD PIC X(5).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+    OPEN OUTPUT TEST-FILE.
+    MOVE 'HELLO' TO TEST-RECORD.
+    WRITE TEST-RECORD.
+    CLOSE TEST-FILE WITH LOCK.
+    MOVE '**' TO WS-STATUS.
+    OPEN INPUT TEST-FILE.
+    DISPLAY WS-STATUS.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_close_lock_test.dat");
+    assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
+    assert!(
+        stdout.trim().starts_with("38"),
+        "OPEN after CLOSE WITH LOCK should set status 38, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn test_native_variable_record_write_bounds_set_status_44() {
+    let _ = std::fs::remove_file("/tmp/cobol_varrec_bounds_test.dat");
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VRBND.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT TEST-FILE ASSIGN TO '/tmp/cobol_varrec_bounds_test.dat'
+        ORGANIZATION IS SEQUENTIAL
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD TEST-FILE
+    RECORD IS VARYING IN SIZE FROM 5 TO 10 CHARACTERS
+    DEPENDING ON WS-LEN.
+01 TEST-RECORD PIC X(10).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+01 WS-LEN PIC 9(2).
+PROCEDURE DIVISION.
+    OPEN OUTPUT TEST-FILE.
+    MOVE 4 TO WS-LEN.
+    WRITE TEST-RECORD.
+    DISPLAY WS-STATUS.
+    MOVE 5 TO WS-LEN.
+    WRITE TEST-RECORD.
+    DISPLAY WS-STATUS.
+    MOVE 11 TO WS-LEN.
+    WRITE TEST-RECORD.
+    DISPLAY WS-STATUS.
+    CLOSE TEST-FILE.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_varrec_bounds_test.dat");
+    assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["44", "00", "44"]);
+}
+
+#[test]
 fn test_native_file_write_read() {
     let _ = std::fs::remove_file("/tmp/cobol_fwr_test.dat");
     let src = "\
@@ -5149,6 +5288,7 @@ PROCEDURE DIVISION.
     MOVE 00001 TO IX-KEY.
     DELETE IX-FILE
         INVALID KEY DISPLAY "DELETE FAILED"
+        NOT INVALID KEY DISPLAY "DELETE OK"
     END-DELETE.
     CLOSE IX-FILE.
     STOP RUN.
@@ -5156,8 +5296,183 @@ PROCEDURE DIVISION.
     let hir = parse_and_lower(src);
     let c_code = generate_c(&hir);
     assert!(
-        c_code.contains("cobol_file_delete") || c_code.contains("delete"),
+        c_code.contains("cobol_file_delete_record(FILE_ID_IX_FILE"),
         "should generate DELETE statement code, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("DELETE FAILED") && c_code.contains("DELETE OK"),
+        "DELETE INVALID KEY / NOT INVALID KEY branches should be preserved, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_write_from_subscripted_group_moves_to_record_area() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. WRFROM.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_write_from_test.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS OUT-KEY.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 OUT-REC.
+   05 OUT-KEY PIC 9(5).
+   05 OUT-TEXT PIC X(10).
+WORKING-STORAGE SECTION.
+01 SRC-TABLE OCCURS 2.
+   05 SRC-KEY PIC 9(5).
+   05 SRC-TEXT PIC X(10).
+PROCEDURE DIVISION.
+    OPEN OUTPUT IX-FILE.
+    WRITE OUT-REC FROM SRC-TABLE (1)
+        INVALID KEY DISPLAY "BAD"
+    END-WRITE.
+    CLOSE IX-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("memset(&OUT_REC, ' ', 15);")
+            && c_code.contains("memcpy(&OUT_REC, &SRC_TABLE[(((int64_t)1)) - 1]"),
+        "WRITE FROM should move the subscripted source into the FD record area, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_file_write(FILE_ID_IX_FILE, (const uint8_t*)&OUT_REC, 15)"),
+        "WRITE should pass the FD record area to the runtime, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_read_duplicate_key_status_does_not_dispatch_declarative() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RDDUP02.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_read_dup_status_test.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IX-KEY
+        ALTERNATE RECORD KEY IS IX-ALT WITH DUPLICATES
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 IX-RECORD.
+   05 IX-KEY PIC 9(5).
+   05 IX-ALT PIC X(3).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+DECLARATIVES.
+ERR-SEC SECTION.
+    USE AFTER STANDARD EXCEPTION PROCEDURE ON IX-FILE.
+ERR-PARA.
+    DISPLAY "ERR".
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    OPEN INPUT IX-FILE.
+    READ IX-FILE.
+    CLOSE IX-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("if (!((_fs == 0 || _fs == 2) || 0 || 0))"),
+        "READ status 02 is a successful duplicate-key condition and must not dispatch declaratives, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_start_without_key_uses_indexed_record_key() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STARTKEY.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_start_key_test.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS SEQUENTIAL
+        RECORD KEY IS IX-KEY.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 IX-RECORD.
+   05 IX-KEY PIC 9(5).
+   05 IX-DATA PIC X(10).
+PROCEDURE DIVISION.
+    START IX-FILE.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_file_start(FILE_ID_IX_FILE, (const uint8_t*)IX_KEY, 5, 0, 0)"),
+        "START without KEY should use the indexed file's record key, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_start_invalid_key_phrase_does_not_dispatch_declarative() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STARTDECL.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IX-FILE ASSIGN TO "/tmp/cobol_start_decl_test.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IX-KEY
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+FILE SECTION.
+FD IX-FILE.
+01 IX-RECORD.
+   05 IX-KEY PIC 9(5).
+   05 IX-DATA PIC X(10).
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC XX.
+PROCEDURE DIVISION.
+DECLARATIVES.
+ERR-SEC SECTION.
+    USE AFTER STANDARD EXCEPTION PROCEDURE ON IX-FILE.
+ERR-PARA.
+    DISPLAY "ERR".
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    START IX-FILE
+        INVALID KEY DISPLAY "HANDLED"
+    END-START.
+    STOP RUN.
+"#;
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        !c_code.contains("_check_file_declarative(\"IX_FILE\""),
+        "START INVALID KEY phrase should handle the condition without declarative dispatch, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("HANDLED"),
+        "START INVALID KEY body should be preserved, got:\n{}",
         c_code
     );
 }
@@ -5917,6 +6232,8 @@ fn test_typedef_codegen() {
             fd_record_aliases: std::collections::HashMap::new(),
             variable_record_files: std::collections::HashSet::new(),
             variable_record_depending: std::collections::HashMap::new(),
+            variable_record_bounds: std::collections::HashMap::new(),
+            same_record_areas: Vec::new(),
             nested_programs: Vec::new(),
             span: Span::new(0, 0, FileId(0)),
         };

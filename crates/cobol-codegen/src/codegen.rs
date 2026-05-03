@@ -319,7 +319,7 @@ fn emit_file_declarative_dispatch(
     out.push_str(&format!(
         "static void {fn_name}(const char* file_c_name, const char* declarative_mode, int fs) {{\n"
     ));
-    out.push_str("    if (fs == 0) return;\n");
+    out.push_str("    if (fs == 0 || fs == 5) return;\n");
     for decl in declaratives
         .iter()
         .chain(inherited_global_declaratives.iter())
@@ -1735,7 +1735,9 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_variable_records: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_variable_depending: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_variable_bounds: HashMap<smol_str::SmolStr, (u32, u32)> = HashMap::new();
     let empty_aliases: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_same_records: Vec<Vec<smol_str::SmolStr>> = Vec::new();
     let ctx = CodegenContext::new(
         &[],
         &empty_records,
@@ -1743,8 +1745,10 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
         &empty_relative_keys,
         &empty_variable_records,
         &empty_variable_depending,
+        &empty_variable_bounds,
         &[],
         &empty_aliases,
+        &empty_same_records,
         "_check_file_declarative".to_string(),
     );
     for class in classes {
@@ -1873,7 +1877,9 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_variable_records: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_variable_depending: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_variable_bounds: HashMap<smol_str::SmolStr, (u32, u32)> = HashMap::new();
     let empty_aliases: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_same_records: Vec<Vec<smol_str::SmolStr>> = Vec::new();
     let ctx = CodegenContext::new(
         &[],
         &empty_records,
@@ -1881,8 +1887,10 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
         &empty_relative_keys,
         &empty_variable_records,
         &empty_variable_depending,
+        &empty_variable_bounds,
         &[],
         &empty_aliases,
+        &empty_same_records,
         "_check_file_declarative".to_string(),
     );
     for func in functions {

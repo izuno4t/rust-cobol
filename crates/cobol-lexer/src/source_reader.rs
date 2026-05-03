@@ -94,8 +94,16 @@ impl SourceReader {
     /// - `-`: continuation line
     /// - `D` or `d`: debug line
     /// - `$`: compiler directive (extension supported by many compilers)
-    fn is_valid_fixed_indicator(ch: char) -> bool {
-        matches!(ch, ' ' | '*' | '/' | '-' | 'D' | 'd' | '$')
+    fn normalize_fixed_indicator(ch: char) -> Option<char> {
+        match ch {
+            // NIST CCVS fixed-format sources use T/U in the indicator
+            // column as paired conditional lines. The high-level suite
+            // activates T lines and deactivates U lines.
+            'T' | 't' => Some(' '),
+            'U' | 'u' => Some('*'),
+            ' ' | '*' | '/' | '-' | 'D' | 'd' | '$' => Some(ch),
+            _ => None,
+        }
     }
 
     /// Parse source in fixed format (COBOL-85 standard layout).
@@ -132,8 +140,9 @@ impl SourceReader {
             // If the indicator is not a valid COBOL fixed-format indicator,
             // treat the line as a comment. This handles trailing non-COBOL data
             // appended after the program (e.g., NIST CCVS test character sets).
-            let indicator = if Self::is_valid_fixed_indicator(raw_indicator) {
-                raw_indicator
+            let indicator = if let Some(indicator) = Self::normalize_fixed_indicator(raw_indicator)
+            {
+                indicator
             } else {
                 '*'
             };
@@ -193,8 +202,9 @@ impl SourceReader {
 
             // If the indicator is not a valid COBOL fixed-format indicator,
             // treat the line as a comment (same logic as parse_fixed).
-            let indicator = if Self::is_valid_fixed_indicator(raw_indicator) {
-                raw_indicator
+            let indicator = if let Some(indicator) = Self::normalize_fixed_indicator(raw_indicator)
+            {
+                indicator
             } else {
                 '*'
             };
@@ -353,6 +363,17 @@ mod tests {
         let src = "000100D    DISPLAY \"DEBUG INFO\".                                         \n";
         let reader = SourceReader::new(src, SourceFormat::Fixed);
         assert!(reader.lines()[0].is_debug());
+    }
+
+    #[test]
+    fn test_fixed_format_ccvs_t_and_u_indicators() {
+        let src = "000100T    DISPLAY \"ACTIVE\".                                             \n\
+                   000200U    DISPLAY \"INACTIVE\".                                           \n";
+        let reader = SourceReader::new(src, SourceFormat::Fixed);
+        let lines = reader.lines();
+        assert_eq!(lines[0].indicator, ' ');
+        assert_eq!(lines[0].content_text().trim(), "DISPLAY \"ACTIVE\".");
+        assert!(lines[1].is_comment());
     }
 
     #[test]

@@ -137,6 +137,10 @@ pub struct HirProgram {
     pub variable_record_files: std::collections::HashSet<SmolStr>,
     /// FD file name → DEPENDING ON data item for RECORD IS VARYING.
     pub variable_record_depending: std::collections::HashMap<SmolStr, SmolStr>,
+    /// FD file name → lower/upper record-size bounds for RECORD IS VARYING.
+    pub variable_record_bounds: std::collections::HashMap<SmolStr, (u32, u32)>,
+    /// I-O-CONTROL SAME RECORD AREA file groups.
+    pub same_record_areas: Vec<Vec<SmolStr>>,
     /// Nested programs (COBOL 85 inter-program communication).
     pub nested_programs: Vec<HirProgram>,
     pub span: Span,
@@ -342,6 +346,8 @@ pub struct HirDataItem {
     pub initial_value: Option<HirLiteral>,
     /// OCCURS clause: number of repetitions (None = scalar).
     pub occurs: Option<u32>,
+    /// OCCURS DEPENDING ON data item, when present.
+    pub occurs_depending_on: Option<SmolStr>,
     /// INDEXED BY names from OCCURS clause.
     pub indexed_by: Vec<SmolStr>,
     /// REDEFINES clause: the name of the redefined item.
@@ -373,6 +379,7 @@ impl HirDataItem {
             is_external: false,
             initial_value: None,
             occurs: None,
+            occurs_depending_on: None,
             indexed_by: Vec::new(),
             redefines: None,
             renames: None,
@@ -545,7 +552,9 @@ pub enum HirStatement {
     Add {
         operands: Vec<HirExpr>,
         to: Vec<HirExpr>,
+        to_rounded: Vec<bool>,
         giving: Vec<HirExpr>,
+        giving_rounded: Vec<bool>,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
@@ -670,6 +679,8 @@ pub enum HirStatement {
     /// DELETE statement.
     Delete {
         file_name: SmolStr,
+        invalid_key: Vec<HirStatement>,
+        not_invalid_key: Vec<HirStatement>,
         span: Span,
     },
     /// GO TO statement.
@@ -1057,6 +1068,8 @@ pub struct HirOpenEntry {
     pub file_name: SmolStr,
     /// ASSIGN TO path (physical file name or device).
     pub assign_to: SmolStr,
+    /// SELECT OPTIONAL clause.
+    pub optional: bool,
     /// File organization: 0=Sequential, 1=LineSequential, 2=Relative, 3=Indexed.
     pub organization: u32,
     /// Access mode: 0=Sequential, 1=Random, 2=Dynamic.

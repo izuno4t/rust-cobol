@@ -70,6 +70,8 @@ pub enum RepositoryEntryKind {
 pub struct InputOutputSection {
     /// FILE-CONTROL paragraph entries.
     pub file_controls: Vec<FileControlEntry>,
+    /// I-O-CONTROL SAME RECORD AREA groups.
+    pub same_record_areas: Vec<Vec<SmolStr>>,
     pub span: Span,
 }
 
@@ -81,6 +83,8 @@ pub struct InputOutputSection {
 pub struct FileControlEntry {
     /// The logical file name (SELECT file-name).
     pub file_name: SmolStr,
+    /// SELECT OPTIONAL clause.
+    pub optional: bool,
     /// The device or file path (ASSIGN TO).
     pub assign_to: SmolStr,
     /// ORGANIZATION clause.
