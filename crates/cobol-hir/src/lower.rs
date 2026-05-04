@@ -2575,7 +2575,7 @@ fn lower_inspect(inspect: &cobol_ast::statement::InspectStatement) -> HirStateme
         }
     };
     HirStatement::Inspect {
-        target: inspect.target.name.clone(),
+        target: lower_qualified_name_to_expr(&inspect.target),
         kind,
         span: inspect.span,
     }

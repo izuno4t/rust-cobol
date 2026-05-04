@@ -58,7 +58,7 @@
 | IMPL-017 | ⏳ | LINAGEとWRITE ADVANCINGのoutput positioningを実装する | IMPL-008,IMPL-014 |
 | IMPL-018 | 🚧 | PICTURE metadataをsemaからruntimeまで一貫して運ぶ | IMPL-003,TASK-006 |
 | IMPL-019 | 🚧 | MOVE conversionをsource/target category単位で一元化する | IMPL-018 |
-| IMPL-020 | ⏳ | decimal算術、丸め、SIZE ERRORを一元化する | IMPL-018 |
+| IMPL-020 | 🚧 | decimal算術、丸め、SIZE ERRORを一元化する | IMPL-018 |
 | IMPL-021 | ⏳ | edited numeric formatter/parserを実装する | IMPL-019 |
 | IMPL-022 | ⏳ | intrinsic argument flattenと戻り値categoryを実装する | IMPL-018,TASK-007 |
 | IMPL-023 | ⏳ | numeric/math/aggregate intrinsicを実装する | IMPL-020,IMPL-022 |
@@ -2013,7 +2013,7 @@ TASK-011時点での判断:
 ### IMPL-018/IMPL-019 実施記録（進行中）
 
 - 最新ベースライン: `make nist-summary`を実行し、全体は
-  `391 total / 266 pass / 125 fail / 0 ready / 0 CErr / 0 RErr / 68%`。
+  `391 total / 267 pass / 124 fail / 0 ready / 0 CErr / 0 RErr / 68%`。
   `DB`, `IF`, `IX`は100% pass。残る最大阻害はruntime FAILである。
 - CErr分類: `make nist-compile-errors`は`Total: 0`。
   DISPLAY numericを`char[]`として保持する経路と、`CobolDecimal`構造体として扱う
@@ -2079,6 +2079,23 @@ TASK-011時点での判断:
   `DECIMAL-POINT IS COMMA`相当の右端`,`小数点を整形できていなかったこと。
   paragraph-to-paragraph THRUでは中間SECTION見出しを呼び出し対象から外し、
   両方の記号があるnumeric-edited PICTUREでは右端の記号を実小数点として扱う。
+- 進捗: `NC111A`は個別再実行でPASS。原因は`ADD ... GIVING`でdecimal operandを
+  含む場合でも、`ROUNDED`なしの経路がinteger互換式へ落ち、`S9V9 VALUE +1.6`
+  と`1.4`の和をtarget scaleへ揃える前に小数桁を失っていたこと。
+  decimal operandを含む`ADD ... GIVING`は常にexact decimal和を作り、targetの
+  PICTURE scaleへ丸めまたは切り捨ててからDISPLAY numericへ格納するようにした。
+- 進捗: `NC216A`は`INSPECT`共通仕様の修正で先頭失敗が
+  `21 passed / 36 failed`から`52 passed / 5 failed`まで前進した。原因は
+  `BEFORE`/`AFTER INITIAL`をTALLYING側で無視していたこと、複数TALLYING phraseを
+  独立走査していたこと、`TALLYING AND REPLACING`で元文字列を見ずに置換後文字列を
+  次phraseのdelimiter/searchへ使っていたこと、signed DISPLAY numericのoverpunchを
+  INSPECT対象として正規化していなかったこと、INSPECT target/operandの添字を
+  HIR/codegenで落としていたこと。
+- 残件: `NC216A`の次の根本原因は、無名 elementary item
+  `05 PIC X(7) VALUE "XXXXXXX"`がHIR上でsize 1の`PIC`項目として生成され、
+  `INSPECT-FIELDS`のgroup sizeが35ではなく5になっていること。`DATA-FIELD(SUB)`の
+  添字自体は生成Cへ出るようになったが、元storageが5バイトしか初期化されないため、
+  `INS-TEST-F1-30`はまだFAILする。
 - 確認: `cargo test -p cobol-runtime string_ops::tests::test_store_numeric_display
   -- --nocapture`, `cargo test -p cobol-codegen --all-targets`,
   `cargo test -p cobol-driver --test e2e_test`, `cargo fmt --check`, `make release`,
@@ -2088,6 +2105,12 @@ TASK-011時点での判断:
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC104A`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC123A`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC107A`,
+  `cargo test -p cobol-driver
+  test_native_add_giving_decimal_to_integer_truncates_fraction --test e2e_test
+  -- --nocapture`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC111A`,
+  `cargo test -p cobol-driver test_native_inspect --test e2e_test -- --nocapture`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC216A`,
   `make nist-summary`を実行。
 - 次の作業: runtime FAIL 125件を、numeric edited formatter/parser、
   decimal算術/SIZE ERROR、MOVE CORRESPONDING、REDEFINES、PERFORM制御、

@@ -2854,10 +2854,7 @@ pub(crate) fn emit_inspect_operand(
 ) -> (String, String) {
     match expr {
         HirExpr::DataRef(data_ref) => {
-            let c_name = data_name_to_c_name(&data_ref.name);
-            let size = find_data_item_size(&c_name, data_items);
-            let ptr = c_ptr_expr(&c_name, data_items);
-            (format!("(const uint8_t*){ptr}"), format!("{size}"))
+            emit_alphanumeric_operand(&HirExpr::DataRef(data_ref.clone()), data_items)
         }
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
@@ -2889,13 +2886,27 @@ pub(crate) fn emit_inspect_tallying(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    let tgt_ptr = c_ptr_expr(c_target, data_items);
     if tallying.is_empty() {
         // Fallback: count all characters
+        let tgt_ptr = c_ptr_expr(c_target, data_items);
         out.push_str(&format!(
             "{pad}cobol_inspect_tallying((const uint8_t*){tgt_ptr}, {target_size}, NULL, 0, 0);\n"
         ));
         return;
+    }
+    let raw_tgt_ptr = c_ptr_expr(c_target, data_items);
+    let mut tgt_ptr = raw_tgt_ptr.clone();
+    let normalized_numeric_value =
+        inspect_numeric_normalized_value_expr(c_target, data_items, &raw_tgt_ptr, target_size);
+    if let Some(value_expr) = &normalized_numeric_value {
+        out.push_str(&format!("{pad}{{\n"));
+        out.push_str(&format!(
+            "{pad}    uint8_t _insp_numeric_target[{target_size} + 1];\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    snprintf((char*)_insp_numeric_target, sizeof(_insp_numeric_target), \"%0*lld\", {target_size}, (long long)({value_expr}));\n"
+        ));
+        tgt_ptr = "_insp_numeric_target".to_string();
     }
     for (i, t) in tallying.iter().enumerate() {
         let counter = emit_expr(&t.counter);
@@ -2921,22 +2932,323 @@ pub(crate) fn emit_inspect_tallying(
                 (3, ptr, len)
             }
         };
+        let mut tally_ptr = format!("(const uint8_t*){tgt_ptr}");
+        let mut tally_len = target_size.to_string();
+        if !t.before_after.is_empty() {
+            out.push_str(&format!("{pad}{{\n"));
+            out.push_str(&format!(
+                "{pad}    const uint8_t* _insp_base = (const uint8_t*){tgt_ptr};\n"
+            ));
+            out.push_str(&format!("{pad}    uint32_t _insp_start = 0;\n"));
+            out.push_str(&format!("{pad}    uint32_t _insp_end = {target_size};\n"));
+            for (j, ba) in t.before_after.iter().enumerate() {
+                let marker_label = format!("tally_ba{i}_{j}");
+                let (marker_ptr, marker_len) =
+                    emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
+                out.push_str(&format!(
+                    "{pad}    const uint8_t* _insp_marker_{j} = {marker_ptr};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    uint32_t _insp_marker_len_{j} = {marker_len};\n"
+                ));
+                out.push_str(&format!("{pad}    if (_insp_marker_len_{j} == 0 || _insp_marker_len_{j} > _insp_end - _insp_start) {{\n"));
+                if ba.is_before {
+                    out.push_str(&format!("{pad}        /* BEFORE with an absent delimiter keeps the current range. */\n"));
+                } else {
+                    out.push_str(&format!("{pad}        _insp_start = _insp_end;\n"));
+                }
+                out.push_str(&format!("{pad}    }} else {{\n"));
+                out.push_str(&format!("{pad}        uint32_t _insp_found = _insp_end;\n"));
+                out.push_str(&format!("{pad}        for (uint32_t _i = _insp_start; _i + _insp_marker_len_{j} <= _insp_end; _i++) {{\n"));
+                out.push_str(&format!("{pad}            if (memcmp(_insp_base + _i, _insp_marker_{j}, _insp_marker_len_{j}) == 0) {{ _insp_found = _i; break; }}\n"));
+                out.push_str(&format!("{pad}        }}\n"));
+                out.push_str(&format!("{pad}        if (_insp_found == _insp_end) {{\n"));
+                if ba.is_before {
+                    out.push_str(&format!("{pad}            /* BEFORE with no match leaves the current range unchanged. */\n"));
+                } else {
+                    out.push_str(&format!("{pad}            _insp_start = _insp_end;\n"));
+                }
+                out.push_str(&format!("{pad}        }} else {{\n"));
+                if ba.is_before {
+                    out.push_str(&format!("{pad}            _insp_end = _insp_found;\n"));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}            _insp_start = _insp_found + _insp_marker_len_{j};\n"
+                    ));
+                }
+                out.push_str(&format!("{pad}        }}\n"));
+                out.push_str(&format!("{pad}    }}\n"));
+            }
+            tally_ptr = "(_insp_base + _insp_start)".to_string();
+            tally_len = "(_insp_end - _insp_start)".to_string();
+        }
         if let Some(disp_size) = counter_disp {
             let counter_const_ptr = display_numeric_const_ptr(&counter);
             let counter_ptr = display_numeric_ptr(&counter);
             out.push_str(&format!(
                 "{pad}cobol_store_numeric_display(\
                  cobol_display_to_int64({counter_const_ptr}, {disp_size}) + \
-                 cobol_inspect_tallying((const uint8_t*){tgt_ptr}, {target_size}, \
-                 {search_ptr}, {search_len}, {mode}), \
+                 cobol_inspect_tallying({tally_ptr}, {tally_len}, {search_ptr}, {search_len}, \
+                 {mode}), \
                  {counter_ptr}, {disp_size});\n"
             ));
         } else {
             out.push_str(&format!(
-                "{pad}{counter} += cobol_inspect_tallying((const uint8_t*){tgt_ptr}, {target_size}, {search_ptr}, {search_len}, {mode});\n"
+                "{pad}{counter} += cobol_inspect_tallying({tally_ptr}, {tally_len}, {search_ptr}, {search_len}, {mode});\n"
             ));
         }
+        if !t.before_after.is_empty() {
+            out.push_str(&format!("{pad}}}\n"));
+        }
     }
+    if normalized_numeric_value.is_some() {
+        out.push_str(&format!("{pad}}}\n"));
+    }
+}
+
+/// Emit INSPECT TALLYING phrases for TALLYING AND REPLACING format.
+pub(crate) fn emit_inspect_tallying_series(
+    out: &mut String,
+    c_target: &str,
+    target_size: u32,
+    tallying: &[cobol_hir::HirInspectTallying],
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    if tallying.is_empty() {
+        return;
+    }
+    out.push_str(&format!("{pad}{{\n"));
+    let raw_tgt_ptr = c_ptr_expr(c_target, data_items);
+    if let Some(value_expr) =
+        inspect_numeric_normalized_value_expr(c_target, data_items, &raw_tgt_ptr, target_size)
+    {
+        out.push_str(&format!(
+            "{pad}    uint8_t _insp_numeric_target[{target_size} + 1];\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    snprintf((char*)_insp_numeric_target, sizeof(_insp_numeric_target), \"%0*lld\", {target_size}, (long long)({value_expr}));\n"
+        ));
+        out.push_str(&format!(
+            "{pad}    const uint8_t* _insp_base = (const uint8_t*)_insp_numeric_target;\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}    const uint8_t* _insp_base = (const uint8_t*){raw_tgt_ptr};\n"
+        ));
+    }
+    let counter_names: Vec<String> = tallying.iter().map(|t| emit_expr(&t.counter)).collect();
+    let counter_slots: Vec<usize> = counter_names
+        .iter()
+        .enumerate()
+        .map(|(i, counter)| {
+            counter_names
+                .iter()
+                .position(|candidate| candidate == counter)
+                .unwrap_or(i)
+        })
+        .collect();
+    for (i, t) in tallying.iter().enumerate() {
+        if counter_slots[i] != i {
+            out.push_str(&format!("{pad}    uint32_t _insp_start_{i} = 0;\n"));
+            out.push_str(&format!(
+                "{pad}    uint32_t _insp_end_{i} = {target_size};\n"
+            ));
+            if matches!(t.kind, cobol_hir::HirTallyingKind::Leading(_)) {
+                out.push_str(&format!("{pad}    uint8_t _insp_leading_{i} = 1;\n"));
+            }
+            for (j, ba) in t.before_after.iter().enumerate() {
+                let marker_label = format!("series_ba{i}_{j}");
+                let (marker_ptr, marker_len) =
+                    emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
+                out.push_str(&format!(
+                    "{pad}    const uint8_t* _insp_marker_{i}_{j} = {marker_ptr};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    uint32_t _insp_marker_len_{i}_{j} = {marker_len};\n"
+                ));
+                out.push_str(&format!("{pad}    if (_insp_marker_len_{i}_{j} == 0 || _insp_marker_len_{i}_{j} > _insp_end_{i} - _insp_start_{i}) {{\n"));
+                if !ba.is_before {
+                    out.push_str(&format!("{pad}        _insp_start_{i} = _insp_end_{i};\n"));
+                }
+                out.push_str(&format!("{pad}    }} else {{\n"));
+                out.push_str(&format!(
+                    "{pad}        uint32_t _insp_found = _insp_end_{i};\n"
+                ));
+                out.push_str(&format!("{pad}        for (uint32_t _j = _insp_start_{i}; _j + _insp_marker_len_{i}_{j} <= _insp_end_{i}; _j++) {{\n"));
+                out.push_str(&format!("{pad}            if (memcmp(_insp_base + _j, _insp_marker_{i}_{j}, _insp_marker_len_{i}_{j}) == 0) {{ _insp_found = _j; break; }}\n"));
+                out.push_str(&format!("{pad}        }}\n"));
+                out.push_str(&format!(
+                    "{pad}        if (_insp_found == _insp_end_{i}) {{\n"
+                ));
+                if !ba.is_before {
+                    out.push_str(&format!(
+                        "{pad}            _insp_start_{i} = _insp_end_{i};\n"
+                    ));
+                }
+                out.push_str(&format!("{pad}        }} else {{\n"));
+                if ba.is_before {
+                    out.push_str(&format!("{pad}            _insp_end_{i} = _insp_found;\n"));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}            _insp_start_{i} = _insp_found + _insp_marker_len_{i}_{j};\n"
+                    ));
+                }
+                out.push_str(&format!("{pad}        }}\n"));
+                out.push_str(&format!("{pad}    }}\n"));
+            }
+            continue;
+        }
+        let counter = emit_expr(&t.counter);
+        let counter_base = expr_data_name(&t.counter).map(data_name_to_c_name);
+        if let Some(disp_size) = counter_base
+            .as_deref()
+            .and_then(|name| grp_display_size(name, data_items))
+        {
+            let counter_const_ptr = display_numeric_const_ptr(&counter);
+            out.push_str(&format!(
+                "{pad}    int64_t _insp_counter_{i} = cobol_display_to_int64({counter_const_ptr}, {disp_size});\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "{pad}    int64_t _insp_counter_{i} = {counter};\n"
+            ));
+        }
+        out.push_str(&format!("{pad}    uint32_t _insp_start_{i} = 0;\n"));
+        out.push_str(&format!(
+            "{pad}    uint32_t _insp_end_{i} = {target_size};\n"
+        ));
+        if matches!(t.kind, cobol_hir::HirTallyingKind::Leading(_)) {
+            out.push_str(&format!("{pad}    uint8_t _insp_leading_{i} = 1;\n"));
+        }
+        for (j, ba) in t.before_after.iter().enumerate() {
+            let marker_label = format!("series_ba{i}_{j}");
+            let (marker_ptr, marker_len) =
+                emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
+            out.push_str(&format!(
+                "{pad}    const uint8_t* _insp_marker_{i}_{j} = {marker_ptr};\n"
+            ));
+            out.push_str(&format!(
+                "{pad}    uint32_t _insp_marker_len_{i}_{j} = {marker_len};\n"
+            ));
+            out.push_str(&format!("{pad}    if (_insp_marker_len_{i}_{j} == 0 || _insp_marker_len_{i}_{j} > _insp_end_{i} - _insp_start_{i}) {{\n"));
+            if !ba.is_before {
+                out.push_str(&format!("{pad}        _insp_start_{i} = _insp_end_{i};\n"));
+            }
+            out.push_str(&format!("{pad}    }} else {{\n"));
+            out.push_str(&format!(
+                "{pad}        uint32_t _insp_found = _insp_end_{i};\n"
+            ));
+            out.push_str(&format!("{pad}        for (uint32_t _j = _insp_start_{i}; _j + _insp_marker_len_{i}_{j} <= _insp_end_{i}; _j++) {{\n"));
+            out.push_str(&format!("{pad}            if (memcmp(_insp_base + _j, _insp_marker_{i}_{j}, _insp_marker_len_{i}_{j}) == 0) {{ _insp_found = _j; break; }}\n"));
+            out.push_str(&format!("{pad}        }}\n"));
+            out.push_str(&format!(
+                "{pad}        if (_insp_found == _insp_end_{i}) {{\n"
+            ));
+            if !ba.is_before {
+                out.push_str(&format!(
+                    "{pad}            _insp_start_{i} = _insp_end_{i};\n"
+                ));
+            }
+            out.push_str(&format!("{pad}        }} else {{\n"));
+            if ba.is_before {
+                out.push_str(&format!("{pad}            _insp_end_{i} = _insp_found;\n"));
+            } else {
+                out.push_str(&format!(
+                    "{pad}            _insp_start_{i} = _insp_found + _insp_marker_len_{i}_{j};\n"
+                ));
+            }
+            out.push_str(&format!("{pad}        }}\n"));
+            out.push_str(&format!("{pad}    }}\n"));
+        }
+    }
+    out.push_str(&format!("{pad}    uint32_t _insp_i = 0;\n"));
+    out.push_str(&format!("{pad}    while (_insp_i < {target_size}) {{\n"));
+    out.push_str(&format!("{pad}        uint8_t _insp_matched = 0;\n"));
+    for (i, t) in tallying.iter().enumerate() {
+        let counter_slot = counter_slots[i];
+        out.push_str(&format!(
+            "{pad}        if (!_insp_matched && _insp_i >= _insp_start_{i} && _insp_i < _insp_end_{i}) {{\n"
+        ));
+        match &t.kind {
+            cobol_hir::HirTallyingKind::Characters => {
+                out.push_str(&format!(
+                    "{pad}            _insp_counter_{counter_slot}++;\n"
+                ));
+                out.push_str(&format!("{pad}            _insp_i++;\n"));
+                out.push_str(&format!("{pad}            _insp_matched = 1;\n"));
+            }
+            cobol_hir::HirTallyingKind::All(expr) => {
+                let label = format!("series_all{i}");
+                let (search_ptr, search_len) =
+                    emit_inspect_operand(out, expr, &label, data_items, pad);
+                out.push_str(&format!(
+                    "{pad}            const uint8_t* _insp_search_{i} = {search_ptr};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}            uint32_t _insp_search_len_{i} = {search_len};\n"
+                ));
+                out.push_str(&format!("{pad}            if (_insp_search_len_{i} > 0 && _insp_i + _insp_search_len_{i} <= _insp_end_{i} && memcmp(_insp_base + _insp_i, _insp_search_{i}, _insp_search_len_{i}) == 0) {{\n"));
+                out.push_str(&format!(
+                    "{pad}                _insp_counter_{counter_slot}++;\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}                _insp_i += _insp_search_len_{i};\n"
+                ));
+                out.push_str(&format!("{pad}                _insp_matched = 1;\n"));
+                out.push_str(&format!("{pad}            }}\n"));
+            }
+            cobol_hir::HirTallyingKind::Leading(expr) => {
+                let label = format!("series_leading{i}");
+                let (search_ptr, search_len) =
+                    emit_inspect_operand(out, expr, &label, data_items, pad);
+                out.push_str(&format!("{pad}            if (_insp_leading_{i}) {{\n"));
+                out.push_str(&format!(
+                    "{pad}                const uint8_t* _insp_search_{i} = {search_ptr};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}                uint32_t _insp_search_len_{i} = {search_len};\n"
+                ));
+                out.push_str(&format!("{pad}                if (_insp_search_len_{i} > 0 && _insp_i + _insp_search_len_{i} <= _insp_end_{i} && memcmp(_insp_base + _insp_i, _insp_search_{i}, _insp_search_len_{i}) == 0) {{\n"));
+                out.push_str(&format!(
+                    "{pad}                    _insp_counter_{counter_slot}++;\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}                    _insp_i += _insp_search_len_{i};\n"
+                ));
+                out.push_str(&format!("{pad}                    _insp_matched = 1;\n"));
+                out.push_str(&format!("{pad}                }} else {{\n"));
+                out.push_str(&format!(
+                    "{pad}                    _insp_leading_{i} = 0;\n"
+                ));
+                out.push_str(&format!("{pad}                }}\n"));
+                out.push_str(&format!("{pad}            }}\n"));
+            }
+            cobol_hir::HirTallyingKind::Trailing(_) => {}
+        }
+        out.push_str(&format!("{pad}        }}\n"));
+    }
+    out.push_str(&format!("{pad}        if (!_insp_matched) _insp_i++;\n"));
+    out.push_str(&format!("{pad}    }}\n"));
+    for (i, t) in tallying.iter().enumerate() {
+        if counter_slots[i] != i {
+            continue;
+        }
+        let counter = emit_expr(&t.counter);
+        let counter_base = expr_data_name(&t.counter).map(data_name_to_c_name);
+        if let Some(disp_size) = counter_base
+            .as_deref()
+            .and_then(|name| grp_display_size(name, data_items))
+        {
+            let counter_ptr = display_numeric_ptr(&counter);
+            out.push_str(&format!(
+                "{pad}    cobol_store_numeric_display(_insp_counter_{i}, {counter_ptr}, {disp_size});\n"
+            ));
+        } else {
+            out.push_str(&format!("{pad}    {counter} = _insp_counter_{i};\n"));
+        }
+    }
+    out.push_str(&format!("{pad}}}\n"));
 }
 
 /// Emit INSPECT REPLACING phrases.
@@ -3035,10 +3347,242 @@ pub(crate) fn emit_inspect_replacing(
                 (3, f_ptr, f_len, t_ptr, t_len)
             }
         };
+        let mut replace_target_ptr = format!("(uint8_t*){tgt_ptr}");
+        let mut replace_target_len = target_size.to_string();
+        if !r.before_after.is_empty() {
+            out.push_str(&format!("{pad}{{\n"));
+            out.push_str(&format!(
+                "{pad}    uint8_t* _insp_base = (uint8_t*){tgt_ptr};\n"
+            ));
+            out.push_str(&format!("{pad}    uint32_t _insp_start = 0;\n"));
+            out.push_str(&format!("{pad}    uint32_t _insp_end = {target_size};\n"));
+            for (j, ba) in r.before_after.iter().enumerate() {
+                let marker_label = format!("rep_ba{i}_{j}");
+                let (marker_ptr, marker_len) =
+                    emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
+                out.push_str(&format!(
+                    "{pad}    const uint8_t* _insp_marker_{j} = {marker_ptr};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    uint32_t _insp_marker_len_{j} = {marker_len};\n"
+                ));
+                out.push_str(&format!("{pad}    if (_insp_marker_len_{j} == 0 || _insp_marker_len_{j} > _insp_end - _insp_start) {{\n"));
+                if ba.is_before {
+                    out.push_str(&format!("{pad}        /* BEFORE with an absent delimiter keeps the current range. */\n"));
+                } else {
+                    out.push_str(&format!("{pad}        _insp_start = _insp_end;\n"));
+                }
+                out.push_str(&format!("{pad}    }} else {{\n"));
+                out.push_str(&format!("{pad}        uint32_t _insp_found = _insp_end;\n"));
+                out.push_str(&format!("{pad}        for (uint32_t _i = _insp_start; _i + _insp_marker_len_{j} <= _insp_end; _i++) {{\n"));
+                out.push_str(&format!("{pad}            if (memcmp(_insp_base + _i, _insp_marker_{j}, _insp_marker_len_{j}) == 0) {{ _insp_found = _i; break; }}\n"));
+                out.push_str(&format!("{pad}        }}\n"));
+                out.push_str(&format!("{pad}        if (_insp_found == _insp_end) {{\n"));
+                if ba.is_before {
+                    out.push_str(&format!("{pad}            /* BEFORE with no match leaves the current range unchanged. */\n"));
+                } else {
+                    out.push_str(&format!("{pad}            _insp_start = _insp_end;\n"));
+                }
+                out.push_str(&format!("{pad}        }} else {{\n"));
+                if ba.is_before {
+                    out.push_str(&format!("{pad}            _insp_end = _insp_found;\n"));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}            _insp_start = _insp_found + _insp_marker_len_{j};\n"
+                    ));
+                }
+                out.push_str(&format!("{pad}        }}\n"));
+                out.push_str(&format!("{pad}    }}\n"));
+            }
+            replace_target_ptr = "(_insp_base + _insp_start)".to_string();
+            replace_target_len = "(_insp_end - _insp_start)".to_string();
+        }
         out.push_str(&format!(
-            "{pad}cobol_inspect_replacing((uint8_t*){tgt_ptr}, {target_size}, {search_ptr}, {search_len}, {replace_ptr}, {replace_len}, {mode});\n"
+            "{pad}cobol_inspect_replacing({replace_target_ptr}, {replace_target_len}, {search_ptr}, {search_len}, {replace_ptr}, {replace_len}, {mode});\n"
         ));
+        if !r.before_after.is_empty() {
+            out.push_str(&format!("{pad}}}\n"));
+        }
     }
+}
+
+fn inspect_numeric_normalized_value_expr(
+    c_target: &str,
+    data_items: &[HirDataItem],
+    raw_tgt_ptr: &str,
+    target_size: u32,
+) -> Option<String> {
+    if let Some((_, _, signed)) = display_numeric_c_expr_metadata(c_target, data_items) {
+        if signed {
+            return Some(format!(
+                "llabs(cobol_display_to_int64({raw_tgt_ptr}, {target_size}))"
+            ));
+        }
+    }
+    let item = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))?;
+    if matches!(item.data_type, HirType::Numeric { .. })
+        && grp_display_size(c_target, data_items).is_none()
+    {
+        return Some(format!("llabs((long long){c_target})"));
+    }
+    None
+}
+
+/// Emit INSPECT REPLACING phrases for TALLYING AND REPLACING format.
+pub(crate) fn emit_inspect_replacing_series(
+    out: &mut String,
+    c_target: &str,
+    target_size: u32,
+    replacing: &[cobol_hir::HirInspectReplacing],
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    if replacing.is_empty() {
+        return;
+    }
+    let tgt_ptr = c_ptr_expr(c_target, data_items);
+    out.push_str(&format!("{pad}{{\n"));
+    out.push_str(&format!(
+        "{pad}    uint8_t* _insp_base = (uint8_t*){tgt_ptr};\n"
+    ));
+    out.push_str(&format!("{pad}    uint8_t _insp_orig[{target_size}];\n"));
+    out.push_str(&format!(
+        "{pad}    memcpy(_insp_orig, _insp_base, {target_size});\n"
+    ));
+    for (i, r) in replacing.iter().enumerate() {
+        out.push_str(&format!("{pad}    uint32_t _insp_start_{i} = 0;\n"));
+        out.push_str(&format!(
+            "{pad}    uint32_t _insp_end_{i} = {target_size};\n"
+        ));
+        if matches!(r.kind, cobol_hir::HirReplacingKind::Leading { .. }) {
+            out.push_str(&format!("{pad}    uint8_t _insp_leading_{i} = 1;\n"));
+        }
+        if matches!(r.kind, cobol_hir::HirReplacingKind::First { .. }) {
+            out.push_str(&format!("{pad}    uint8_t _insp_done_{i} = 0;\n"));
+        }
+        for (j, ba) in r.before_after.iter().enumerate() {
+            let marker_label = format!("rep_series_ba{i}_{j}");
+            let (marker_ptr, marker_len) =
+                emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
+            out.push_str(&format!(
+                "{pad}    const uint8_t* _insp_marker_{i}_{j} = {marker_ptr};\n"
+            ));
+            out.push_str(&format!(
+                "{pad}    uint32_t _insp_marker_len_{i}_{j} = {marker_len};\n"
+            ));
+            out.push_str(&format!("{pad}    if (_insp_marker_len_{i}_{j} == 0 || _insp_marker_len_{i}_{j} > _insp_end_{i} - _insp_start_{i}) {{\n"));
+            if !ba.is_before {
+                out.push_str(&format!("{pad}        _insp_start_{i} = _insp_end_{i};\n"));
+            }
+            out.push_str(&format!("{pad}    }} else {{\n"));
+            out.push_str(&format!(
+                "{pad}        uint32_t _insp_found = _insp_end_{i};\n"
+            ));
+            out.push_str(&format!("{pad}        for (uint32_t _j = _insp_start_{i}; _j + _insp_marker_len_{i}_{j} <= _insp_end_{i}; _j++) {{\n"));
+            out.push_str(&format!("{pad}            if (memcmp(_insp_orig + _j, _insp_marker_{i}_{j}, _insp_marker_len_{i}_{j}) == 0) {{ _insp_found = _j; break; }}\n"));
+            out.push_str(&format!("{pad}        }}\n"));
+            out.push_str(&format!(
+                "{pad}        if (_insp_found == _insp_end_{i}) {{\n"
+            ));
+            if !ba.is_before {
+                out.push_str(&format!(
+                    "{pad}            _insp_start_{i} = _insp_end_{i};\n"
+                ));
+            }
+            out.push_str(&format!("{pad}        }} else {{\n"));
+            if ba.is_before {
+                out.push_str(&format!("{pad}            _insp_end_{i} = _insp_found;\n"));
+            } else {
+                out.push_str(&format!(
+                    "{pad}            _insp_start_{i} = _insp_found + _insp_marker_len_{i}_{j};\n"
+                ));
+            }
+            out.push_str(&format!("{pad}        }}\n"));
+            out.push_str(&format!("{pad}    }}\n"));
+        }
+    }
+    out.push_str(&format!("{pad}    uint32_t _insp_i = 0;\n"));
+    out.push_str(&format!("{pad}    while (_insp_i < {target_size}) {{\n"));
+    out.push_str(&format!("{pad}        uint8_t _insp_matched = 0;\n"));
+    for (i, r) in replacing.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}        if (!_insp_matched && _insp_i >= _insp_start_{i} && _insp_i < _insp_end_{i}) {{\n"
+        ));
+        let (mode, search_ptr, search_len, replace_ptr, replace_len) = match &r.kind {
+            cobol_hir::HirReplacingKind::Characters(to_expr) => {
+                let label = format!("rep_series_to{i}");
+                let (to_ptr, to_len) = emit_inspect_operand(out, to_expr, &label, data_items, pad);
+                (0u32, "NULL".to_string(), "1".to_string(), to_ptr, to_len)
+            }
+            cobol_hir::HirReplacingKind::All { from, to } => {
+                let from_label = format!("rep_series_from{i}");
+                let to_label = format!("rep_series_to{i}");
+                let (f_ptr, f_len) = emit_inspect_operand(out, from, &from_label, data_items, pad);
+                let (t_ptr, t_len) = emit_inspect_operand(out, to, &to_label, data_items, pad);
+                (1, f_ptr, f_len, t_ptr, t_len)
+            }
+            cobol_hir::HirReplacingKind::Leading { from, to } => {
+                let from_label = format!("rep_series_from{i}");
+                let to_label = format!("rep_series_to{i}");
+                let (f_ptr, f_len) = emit_inspect_operand(out, from, &from_label, data_items, pad);
+                let (t_ptr, t_len) = emit_inspect_operand(out, to, &to_label, data_items, pad);
+                (2, f_ptr, f_len, t_ptr, t_len)
+            }
+            cobol_hir::HirReplacingKind::First { from, to } => {
+                let from_label = format!("rep_series_from{i}");
+                let to_label = format!("rep_series_to{i}");
+                let (f_ptr, f_len) = emit_inspect_operand(out, from, &from_label, data_items, pad);
+                let (t_ptr, t_len) = emit_inspect_operand(out, to, &to_label, data_items, pad);
+                (3, f_ptr, f_len, t_ptr, t_len)
+            }
+        };
+        out.push_str(&format!(
+            "{pad}            const uint8_t* _insp_search_{i} = {search_ptr};\n"
+        ));
+        out.push_str(&format!(
+            "{pad}            uint32_t _insp_search_len_{i} = {search_len};\n"
+        ));
+        out.push_str(&format!(
+            "{pad}            const uint8_t* _insp_replace_{i} = {replace_ptr};\n"
+        ));
+        out.push_str(&format!(
+            "{pad}            uint32_t _insp_replace_len_{i} = {replace_len};\n"
+        ));
+        let guard = match mode {
+            0 => "1".to_string(),
+            2 => format!("_insp_leading_{i}"),
+            3 => format!("!_insp_done_{i}"),
+            _ => "1".to_string(),
+        };
+        out.push_str(&format!("{pad}            if ({guard}) {{\n"));
+        if mode == 0 {
+            out.push_str(&format!("{pad}                if (_insp_replace_len_{i} > 0) {{ _insp_base[_insp_i] = _insp_replace_{i}[0]; _insp_i++; _insp_matched = 1; }}\n"));
+        } else {
+            out.push_str(&format!("{pad}                if (_insp_search_len_{i} > 0 && _insp_i + _insp_search_len_{i} <= _insp_end_{i} && memcmp(_insp_orig + _insp_i, _insp_search_{i}, _insp_search_len_{i}) == 0) {{\n"));
+            out.push_str(&format!("{pad}                    uint32_t _insp_copy_len = _insp_search_len_{i} < _insp_replace_len_{i} ? _insp_search_len_{i} : _insp_replace_len_{i};\n"));
+            out.push_str(&format!("{pad}                    memcpy(_insp_base + _insp_i, _insp_replace_{i}, _insp_copy_len);\n"));
+            if mode == 3 {
+                out.push_str(&format!("{pad}                    _insp_done_{i} = 1;\n"));
+            }
+            out.push_str(&format!(
+                "{pad}                    _insp_i += _insp_search_len_{i};\n"
+            ));
+            out.push_str(&format!("{pad}                    _insp_matched = 1;\n"));
+            out.push_str(&format!("{pad}                }} else {{\n"));
+            if mode == 2 {
+                out.push_str(&format!(
+                    "{pad}                    _insp_leading_{i} = 0;\n"
+                ));
+            }
+            out.push_str(&format!("{pad}                }}\n"));
+        }
+        out.push_str(&format!("{pad}            }}\n"));
+        out.push_str(&format!("{pad}        }}\n"));
+    }
+    out.push_str(&format!("{pad}        if (!_insp_matched) _insp_i++;\n"));
+    out.push_str(&format!("{pad}    }}\n"));
+    out.push_str(&format!("{pad}}}\n"));
 }
 
 /// Emit the value part of a STRING source operand.

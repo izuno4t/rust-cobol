@@ -360,7 +360,7 @@ pub(crate) fn emit_statement_with_ctx(
                             }
                             out.push_str("}\n");
                         }
-                    } else if _rounded && uses_decimal {
+                    } else if uses_decimal {
                         let terms: Vec<&HirExpr> = operands.iter().chain(to.iter()).collect();
                         if let Some((first_term, rest_terms)) = terms.split_first() {
                             out.push_str(&format!("{pad}{{ "));
@@ -374,16 +374,17 @@ pub(crate) fn emit_statement_with_ctx(
                                 out.push_str(&decimal_init_statement(&tmp, Some(op), data_items));
                                 out.push_str(&decimal_add_exact_statement("_ag", &tmp));
                             }
-                            out.push_str(
-                                "int64_t _result = _ag.value; \
-                                 if (_ag.scale > 0) { \
-                                     int64_t _factor = 1; \
-                                     for (int32_t _i = 0; _i < _ag.scale; _i++) _factor *= 10; \
-                                     _result = (_ag.value >= 0) ? ((_ag.value + (_factor / 2)) / _factor) : ((_ag.value - (_factor / 2)) / _factor); \
-                                 } else if (_ag.scale < 0) { \
-                                     for (int32_t _i = 0; _i < -_ag.scale; _i++) _result *= 10; \
-                                 } ",
-                            );
+                            let display_target =
+                                display_numeric_c_expr_metadata(&c_target, data_items);
+                            let target_scale = display_target
+                                .map(|(_, scale, _)| scale)
+                                .or_else(|| decimal_expr_scale(target, data_items))
+                                .unwrap_or(0);
+                            out.push_str(&decimal_rescale_to_scale_statement(
+                                "_ag",
+                                target_scale,
+                                _rounded,
+                            ));
                             if has_size_error {
                                 if let Some(max_val) = get_pic_max(
                                     target_name.map_or("", HirDataName::as_str),
@@ -392,11 +393,40 @@ pub(crate) fn emit_statement_with_ctx(
                                     out.push_str(&format!(
                                         "if (llabs(_result) > {max_val}) {{ _size_error = 1; }} else {{ "
                                     ));
-                                    emit_store_int(out, &c_target, "_result", data_items, "");
+                                    if let Some((target_size, _, _)) = display_target {
+                                        emit_store_display_numeric(
+                                            out,
+                                            "",
+                                            "_result",
+                                            &c_target,
+                                            target_size,
+                                            data_items,
+                                        );
+                                    } else {
+                                        emit_store_int(out, &c_target, "_result", data_items, "");
+                                    }
                                     out.push_str("} ");
+                                } else if let Some((target_size, _, _)) = display_target {
+                                    emit_store_display_numeric(
+                                        out,
+                                        "",
+                                        "_result",
+                                        &c_target,
+                                        target_size,
+                                        data_items,
+                                    );
                                 } else {
                                     emit_store_int(out, &c_target, "_result", data_items, "");
                                 }
+                            } else if let Some((target_size, _, _)) = display_target {
+                                emit_store_display_numeric(
+                                    out,
+                                    "",
+                                    "_result",
+                                    &c_target,
+                                    target_size,
+                                    data_items,
+                                );
                             } else {
                                 emit_store_int(out, &c_target, "_result", data_items, "");
                             }
@@ -4039,12 +4069,45 @@ pub(crate) fn emit_statement_with_ctx(
             out.push_str(&format!("{pad}}}\n"));
         }
         HirStatement::Inspect { target, kind, .. } => {
-            let c_target = sanitize_name(target);
-            let target_size = find_data_item_size(&c_target, data_items);
+            let (c_target, target_size) = match target {
+                HirExpr::DataRef(data_ref)
+                    if data_ref.subscripts.is_empty() && data_ref.refmod.is_none() =>
+                {
+                    let c_name = data_name_to_c_name(&data_ref.name);
+                    let size = find_data_item_size(&c_name, data_items);
+                    (c_name, size)
+                }
+                _ => {
+                    let (ptr, len) = emit_alphanumeric_operand(target, data_items);
+                    let size = len.parse::<u32>().unwrap_or(0);
+                    out.push_str(&format!(
+                        "{pad}uint8_t* _inspect_target = (uint8_t*){ptr};\n"
+                    ));
+                    ("_inspect_target".to_string(), size)
+                }
+            };
             out.push_str(&format!("{pad}/* INSPECT {c_target} */\n"));
             match kind {
                 cobol_hir::HirInspectKind::Tallying { tallying } => {
-                    emit_inspect_tallying(out, &c_target, target_size, tallying, data_items, &pad);
+                    if tallying.len() <= 1 {
+                        emit_inspect_tallying(
+                            out,
+                            &c_target,
+                            target_size,
+                            tallying,
+                            data_items,
+                            &pad,
+                        );
+                    } else {
+                        emit_inspect_tallying_series(
+                            out,
+                            &c_target,
+                            target_size,
+                            tallying,
+                            data_items,
+                            &pad,
+                        );
+                    }
                 }
                 cobol_hir::HirInspectKind::Replacing { replacing } => {
                     emit_inspect_replacing(
@@ -4060,8 +4123,15 @@ pub(crate) fn emit_statement_with_ctx(
                     tallying,
                     replacing,
                 } => {
-                    emit_inspect_tallying(out, &c_target, target_size, tallying, data_items, &pad);
-                    emit_inspect_replacing(
+                    emit_inspect_tallying_series(
+                        out,
+                        &c_target,
+                        target_size,
+                        tallying,
+                        data_items,
+                        &pad,
+                    );
+                    emit_inspect_replacing_series(
                         out,
                         &c_target,
                         target_size,

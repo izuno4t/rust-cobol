@@ -787,7 +787,7 @@ pub enum HirStatement {
     },
     /// INSPECT statement.
     Inspect {
-        target: SmolStr,
+        target: HirExpr,
         kind: HirInspectKind,
         span: Span,
     },
@@ -1580,7 +1580,7 @@ fn write_stmt(
         HirStatement::UnstringStmt { source, .. } => writeln!(f, "{pad}UNSTRING {source}"),
         HirStatement::Accept { target, .. } => writeln!(f, "{pad}ACCEPT {target}"),
         HirStatement::Sort { file_name, .. } => writeln!(f, "{pad}SORT {file_name}"),
-        HirStatement::Inspect { target, .. } => writeln!(f, "{pad}INSPECT {target}"),
+        HirStatement::Inspect { .. } => writeln!(f, "{pad}INSPECT"),
         HirStatement::Search {
             table_name, all, ..
         } => {

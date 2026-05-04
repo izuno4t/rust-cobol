@@ -3018,6 +3018,169 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_inspect_tallying_before_after_initial_limits_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSPECT-RANGE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA  PIC X(83) VALUE
+   'AH YES AH YES W.C. FRITOES HERE. ANYONE WHO HATES DOGS AND KIDS CAN NOT BE ALL BAD.'.
+01 WS-AFTER PIC 9(3) VALUE 0.
+01 WS-BEFORE PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    INSPECT WS-DATA TALLYING WS-AFTER FOR CHARACTERS AFTER ' W'.
+    INSPECT WS-DATA TALLYING WS-BEFORE FOR ALL SPACE BEFORE INITIAL 'W.C.'.
+    DISPLAY WS-AFTER.
+    DISPLAY WS-BEFORE.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
+    assert!(
+        lines.iter().any(|line| *line == "068" || *line == "68"),
+        "INSPECT AFTER INITIAL should tally only after delimiter, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| *line == "004" || *line == "4"),
+        "INSPECT BEFORE INITIAL should tally only before delimiter, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_inspect_replacing_before_after_initial_limits_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSPECT-REPLACE-RANGE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA  PIC X(83) VALUE
+   'AH YES AH YES W.C. FRITOES HERE. ANYONE WHO HATES DOGS AND KIDS CAN NOT BE ALL BAD.'.
+PROCEDURE DIVISION.
+    INSPECT WS-DATA
+        REPLACING LEADING 'AH' BY 'OH' BEFORE INITIAL ' AH YES'
+                  FIRST 'I' BY 'O' AFTER INITIAL '.'
+                  ALL '. ' BY ', ' AFTER INITIAL 'HE'.
+    DISPLAY WS-DATA.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.contains("OH YES AH YES W.C. FR"),
+        "INSPECT REPLACING BEFORE/AFTER should limit each phrase range, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_inspect_tallying_replacing_tally_phrases_share_scan_position() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSPECT-SERIES.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA  PIC X(83) VALUE
+   'AH YES AH YES W.C. FRITOES HERE. ANYONE WHO HATES DOGS AND KIDS CAN NOT BE ALL BAD.'.
+01 C-A      PIC 9(3) VALUE 0.
+01 C-LEAD   PIC 9(3) VALUE 0.
+01 C-CHARS  PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    INSPECT WS-DATA
+        TALLYING C-A FOR ALL 'A'
+                 C-LEAD FOR LEADING 'AH'
+                 C-CHARS FOR CHARACTERS BEFORE '.'
+        REPLACING FIRST 'L ' BY 'ZZ' AFTER INITIAL 'AL'
+                  FIRST 'BAD' BY 'ZZZ' AFTER 'L '
+                  LEADING 'BAD' BY 'ZZZ' BEFORE INITIAL 'Q'
+                  FIRST 'BAD' BY 'ZZZ' BEFORE INITIAL 'Z'
+                  FIRST 'BAD' BY 'ZZZ' AFTER 'ALL '
+                  ALL '.' BY 'Z' AFTER 'AL'.
+    DISPLAY C-A.
+    DISPLAY C-LEAD.
+    DISPLAY C-CHARS.
+    DISPLAY WS-DATA.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
+    assert!(
+        lines.iter().any(|line| *line == "008" || *line == "8"),
+        "first tally phrase should count all A characters, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| *line == "000" || *line == "0"),
+        "later LEADING phrase should not recount bytes consumed by prior phrase, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| *line == "013" || *line == "13"),
+        "CHARACTERS BEFORE should count remaining inspected bytes before delimiter, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("IDS CAN NOT BE ALZZZZZZ"),
+        "REPLACING phrases should use the original scan text while updating target, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_inspect_tallying_signed_display_numeric_uses_digits_without_sign() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSPECT-SIGNED.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NUM   PIC S9(5) VALUE -12345.
+01 C-MINUS  PIC 9(3) VALUE 0.
+01 C-FIVE   PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    INSPECT WS-NUM TALLYING C-MINUS FOR ALL '-'
+                             C-FIVE FOR ALL '5'.
+    DISPLAY C-MINUS.
+    DISPLAY C-FIVE.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
+    assert!(
+        lines.iter().any(|line| *line == "000" || *line == "0"),
+        "signed DISPLAY numeric INSPECT should not expose a '-' byte, got:\n{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| *line == "001" || *line == "1"),
+        "signed DISPLAY numeric INSPECT should expose the trailing digit, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_inspect_tallying_phrases_share_scan_position() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSPECT-TALLY-SERIES.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(4) VALUE 'AABA'.
+01 C-AA    PIC 9(3) VALUE 0.
+01 C-A     PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    INSPECT WS-DATA TALLYING C-AA FOR ALL 'AA'
+                              C-A FOR ALL 'A'.
+    DISPLAY C-AA.
+    DISPLAY C-A.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
+    assert!(matches!(lines.first(), Some(&"001") | Some(&"1")));
+    assert!(
+        matches!(lines.get(1), Some(&"001") | Some(&"1")),
+        "second phrase should count only the remaining A, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn test_native_reference_modification() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3118,6 +3281,28 @@ PROCEDURE DIVISION.
     assert!(
         stdout.lines().any(|line| line.trim() == "1.234.567,89"),
         "numeric edited decimal comma picture should use comma as decimal point, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_add_giving_decimal_to_integer_truncates_fraction() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ADD-TRUNC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 N-43 PIC S9V9 VALUE +1.6.
+01 N-45 PIC S9 VALUE 0.
+PROCEDURE DIVISION.
+    ADD N-43 1.4 GIVING N-45.
+    DISPLAY N-45.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "3"),
+        "ADD GIVING decimal result into integer target should truncate to 3, got:\n{stdout}"
     );
 }
 
