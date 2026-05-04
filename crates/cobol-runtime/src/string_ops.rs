@@ -400,6 +400,72 @@ pub unsafe extern "C" fn cobol_store_numeric_display(value: i64, dst_ptr: *mut u
     }
 }
 
+/// Store DISPLAY numeric with SIGN IS SEPARATE CHARACTER.
+///
+/// `position` is 0 for leading sign, 1 for trailing sign.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_store_numeric_display_separate_sign(
+    value: i64,
+    dst_ptr: *mut u8,
+    dst_len: u32,
+    position: u32,
+) {
+    if dst_ptr.is_null() || dst_len == 0 {
+        return;
+    }
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
+    dst.fill(b'0');
+    let sign = if value < 0 { b'-' } else { b'+' };
+    let digit_len = dst.len().saturating_sub(1);
+    let digits = if position == 0 {
+        dst[0] = sign;
+        &mut dst[1..]
+    } else {
+        let last = dst.len() - 1;
+        dst[last] = sign;
+        &mut dst[..last]
+    };
+    let mut n = value.unsigned_abs();
+    for slot in digits.iter_mut().take(digit_len).rev() {
+        *slot = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+}
+
+/// Store DISPLAY numeric with SIGN IS LEADING, using embedded overpunch.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_store_numeric_display_leading_sign(
+    value: i64,
+    dst_ptr: *mut u8,
+    dst_len: u32,
+) {
+    if dst_ptr.is_null() || dst_len == 0 {
+        return;
+    }
+    cobol_store_numeric_display(value.unsigned_abs() as i64, dst_ptr, dst_len);
+    if value < 0 {
+        let dst = std::slice::from_raw_parts_mut(dst_ptr, dst_len as usize);
+        if let Some(first) = dst.first_mut() {
+            *first = match *first {
+                b'0' => b'}',
+                b'1' => b'J',
+                b'2' => b'K',
+                b'3' => b'L',
+                b'4' => b'M',
+                b'5' => b'N',
+                b'6' => b'O',
+                b'7' => b'P',
+                b'8' => b'Q',
+                b'9' => b'R',
+                other => other,
+            };
+        }
+    }
+}
+
 /// Read a zoned decimal (ASCII digit) buffer and return its int64_t value.
 /// Handles leading/trailing spaces and sign characters.
 ///
@@ -434,10 +500,11 @@ pub unsafe extern "C" fn cobol_display_to_int64(src_ptr: *const u8, src_len: u32
     let mut value = 0i64;
     let mut saw_digit = false;
     for (idx, &b) in src[start..end].iter().enumerate() {
+        let is_first = idx == 0;
         let is_last = idx + 1 == end - start;
         let digit = if b.is_ascii_digit() {
             b - b'0'
-        } else if is_last {
+        } else if is_first || is_last {
             match b {
                 b'{' => {
                     negative = false;
@@ -460,7 +527,7 @@ pub unsafe extern "C" fn cobol_display_to_int64(src_ptr: *const u8, src_len: u32
         } else {
             return 0;
         };
-        if b.is_ascii_digit() || is_last {
+        if b.is_ascii_digit() || is_first || is_last {
             saw_digit = true;
             value = value.saturating_mul(10).saturating_add(digit as i64);
         }
@@ -893,11 +960,37 @@ mod tests {
     }
 
     #[test]
+    fn test_store_numeric_display_leading_sign_negative_overpunch() {
+        let mut buf = [b' '; 4];
+        unsafe {
+            cobol_store_numeric_display_leading_sign(-9127, buf.as_mut_ptr(), buf.len() as u32);
+            assert_eq!(&buf, b"R127");
+            assert_eq!(
+                cobol_display_to_int64(buf.as_ptr(), buf.len() as u32),
+                -9127
+            );
+        }
+    }
+
+    #[test]
+    fn test_store_numeric_display_separate_sign_positions() {
+        let mut leading = [b' '; 5];
+        let mut trailing = [b' '; 5];
+        unsafe {
+            cobol_store_numeric_display_separate_sign(1234, leading.as_mut_ptr(), 5, 0);
+            cobol_store_numeric_display_separate_sign(-1234, trailing.as_mut_ptr(), 5, 1);
+        }
+        assert_eq!(&leading, b"+1234");
+        assert_eq!(&trailing, b"1234-");
+    }
+
+    #[test]
     fn test_display_to_int64_handles_spaces_and_signs() {
         unsafe {
             assert_eq!(cobol_display_to_int64(b"  +123".as_ptr(), 6), 123);
             assert_eq!(cobol_display_to_int64(b"456- ".as_ptr(), 5), -456);
             assert_eq!(cobol_display_to_int64(b"12L".as_ptr(), 3), -123);
+            assert_eq!(cobol_display_to_int64(b"R127".as_ptr(), 4), -9127);
             assert_eq!(cobol_display_to_int64(b"   ".as_ptr(), 3), 0);
         }
     }

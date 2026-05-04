@@ -2422,7 +2422,9 @@ pub(crate) fn emit_decimal_arith(
              _lhs.size = {target_size}; _lhs.scale = {target_scale}; _lhs.is_signed = {signed}; \
              {operand_init} \
              {func}(&_lhs, &_rhs, &_lhs); \
-             cobol_store_numeric_display(_lhs.value, {c_target_ptr}, {target_size}); }}\n"
+             {} \
+             cobol_store_numeric_display(_result, {c_target_ptr}, {target_size}); }}\n",
+            decimal_rescale_to_scale_statement("_lhs", target_scale)
         ));
         return;
     }
@@ -2457,10 +2459,9 @@ pub(crate) fn emit_decimal_arith(
                     ));
                 }
                 _ => {
-                    // Convert operand to a temporary CobolDecimal.
-                    let c_op = emit_int_compatible_expr(operand, data_items);
+                    let init = decimal_temp_init_from_expr("_tmp", operand, data_items);
                     out.push_str(&format!(
-                        "{pad}{{ CobolDecimal _tmp; cobol_decimal_from_int({c_op}, 0, &_tmp); {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
+                        "{pad}{{ {init} {func}(&{c_target}, &_tmp, &{c_target}); }}\n"
                     ));
                 }
             },
@@ -4182,7 +4183,7 @@ impl Layout {
 
 pub(crate) fn find_data_item_layout(c_name: &str, data_items: &[HirDataItem]) -> Layout {
     if let Some(item) = find_data_item_by_c_name(c_name, data_items) {
-        let item_len = data_item_byte_size(&item.data_type);
+        let item_len = data_item_storage_size(item);
         let count = item.occurs.unwrap_or(1);
         return Layout {
             item_len,
@@ -4193,7 +4194,7 @@ pub(crate) fn find_data_item_layout(c_name: &str, data_items: &[HirDataItem]) ->
     }
     let lookup = extract_leaf_member(c_name);
     if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {
-        let item_len = data_item_byte_size(&item.data_type);
+        let item_len = data_item_storage_size(item);
         let count = item.occurs.unwrap_or(1);
         return Layout {
             item_len,
@@ -4224,7 +4225,7 @@ pub(crate) fn find_data_item_occurs_count(c_name: &str, data_items: &[HirDataIte
 pub(crate) fn find_data_item_stride(c_name: &str, data_items: &[HirDataItem]) -> u32 {
     let lookup = extract_leaf_member(c_name);
     if let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) {
-        return data_item_byte_size(&item.data_type);
+        return data_item_storage_size(item);
     }
     find_data_item_element_size(c_name, data_items)
 }
@@ -4244,6 +4245,13 @@ pub(crate) fn data_item_byte_size(data_type: &HirType) -> u32 {
         HirType::FloatLong => 8,
         HirType::FloatExtended => 16,
         HirType::National { size } => size * 2, // UTF-16: 2 bytes per character
+    }
+}
+
+pub(crate) fn data_item_storage_size(item: &HirDataItem) -> u32 {
+    match item.data_type {
+        HirType::Numeric { size, .. } if item.sign.is_some_and(|sign| sign.separate) => size + 1,
+        _ => data_item_byte_size(&item.data_type),
     }
 }
 

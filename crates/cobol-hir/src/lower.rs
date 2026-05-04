@@ -11,7 +11,7 @@ use std::{
 };
 
 use cobol_ast::{
-    data_div::ValueClause,
+    data_div::{SignClause, SignPosition, ValueClause},
     expr::{
         ArithOp, ClassType, CompareOp, Condition, FigurativeConstant, QualifiedName, SignType,
         UnaryArithOp,
@@ -36,9 +36,9 @@ use crate::hir::{
     HirInspectReplacing, HirInspectTallying, HirItemId, HirLiteral, HirMoveTarget, HirOpenEntry,
     HirOpenMode, HirParagraph, HirParagraphId, HirParagraphKind, HirParam, HirParamMode,
     HirPerformKind, HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind,
-    HirScreenInfo, HirSearchWhen, HirSendOption, HirSortKey, HirSortOrder, HirStartRelation,
-    HirStatement, HirStringSource, HirTallyingKind, HirTransferTarget, HirType, HirUnaryOp,
-    HirUnstringDelimiter, HirVaryingAfter,
+    HirScreenInfo, HirSearchWhen, HirSendOption, HirSignClause, HirSignPosition, HirSortKey,
+    HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind,
+    HirTransferTarget, HirType, HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
 };
 
 #[derive(Debug, Clone)]
@@ -718,13 +718,14 @@ fn lower_data_division(data: &DataDivision) -> Vec<HirDataItem> {
 }
 
 fn lower_data_item(item: &DataItem, inherited_external: bool, out: &mut Vec<HirDataItem>) {
-    lower_data_item_with_usage(item, inherited_external, None, out);
+    lower_data_item_with_usage(item, inherited_external, None, None, out);
 }
 
 fn lower_data_item_with_usage(
     item: &DataItem,
     inherited_external: bool,
     inherited_usage: Option<&Usage>,
+    inherited_sign: Option<&SignClause>,
     out: &mut Vec<HirDataItem>,
 ) {
     // Skip FILLER and level 88 condition names
@@ -733,7 +734,8 @@ fn lower_data_item_with_usage(
     }
 
     if let Some(name) = &item.name {
-        let data_type = determine_hir_type_with_usage(item, inherited_usage);
+        let data_type = determine_hir_type_with_usage(item, inherited_usage, inherited_sign);
+        let effective_sign = item.sign_clause.as_ref().or(inherited_sign);
         let initial_value = item.value.as_ref().map(lower_value_clause);
         let occurs = item.occurs.as_ref().map(|o| o.max);
         let occurs_depending_on = item
@@ -757,6 +759,7 @@ fn lower_data_item_with_usage(
             data_type,
             picture: item.picture.as_ref().map(|p| p.raw_string.clone()),
             is_numeric_edited: is_numeric_edited_item(item),
+            sign: lower_sign_clause(effective_sign),
             blank_when_zero: item.blank_when_zero,
             scale_adjustment: picture_scale_adjustment(item),
             is_external: inherited_external || item.is_external,
@@ -785,11 +788,13 @@ fn lower_data_item_with_usage(
 
     // Recursively lower child items (group items)
     let child_usage = item.usage.as_ref().or(inherited_usage);
+    let child_sign = item.sign_clause.as_ref().or(inherited_sign);
     for child in &item.children {
         lower_data_item_with_usage(
             child,
             inherited_external || item.is_external,
             child_usage,
+            child_sign,
             out,
         );
     }
@@ -853,6 +858,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             data_type,
             picture: item.picture.as_ref().map(|p| p.raw_string.clone()),
             is_numeric_edited: is_numeric_edited_item(item),
+            sign: lower_sign_clause(item.sign_clause.as_ref()),
             blank_when_zero: item.blank_when_zero,
             scale_adjustment: picture_scale_adjustment(item),
             is_external: false,
@@ -874,16 +880,21 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
 }
 
 fn determine_hir_type(item: &DataItem) -> HirType {
-    determine_hir_type_with_usage(item, None)
+    determine_hir_type_with_usage(item, None, None)
 }
 
-fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage>) -> HirType {
+fn determine_hir_type_with_usage(
+    item: &DataItem,
+    inherited_usage: Option<&Usage>,
+    inherited_sign: Option<&SignClause>,
+) -> HirType {
     if item.picture.is_none() && !item.children.is_empty() {
         // Group items stay groups even when USAGE is specified on the group.
         // The usage affects descendants semantically, but collapsing the
         // group into a scalar loses nested OCCURS structure needed by codegen.
         let mut members = Vec::new();
         let child_usage = item.usage.as_ref().or(inherited_usage);
+        let child_sign = item.sign_clause.as_ref().or(inherited_sign);
         for child in &item.children {
             if child.level == 88 {
                 continue;
@@ -892,7 +903,8 @@ fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage
                 .name
                 .clone()
                 .unwrap_or_else(|| SmolStr::from("FILLER"));
-            let data_type = determine_hir_type_with_usage(child, child_usage);
+            let data_type = determine_hir_type_with_usage(child, child_usage, child_sign);
+            let effective_sign = child.sign_clause.as_ref().or(child_sign);
             let initial_value = child.value.as_ref().map(lower_value_clause);
             let occurs = child.occurs.as_ref().map(|o| o.max);
             let occurs_depending_on = child
@@ -913,6 +925,7 @@ fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage
                 data_type,
                 picture: child.picture.as_ref().map(|p| p.raw_string.clone()),
                 is_numeric_edited: is_numeric_edited_item(child),
+                sign: lower_sign_clause(effective_sign),
                 blank_when_zero: child.blank_when_zero,
                 scale_adjustment: picture_scale_adjustment(child),
                 is_external: child.is_external,
@@ -933,7 +946,13 @@ fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage
             .map(|m| {
                 let element_size = match &m.data_type {
                     HirType::Alphanumeric { size } => *size,
-                    HirType::Numeric { size, .. } => *size,
+                    HirType::Numeric { size, .. } => {
+                        if m.sign.is_some_and(|sign| sign.separate) {
+                            *size + 1
+                        } else {
+                            *size
+                        }
+                    }
                     HirType::Group { size, .. } => *size,
                     HirType::Comp3 { size, .. } => (*size + 2) / 2,
                     HirType::Binary { size } => {
@@ -1018,6 +1037,18 @@ fn determine_hir_type_with_usage(item: &DataItem, inherited_usage: Option<&Usage
         // Default: single character alphanumeric
         HirType::Alphanumeric { size: 1 }
     }
+}
+
+fn lower_sign_clause(clause: Option<&SignClause>) -> Option<HirSignClause> {
+    let clause = clause?;
+    let position = match clause.position {
+        SignPosition::Leading => HirSignPosition::Leading,
+        SignPosition::Trailing => HirSignPosition::Trailing,
+    };
+    Some(HirSignClause {
+        position,
+        separate: clause.separate,
+    })
 }
 
 fn is_numeric_edited_item(item: &DataItem) -> bool {
@@ -2164,7 +2195,7 @@ fn lower_purge(purge: &PurgeStatement) -> HirStatement {
 
 fn lower_goto(goto: &GoToStatement) -> HirStatement {
     let targets = goto.targets.iter().map(resolve_transfer_target).collect();
-    let depending_on = goto.depending_on.as_ref().map(lower_data_name);
+    let depending_on = goto.depending_on.as_ref().map(lower_qualified_name_to_expr);
     HirStatement::GoTo {
         targets,
         depending_on,
@@ -3244,7 +3275,7 @@ fn extract_variable_record_files(program: &CobolProgram) -> std::collections::Ha
 
 fn fd_has_multiple_record_sizes(fd: &FileDescription) -> bool {
     let mut sizes = fd.items.iter().filter(|item| item.level == 1).map(|item| {
-        hir_type_record_size(&determine_hir_type_with_usage(item, None))
+        hir_type_record_size(&determine_hir_type_with_usage(item, None, None))
             * item.occurs.as_ref().map_or(1, |occurs| occurs.max)
     });
     let Some(first_size) = sizes.next() else {
@@ -3301,11 +3332,10 @@ fn extract_variable_record_bounds(program: &CobolProgram) -> HashMap<SmolStr, (u
         .iter()
         .filter_map(|fd| {
             let varying = fd.record_varying.as_ref()?;
-            let mut item_sizes = fd
-                .items
-                .iter()
-                .filter(|item| item.level == 1)
-                .map(|item| hir_type_record_size(&determine_hir_type_with_usage(item, None)));
+            let mut item_sizes =
+                fd.items.iter().filter(|item| item.level == 1).map(|item| {
+                    hir_type_record_size(&determine_hir_type_with_usage(item, None, None))
+                });
             let first_size = item_sizes.next();
             let (inferred_min, inferred_max) = if let Some(first_size) = first_size {
                 item_sizes.fold((first_size, first_size), |(min, max), size| {

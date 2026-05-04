@@ -70,6 +70,7 @@ pub(crate) struct CodegenContext {
     fd_max_record_sizes: HashMap<String, u32>,
     in_body_context: Cell<bool>,
     in_debug_declarative: Cell<bool>,
+    has_debug_declaratives: bool,
     goto_label_map: RefCell<HashMap<HirParagraphId, usize>>,
     body_goto_label_map: RefCell<HashMap<HirParagraphId, usize>>,
     perform_thru_counter: Cell<usize>,
@@ -102,6 +103,10 @@ impl CodegenContext {
                 .iter()
                 .map(|nested| sanitize_name(&nested.name)),
         );
+        ctx.has_debug_declaratives = program
+            .declaratives
+            .iter()
+            .any(|decl| decl.use_kind == HirDeclarativeUse::ForDebugging);
         ctx.alterable_paragraphs = collect_alterable_paragraphs(program);
         ctx
     }
@@ -229,6 +234,11 @@ impl CodegenContext {
             fd_max_record_sizes,
             in_body_context: Cell::new(false),
             in_debug_declarative: Cell::new(false),
+            has_debug_declaratives: parent.has_debug_declaratives
+                || program
+                    .declaratives
+                    .iter()
+                    .any(|decl| decl.use_kind == HirDeclarativeUse::ForDebugging),
             goto_label_map: RefCell::new(HashMap::new()),
             body_goto_label_map: RefCell::new(HashMap::new()),
             perform_thru_counter: Cell::new(0),
@@ -290,6 +300,7 @@ impl CodegenContext {
             fd_max_record_sizes: build_fd_max_record_sizes(data_items, fd_record_aliases),
             in_body_context: Cell::new(false),
             in_debug_declarative: Cell::new(false),
+            has_debug_declaratives: false,
             goto_label_map: RefCell::new(HashMap::new()),
             body_goto_label_map: RefCell::new(HashMap::new()),
             perform_thru_counter: Cell::new(0),
@@ -312,6 +323,10 @@ impl CodegenContext {
 
     pub(crate) fn in_debug_declarative(&self) -> bool {
         self.in_debug_declarative.get()
+    }
+
+    pub(crate) fn has_debug_declaratives(&self) -> bool {
+        self.has_debug_declaratives
     }
 
     pub(crate) fn set_label_map(&self, map: HashMap<HirParagraphId, usize>) {
@@ -673,10 +688,11 @@ pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap
             ..
         } = &item.data_type
         {
-            if item
-                .redefines
-                .as_ref()
-                .is_some_and(|name| redefines_target_requires_display(data_items, name))
+            if item.sign.is_some_and(|sign| sign.separate)
+                || item
+                    .redefines
+                    .as_ref()
+                    .is_some_and(|name| redefines_target_requires_display(data_items, name))
                 || data_items.iter().any(|other| {
                     other
                         .redefines
@@ -688,7 +704,12 @@ pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap
                         )
                 })
             {
-                map.insert(sanitize_name(&item.name), *size);
+                let storage_size = if item.sign.is_some_and(|sign| sign.separate) {
+                    *size + 1
+                } else {
+                    *size
+                };
+                map.insert(sanitize_name(&item.name), storage_size);
             }
         }
         if let HirType::Group { members, .. } = &item.data_type {
@@ -713,10 +734,11 @@ pub(crate) fn build_display_numeric_scales(data_items: &[HirDataItem]) -> HashMa
             decimal_places: 0, ..
         } = &item.data_type
         {
-            if item
-                .redefines
-                .as_ref()
-                .is_some_and(|name| redefines_target_requires_display(data_items, name))
+            if item.sign.is_some_and(|sign| sign.separate)
+                || item
+                    .redefines
+                    .as_ref()
+                    .is_some_and(|name| redefines_target_requires_display(data_items, name))
                 || data_items.iter().any(|other| {
                     other
                         .redefines
@@ -756,7 +778,12 @@ pub(crate) fn collect_display_numeric_sizes(
         let c_name = dedup_group_member_context_name(member, &mut member_name_counts);
         match &member.data_type {
             HirType::Numeric { size, .. } if raw_display_layout => {
-                map.insert(c_name, *size);
+                let storage_size = if member.sign.is_some_and(|sign| sign.separate) {
+                    *size + 1
+                } else {
+                    *size
+                };
+                map.insert(c_name, storage_size);
             }
             HirType::Group {
                 members: sub_members,
@@ -837,6 +864,7 @@ fn dedup_group_member_context_name(
 fn group_members_need_raw_display_layout(members: &[HirDataItem]) -> bool {
     members.iter().any(|member| {
         member.redefines.is_some()
+            || member.sign.is_some_and(|sign| sign.separate)
             || match &member.data_type {
                 HirType::Numeric { .. } => true,
                 HirType::Group {

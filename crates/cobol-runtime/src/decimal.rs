@@ -558,11 +558,9 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
         return result;
     }
 
-    // In the default COBOL convention, period is the actual decimal point and
-    // comma is an insertion character. DECIMAL-POINT IS COMMA is handled while
-    // parsing numeric literals, but edited output currently follows the default
-    // convention.
-    let actual_decimal_char = chars.iter().find(|&&c| c == '.').copied();
+    // When both period and comma appear, the rightmost separator is the actual
+    // decimal point and the other separator is an insertion character.
+    let actual_decimal_char = numeric_edited_actual_decimal_char(&chars);
     let decimal_pos = chars
         .iter()
         .position(|&c| c == 'V' || Some(c) == actual_decimal_char);
@@ -817,6 +815,16 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let _ = has_actual_point;
 
     result
+}
+
+fn numeric_edited_actual_decimal_char(chars: &[char]) -> Option<char> {
+    let dot_pos = chars.iter().rposition(|&c| c == '.');
+    let comma_pos = chars.iter().rposition(|&c| c == ',');
+    match (dot_pos, comma_pos) {
+        (Some(dot), Some(comma)) => Some(if comma > dot { ',' } else { '.' }),
+        (Some(_), None) => Some('.'),
+        _ => None,
+    }
 }
 
 fn format_floating_numeric_edited(
@@ -1548,5 +1556,17 @@ mod tests {
         };
         let s = std::str::from_utf8(&buf[..written as usize]).unwrap();
         assert_eq!(s, "-123.45");
+    }
+
+    #[test]
+    fn test_decimal_to_display_decimal_point_comma_picture() {
+        let d = make_dec(123456789, 2, 9, false);
+        let pic = b"9.999.999,99";
+        let mut buf = [0u8; 32];
+        let written = unsafe {
+            cobol_decimal_to_display(&d, buf.as_mut_ptr(), 32, pic.as_ptr(), pic.len() as u32)
+        };
+        let s = std::str::from_utf8(&buf[..written as usize]).unwrap();
+        assert_eq!(s, "1.234.567,89");
     }
 }

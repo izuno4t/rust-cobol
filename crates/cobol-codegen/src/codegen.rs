@@ -349,15 +349,13 @@ fn emit_file_declarative_dispatch(
                 .collect::<Vec<_>>()
                 .join(" || ");
             out.push_str(&format!(
-                "    if ({mode_guard}) {{ _set_debug_event(\"{}\", \"USE PROCEDURE\", \"\"); decl_{c_decl}(); return; }}\n",
-                escape_c_string(&decl.name),
+                "    if ({mode_guard}) {{ decl_{c_decl}(); return; }}\n",
             ));
         } else {
             for fname in &decl.file_names {
                 let c_file = sanitize_name(fname);
                 out.push_str(&format!(
-                    "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ _set_debug_event(\"{}\", \"USE PROCEDURE\", \"\"); decl_{c_decl}(); return; }}\n",
-                    escape_c_string(&decl.name)
+                    "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ decl_{c_decl}(); return; }}\n"
                 ));
             }
         }
@@ -796,6 +794,10 @@ fn has_debug_declaratives(program: &HirProgram) -> bool {
         .any(|decl| decl.use_kind == HirDeclarativeUse::ForDebugging)
 }
 
+fn has_active_debug_declaratives() -> bool {
+    with_active_context(|ctx| ctx.has_debug_declaratives())
+}
+
 fn collect_debug_register_needs(program: &HirProgram) -> DebugRegisterNeeds {
     let hir_dump = format!("{program:#?}");
     let has_debug_decl = has_debug_declaratives(program);
@@ -824,6 +826,9 @@ fn is_all_references_debug_decl(debug_items: &[smol_str::SmolStr]) -> bool {
 }
 
 fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
+    if !has_debug_declaratives(program) {
+        return;
+    }
     let needs = collect_debug_register_needs(program);
     out.push_str("/* Debug declarative dispatch support */\n");
     out.push_str("static char _debug_event_name[81];\n");
@@ -1281,15 +1286,19 @@ fn emit_program_paragraph_definitions(
                 out.push_str("    if (_goto_target) goto _goto_dispatch;\n");
                 for paragraph in section_paras {
                     let paragraph_c_name = sanitize_name(&paragraph.name);
-                    out.push_str(&format!(
-                        "    _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\");\n",
-                        escape_c_string(&paragraph.name)
-                    ));
+                    if has_active_debug_declaratives() {
+                        out.push_str(&format!(
+                            "    _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\");\n",
+                            escape_c_string(&paragraph.name)
+                        ));
+                    }
                     out.push_str(&format!("lbl_{paragraph_c_name}:;\n"));
-                    out.push_str(&format!(
-                        "    _dispatch_debug_procedure(\"{}\");\n",
-                        escape_c_string(&paragraph.name)
-                    ));
+                    if has_active_debug_declaratives() {
+                        out.push_str(&format!(
+                            "    _dispatch_debug_procedure(\"{}\");\n",
+                            escape_c_string(&paragraph.name)
+                        ));
+                    }
                     ctx.set_in_body_context(true);
                     for stmt in &paragraph.body {
                         let env = StmtEmitEnv {
@@ -1369,14 +1378,16 @@ fn emit_isolated_paragraph_definition(
     let para_label_map = build_paragraph_label_map(paragraph);
     ctx.set_label_map(para_label_map.clone());
     out.push_str(&format!("\nstatic void para_{c_name}(void) {{\n"));
-    out.push_str(&format!(
-        "    _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\");\n",
-        escape_c_string(&paragraph.name)
-    ));
-    out.push_str(&format!(
-        "    _dispatch_debug_procedure(\"{}\");\n",
-        escape_c_string(&paragraph.name)
-    ));
+    if has_active_debug_declaratives() {
+        out.push_str(&format!(
+            "    _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\");\n",
+            escape_c_string(&paragraph.name)
+        ));
+        out.push_str(&format!(
+            "    _dispatch_debug_procedure(\"{}\");\n",
+            escape_c_string(&paragraph.name)
+        ));
+    }
     out.push_str(&format!(
         "    cobol_trace_paragraph(\"{}\", \"{}\");\n",
         sanitize_name(program_name),
@@ -1512,10 +1523,16 @@ fn emit_inline_dispatch_loop(
                 next_label_map.get(&paragraph.id).copied()
             };
             if let Some(next_id) = next_id {
-                out.push_str(&format!(
-                    "        case {id}: para_{c_name}(); if (!_goto_target) {{ _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\"); _goto_target = {next_id}; }} break;\n",
-                    escape_c_string(&paragraph.name)
-                ));
+                if has_active_debug_declaratives() {
+                    out.push_str(&format!(
+                        "        case {id}: para_{c_name}(); if (!_goto_target) {{ _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\"); _goto_target = {next_id}; }} break;\n",
+                        escape_c_string(&paragraph.name)
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "        case {id}: para_{c_name}(); if (!_goto_target) {{ _goto_target = {next_id}; }} break;\n"
+                    ));
+                }
             } else {
                 out.push_str(&format!("        case {id}: para_{c_name}(); break;\n"));
             }
@@ -1539,9 +1556,11 @@ fn emit_top_level_entry_flow(
             .find(|paragraph| paragraph.id == first_id)
             .map(|paragraph| escape_c_string(&paragraph.name))
         {
-            out.push_str(&format!(
-                "    _set_debug_event(\"{first_name}\", \"START PROGRAM\", \"\");\n"
-            ));
+            if has_active_debug_declaratives() {
+                out.push_str(&format!(
+                    "    _set_debug_event(\"{first_name}\", \"START PROGRAM\", \"\");\n"
+                ));
+            }
         }
         out.push_str("_goto_dispatch:\n");
         if let Some(first_label_id) = label_map.get(&first_id) {

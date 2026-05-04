@@ -340,6 +340,7 @@ pub struct HirDataItem {
     pub data_type: HirType,
     pub picture: Option<SmolStr>,
     pub is_numeric_edited: bool,
+    pub sign: Option<HirSignClause>,
     pub blank_when_zero: bool,
     pub scale_adjustment: i32,
     pub is_external: bool,
@@ -361,6 +362,18 @@ pub struct HirDataItem {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HirSignClause {
+    pub position: HirSignPosition,
+    pub separate: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirSignPosition {
+    Leading,
+    Trailing,
+}
+
 impl HirDataItem {
     /// Creates a synthetic data item with neutral COBOL metadata defaults.
     ///
@@ -374,6 +387,7 @@ impl HirDataItem {
             data_type,
             picture: None,
             is_numeric_edited: false,
+            sign: None,
             blank_when_zero: false,
             scale_adjustment: 0,
             is_external: false,
@@ -686,7 +700,7 @@ pub enum HirStatement {
     /// GO TO statement.
     GoTo {
         targets: Vec<HirTransferTarget>,
-        depending_on: Option<HirDataName>,
+        depending_on: Option<HirExpr>,
         span: Span,
     },
     /// INITIALIZE statement.

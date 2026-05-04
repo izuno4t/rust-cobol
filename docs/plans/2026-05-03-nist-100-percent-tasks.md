@@ -2013,7 +2013,7 @@ TASK-011時点での判断:
 ### IMPL-018/IMPL-019 実施記録（進行中）
 
 - 最新ベースライン: `make nist-summary`を実行し、全体は
-  `391 total / 262 pass / 129 fail / 0 ready / 0 CErr / 0 RErr / 67%`。
+  `391 total / 266 pass / 125 fail / 0 ready / 0 CErr / 0 RErr / 68%`。
   `DB`, `IF`, `IX`は100% pass。残る最大阻害はruntime FAILである。
 - CErr分類: `make nist-compile-errors`は`Total: 0`。
   DISPLAY numericを`char[]`として保持する経路と、`CobolDecimal`構造体として扱う
@@ -2050,7 +2050,46 @@ TASK-011時点での判断:
   MOVEする経路で、符号付きsourceの表示符号を編集元文字列へ含めていたこと。
   `PIC XBXXX/XXX/XXX/XXX/XXXBXX`などのalphanumeric editedでは、挿入編集対象を
   数字列として扱い、source signは格納しない。
-- 次の作業: runtime FAIL 129件を、numeric edited formatter/parser、
+- 進捗: `NC116A`は個別再実行でPASS。原因は`SIGN LEADING/TRAILING SEPARATE`が
+  HIRへ伝播せず、DISPLAY numericのstorage sizeとMOVE変換で符号バイトを通常桁として
+  扱っていたこと。さらにgroup `SIGN`句の子項目継承、非分離`SIGN LEADING`の先頭
+  overpunch格納、COMP/BINARYから別符号DISPLAYへのMOVE経路を補正した。
+- 進捗: `NC104A`は個別再実行でPASS。原因はDISPLAY numeric targetへscaleを合わせる際、
+  受け側整数桁へ収まらない高位桁を落とす前に`10^17`などを乗算してC側でoverflowして
+  いたこと。また、別符号DISPLAY対応で通常の`int64_t` numeric sourceまでDISPLAY bytes
+  と誤分類し、英数字MOVEで生メモリを読んでいた経路を補正した。
+- 進捗: `NC123A`は個別再実行でPASS。原因は添字付きDISPLAY numeric operandを
+  Decimal化する一部のADD/SUBTRACT経路で`decimal_places`を落としてscale 0として
+  扱っていたこと、DISPLAY numeric targetへ内部Decimal値をtarget scaleへ戻さずに
+  格納していたこと、`ROUNDED`/`ON SIZE ERROR`で固定PICTUREのscale/容量検査を
+  target metadataではなく現在のDecimal状態に依存していたこと。さらに
+  `GO TO ... DEPENDING ON`のHIRが`TABLE5-NUM (INDEX5)`のsubscriptを落としていたため、
+  selectorを式として保持してDISPLAY numeric値を読ませるようにした。
+- 進捗: `cobol-driver` e2e 216件はPASS。追加原因は、非DEBUGのfile declarativeでも
+  debug helperを無条件生成していたこと、`PERFORM VARYING`構造テストが現行の
+  `for (;;) + if break`生成契約ではなく古い`while`生成を期待していたこと、
+  paragraph内から外部paragraphへ`GO TO`した際にtop-level dispatcher用の
+  `_goto_target`番号をparagraphローカルdispatcherで解釈してALTER系が循環していたこと。
+  debug event生成条件を`USE FOR DEBUGGING`存在時へ揃え、外部paragraph転送は
+  `_goto_target`を設定して呼び出し元dispatcherへ`return`する契約に修正した。
+- 進捗: `NC107A`は個別再実行でPASS。原因は`PERFORM paragraph THRU paragraph`の
+  範囲内にSECTION見出しが挟まる場合、SECTION関数と配下paragraphを重複実行して
+  through終端後のparagraphまで走っていたこと。また`PIC 9.999.999,99`のように
+  `.`と`,`が両方あるnumeric-edited PICTUREで、常に`.`を実小数点として扱い、
+  `DECIMAL-POINT IS COMMA`相当の右端`,`小数点を整形できていなかったこと。
+  paragraph-to-paragraph THRUでは中間SECTION見出しを呼び出し対象から外し、
+  両方の記号があるnumeric-edited PICTUREでは右端の記号を実小数点として扱う。
+- 確認: `cargo test -p cobol-runtime string_ops::tests::test_store_numeric_display
+  -- --nocapture`, `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-driver --test e2e_test`, `cargo fmt --check`, `make release`,
+  `cargo test -p cobol-runtime decimal::tests::test_decimal_to_display_decimal_point_comma_picture
+  -- --nocapture`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC116A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC104A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC123A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC107A`,
+  `make nist-summary`を実行。
+- 次の作業: runtime FAIL 125件を、numeric edited formatter/parser、
   decimal算術/SIZE ERROR、MOVE CORRESPONDING、REDEFINES、PERFORM制御、
   REPORT/SORT/COMMUNICATIONへ再分類して、件数の大きい順に潰す。
 

@@ -204,7 +204,9 @@ PROCEDURE DIVISION.
     assert!(matches!(&hir.body[0], HirStatement::Perform { .. }));
 
     let c_code = compile_to_c(src);
-    assert!(c_code.contains("while ("));
+    assert!(c_code.contains("for (;;)"));
+    assert!(c_code.contains("if ("));
+    assert!(c_code.contains("break;"));
 }
 
 #[test]
@@ -492,7 +494,9 @@ PROCEDURE DIVISION.
 
     let c_code = compile_to_c(src);
     assert!(c_code.contains("WS_I = "));
-    assert!(c_code.contains("while ("));
+    assert!(c_code.contains("for (;;)"));
+    assert!(c_code.contains("if ("));
+    assert!(c_code.contains("break;"));
     assert!(c_code.contains("WS_I +="));
 }
 
@@ -2583,6 +2587,7 @@ fn test_c2_move_corresponding() {
                                 decimal_places: 0,
                                 is_signed: false,
                             },
+                            sign: None,
                             picture: None,
                             is_numeric_edited: false,
                             blank_when_zero: false,
@@ -2601,6 +2606,7 @@ fn test_c2_move_corresponding() {
                         HirDataItem {
                             name: "FIELD-B".into(),
                             data_type: HirType::Alphanumeric { size: 10 },
+                            sign: None,
                             picture: None,
                             is_numeric_edited: false,
                             blank_when_zero: false,
@@ -2619,6 +2625,7 @@ fn test_c2_move_corresponding() {
                     ],
                     size: 15,
                 },
+                sign: None,
                 picture: None,
                 is_numeric_edited: false,
                 blank_when_zero: false,
@@ -2645,6 +2652,7 @@ fn test_c2_move_corresponding() {
                                 decimal_places: 0,
                                 is_signed: false,
                             },
+                            sign: None,
                             picture: None,
                             is_numeric_edited: false,
                             blank_when_zero: false,
@@ -2663,6 +2671,7 @@ fn test_c2_move_corresponding() {
                         HirDataItem {
                             name: "FIELD-C".into(),
                             data_type: HirType::Alphanumeric { size: 10 },
+                            sign: None,
                             picture: None,
                             is_numeric_edited: false,
                             blank_when_zero: false,
@@ -2681,6 +2690,7 @@ fn test_c2_move_corresponding() {
                     ],
                     size: 15,
                 },
+                sign: None,
                 picture: None,
                 is_numeric_edited: false,
                 blank_when_zero: false,
@@ -2768,6 +2778,7 @@ fn test_c2_add_corresponding() {
                             decimal_places: 2,
                             is_signed: false,
                         },
+                        sign: None,
                         picture: None,
                         is_numeric_edited: false,
                         blank_when_zero: false,
@@ -2785,6 +2796,7 @@ fn test_c2_add_corresponding() {
                     }],
                     size: 9,
                 },
+                sign: None,
                 picture: None,
                 is_numeric_edited: false,
                 blank_when_zero: false,
@@ -2810,6 +2822,7 @@ fn test_c2_add_corresponding() {
                             decimal_places: 2,
                             is_signed: false,
                         },
+                        sign: None,
                         picture: None,
                         is_numeric_edited: false,
                         blank_when_zero: false,
@@ -2827,6 +2840,7 @@ fn test_c2_add_corresponding() {
                     }],
                     size: 9,
                 },
+                sign: None,
                 picture: None,
                 is_numeric_edited: false,
                 blank_when_zero: false,
@@ -3049,6 +3063,61 @@ PARA-B.
         stdout.contains("B-DONE"),
         "PERFORM THRU should execute both paragraphs: got '{}'",
         stdout.trim()
+    );
+}
+
+#[test]
+fn test_native_perform_paragraph_thru_skips_intermediate_section_header() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. PERF-THRU-SECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  N PIC 9(4) VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM A-PARA THRU B-PARA 2 TIMES.
+    DISPLAY N.
+    STOP RUN.
+A-SECTION SECTION.
+A-PARA.
+    ADD 10 TO N.
+B-SECTION SECTION.
+B-PARA.
+    ADD 100 TO N.
+B-NEXT.
+    ADD 1000 TO N.
+";
+    let (stdout, stderr, code) = compile_and_run(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "220"),
+        "PERFORM paragraph THRU paragraph should not execute paragraph after through target, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_numeric_edited_decimal_point_comma_picture() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DEC-COMMA.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    DECIMAL-POINT IS COMMA.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77  DATA-K PIC 9999999V99 VALUE 1234567,89.
+77  DATA-L PIC 9.999.999,99.
+PROCEDURE DIVISION.
+    MOVE DATA-K TO DATA-L.
+    DISPLAY DATA-L.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "1.234.567,89"),
+        "numeric edited decimal comma picture should use comma as decimal point, got:\n{stdout}"
     );
 }
 

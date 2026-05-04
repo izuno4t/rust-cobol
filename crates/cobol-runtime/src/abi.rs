@@ -144,6 +144,12 @@ pub fn emit_c_declarations(out: &mut String) {
     out.push_str(
         "extern void cobol_store_numeric_display(int64_t value, uint8_t* dst, uint32_t dst_len);\n",
     );
+    out.push_str(
+        "extern void cobol_store_numeric_display_separate_sign(int64_t value, uint8_t* dst, uint32_t dst_len, uint32_t position);\n",
+    );
+    out.push_str(
+        "extern void cobol_store_numeric_display_leading_sign(int64_t value, uint8_t* dst, uint32_t dst_len);\n",
+    );
     out.push_str("extern int64_t cobol_display_to_int64(const uint8_t* src, uint32_t src_len);\n");
     out.push_str(
         "extern int32_t cobol_string_concat(const CobolStringSource* sources, uint32_t source_count, uint8_t* dst, uint32_t dst_len, uint32_t* pointer);\n",

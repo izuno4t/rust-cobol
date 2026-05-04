@@ -1,6 +1,7 @@
 use super::*;
 use cobol_hir::{
-    HirDataName, HirParagraphId, HirParagraphKind, HirPerformTest, HirReceiveMode, HirType,
+    HirDataName, HirParagraphId, HirParagraphKind, HirPerformTest, HirReceiveMode, HirSignPosition,
+    HirType,
 };
 
 pub(crate) struct StmtEmitEnv<'a> {
@@ -421,18 +422,98 @@ pub(crate) fn emit_statement_with_ctx(
                     let target_name = expr_data_name(target);
                     let target_is_decimal = target_expr_is_decimal(target, &c_target, data_items);
                     if target_is_decimal {
-                        for op in operands {
-                            if !emit_fast_decimal_add_assign(
-                                out, &c_target, target, op, data_items, &pad,
-                            ) {
-                                emit_decimal_arith(
-                                    out,
-                                    &c_target,
-                                    op,
-                                    "cobol_decimal_add",
+                        if rounded || has_size_error {
+                            let display_target =
+                                display_numeric_c_expr_metadata(&c_target, data_items);
+                            let target_scale = display_target
+                                .map(|(_, scale, _)| scale)
+                                .or_else(|| decimal_expr_scale(target, data_items));
+                            if let Some(target_scale) = target_scale {
+                                out.push_str(&format!("{pad}{{ "));
+                                out.push_str(&decimal_init_statement(
+                                    "_ar",
+                                    Some(target),
                                     data_items,
-                                    &pad,
-                                );
+                                ));
+                                for (op_idx, op) in operands.iter().enumerate() {
+                                    let tmp = format!("_ao{op_idx}");
+                                    out.push_str(&decimal_init_statement(
+                                        &tmp,
+                                        Some(op),
+                                        data_items,
+                                    ));
+                                    out.push_str(&decimal_add_exact_statement("_ar", &tmp));
+                                }
+                                out.push_str(&decimal_rescale_to_scale_statement(
+                                    "_ar",
+                                    target_scale,
+                                    rounded,
+                                ));
+                                if has_size_error {
+                                    if let Some(max_val) = get_pic_max(
+                                        target_name.map_or("", HirDataName::as_str),
+                                        data_items,
+                                    ) {
+                                        out.push_str(&format!(
+                                            "if (llabs(_result) > {max_val}) {{ _size_error = 1; }} else {{ "
+                                        ));
+                                        if let Some((target_size, _, _)) = display_target {
+                                            let target_ptr = display_numeric_ptr(&c_target);
+                                            out.push_str(&format!(
+                                                "cobol_store_numeric_display(_result, {target_ptr}, {target_size}); "
+                                            ));
+                                        } else {
+                                            out.push_str(&format!(
+                                                "{c_target}.value = _result; {c_target}.scale = {target_scale}; "
+                                            ));
+                                        }
+                                        out.push_str("} }\n");
+                                    } else if let Some((target_size, _, _)) = display_target {
+                                        let target_ptr = display_numeric_ptr(&c_target);
+                                        out.push_str(&format!(
+                                            "cobol_store_numeric_display(_result, {target_ptr}, {target_size}); }}\n"
+                                        ));
+                                    } else {
+                                        out.push_str(&format!(
+                                            "{c_target}.value = _result; {c_target}.scale = {target_scale}; }}\n"
+                                        ));
+                                    }
+                                } else if let Some((target_size, _, _)) = display_target {
+                                    let target_ptr = display_numeric_ptr(&c_target);
+                                    out.push_str(&format!(
+                                        "cobol_store_numeric_display(_result, {target_ptr}, {target_size}); }}\n"
+                                    ));
+                                } else {
+                                    out.push_str(&format!(
+                                        "{c_target}.value = _result; {c_target}.scale = {target_scale}; }}\n"
+                                    ));
+                                }
+                            } else {
+                                for op in operands {
+                                    emit_decimal_arith(
+                                        out,
+                                        &c_target,
+                                        op,
+                                        "cobol_decimal_add",
+                                        data_items,
+                                        &pad,
+                                    );
+                                }
+                            }
+                        } else {
+                            for op in operands {
+                                if !emit_fast_decimal_add_assign(
+                                    out, &c_target, target, op, data_items, &pad,
+                                ) {
+                                    emit_decimal_arith(
+                                        out,
+                                        &c_target,
+                                        op,
+                                        "cobol_decimal_add",
+                                        data_items,
+                                        &pad,
+                                    );
+                                }
                             }
                         }
                     } else {
@@ -810,22 +891,48 @@ pub(crate) fn emit_statement_with_ctx(
                                     ));
                                 }
                             } else {
-                                out.push_str(&decimal_rescale_to_target_statement(
-                                    "_sr", &c_target, rounded,
-                                ));
-                                if has_size_error {
-                                    if let Some(max_val) = get_pic_max(
-                                        target_name.map_or("", HirDataName::as_str),
-                                        data_items,
-                                    ) {
+                                if let Some(target_scale) = decimal_expr_scale(target, data_items) {
+                                    out.push_str(&decimal_rescale_to_scale_statement(
+                                        "_sr",
+                                        target_scale,
+                                        rounded,
+                                    ));
+                                    if has_size_error {
+                                        if let Some(max_val) = get_pic_max(
+                                            target_name.map_or("", HirDataName::as_str),
+                                            data_items,
+                                        ) {
+                                            out.push_str(&format!(
+                                                "if (llabs(_result) > {max_val}) {{ _size_error = 1; }} else {{ {c_target}.value = _result; {c_target}.scale = {target_scale}; }} "
+                                            ));
+                                        } else {
+                                            out.push_str(&format!(
+                                                "{c_target}.value = _result; {c_target}.scale = {target_scale}; "
+                                            ));
+                                        }
+                                    } else {
                                         out.push_str(&format!(
-                                            "if (llabs(_result) > {max_val}) {{ _size_error = 1; }} else {{ {c_target}.value = _result; }} "
+                                            "{c_target}.value = _result; {c_target}.scale = {target_scale}; "
                                         ));
+                                    }
+                                } else {
+                                    out.push_str(&decimal_rescale_to_target_statement(
+                                        "_sr", &c_target, rounded,
+                                    ));
+                                    if has_size_error {
+                                        if let Some(max_val) = get_pic_max(
+                                            target_name.map_or("", HirDataName::as_str),
+                                            data_items,
+                                        ) {
+                                            out.push_str(&format!(
+                                                "if (llabs(_result) > {max_val}) {{ _size_error = 1; }} else {{ {c_target}.value = _result; }} "
+                                            ));
+                                        } else {
+                                            out.push_str(&format!("{c_target}.value = _result; "));
+                                        }
                                     } else {
                                         out.push_str(&format!("{c_target}.value = _result; "));
                                     }
-                                } else {
-                                    out.push_str(&format!("{c_target}.value = _result; "));
                                 }
                             }
                             out.push_str("}\n");
@@ -2791,21 +2898,26 @@ pub(crate) fn emit_statement_with_ctx(
             let in_body = with_active_context(|ctx| ctx.in_body_context());
             let alter_info = current_paragraph.and_then(|id| ctx.alterable_paragraph(id));
             if let Some(dep) = depending_on {
-                let c_dep = data_name_to_c_name(dep);
-                let dep_name = escape_c_string(dep.as_str());
-                out.push_str(&format!("{pad}{{\n"));
-                out.push_str(&format!("{pad}    char _debug_ref_contents[81];\n"));
-                out.push_str(&format!(
-                    "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%lld\", (long long){c_dep});\n"
-                ));
-                out.push_str(&format!(
-                    "{pad}    _set_debug_event(\"{dep_name}\", _debug_ref_contents, \"\");\n"
-                ));
-                out.push_str(&format!(
-                    "{pad}    _dispatch_debug_reference(\"{dep_name}\");\n"
-                ));
-                out.push_str(&format!("{pad}}}\n"));
-                out.push_str(&format!("{pad}switch ((int){c_dep}) {{\n"));
+                let c_dep = emit_expr(dep);
+                let dep_value = emit_int_compatible_expr(dep, data_items);
+                let dep_name = expr_data_name(dep)
+                    .map(|name| escape_c_string(name.as_str()))
+                    .unwrap_or_else(|| escape_c_string(&c_dep));
+                if should_emit_debug_events() {
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!("{pad}    char _debug_ref_contents[81];\n"));
+                    out.push_str(&format!(
+                        "{pad}    snprintf(_debug_ref_contents, sizeof(_debug_ref_contents), \"%lld\", (long long){dep_value});\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    _set_debug_event(\"{dep_name}\", _debug_ref_contents, \"\");\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    _dispatch_debug_reference(\"{dep_name}\");\n"
+                    ));
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                out.push_str(&format!("{pad}switch ((int)({dep_value})) {{\n"));
                 for (i, target) in targets.iter().enumerate() {
                     out.push_str(&format!("{pad}    case {}:\n", i + 1));
                     emit_transfer_to_target(
@@ -2847,12 +2959,14 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!("{pad}{} = {};\n", info.dispatch_var, target_id.0));
                     }
                 }
-                out.push_str(&format!(
-                    "{pad}_set_debug_event(\"{from_name}\", \"{to_name}\", \"\");\n"
-                ));
-                out.push_str(&format!(
-                    "{pad}_dispatch_debug_procedure(\"{from_name}\");\n"
-                ));
+                if should_emit_debug_events() {
+                    out.push_str(&format!(
+                        "{pad}_set_debug_event(\"{from_name}\", \"{to_name}\", \"\");\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}_dispatch_debug_procedure(\"{from_name}\");\n"
+                    ));
+                }
             }
         }
         HirStatement::Initialize { targets, .. } => {
@@ -3802,9 +3916,11 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!(
                         "{pad}    _sort_buf_id = cobol_sort_buffer_init({rec_len});\n"
                     ));
-                    out.push_str(&format!(
-                        "{pad}    _set_debug_event(\"{event_name}\", \"SORT INPUT\", \"\");\n"
-                    ));
+                    if should_emit_debug_events() {
+                        out.push_str(&format!(
+                            "{pad}    _set_debug_event(\"{event_name}\", \"SORT INPUT\", \"\");\n"
+                        ));
+                    }
                     out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                     if let Some(thru_name) = thru {
                         let c_thru = sanitize_name(thru_name);
@@ -3862,9 +3978,11 @@ pub(crate) fn emit_statement_with_ctx(
                         "{pad}        cobol_sort_buffer_release(_sort_buf_id, &_sort_buf[_si * {rec_len}], {rec_len});\n"
                     ));
                     out.push_str(&format!("{pad}    }}\n"));
-                    out.push_str(&format!(
-                        "{pad}    _set_debug_event(\"{event_name}\", \"SORT OUTPUT\", \"\");\n"
-                    ));
+                    if should_emit_debug_events() {
+                        out.push_str(&format!(
+                            "{pad}    _set_debug_event(\"{event_name}\", \"SORT OUTPUT\", \"\");\n"
+                        ));
+                    }
                     out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                     if let Some(thru_name) = thru {
                         let c_thru = sanitize_name(thru_name);
@@ -3882,9 +4000,11 @@ pub(crate) fn emit_statement_with_ctx(
                     let c_proc = sanitize_name(proc_name);
                     let event_name = escape_c_string(proc_name);
                     out.push_str(&format!("{pad}    /* INPUT PROCEDURE {c_proc} */\n"));
-                    out.push_str(&format!(
-                        "{pad}    _set_debug_event(\"{event_name}\", \"SORT INPUT\", \"\");\n"
-                    ));
+                    if should_emit_debug_events() {
+                        out.push_str(&format!(
+                            "{pad}    _set_debug_event(\"{event_name}\", \"SORT INPUT\", \"\");\n"
+                        ));
+                    }
                     out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                     if let Some(thru_name) = thru {
                         let c_thru = sanitize_name(thru_name);
@@ -3898,9 +4018,11 @@ pub(crate) fn emit_statement_with_ctx(
                     let c_proc = sanitize_name(proc_name);
                     let event_name = escape_c_string(proc_name);
                     out.push_str(&format!("{pad}    /* OUTPUT PROCEDURE {c_proc} */\n"));
-                    out.push_str(&format!(
-                        "{pad}    _set_debug_event(\"{event_name}\", \"SORT OUTPUT\", \"\");\n"
-                    ));
+                    if should_emit_debug_events() {
+                        out.push_str(&format!(
+                            "{pad}    _set_debug_event(\"{event_name}\", \"SORT OUTPUT\", \"\");\n"
+                        ));
+                    }
                     out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                     if let Some(thru_name) = thru {
                         let c_thru = sanitize_name(thru_name);
@@ -4365,9 +4487,11 @@ pub(crate) fn emit_statement_with_ctx(
             ));
             if let Some((proc_name, thru)) = output_procedure {
                 let proc_debug_name = escape_c_string(proc_name);
-                out.push_str(&format!(
-                    "{pad}    _set_debug_event(\"{proc_debug_name}\", \"MERGE OUTPUT\", \"\");\n"
-                ));
+                if should_emit_debug_events() {
+                    out.push_str(&format!(
+                        "{pad}    _set_debug_event(\"{proc_debug_name}\", \"MERGE OUTPUT\", \"\");\n"
+                    ));
+                }
                 let c_proc = sanitize_name(proc_name);
                 out.push_str(&format!("{pad}    para_{c_proc}();\n"));
                 if let Some(thru_name) = thru {
@@ -4665,21 +4789,26 @@ fn emit_transfer_to_target(
 ) {
     let c_target = transfer_target_c_name(target, paragraphs);
     let target_name = escape_c_string(target.name());
-    let local_label_id = target
+    let paragraph_label_id = target
         .paragraph_id()
         .and_then(|id| with_active_context(|ctx| ctx.label_id(id)));
-    if in_body && local_label_id.is_some() {
+    if in_body && paragraph_label_id.is_some() {
         emit_optional_debug_event(out, pad, &target_name, "");
         out.push_str(&format!("{pad}goto lbl_{c_target};\n"));
         return;
     }
 
-    let label_id = target.paragraph_id().and_then(|id| {
-        with_active_context(|ctx| ctx.label_id(id).or_else(|| ctx.body_label_id(id)))
-    });
+    let body_label_id = target
+        .paragraph_id()
+        .and_then(|id| with_active_context(|ctx| ctx.body_label_id(id)));
+    let label_id = paragraph_label_id.or(body_label_id);
     if let Some(id) = label_id {
         emit_optional_debug_event(out, pad, &target_name, "");
-        out.push_str(&format!("{pad}_goto_target = {id}; goto _goto_dispatch;\n"));
+        if in_body && paragraph_label_id.is_none() && body_label_id.is_some() {
+            out.push_str(&format!("{pad}_goto_target = {id}; return;\n"));
+        } else {
+            out.push_str(&format!("{pad}_goto_target = {id}; goto _goto_dispatch;\n"));
+        }
     } else {
         emit_optional_debug_event(out, pad, &target_name, "");
         out.push_str(&format!("{pad}para_{c_target}(); return;\n"));
@@ -4707,12 +4836,16 @@ fn emit_alterable_goto_dispatch(
 }
 
 fn emit_optional_debug_event(out: &mut String, pad: &str, name: &str, contents: &str) {
-    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+    if !should_emit_debug_events() {
         return;
     }
     out.push_str(&format!(
         "{pad}_set_debug_event(\"{name}\", \"{contents}\", \"\");\n"
     ));
+}
+
+fn should_emit_debug_events() -> bool {
+    with_active_context(|ctx| ctx.has_debug_declaratives() && !ctx.in_debug_declarative())
 }
 
 fn emit_debug_raw_contents_event(
@@ -4724,7 +4857,7 @@ fn emit_debug_raw_contents_event(
     condition: Option<&str>,
     dispatch_reference: bool,
 ) {
-    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+    if !should_emit_debug_events() {
         return;
     }
     let event_name = escape_c_string(name);
@@ -4792,7 +4925,7 @@ fn emit_debug_raw_contents_event(
 }
 
 fn emit_debug_spaces_event(out: &mut String, pad: &str, name: &str) {
-    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+    if !should_emit_debug_events() {
         return;
     }
     let event_name = escape_c_string(name);
@@ -4897,7 +5030,7 @@ fn emit_debug_identifier_value_event(
     data_items: &[HirDataItem],
     include_redefines_declarative: bool,
 ) {
-    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+    if !should_emit_debug_events() {
         return;
     }
     let dispatch_names = if include_redefines_declarative {
@@ -5023,7 +5156,7 @@ fn emit_debug_numeric_identifier_target_event(
             );
         }
         HirType::Alphanumeric { .. } | HirType::Group { .. } => {
-            if with_active_context(|ctx| ctx.in_debug_declarative()) {
+            if !should_emit_debug_events() {
                 return;
             }
             let event_name = escape_c_string(&debug_data_display_name(name));
@@ -5100,7 +5233,7 @@ fn emit_debug_numeric_identifier_source_event(
     } else {
         emit_expr(expr)
     };
-    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+    if !should_emit_debug_events() {
         return;
     }
     let event_name = escape_c_string(&debug_data_display_name(name));
@@ -5153,7 +5286,7 @@ fn emit_debug_subscript_values(
     subscripts: &[HirExpr],
     data_items: &[HirDataItem],
 ) {
-    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+    if !should_emit_debug_events() {
         return;
     }
     for (idx, subscript) in subscripts.iter().take(3).enumerate() {
@@ -5167,7 +5300,7 @@ fn emit_debug_subscript_values(
 }
 
 fn emit_fallthrough_debug_event(out: &mut String, pad: &str, name: &str, contents: &str) {
-    if with_active_context(|ctx| ctx.in_debug_declarative()) {
+    if !should_emit_debug_events() {
         return;
     }
     out.push_str(&format!(
@@ -6174,11 +6307,17 @@ pub(crate) fn emit_move_to(
                         display_numeric_c_expr_info(c_target, data_items)
                     {
                         let (scaled, scale) = parse_decimal_literal(s);
-                        let scaled = scale_decimal_to_target(scaled, scale, target_scale);
-                        let tgt_ptr = display_numeric_ptr(c_target);
-                        out.push_str(&format!(
-                            "{pad}cobol_store_numeric_display({scaled}, {tgt_ptr}, {tgt_size});\n"
-                        ));
+                        let scaled = fit_scaled_expr_to_display_target(
+                            &scaled.to_string(),
+                            scale,
+                            c_target,
+                            tgt_size,
+                            target_scale,
+                            data_items,
+                        );
+                        emit_store_display_numeric(
+                            out, pad, &scaled, c_target, tgt_size, data_items,
+                        );
                         return;
                     }
                 }
@@ -6216,11 +6355,15 @@ pub(crate) fn emit_move_to(
             } else if let Some((tgt_size, target_scale)) =
                 display_numeric_c_expr_info(c_target, data_items)
             {
-                let scaled = scale_decimal_to_target(*n, 0, target_scale);
-                let tgt_ptr = display_numeric_ptr(c_target);
-                out.push_str(&format!(
-                    "{pad}cobol_store_numeric_display({scaled}, {tgt_ptr}, {tgt_size});\n"
-                ));
+                let scaled = fit_scaled_expr_to_display_target(
+                    &n.to_string(),
+                    0,
+                    c_target,
+                    tgt_size,
+                    target_scale,
+                    data_items,
+                );
+                emit_store_display_numeric(out, pad, &scaled, c_target, tgt_size, data_items);
             } else {
                 emit_store_int(out, c_target, &n.to_string(), data_items, pad);
             }
@@ -6230,11 +6373,15 @@ pub(crate) fn emit_move_to(
                 display_numeric_c_expr_info(c_target, data_items)
             {
                 let (scaled, scale) = parse_decimal_literal(d);
-                let scaled = scale_decimal_to_target(scaled, scale, target_scale);
-                let tgt_ptr = display_numeric_ptr(c_target);
-                out.push_str(&format!(
-                    "{pad}cobol_store_numeric_display({scaled}, {tgt_ptr}, {tgt_size});\n"
-                ));
+                let scaled = fit_scaled_expr_to_display_target(
+                    &scaled.to_string(),
+                    scale,
+                    c_target,
+                    tgt_size,
+                    target_scale,
+                    data_items,
+                );
+                emit_store_display_numeric(out, pad, &scaled, c_target, tgt_size, data_items);
             } else {
                 let (scaled, scale) = parse_decimal_literal(d);
                 let value = if scale == 0 {
@@ -6250,11 +6397,15 @@ pub(crate) fn emit_move_to(
             if let Some((tgt_size, target_scale)) =
                 display_numeric_c_expr_info(c_target, data_items)
             {
-                let scaled = scale_decimal_to_target(scaled, scale, target_scale);
-                let tgt_ptr = display_numeric_ptr(c_target);
-                out.push_str(&format!(
-                    "{pad}cobol_store_numeric_display({scaled}, {tgt_ptr}, {tgt_size});\n"
-                ));
+                let scaled = fit_scaled_expr_to_display_target(
+                    &scaled.to_string(),
+                    scale,
+                    c_target,
+                    tgt_size,
+                    target_scale,
+                    data_items,
+                );
+                emit_store_display_numeric(out, pad, &scaled, c_target, tgt_size, data_items);
             } else {
                 let value = if scale == 0 {
                     scaled.to_string()
@@ -6463,7 +6614,41 @@ pub(crate) fn emit_move_to(
             } else if is_target_alpha && is_source_display_numeric_var {
                 let tgt_size = find_data_item_layout(c_target, data_items).item_len;
                 let c_src = emit_expr(from);
-                if let Some(src_size) = grp_display_size(&c_src, data_items) {
+                if let Some(item) =
+                    src_data_name.and_then(|name| find_data_item_by_name(name, data_items))
+                {
+                    let HirType::Numeric {
+                        size,
+                        decimal_places,
+                        ..
+                    } = item.data_type
+                    else {
+                        unreachable!();
+                    };
+                    if decimal_places == 0 {
+                        if let Some(src_size) = grp_display_size(&c_src, data_items) {
+                            let src_ptr = display_numeric_const_ptr(&c_src);
+                            out.push_str(&format!(
+                                "{pad}{{ char _nbuf[64]; int _nlen = snprintf(_nbuf, sizeof(_nbuf), \"%0*lld\", {size}, (long long)llabs(cobol_display_to_int64({src_ptr}, {src_size}))); \
+                                 {move_fn}((const uint8_t*)_nbuf, (uint32_t)_nlen, (uint8_t*){c_target}, {tgt_size}); }}\n"
+                            ));
+                        } else {
+                            let e = emit_int_compatible_expr(from, data_items);
+                            if !emit_move_numeric_item_to_alphanumeric(
+                                out, from, &e, c_target, tgt_size, data_items, pad,
+                            ) {
+                                emit_move_numeric_to_alphanumeric(out, &e, c_target, tgt_size, pad);
+                            }
+                        }
+                    } else {
+                        let e = emit_int_compatible_expr(from, data_items);
+                        if !emit_move_numeric_item_to_alphanumeric(
+                            out, from, &e, c_target, tgt_size, data_items, pad,
+                        ) {
+                            emit_move_numeric_to_alphanumeric(out, &e, c_target, tgt_size, pad);
+                        }
+                    }
+                } else if let Some(src_size) = grp_display_size(&c_src, data_items) {
                     let src_ptr = display_numeric_const_ptr(&c_src);
                     out.push_str(&format!(
                         "{pad}{move_fn}({src_ptr}, {src_size}, (uint8_t*){c_target}, {tgt_size});\n"
@@ -6592,20 +6777,28 @@ pub(crate) fn emit_move_to(
                 if let Some((target_size, target_scale)) =
                     display_numeric_c_expr_info(c_target, data_items)
                 {
-                    if let Some(source_scale) = src_type.and_then(numeric_decimal_places) {
-                        let scaled = scale_decimal_expr_to_target(&e, source_scale, target_scale);
-                        let scaled = if display_numeric_target_is_unsigned(c_target, data_items) {
-                            format!("llabs({scaled})")
-                        } else {
-                            scaled
-                        };
-                        let target_ptr = display_numeric_ptr(c_target);
-                        out.push_str(&format!(
-                            "{pad}cobol_store_numeric_display({scaled}, {target_ptr}, {target_size});\n"
-                        ));
+                    let source_scale = src_type.and_then(numeric_decimal_places).unwrap_or(0);
+                    let scaled = fit_scaled_expr_to_display_target(
+                        &e,
+                        source_scale,
+                        c_target,
+                        target_size,
+                        target_scale,
+                        data_items,
+                    );
+                    let scaled = if display_numeric_target_is_unsigned(c_target, data_items) {
+                        format!("llabs({scaled})")
                     } else {
-                        emit_store_int(out, c_target, &e, data_items, pad);
-                    }
+                        scaled
+                    };
+                    emit_store_display_numeric(
+                        out,
+                        pad,
+                        &scaled,
+                        c_target,
+                        target_size,
+                        data_items,
+                    );
                 } else {
                     emit_store_int(out, c_target, &e, data_items, pad);
                 }
@@ -7040,11 +7233,20 @@ pub(crate) fn emit_perform(
                     .and_then(|target_id| paragraphs.iter().position(|p| p.id == target_id));
                 if let (Some(si), Some(ei)) = (start_idx, end_idx) {
                     let reversed = si > ei;
+                    let include_section_headers =
+                        matches!(paragraphs[si].kind, HirParagraphKind::Section)
+                            || matches!(paragraphs[ei].kind, HirParagraphKind::Section);
                     let thru_paras: Vec<_> = if reversed {
                         let group_end = paragraph_group_end(paragraphs, si);
-                        effective_perform_thru_paragraphs(&paragraphs[si..group_end])
+                        effective_perform_thru_paragraphs(
+                            &paragraphs[si..group_end],
+                            include_section_headers,
+                        )
                     } else {
-                        effective_perform_thru_paragraphs(&paragraphs[si..=ei])
+                        effective_perform_thru_paragraphs(
+                            &paragraphs[si..=ei],
+                            include_section_headers,
+                        )
                     };
                     let thru_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
                         thru_paras
@@ -7275,6 +7477,22 @@ fn emit_move_to_alphanumeric_edited(
             if !is_alpha_expr(from, data_items) && alphanumeric_expr_len(from, data_items).is_none()
             {
                 let c_source = emit_expr(from);
+                if let Some(item) = expr_data_name(from)
+                    .and_then(|name| find_data_item_by_name(name, data_items))
+                    .filter(|item| item.sign.is_some_and(|sign| sign.separate))
+                {
+                    let value = emit_int_compatible_expr(from, data_items);
+                    let digit_size = match item.data_type {
+                        HirType::Numeric { size, .. } => size,
+                        _ => find_data_item_layout(&c_source, data_items).item_len,
+                    };
+                    out.push_str(&format!(
+                        "{pad}{{ char _nbuf[64]; int _nlen = snprintf(_nbuf, sizeof(_nbuf), \"%0*lld\", {digit_size}, (long long)llabs({value})); \
+                         cobol_move_alphanumeric_edited((const uint8_t*)_nbuf, (uint32_t)_nlen, \
+                         (uint8_t*){c_target}, {tgt_size}, (const uint8_t*)\"{escaped_pic}\", {pic_len}); }}\n"
+                    ));
+                    return true;
+                }
                 if let Some(src_size) = grp_display_size(&c_source, data_items) {
                     out.push_str(&format!(
                         "{pad}cobol_move_alphanumeric_edited({}, {src_size}, \
@@ -7368,18 +7586,62 @@ fn numeric_decimal_places(ty: &HirType) -> Option<u32> {
     }
 }
 
-fn scale_decimal_expr_to_target(value_expr: &str, source_scale: u32, target_scale: u32) -> String {
+fn fit_scaled_expr_to_display_target(
+    value_expr: &str,
+    source_scale: u32,
+    c_target: &str,
+    target_size: u32,
+    target_scale: u32,
+    data_items: &[HirDataItem],
+) -> String {
+    let target_digits = display_numeric_digit_count(c_target, target_size, data_items);
+    if target_digits == 0 {
+        return "0".to_string();
+    }
+    let value = format!("((int64_t)({value_expr}))");
     match target_scale.cmp(&source_scale) {
         std::cmp::Ordering::Greater => {
-            let factor = pow10_i64_literal(target_scale - source_scale);
-            format!("(({value_expr}) * {factor})")
+            let scale_delta = target_scale - source_scale;
+            if scale_delta >= target_digits {
+                return "0".to_string();
+            }
+            let keep_digits = target_digits - scale_delta;
+            let reduced = modulo_signed_expr(&value, keep_digits);
+            let factor = pow10_i64_literal(scale_delta);
+            format!("(({reduced}) * {factor})")
         }
         std::cmp::Ordering::Less => {
             let factor = pow10_i64_literal(source_scale - target_scale);
-            format!("(({value_expr}) / {factor})")
+            let scaled_down = format!("(({value}) / {factor})");
+            modulo_signed_expr(&scaled_down, target_digits)
         }
-        std::cmp::Ordering::Equal => value_expr.to_string(),
+        std::cmp::Ordering::Equal => modulo_signed_expr(&value, target_digits),
     }
+}
+
+fn display_numeric_digit_count(
+    c_target: &str,
+    target_size: u32,
+    data_items: &[HirDataItem],
+) -> u32 {
+    find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))
+        .and_then(|item| match item.data_type {
+            HirType::Numeric { size, .. } => Some(size),
+            _ => None,
+        })
+        .unwrap_or(target_size)
+}
+
+fn modulo_signed_expr(value_expr: &str, digits: u32) -> String {
+    if digits == 0 {
+        return "0".to_string();
+    }
+    if digits > 18 {
+        return value_expr.to_string();
+    }
+    let factor = pow10_i64_literal(digits);
+    format!("(({value_expr} >= 0) ? ({value_expr} % {factor}) : -((-{value_expr}) % {factor}))")
 }
 
 fn display_numeric_target_is_unsigned(c_target: &str, data_items: &[HirDataItem]) -> bool {
@@ -7399,6 +7661,49 @@ fn display_numeric_target_is_unsigned(c_target: &str, data_items: &[HirDataItem]
                     .as_ref()
                     .is_none_or(|pic| !pic.to_ascii_uppercase().contains('S'))
         })
+}
+
+fn emit_store_display_numeric(
+    out: &mut String,
+    pad: &str,
+    value_expr: &str,
+    c_target: &str,
+    target_size: u32,
+    data_items: &[HirDataItem],
+) {
+    let target_ptr = display_numeric_ptr(c_target);
+    if let Some(sign) = display_numeric_sign_clause(c_target, data_items) {
+        if sign.separate {
+            let position = match sign.position {
+                HirSignPosition::Leading => 0,
+                HirSignPosition::Trailing => 1,
+            };
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display_separate_sign({value_expr}, {target_ptr}, {target_size}, {position});\n"
+            ));
+        } else if matches!(sign.position, HirSignPosition::Leading) {
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display_leading_sign({value_expr}, {target_ptr}, {target_size});\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "{pad}cobol_store_numeric_display({value_expr}, {target_ptr}, {target_size});\n"
+            ));
+        }
+    } else {
+        out.push_str(&format!(
+            "{pad}cobol_store_numeric_display({value_expr}, {target_ptr}, {target_size});\n"
+        ));
+    }
+}
+
+fn display_numeric_sign_clause(
+    c_target: &str,
+    data_items: &[HirDataItem],
+) -> Option<cobol_hir::HirSignClause> {
+    let item = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))?;
+    item.sign
 }
 
 fn expr_name_is_display_numeric(name: &HirDataName) -> bool {
@@ -7586,7 +7891,13 @@ fn numeric_edited_picture_scale(pic: &str) -> u32 {
 }
 
 fn numeric_edited_actual_decimal_byte(bytes: &[u8]) -> Option<u8> {
-    bytes.iter().copied().find(|b| *b == b'.')
+    let dot_pos = bytes.iter().rposition(|b| *b == b'.');
+    let comma_pos = bytes.iter().rposition(|b| *b == b',');
+    match (dot_pos, comma_pos) {
+        (Some(dot), Some(comma)) => Some(if comma > dot { b',' } else { b'.' }),
+        (Some(_), None) => Some(b'.'),
+        _ => None,
+    }
 }
 
 fn picture_repeat_count(bytes: &[u8], i: &mut usize) -> u32 {
@@ -7838,11 +8149,17 @@ fn numeric_edited_scaled_source(
     }
 }
 
-fn effective_perform_thru_paragraphs(paragraphs: &[HirParagraph]) -> Vec<&HirParagraph> {
+fn effective_perform_thru_paragraphs(
+    paragraphs: &[HirParagraph],
+    include_section_headers: bool,
+) -> Vec<&HirParagraph> {
     let mut selected_sections = Vec::new();
     let mut effective = Vec::new();
 
     for paragraph in paragraphs {
+        if !include_section_headers && matches!(paragraph.kind, HirParagraphKind::Section) {
+            continue;
+        }
         if let Some(section_id) = paragraph.section_id {
             if selected_sections.contains(&section_id) {
                 continue;

@@ -1,4 +1,5 @@
 use super::*;
+use cobol_hir::HirSignPosition;
 use std::cell::RefCell;
 
 thread_local! {
@@ -189,11 +190,11 @@ fn compute_redefines_max_sizes(items: &[HirDataItem]) -> HashMap<String, u32> {
             continue;
         };
         let c_redef = sanitize_name(redef_name);
-        let alias_size = data_item_byte_size(&item.data_type);
+        let alias_size = data_item_storage_size(item);
         let primary_size = items
             .iter()
             .find(|candidate| candidate.name.eq_ignore_ascii_case(redef_name))
-            .map(|candidate| data_item_byte_size(&candidate.data_type))
+            .map(data_item_storage_size)
             .unwrap_or(0);
         let max_size = alias_size.max(primary_size);
         result
@@ -362,7 +363,11 @@ pub(crate) fn emit_single_data_item(
     // REDEFINES: overlay on another item's memory via #define with cast
     if let Some(ref redef_name) = item.redefines {
         let c_redef = sanitize_name(redef_name);
-        let c_type = c_type_for_hir_type(&item.data_type);
+        let c_type = if item.sign.is_some_and(|sign| sign.separate) {
+            "char"
+        } else {
+            c_type_for_hir_type(&item.data_type)
+        };
         match &item.data_type {
             HirType::Alphanumeric { .. } | HirType::National { .. } => {
                 // Array types: cast to pointer (acts as array base for memset/strncpy)
@@ -446,17 +451,26 @@ pub(crate) fn emit_single_data_item(
                 out.push_str(&format!("static uint16_t {c_name}[{size}];\n"));
             }
         }
-        HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+        HirType::Numeric { decimal_places, .. }
+            if *decimal_places > 0 && item.sign.is_none_or(|sign| !sign.separate) =>
+        {
             out.push_str(&format!("static CobolDecimal {c_name}{array_suffix};\n"));
         }
         HirType::Numeric {
             size,
             decimal_places: 0,
             ..
-        } if top_level_numeric_redefined_as_display(item, all_items) => {
+        } if item.sign.is_some_and(|sign| sign.separate)
+            || top_level_numeric_redefined_as_display(item, all_items) =>
+        {
+            let storage_size = if item.sign.is_some_and(|sign| sign.separate) {
+                size + 1
+            } else {
+                *size
+            };
             out.push_str(&format!(
                 "static char {c_name}{array_suffix}[{}];\n",
-                size + 1
+                storage_size
             ));
         }
         HirType::Numeric { .. } => {
@@ -627,7 +641,11 @@ pub(crate) fn emit_group_struct_member(
         HirType::Numeric { size, .. } if raw_display_layout => {
             // USAGE DISPLAY numeric in group: store as zoned decimal (char[])
             // when REDEFINES/record aliases need byte-for-byte overlay layout.
-            let disp_size = *size as usize;
+            let disp_size = if member.sign.is_some_and(|sign| sign.separate) {
+                (*size + 1) as usize
+            } else {
+                *size as usize
+            };
             out.push_str(&format!(
                 "    char _m_{c_name}{array_suffix}[{disp_size}];\n"
             ));
@@ -796,7 +814,11 @@ pub(crate) fn emit_group_redefines(
         if let Some(ref redef_name) = member.redefines {
             let c_name = sanitize_name(&member.name);
             let c_redef = sanitize_name(redef_name);
-            let c_type = c_type_for_hir_type(&member.data_type);
+            let c_type = if member.sign.is_some_and(|sign| sign.separate) {
+                "char"
+            } else {
+                c_type_for_hir_type(&member.data_type)
+            };
             let qualified_target = format!("{path_prefix}._m_{c_redef}");
             let emit_aliases = member.name != "FILLER" && member.name != "PIC";
             match &member.data_type {
@@ -923,6 +945,43 @@ fn c_type_for_redefines_occurs_item(item: &HirDataItem) -> &'static str {
 
 pub(crate) fn emit_data_init(out: &mut String, items: &[HirDataItem]) {
     emit_data_init_excluding(out, items, &HashSet::new());
+}
+
+fn emit_init_store_numeric_display(
+    out: &mut String,
+    item: &HirDataItem,
+    c_name: &str,
+    value: &str,
+    size: u32,
+) {
+    if let Some(sign) = item.sign {
+        if sign.separate {
+            let position = match sign.position {
+                HirSignPosition::Leading => 0,
+                HirSignPosition::Trailing => 1,
+            };
+            let storage_size = size + 1;
+            out.push_str(&format!(
+                "    cobol_store_numeric_display_separate_sign({value}, \
+                 (uint8_t*)&({c_name}), {storage_size}, {position});\n"
+            ));
+        } else if matches!(sign.position, HirSignPosition::Leading) {
+            out.push_str(&format!(
+                "    cobol_store_numeric_display_leading_sign({value}, \
+                 (uint8_t*)&({c_name}), {size});\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "    cobol_store_numeric_display({value}, \
+                 (uint8_t*)&({c_name}), {size});\n"
+            ));
+        }
+    } else {
+        out.push_str(&format!(
+            "    cobol_store_numeric_display({value}, \
+             (uint8_t*)&({c_name}), {size});\n"
+        ));
+    }
 }
 
 pub(crate) fn emit_data_init_excluding(
@@ -1251,10 +1310,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 } else {
                     n.to_string()
                 };
-                out.push_str(&format!(
-                    "    cobol_store_numeric_display({value}, \
-                     (uint8_t*)&({c_name}), {size});\n"
-                ));
+                emit_init_store_numeric_display(out, item, &c_name, &value, *size);
             }
             (
                 HirType::Numeric {
@@ -1270,10 +1326,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
             {
                 let (scaled, _scale) = parse_decimal_literal(d);
                 let value = scaled.to_string();
-                out.push_str(&format!(
-                    "    cobol_store_numeric_display({value}, \
-                     (uint8_t*)&({c_name}), {size});\n"
-                ));
+                emit_init_store_numeric_display(out, item, &c_name, &value, *size);
             }
             (
                 HirType::Numeric {
@@ -1287,10 +1340,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 || c_name.contains("._m_")
                 || with_active_context(|ctx| ctx.has_display_numeric(&c_name)) =>
             {
-                out.push_str(&format!(
-                    "    cobol_store_numeric_display(0, \
-                     (uint8_t*)&({c_name}), {size});\n"
-                ));
+                emit_init_store_numeric_display(out, item, &c_name, "0", *size);
             }
             (
                 HirType::Numeric { .. }
@@ -1353,11 +1403,31 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 ));
             }
             _ => {
-                emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
+                if let HirType::Numeric { size, .. } = item.data_type {
+                    if item.sign.is_some_and(|sign| sign.separate)
+                        || with_active_context(|ctx| ctx.has_display_numeric(&c_name))
+                    {
+                        emit_init_store_numeric_display(out, item, &c_name, "0", size);
+                    } else {
+                        emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
+                    }
+                } else {
+                    emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
+                }
             }
         }
     } else {
-        emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
+        if let HirType::Numeric { size, .. } = item.data_type {
+            if item.sign.is_some_and(|sign| sign.separate)
+                || with_active_context(|ctx| ctx.has_display_numeric(&c_name))
+            {
+                emit_init_store_numeric_display(out, item, &c_name, "0", size);
+            } else {
+                emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
+            }
+        } else {
+            emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
+        }
     }
 }
 
