@@ -79,6 +79,7 @@ impl Parser {
             source_computer,
             object_computer,
             special_names,
+            decimal_point_is_comma: self.decimal_point_is_comma,
             repository,
             span: start_span.merge(&end_span),
         })

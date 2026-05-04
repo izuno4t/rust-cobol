@@ -60,10 +60,12 @@ pub(crate) struct CodegenContext {
     alpha_names: HashSet<String>,
     display_numeric_sizes: HashMap<String, u32>,
     display_numeric_scales: HashMap<String, u32>,
+    decimal_point_is_comma: bool,
     group_alpha_names: HashSet<String>,
     justified_names: HashSet<String>,
     data_item_size_cache: HashMap<String, u32>,
     occurs_counts: HashMap<String, u32>,
+    redefines_occurs_strides: HashMap<String, u32>,
     /// For each primary FD record, the max byte size across all 01-level records
     /// sharing the same FD.  Used by `find_record_len` to return the correct
     /// buffer size for file I/O operations.
@@ -107,6 +109,7 @@ impl CodegenContext {
             .declaratives
             .iter()
             .any(|decl| decl.use_kind == HirDeclarativeUse::ForDebugging);
+        ctx.decimal_point_is_comma = program.decimal_point_is_comma;
         ctx.alterable_paragraphs = collect_alterable_paragraphs(program);
         ctx
     }
@@ -199,6 +202,8 @@ impl CodegenContext {
 
         let mut occurs_counts = parent.occurs_counts.clone();
         occurs_counts.extend(build_occurs_counts(&program.data_items));
+        let mut redefines_occurs_strides = parent.redefines_occurs_strides.clone();
+        redefines_occurs_strides.extend(build_redefines_occurs_strides(&program.data_items));
 
         let mut fd_max_record_sizes = parent.fd_max_record_sizes.clone();
         fd_max_record_sizes.extend(build_fd_max_record_sizes(
@@ -227,10 +232,12 @@ impl CodegenContext {
             alpha_names,
             display_numeric_sizes,
             display_numeric_scales,
+            decimal_point_is_comma: program.decimal_point_is_comma,
             group_alpha_names,
             justified_names,
             data_item_size_cache,
             occurs_counts,
+            redefines_occurs_strides,
             fd_max_record_sizes,
             in_body_context: Cell::new(false),
             in_debug_declarative: Cell::new(false),
@@ -293,10 +300,12 @@ impl CodegenContext {
             alpha_names: build_alpha_names(data_items),
             display_numeric_sizes: build_display_numeric_sizes(data_items),
             display_numeric_scales: build_display_numeric_scales(data_items),
+            decimal_point_is_comma: false,
             group_alpha_names: build_group_alpha_names(data_items),
             justified_names: build_justified_names(data_items),
             data_item_size_cache: build_data_item_size_cache(data_items),
             occurs_counts: build_occurs_counts(data_items),
+            redefines_occurs_strides: build_redefines_occurs_strides(data_items),
             fd_max_record_sizes: build_fd_max_record_sizes(data_items, fd_record_aliases),
             in_body_context: Cell::new(false),
             in_debug_declarative: Cell::new(false),
@@ -327,6 +336,10 @@ impl CodegenContext {
 
     pub(crate) fn has_debug_declaratives(&self) -> bool {
         self.has_debug_declaratives
+    }
+
+    pub(crate) fn decimal_point_is_comma(&self) -> bool {
+        self.decimal_point_is_comma
     }
 
     pub(crate) fn set_label_map(&self, map: HashMap<HirParagraphId, usize>) {
@@ -474,6 +487,10 @@ impl CodegenContext {
 
     pub(crate) fn occurs_count(&self, c_name: &str) -> Option<u32> {
         self.occurs_counts.get(c_name).copied()
+    }
+
+    pub(crate) fn redefines_occurs_stride(&self, c_name: &str) -> Option<u32> {
+        self.redefines_occurs_strides.get(c_name).copied()
     }
 
     /// Return the max FD record size for a primary record name, if it
@@ -682,12 +699,7 @@ fn collect_justified_names(set: &mut HashSet<String>, data_items: &[HirDataItem]
 pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap<String, u32> {
     let mut map = HashMap::new();
     for item in data_items {
-        if let HirType::Numeric {
-            size,
-            decimal_places: 0,
-            ..
-        } = &item.data_type
-        {
+        if let HirType::Numeric { size, .. } = &item.data_type {
             if item.sign.is_some_and(|sign| sign.separate)
                 || item
                     .redefines
@@ -730,10 +742,7 @@ pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap
 pub(crate) fn build_display_numeric_scales(data_items: &[HirDataItem]) -> HashMap<String, u32> {
     let mut map = HashMap::new();
     for item in data_items {
-        if let HirType::Numeric {
-            decimal_places: 0, ..
-        } = &item.data_type
-        {
+        if let HirType::Numeric { .. } = &item.data_type {
             if item.sign.is_some_and(|sign| sign.separate)
                 || item
                     .redefines
@@ -1022,6 +1031,24 @@ pub(crate) fn build_occurs_counts(items: &[HirDataItem]) -> HashMap<String, u32>
     let mut map = HashMap::new();
     populate_occurs_counts(items, &mut map);
     map
+}
+
+pub(crate) fn build_redefines_occurs_strides(items: &[HirDataItem]) -> HashMap<String, u32> {
+    let mut map = HashMap::new();
+    populate_redefines_occurs_strides(items, &mut map);
+    map
+}
+
+fn populate_redefines_occurs_strides(items: &[HirDataItem], map: &mut HashMap<String, u32>) {
+    for item in items {
+        if item.redefines.is_some() && item.occurs.is_some() {
+            map.entry(sanitize_name(&item.name))
+                .or_insert_with(|| data_item_storage_size(item));
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            populate_redefines_occurs_strides(members, map);
+        }
+    }
 }
 
 fn populate_occurs_counts(items: &[HirDataItem], map: &mut HashMap<String, u32>) {

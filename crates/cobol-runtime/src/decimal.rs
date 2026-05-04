@@ -820,7 +820,11 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
 fn numeric_edited_actual_decimal_char(chars: &[char]) -> Option<char> {
     let dot_pos = chars.iter().rposition(|&c| c == '.');
     let comma_pos = chars.iter().rposition(|&c| c == ',');
+    let dot_count = chars.iter().filter(|&&c| c == '.').count();
+    let comma_count = chars.iter().filter(|&&c| c == ',').count();
     match (dot_pos, comma_pos) {
+        (Some(_), Some(_)) if dot_count == 1 && comma_count > 1 => Some('.'),
+        (Some(_), Some(_)) if comma_count == 1 && dot_count > 1 => Some(','),
         (Some(dot), Some(comma)) => Some(if comma > dot { ',' } else { '.' }),
         (Some(_), None) => Some('.'),
         _ => None,
@@ -839,7 +843,7 @@ fn format_floating_numeric_edited(
         .position(|&c| c == 'V' || Some(c) == actual_decimal_char)
         .unwrap_or(chars.len());
     let int_pic = &chars[..decimal_idx];
-    let floating_symbol = ['$', '+', '-']
+    let floating_symbol = ['$', '+', '-', '<', '>']
         .into_iter()
         .find(|symbol| int_pic.iter().filter(|&&c| c == *symbol).count() > 1)?;
 
@@ -848,7 +852,7 @@ fn format_floating_numeric_edited(
         '+' => Some(if negative { '-' } else { '+' }),
         '-' if negative => Some('-'),
         '-' => None,
-        _ => None,
+        other => Some(other),
     };
 
     let frac_pic = if decimal_idx < chars.len() {
@@ -925,7 +929,7 @@ fn numeric_edited_floating_symbol(
         .position(|&c| c == 'V' || Some(c) == actual_decimal_char)
         .unwrap_or(chars.len());
     let int_pic = &chars[..decimal_idx];
-    ['$', '+', '-']
+    ['$', '+', '-', '<', '>']
         .into_iter()
         .find(|symbol| int_pic.iter().filter(|&&c| c == *symbol).count() > 1)
 }
@@ -1568,5 +1572,17 @@ mod tests {
         };
         let s = std::str::from_utf8(&buf[..written as usize]).unwrap();
         assert_eq!(s, "1.234.567,89");
+    }
+
+    #[test]
+    fn test_decimal_to_display_mixed_insertion_after_decimal_point() {
+        let d = make_dec(123456789, 4, 10, false);
+        let pic = b"ZZZ,999.999,9";
+        let mut buf = [0u8; 32];
+        let written = unsafe {
+            cobol_decimal_to_display(&d, buf.as_mut_ptr(), 32, pic.as_ptr(), pic.len() as u32)
+        };
+        let s = std::str::from_utf8(&buf[..written as usize]).unwrap();
+        assert_eq!(s, " 12,345.678,9");
     }
 }

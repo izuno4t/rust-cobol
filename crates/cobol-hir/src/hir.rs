@@ -141,6 +141,8 @@ pub struct HirProgram {
     pub variable_record_bounds: std::collections::HashMap<SmolStr, (u32, u32)>,
     /// I-O-CONTROL SAME RECORD AREA file groups.
     pub same_record_areas: Vec<Vec<SmolStr>>,
+    /// SPECIAL-NAMES DECIMAL-POINT IS COMMA.
+    pub decimal_point_is_comma: bool,
     /// Nested programs (COBOL 85 inter-program communication).
     pub nested_programs: Vec<HirProgram>,
     pub span: Span,
@@ -544,6 +546,7 @@ pub enum HirStatement {
     AddCorresponding {
         from: HirDataName,
         to: HirDataName,
+        rounded: bool,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,
@@ -552,6 +555,7 @@ pub enum HirStatement {
     SubtractCorresponding {
         from: HirDataName,
         to: HirDataName,
+        rounded: bool,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
         span: Span,

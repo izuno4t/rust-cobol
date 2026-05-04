@@ -1057,6 +1057,13 @@ pub(crate) fn emit_subscript_access(variable: &HirDataName, subscripts: &[HirExp
     // Fallback: simple flat array subscript (top-level OCCURS without group nesting)
     if subscripts.len() == 1 {
         let idx = emit_expr_as_numeric(&subscripts[0]);
+        let redefines_stride = with_active_context(|ctx| {
+            ctx.redefines_occurs_stride(&c_name)
+                .or_else(|| ctx.redefines_occurs_stride(extract_leaf_member(&c_name)))
+        });
+        if let Some(stride) = redefines_stride {
+            return format!("({c_name} + ((({idx}) - 1) * {stride}))");
+        }
         format!("{c_name}[({idx}) - 1]")
     } else {
         let mut access = c_name;
@@ -1090,6 +1097,14 @@ pub(crate) fn grp_display_size(c_name: &str, data_items: &[HirDataItem]) -> Opti
         }
     }
 
+    if !is_simple_name {
+        if let Some(item) = find_data_item_by_c_name(c_name, data_items) {
+            if matches!(item.data_type, HirType::Numeric { .. }) {
+                return Some(data_item_storage_size(item));
+            }
+        }
+    }
+
     // Handle qualified names like "WS_DST__FIELD_A" by extracting the member
     // part after the last "__".
     let base_name = if c_name.contains(".members._m_") {
@@ -1111,8 +1126,8 @@ pub(crate) fn grp_display_size(c_name: &str, data_items: &[HirDataItem]) -> Opti
             }
             let mc = sanitize_name(&m.name);
             if mc == c_name {
-                if let HirType::Numeric { size, .. } = &m.data_type {
-                    return Some(*size);
+                if matches!(m.data_type, HirType::Numeric { .. }) {
+                    return Some(data_item_storage_size(m));
                 }
             }
             if let HirType::Group {
@@ -1237,11 +1252,6 @@ fn truncate_integral_to_picture_size(value_expr: &str, item: &HirDataItem) -> St
     let size = match item.data_type {
         HirType::Numeric { size, .. } | HirType::Binary { size } => size,
         _ => return value_expr.to_string(),
-    };
-    let size = if item.scale_adjustment > 0 {
-        size.saturating_sub(item.scale_adjustment as u32)
-    } else {
-        size
     };
     if size == 0 || size > 18 {
         return value_expr.to_string();
@@ -1514,7 +1524,19 @@ pub(crate) fn emit_int_compatible_expr(expr: &HirExpr, data_items: &[HirDataItem
                         .and_then(|name| grp_display_size(name, data_items))
                 }) {
                     let c_ptr = display_numeric_const_ptr(&c);
-                    format!("cobol_display_to_int64({c_ptr}, {disp_size})")
+                    let raw = format!("cobol_display_to_int64({c_ptr}, {disp_size})");
+                    let adjustment = find_data_item_by_c_name(&c, data_items)
+                        .or_else(|| {
+                            c_var
+                                .as_deref()
+                                .and_then(|name| find_data_item_by_c_name(name, data_items))
+                        })
+                        .or_else(|| {
+                            expr_data_name(expr)
+                                .and_then(|name| find_data_item_by_name(name, data_items))
+                        })
+                        .map_or(0, |item| item.scale_adjustment);
+                    apply_scale_adjustment_to_read(&raw, adjustment)
                 } else {
                     let adjustment = expr_data_name(expr)
                         .and_then(|name| find_data_item_by_name(name, data_items))
@@ -2192,37 +2214,124 @@ pub(crate) fn emit_corresponding_arith(
     from: &HirDataName,
     to: &HirDataName,
     op: &str,
+    rounded: bool,
+    has_size_error: bool,
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    let from_members = get_group_members(from, data_items);
-    let to_members = get_group_members(to, data_items);
     let c_from = data_name_to_c_name(from);
     let c_to = data_name_to_c_name(to);
     let op_name = if op == "+" { "ADD" } else { "SUBTRACT" };
     out.push_str(&format!(
         "{pad}/* {op_name} CORRESPONDING {c_from} TO {c_to} */\n"
     ));
+    emit_corresponding_arith_members(out, from, to, op, rounded, has_size_error, data_items, pad);
+}
+
+fn emit_corresponding_arith_members(
+    out: &mut String,
+    from: &HirDataName,
+    to: &HirDataName,
+    op: &str,
+    rounded: bool,
+    has_size_error: bool,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let from_members = get_group_members(from, data_items);
+    let to_members = get_group_members(to, data_items);
     for src_item in from_members {
         for tgt_item in to_members {
-            if src_item.name == tgt_item.name
-                && src_item.name != "FILLER"
-                && src_item.name != "PIC"
-                && is_numeric_type(&tgt_item.data_type)
+            if src_item.name == tgt_item.name && src_item.name != "FILLER" && src_item.name != "PIC"
             {
+                if src_item.occurs.is_some() || tgt_item.occurs.is_some() {
+                    continue;
+                }
+                if matches!(src_item.data_type, HirType::Group { .. })
+                    && matches!(tgt_item.data_type, HirType::Group { .. })
+                    && corresponding_groups_have_common_children(src_item, tgt_item)
+                {
+                    emit_corresponding_arith_members(
+                        out,
+                        &child_data_name(from, src_item),
+                        &child_data_name(to, tgt_item),
+                        op,
+                        rounded,
+                        has_size_error,
+                        data_items,
+                        pad,
+                    );
+                    continue;
+                }
+                if !is_numeric_type(&tgt_item.data_type) {
+                    continue;
+                }
                 // Use qualified member macros so nested members and REDEFINES
                 // are addressed through the same path resolution as MOVE CORR.
                 let src_ref = data_name_to_c_name(&child_data_name(from, src_item));
                 let tgt_ref = data_name_to_c_name(&child_data_name(to, tgt_item));
-                let src_value = if needs_decimal(&src_item.data_type) {
-                    format!("cobol_decimal_to_int64(&{src_ref})")
-                } else if let Some(src_disp_size) = grp_display_size(&src_ref, data_items) {
+                let src_value = if let Some(src_disp_size) = grp_display_size(&src_ref, data_items)
+                {
                     let src_ref_ptr = display_numeric_const_ptr(&src_ref);
-                    format!("cobol_display_to_int64({src_ref_ptr}, {src_disp_size})")
+                    let raw = format!("cobol_display_to_int64({src_ref_ptr}, {src_disp_size})");
+                    apply_scale_adjustment_to_read(&raw, src_item.scale_adjustment)
+                } else if needs_decimal(&src_item.data_type) {
+                    format!("cobol_decimal_to_int64(&{src_ref})")
                 } else {
                     src_ref.clone()
                 };
-                if needs_decimal(&tgt_item.data_type) {
+                if let Some(disp_size) = grp_display_size(&tgt_ref, data_items) {
+                    let tgt_ref_const_ptr = display_numeric_const_ptr(&tgt_ref);
+                    let tgt_ref_ptr = display_numeric_ptr(&tgt_ref);
+                    let target_raw =
+                        format!("cobol_display_to_int64({tgt_ref_const_ptr}, {disp_size})");
+                    let target_decimal_places = numeric_decimal_places(&tgt_item.data_type);
+                    let source_decimal_places = numeric_decimal_places(&src_item.data_type);
+                    let src_value = if source_decimal_places > 0 {
+                        let src_scaled =
+                            corresponding_scaled_source_value(src_item, &src_ref, data_items);
+                        rescale_corresponding_value(
+                            &src_scaled,
+                            source_decimal_places,
+                            target_decimal_places,
+                            rounded,
+                        )
+                    } else {
+                        src_value.clone()
+                    };
+                    let result_value = if target_decimal_places > 0 {
+                        format!("{target_raw} {op} ({src_value})")
+                    } else {
+                        let target_value =
+                            apply_scale_adjustment_to_read(&target_raw, tgt_item.scale_adjustment);
+                        format!("{target_value} {op} ({src_value})")
+                    };
+                    let store_value = if target_decimal_places > 0 {
+                        result_value.clone()
+                    } else {
+                        corresponding_store_value(&result_value, tgt_item.scale_adjustment, rounded)
+                    };
+                    if has_size_error {
+                        let max_value = if target_decimal_places > 0 {
+                            corresponding_stored_max_value(tgt_item)
+                        } else {
+                            corresponding_max_value(tgt_item)
+                        };
+                        out.push_str(&format!(
+                            "{pad}if (llabs({result_value}) > {max_value}) {{ \
+                             _size_error = 1; \
+                             }} else {{ \
+                             cobol_store_numeric_display({store_value}, \
+                             {tgt_ref_ptr}, {disp_size}); \
+                             }}\n"
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{pad}cobol_store_numeric_display({store_value}, \
+                             {tgt_ref_ptr}, {disp_size});\n"
+                        ));
+                    }
+                } else if needs_decimal(&tgt_item.data_type) {
                     // CobolDecimal: use runtime functions
                     let func = if op == "+" {
                         "cobol_decimal_add"
@@ -2232,21 +2341,107 @@ pub(crate) fn emit_corresponding_arith(
                     out.push_str(&format!(
                         "{pad}{func}(&{src_ref}, &{tgt_ref}, &{tgt_ref});\n"
                     ));
-                } else if let Some(disp_size) = grp_display_size(&tgt_ref, data_items) {
-                    let tgt_ref_const_ptr = display_numeric_const_ptr(&tgt_ref);
-                    let tgt_ref_ptr = display_numeric_ptr(&tgt_ref);
-                    out.push_str(&format!(
-                        "{pad}cobol_store_numeric_display(\
-                         cobol_display_to_int64(\
-                         {tgt_ref_const_ptr}, {disp_size}) {op} \
-                         ({src_value}), \
-                         {tgt_ref_ptr}, {disp_size});\n"
-                    ));
                 } else {
                     out.push_str(&format!("{pad}{tgt_ref} = {tgt_ref} {op} {src_value};\n"));
                 }
             }
         }
+    }
+}
+
+fn numeric_decimal_places(data_type: &HirType) -> u32 {
+    match data_type {
+        HirType::Numeric { decimal_places, .. } | HirType::Comp3 { decimal_places, .. } => {
+            *decimal_places
+        }
+        _ => 0,
+    }
+}
+
+fn corresponding_scaled_source_value(
+    src_item: &HirDataItem,
+    src_ref: &str,
+    data_items: &[HirDataItem],
+) -> String {
+    if let Some(src_disp_size) = grp_display_size(src_ref, data_items) {
+        let src_ref_ptr = display_numeric_const_ptr(src_ref);
+        format!("cobol_display_to_int64({src_ref_ptr}, {src_disp_size})")
+    } else if needs_decimal(&src_item.data_type) {
+        format!("cobol_decimal_to_int64(&{src_ref})")
+    } else {
+        src_ref.to_string()
+    }
+}
+
+fn rescale_corresponding_value(
+    value_expr: &str,
+    source_scale: u32,
+    target_scale: u32,
+    rounded: bool,
+) -> String {
+    if source_scale == target_scale {
+        value_expr.to_string()
+    } else if source_scale < target_scale {
+        format!(
+            "(({value_expr}) * {})",
+            pow10_i64_literal(target_scale - source_scale)
+        )
+    } else {
+        let factor = pow10_i64_literal(source_scale - target_scale);
+        if rounded {
+            format!(
+                "((({value_expr}) >= 0) ? ((({value_expr}) + ({factor} / 2)) / {factor}) : ((({value_expr}) - ({factor} / 2)) / {factor}))"
+            )
+        } else {
+            format!("(({value_expr}) / {factor})")
+        }
+    }
+}
+
+fn corresponding_stored_max_value(item: &HirDataItem) -> String {
+    let size = match item.data_type {
+        HirType::Numeric { size, .. } | HirType::Binary { size } => size,
+        _ => return "INT64_MAX".to_string(),
+    };
+    if size == 0 || size > 18 {
+        "INT64_MAX".to_string()
+    } else {
+        format!("{}LL", 10_i64.pow(size) - 1)
+    }
+}
+
+fn corresponding_max_value(item: &HirDataItem) -> String {
+    let size = match item.data_type {
+        HirType::Numeric { size, .. } | HirType::Binary { size } => size,
+        _ => return "INT64_MAX".to_string(),
+    };
+    if size == 0 || size > 18 {
+        return "INT64_MAX".to_string();
+    }
+    let stored_max = format!("{}LL", 10_i64.pow(size) - 1);
+    if item.scale_adjustment > 0 {
+        format!(
+            "({stored_max} * {})",
+            pow10_i64_literal(item.scale_adjustment as u32)
+        )
+    } else if item.scale_adjustment < 0 {
+        format!(
+            "({stored_max} / {})",
+            pow10_i64_literal((-item.scale_adjustment) as u32)
+        )
+    } else {
+        stored_max
+    }
+}
+
+fn corresponding_store_value(value_expr: &str, scale_adjustment: i32, rounded: bool) -> String {
+    if rounded && scale_adjustment > 0 {
+        let factor = pow10_i64_literal(scale_adjustment as u32);
+        format!(
+            "((({value_expr}) >= 0) ? ((({value_expr}) + ({factor} / 2)) / {factor}) : ((({value_expr}) - ({factor} / 2)) / {factor}))"
+        )
+    } else {
+        apply_scale_adjustment_to_store(value_expr, scale_adjustment)
     }
 }
 

@@ -383,6 +383,9 @@ verifier_standard_ccvs() {
     ccvs_pass=$(verifier_count_summary "$result_file" 'TESTS WERE EXECUTED SUCCESSFULLY')
     ccvs_failed=$(verifier_count_summary "$result_file" 'TEST\(S\) FAILED')
     ccvs_inspect=$(verifier_count_summary "$result_file" 'TEST\(S\) REQUIRE INSPECTION')
+    if [ "$ccvs_inspect" -eq 0 ]; then
+        ccvs_inspect=$(verifier_count_summary "$result_file" 'TESTS REQUIRE VISUAL INSPECTION')
+    fi
     footer_errors="$(verifier_footer_errors "$result_file")"
     expected_cases="$(verifier_expected_case_count "$src")"
     feature_name="$(verifier_expected_feature_name "$src")"

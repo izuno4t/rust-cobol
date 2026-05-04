@@ -145,8 +145,11 @@ snapshot_compiler_if_needed() {
         if [ "$COBOLC" = "$snapshot" ]; then
             SNAPSHOT_COBOLC="$snapshot"
         else
-            cp "$COBOLC" "$snapshot"
-            chmod +x "$snapshot"
+            if [ ! -x "$snapshot" ] || \
+                [ "$(sha256_of_file "$COBOLC")" != "$(sha256_of_file "$snapshot")" ]; then
+                cp "$COBOLC" "$snapshot"
+                chmod +x "$snapshot"
+            fi
             SNAPSHOT_COBOLC="$snapshot"
         fi
     else
@@ -1529,6 +1532,7 @@ case "${1:-}" in
         if [ "${2:-}" = "--all" ] || [ $# -eq 1 ]; then
             run_compile_all_modules
         elif [ -n "${3:-}" ]; then
+            snapshot_compiler_if_needed >/dev/null
             run_program "$2" "$3" "compile_only"
             print_single_result_summary "$2" "$3"
         else
@@ -1557,6 +1561,7 @@ case "${1:-}" in
         ;;
     *)
         if [ -n "${2:-}" ]; then
+            snapshot_compiler_if_needed >/dev/null
             run_program "$1" "$2"
             print_single_result_summary "$1" "$2"
         else

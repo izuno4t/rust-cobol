@@ -1188,6 +1188,166 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_redefines_occurs_alphanumeric_element_uses_byte_stride() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. REDEF-OCCURS-BYTES.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  RAW-DATA.
+    05 RAW-BYTES PIC X(10) VALUE \"ABCDEFGHIJ\".
+    05 TABLE-BYTES REDEFINES RAW-BYTES PIC X(5) OCCURS 2 TIMES.
+PROCEDURE DIVISION.
+    DISPLAY TABLE-BYTES(2).
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("FGHIJ"),
+        "REDEFINES OCCURS should address the second 5-byte element, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_currency_picture_redefines_occurs_and_blank_when_zero() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CURRENCY-REDEF-BLANK.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CURRENCY \"<\".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  COMPLETE-01.
+    02 COMPLETE-F.
+       03 FILLER PIC X(90) VALUE SPACE.
+       03 FL-LESS PIC <(3),<<<.99 VALUE \" <1,111.11\".
+    02 COMPLETE-FORMAT REDEFINES COMPLETE-F PIC X(5) OCCURS 20 TIMES.
+    02 MORE-COMPLETE-FORMAT BLANK WHEN ZERO PIC 9 VALUE \"5\".
+01  DATA-P PIC 999 VALUE \"000\" BLANK WHEN ZERO.
+01  DATA-P1 REDEFINES DATA-P PIC XXX.
+PROCEDURE DIVISION.
+    DISPLAY COMPLETE-FORMAT(19).
+    DISPLAY MORE-COMPLETE-FORMAT.
+    DISPLAY DATA-P1.
+    MOVE ZERO TO MORE-COMPLETE-FORMAT.
+    IF MORE-COMPLETE-FORMAT = SPACE
+        DISPLAY \"BLANK\"
+    ELSE
+        DISPLAY MORE-COMPLETE-FORMAT
+    END-IF.
+    MOVE ZERO TO FL-LESS.
+    DISPLAY FL-LESS.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains(" <1,1"),
+        "currency PICTURE length should preserve the redefined table byte layout, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains('5'),
+        "numeric DISPLAY VALUE string should initialize BLANK WHEN ZERO item, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("000"),
+        "BLANK WHEN ZERO should not blank VALUE storage observed through REDEFINES, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("BLANK"),
+        "MOVE ZERO to BLANK WHEN ZERO item should store spaces, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("      <.00"),
+        "currency floating insertion should format zero as the active currency symbol, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_special_names_switch_conditions_are_complements() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SWITCH-COMPLEMENT.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    \"DUMMY-SWITCH\" IS ABBREV-SWITCH
+        ON ON-SWITCH
+        OFF IS OFF-SWITCH.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  COUNT-X PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+    IF ON-SWITCH ADD 1 TO COUNT-X.
+    IF OFF-SWITCH ADD 1 TO COUNT-X.
+    DISPLAY COUNT-X.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "1"),
+        "ON/OFF switch condition names should be boolean complements, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_move_signed_display_pic_p_to_alphanumeric_expands_scale() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MOVE-P-SCALE-ALPHA.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC S9P(17) SIGN LEADING SEPARATE VALUE -100000000000000000.
+01  DST PIC X(18) VALUE SPACES.
+PROCEDURE DIVISION.
+    MOVE SRC TO DST.
+    DISPLAY DST.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "100000000000000000"),
+        "MOVE from signed DISPLAY PIC P to alphanumeric should strip sign after restoring scale, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_leading_p_display_initial_value_preserves_stored_digit() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. LEADING-P-DISPLAY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC SP(8)9 SIGN TRAILING SEPARATE VALUE .000000001.
+01  DST REDEFINES SRC PIC X(2).
+PROCEDURE DIVISION.
+    DISPLAY DST.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("1+"),
+        "leading P DISPLAY initialization should store the significant digit and sign, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
 fn test_native_hello_world() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -2730,6 +2890,7 @@ fn test_c2_move_corresponding() {
         variable_record_depending: std::collections::HashMap::new(),
         variable_record_bounds: std::collections::HashMap::new(),
         same_record_areas: Vec::new(),
+        decimal_point_is_comma: false,
         nested_programs: Vec::new(),
         span: Span::dummy(),
     };
@@ -2862,6 +3023,7 @@ fn test_c2_add_corresponding() {
         body: vec![HirStatement::AddCorresponding {
             from: cobol_hir::HirDataName::simple("GRP-A"),
             to: cobol_hir::HirDataName::simple("GRP-B"),
+            rounded: false,
             on_size_error: Vec::new(),
             not_on_size_error: Vec::new(),
             span: Span::dummy(),
@@ -2882,6 +3044,7 @@ fn test_c2_add_corresponding() {
         variable_record_depending: std::collections::HashMap::new(),
         variable_record_bounds: std::collections::HashMap::new(),
         same_record_areas: Vec::new(),
+        decimal_point_is_comma: false,
         nested_programs: Vec::new(),
         span: Span::dummy(),
     };
@@ -3223,6 +3386,34 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_add_corresponding_recurses_into_matching_groups() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ADD-CORR-GROUP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC-GRP.
+   02 NEST.
+      03 A PIC 99 VALUE 11.
+      03 B PIC 99 VALUE 22.
+01 DST-GRP.
+   02 NEST.
+      03 A PIC 99 VALUE 01.
+      03 B PIC 99 VALUE 02.
+PROCEDURE DIVISION.
+    ADD CORRESPONDING SRC-GRP TO DST-GRP.
+    DISPLAY DST-GRP.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.contains("1224"),
+        "ADD CORRESPONDING should recurse into matching groups, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn test_native_reference_modification() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3323,6 +3514,54 @@ PROCEDURE DIVISION.
     assert!(
         stdout.lines().any(|line| line.trim() == "1.234.567,89"),
         "numeric edited decimal comma picture should use comma as decimal point, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_group_display_pic_p_initial_value_scales_storage_digits() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. PIC-P-INIT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 G.
+   02 A PIC S9PP VALUE 100.
+   02 B PIC S999 VALUE 100.
+PROCEDURE DIVISION.
+    SUBTRACT A -98 -1 -1 FROM B.
+    DISPLAY B.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "100"),
+        "PIC S9PP in group should initialize stored digit as 1 and read as 100, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_group_display_decimal_initial_value_keeps_fractional_scale_for_size_error() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DISP-DEC-INIT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 G.
+   02 A PIC S9V99 VALUE -9.99.
+PROCEDURE DIVISION.
+    SUBTRACT .01 FROM A
+        ON SIZE ERROR DISPLAY \"SIZE\".
+    IF A = -9.99
+        DISPLAY \"UNCHANGED\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "SIZE")
+            && stdout.lines().any(|line| line.trim() == "UNCHANGED"),
+        "DISPLAY decimal group initial value should stay scaled and unchanged on size error, got:\n{stdout}"
     );
 }
 
@@ -4398,6 +4637,33 @@ PROCEDURE DIVISION.
         "15*20 should be 300: got '{}'",
         stdout.trim()
     );
+}
+
+#[test]
+fn test_native_rounded_multiply_by_subscripted_display_decimal_keeps_operand_scale() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MUL-IDX.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 TABLE1.
+   05 TABLE1-NUM PIC S9V99 OCCURS 2 INDEXED BY INDEX1.
+01 NUM-9V9 PIC 9V9.
+PROCEDURE DIVISION.
+    MOVE 1.34 TO TABLE1-NUM(2).
+    MOVE 4.0 TO NUM-9V9.
+    SET INDEX1 TO 2.
+    MULTIPLY TABLE1-NUM(INDEX1) BY NUM-9V9 ROUNDED.
+    IF NUM-9V9 = 5.4
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY NUM-9V9
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "PASS", "unexpected output: '{stdout}'");
 }
 
 #[test]
@@ -6530,6 +6796,7 @@ fn test_typedef_codegen() {
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::new(0, 0, FileId(0)),
         };

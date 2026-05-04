@@ -25,6 +25,8 @@ pub struct ConfigurationSection {
     pub object_computer: Option<SmolStr>,
     /// SPECIAL-NAMES paragraph entries.
     pub special_names: Vec<SpecialNameEntry>,
+    /// SPECIAL-NAMES DECIMAL-POINT IS COMMA.
+    pub decimal_point_is_comma: bool,
     /// REPOSITORY paragraph entries (COBOL 2002+).
     pub repository: Vec<RepositoryEntry>,
     pub span: Span,

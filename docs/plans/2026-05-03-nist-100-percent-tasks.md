@@ -2095,6 +2095,15 @@ TASK-011時点での判断:
   英数字リテラル継続で72桁目までの空白をpreprocessor/lexerが捨てていたこと、
   `INSPECT CONVERTING`の`BEFORE`/`AFTER`句をHIRで落としていたこと、
   添字付きINSPECT targetの一時ポインタ名を同一関数内で再定義していたこと。
+- 進捗: `NC202A`は個別再実行でPASS。原因は`ADD CORRESPONDING`共通仕様の
+  複数欠陥だった。対応グループ内の同名子グループへ再帰していなかったこと、
+  `PIC 9P`などの`P`を格納桁として数えていたこと、完全修飾DISPLAY numeric名の
+  storage size解決がleaf名の先行重複項目を拾っていたこと、`ROUNDED`を
+  `AddCorresponding`/`SubtractCorresponding`のHIRへ保持していなかったこと、
+  `ON SIZE ERROR`時に対応項目ごとの桁あふれを検出せず格納していたこと、
+  グループ内DISPLAY小数項目を`CobolDecimal`構造体として生成Cへ渡していたこと、
+  小数sourceから整数targetへのCORRESPONDING加算でsource scaleをtarget scaleへ
+  揃えていなかったこと。
 - 確認: `cargo test -p cobol-runtime string_ops::tests::test_store_numeric_display
   -- --nocapture`, `cargo test -p cobol-codegen --all-targets`,
   `cargo test -p cobol-driver --test e2e_test`, `cargo fmt --check`, `make release`,
@@ -2115,10 +2124,19 @@ TASK-011時点での判断:
   `cargo test -p cobol-preprocessor --all-targets`,
   `cargo test -p cobol-hir
   test_lower_fixed_open_literal_continuation_preserves_margin_spaces -- --nocapture`,
-  `cargo test -p cobol-driver test_native_inspect_converting --test e2e_test -- --nocapture`,
+  `cargo test -p cobol-driver test_native_inspect_converting --test e2e_test
+  -- --nocapture`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC115A`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC122A`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC221A`,
+  `cargo test -p cobol-parser --all-targets`,
+  `cargo test -p cobol-hir --all-targets`,
+  `cargo test -p cobol-driver
+  test_native_add_corresponding_recurses_into_matching_groups --test e2e_test
+  -- --nocapture`,
+  `cargo test -p cobol-driver
+  test_nist_nc101a_multiply_scaled_p_target_by_comp_decimal --test e2e_test -- --nocapture`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC202A`,
   `make nist-summary`を実行。
 - 次の作業: runtime FAIL 120件を、numeric edited formatter/parser、
   decimal算術/SIZE ERROR、MOVE CORRESPONDING、REDEFINES、PERFORM制御、

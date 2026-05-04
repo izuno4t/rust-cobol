@@ -138,6 +138,7 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::AddCorresponding {
             from,
             to,
+            rounded,
             on_size_error,
             not_on_size_error,
             ..
@@ -146,7 +147,16 @@ pub(crate) fn emit_statement_with_ctx(
             if has_size_error {
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
-            emit_corresponding_arith(out, from, to, "+", data_items, &pad);
+            emit_corresponding_arith(
+                out,
+                from,
+                to,
+                "+",
+                *rounded,
+                has_size_error,
+                data_items,
+                &pad,
+            );
             emit_on_size_error(
                 out,
                 on_size_error,
@@ -164,6 +174,7 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::SubtractCorresponding {
             from,
             to,
+            rounded,
             on_size_error,
             not_on_size_error,
             ..
@@ -172,7 +183,16 @@ pub(crate) fn emit_statement_with_ctx(
             if has_size_error {
                 out.push_str(&format!("{pad}{{ int _size_error = 0;\n"));
             }
-            emit_corresponding_arith(out, from, to, "-", data_items, &pad);
+            emit_corresponding_arith(
+                out,
+                from,
+                to,
+                "-",
+                *rounded,
+                has_size_error,
+                data_items,
+                &pad,
+            );
             emit_on_size_error(
                 out,
                 on_size_error,
@@ -488,35 +508,49 @@ pub(crate) fn emit_statement_with_ctx(
                                             "if (llabs(_result) > {max_val}) {{ _size_error = 1; }} else {{ "
                                         ));
                                         if let Some((target_size, _, _)) = display_target {
-                                            let target_ptr = display_numeric_ptr(&c_target);
-                                            out.push_str(&format!(
-                                                "cobol_store_numeric_display(_result, {target_ptr}, {target_size}); "
-                                            ));
+                                            emit_store_display_numeric(
+                                                out,
+                                                "",
+                                                "_result",
+                                                &c_target,
+                                                target_size,
+                                                data_items,
+                                            );
                                         } else {
                                             out.push_str(&format!(
-                                                "{c_target}.value = _result; {c_target}.scale = {target_scale}; "
-                                            ));
+                            "{c_target}.value = _result; {c_target}.scale = {target_scale}; "
+                        ));
                                         }
                                         out.push_str("} }\n");
                                     } else if let Some((target_size, _, _)) = display_target {
-                                        let target_ptr = display_numeric_ptr(&c_target);
-                                        out.push_str(&format!(
-                                            "cobol_store_numeric_display(_result, {target_ptr}, {target_size}); }}\n"
-                                        ));
+                                        emit_store_display_numeric(
+                                            out,
+                                            "",
+                                            "_result",
+                                            &c_target,
+                                            target_size,
+                                            data_items,
+                                        );
+                                        out.push_str("}\n");
                                     } else {
                                         out.push_str(&format!(
-                                            "{c_target}.value = _result; {c_target}.scale = {target_scale}; }}\n"
-                                        ));
+                            "{c_target}.value = _result; {c_target}.scale = {target_scale}; }}\n"
+                        ));
                                     }
                                 } else if let Some((target_size, _, _)) = display_target {
-                                    let target_ptr = display_numeric_ptr(&c_target);
-                                    out.push_str(&format!(
-                                        "cobol_store_numeric_display(_result, {target_ptr}, {target_size}); }}\n"
-                                    ));
+                                    emit_store_display_numeric(
+                                        out,
+                                        "",
+                                        "_result",
+                                        &c_target,
+                                        target_size,
+                                        data_items,
+                                    );
+                                    out.push_str("}\n");
                                 } else {
                                     out.push_str(&format!(
-                                        "{c_target}.value = _result; {c_target}.scale = {target_scale}; }}\n"
-                                    ));
+                        "{c_target}.value = _result; {c_target}.scale = {target_scale}; }}\n"
+                    ));
                                 }
                             } else {
                                 for op in operands {
@@ -1378,7 +1412,6 @@ pub(crate) fn emit_statement_with_ctx(
                     if target_is_decimal && display_target.is_some() {
                         let (target_size, target_scale, _) =
                             display_target.expect("checked is_some");
-                        let target_ptr = display_numeric_ptr(&c_target);
                         out.push_str(&format!("{pad}{{ "));
                         out.push_str(&decimal_init_statement("_mt", Some(target), data_items));
                         out.push_str(&decimal_init_statement("_mo", Some(operand), data_items));
@@ -1399,18 +1432,36 @@ pub(crate) fn emit_statement_with_ctx(
                                 get_pic_max(target_name.map_or("", HirDataName::as_str), data_items)
                             {
                                 out.push_str(&format!(
-                                    "if (llabs(_result) > {max_val}) {{ _size_error = 1; }} \
-                                     else {{ cobol_store_numeric_display(_result, {target_ptr}, {target_size}); }} "
+                                    "if (llabs(_result) > {max_val}) {{ _size_error = 1; }} else {{ "
                                 ));
+                                emit_store_display_numeric(
+                                    out,
+                                    "",
+                                    "_result",
+                                    &c_target,
+                                    target_size,
+                                    data_items,
+                                );
+                                out.push_str("} ");
                             } else {
-                                out.push_str(&format!(
-                                    "cobol_store_numeric_display(_result, {target_ptr}, {target_size}); "
-                                ));
+                                emit_store_display_numeric(
+                                    out,
+                                    "",
+                                    "_result",
+                                    &c_target,
+                                    target_size,
+                                    data_items,
+                                );
                             }
                         } else {
-                            out.push_str(&format!(
-                                "cobol_store_numeric_display(_result, {target_ptr}, {target_size}); "
-                            ));
+                            emit_store_display_numeric(
+                                out,
+                                "",
+                                "_result",
+                                &c_target,
+                                target_size,
+                                data_items,
+                            );
                         }
                         out.push_str("}\n");
                     } else if target_is_decimal {
@@ -1428,12 +1479,12 @@ pub(crate) fn emit_statement_with_ctx(
                                 &pad,
                             );
                         }
-                    } else if is_decimal_expr(operand, data_items) {
-                        // int64 target *= CobolDecimal operand. Do not use
-                        // cobol_decimal_mul here: it clamps to operand PICTURE
-                        // size, while the receiving integer target determines
-                        // the allowed result size for this statement.
-                        let c_operand = emit_expr(operand);
+                    } else if is_decimal_expr(operand, data_items)
+                        || expr_is_scaled_display_numeric(operand, data_items)
+                        || decimal_literal_parts(operand).is_some_and(|(_, scale)| scale > 0)
+                    {
+                        // int64 target *= decimal operand. Initialize through the shared decimal
+                        // path so DISPLAY numerics with V/P keep their implied scale.
                         if let Some(disp_size) = grp_display_size(&c_target, data_items) {
                             let c_target_const_ptr = display_numeric_const_ptr(&c_target);
                             let c_target_ptr = display_numeric_ptr(&c_target);
@@ -1443,8 +1494,13 @@ pub(crate) fn emit_statement_with_ctx(
                                 "{pad}{{ int64_t _prev = cobol_display_to_int64(\
                                  {c_target_const_ptr}, {disp_size});\n"
                             ));
+                            out.push_str(&decimal_init_statement(
+                                "_mop",
+                                Some(operand),
+                                data_items,
+                            ));
                             emit_scaled_decimal_multiply_result(
-                                out, "_prev", &c_operand, rounded, &pad,
+                                out, "_prev", "_mop", rounded, &pad,
                             );
                             if has_size_error {
                                 if let Some(max_val) = max_val {
@@ -1480,8 +1536,13 @@ pub(crate) fn emit_statement_with_ctx(
                                 c_target.clone()
                             };
                             out.push_str(&format!("{pad}{{ int64_t _prev = {current};\n"));
+                            out.push_str(&decimal_init_statement(
+                                "_mop",
+                                Some(operand),
+                                data_items,
+                            ));
                             emit_scaled_decimal_multiply_result(
-                                out, "_prev", &c_operand, rounded, &pad,
+                                out, "_prev", "_mop", rounded, &pad,
                             );
                             if has_size_error {
                                 if let Some(max_val) = get_pic_max(
@@ -6582,6 +6643,8 @@ pub(crate) fn emit_move_to(
                 let tgt_size = find_data_item_storage_size(c_target, data_items);
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
                 out.push_str(&format!("{pad}memset({tgt_ptr}, '0', {tgt_size});\n"));
+            } else if let Some((tgt_size, _)) = display_numeric_c_expr_info(c_target, data_items) {
+                emit_store_display_numeric(out, pad, "0", c_target, tgt_size, data_items);
             } else {
                 emit_store_int(out, c_target, "0", data_items, pad);
             }
@@ -6781,8 +6844,17 @@ pub(crate) fn emit_move_to(
                     if decimal_places == 0 {
                         if let Some(src_size) = grp_display_size(&c_src, data_items) {
                             let src_ptr = display_numeric_const_ptr(&c_src);
+                            let raw_value =
+                                format!("cobol_display_to_int64({src_ptr}, {src_size})");
+                            let value =
+                                apply_scale_adjustment_to_read(&raw_value, item.scale_adjustment);
+                            let display_width = if item.scale_adjustment > 0 {
+                                size + item.scale_adjustment as u32
+                            } else {
+                                size
+                            };
                             out.push_str(&format!(
-                                "{pad}{{ char _nbuf[64]; int _nlen = snprintf(_nbuf, sizeof(_nbuf), \"%0*lld\", {size}, (long long)llabs(cobol_display_to_int64({src_ptr}, {src_size}))); \
+                                "{pad}{{ char _nbuf[64]; int _nlen = snprintf(_nbuf, sizeof(_nbuf), \"%0*lld\", {display_width}, (long long)llabs({value})); \
                                  {move_fn}((const uint8_t*)_nbuf, (uint32_t)_nlen, (uint8_t*){c_target}, {tgt_size}); }}\n"
                             ));
                         } else {
@@ -6919,10 +6991,37 @@ pub(crate) fn emit_move_to(
                     }
                 }
             } else if is_source_decimal_var {
-                // CobolDecimal variable → integer target: use cobol_decimal_to_int64
                 let e = emit_expr(from);
-                let dec_expr = format!("cobol_decimal_to_int64(&{e})");
-                emit_store_int(out, c_target, &dec_expr, data_items, pad);
+                if let Some((target_size, target_scale)) =
+                    display_numeric_c_expr_info(c_target, data_items)
+                {
+                    let source_scale = src_type.and_then(numeric_decimal_places).unwrap_or(0);
+                    let scaled = fit_scaled_expr_to_display_target(
+                        &format!("{e}.value"),
+                        source_scale,
+                        c_target,
+                        target_size,
+                        target_scale,
+                        data_items,
+                    );
+                    let scaled = if display_numeric_target_is_unsigned(c_target, data_items) {
+                        format!("llabs({scaled})")
+                    } else {
+                        scaled
+                    };
+                    emit_store_display_numeric(
+                        out,
+                        pad,
+                        &scaled,
+                        c_target,
+                        target_size,
+                        data_items,
+                    );
+                } else {
+                    // CobolDecimal variable -> integer target: use the logical integer value.
+                    let dec_expr = format!("cobol_decimal_to_int64(&{e})");
+                    emit_store_int(out, c_target, &dec_expr, data_items, pad);
+                }
             } else {
                 // Use emit_int_compatible_expr to handle compound expressions
                 // that may contain CobolDecimal sub-expressions.
@@ -7712,7 +7811,9 @@ fn emit_move_numeric_item_to_alphanumeric(
     else {
         return false;
     };
-    let display_pic = if item.scale_adjustment != 0 {
+    let display_pic = if item.scale_adjustment > 0 {
+        "9".repeat((size + item.scale_adjustment as u32) as usize)
+    } else if item.scale_adjustment < 0 {
         "9".repeat(size as usize)
     } else {
         pic.to_string()
@@ -7722,7 +7823,7 @@ fn emit_move_numeric_item_to_alphanumeric(
     let signed = if is_signed { "1" } else { "0" };
     out.push_str(&format!(
         "{pad}{{ CobolDecimal _src_dec = {{ .value = ({value_expr}), .scale = {decimal_places}, \
-         .size = {size}, .is_signed = {signed} }}; \
+         .size = {pic_len}, .is_signed = {signed} }}; \
          char _dbuf[256]; uint32_t _dlen = cobol_decimal_to_display(\
          &_src_dec, (uint8_t*)_dbuf, 256, (const uint8_t*)\"{escaped_pic}\", {pic_len}); \
          cobol_move_string((const uint8_t*)_dbuf, _dlen, (uint8_t*){c_target}, {target_size}); }}\n"
@@ -7751,7 +7852,15 @@ fn fit_scaled_expr_to_display_target(
     if target_digits == 0 {
         return "0".to_string();
     }
-    let value = format!("((int64_t)({value_expr}))");
+    let target_scale_adjustment = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))
+        .map_or(0, |item| item.scale_adjustment);
+    let value = if target_scale_adjustment > 0 {
+        let factor = pow10_i64_literal(target_scale_adjustment as u32);
+        format!("(((int64_t)({value_expr})) / {factor})")
+    } else {
+        format!("((int64_t)({value_expr}))")
+    };
     match target_scale.cmp(&source_scale) {
         std::cmp::Ordering::Greater => {
             let scale_delta = target_scale - source_scale;
@@ -7825,6 +7934,19 @@ fn emit_store_display_numeric(
     data_items: &[HirDataItem],
 ) {
     let target_ptr = display_numeric_ptr(c_target);
+    let blank_when_zero = find_data_item_by_c_name(c_target, data_items)
+        .or_else(|| find_data_item(c_target, data_items))
+        .is_some_and(|item| item.blank_when_zero);
+    if blank_when_zero {
+        out.push_str(&format!(
+            "{pad}if (({value_expr}) == 0) {{ memset({target_ptr}, ' ', {target_size}); }} else {{\n"
+        ));
+    }
+    let store_pad = if blank_when_zero {
+        format!("{pad}    ")
+    } else {
+        pad.to_string()
+    };
     if let Some(sign) = display_numeric_sign_clause(c_target, data_items) {
         if sign.separate {
             let position = match sign.position {
@@ -7832,21 +7954,24 @@ fn emit_store_display_numeric(
                 HirSignPosition::Trailing => 1,
             };
             out.push_str(&format!(
-                "{pad}cobol_store_numeric_display_separate_sign({value_expr}, {target_ptr}, {target_size}, {position});\n"
+                "{store_pad}cobol_store_numeric_display_separate_sign({value_expr}, {target_ptr}, {target_size}, {position});\n"
             ));
         } else if matches!(sign.position, HirSignPosition::Leading) {
             out.push_str(&format!(
-                "{pad}cobol_store_numeric_display_leading_sign({value_expr}, {target_ptr}, {target_size});\n"
+                "{store_pad}cobol_store_numeric_display_leading_sign({value_expr}, {target_ptr}, {target_size});\n"
             ));
         } else {
             out.push_str(&format!(
-                "{pad}cobol_store_numeric_display({value_expr}, {target_ptr}, {target_size});\n"
+                "{store_pad}cobol_store_numeric_display({value_expr}, {target_ptr}, {target_size});\n"
             ));
         }
     } else {
         out.push_str(&format!(
-            "{pad}cobol_store_numeric_display({value_expr}, {target_ptr}, {target_size});\n"
+            "{store_pad}cobol_store_numeric_display({value_expr}, {target_ptr}, {target_size});\n"
         ));
+    }
+    if blank_when_zero {
+        out.push_str(&format!("{pad}}}\n"));
     }
 }
 
@@ -7956,21 +8081,34 @@ fn emit_size_checked_int_assignment(
 ) {
     if let Some(disp_size) = grp_display_size(c_target, data_items) {
         let c_target_const_ptr = display_numeric_const_ptr(c_target);
-        let c_target_ptr = display_numeric_ptr(c_target);
         out.push_str(&format!(
             "{pad}{{ int64_t _prev = cobol_display_to_int64({c_target_const_ptr}, {disp_size});\n"
         ));
         out.push_str(&format!("{pad}int64_t _result = {result_expr};\n"));
         if let Some(max_val) = get_pic_max(target_name, data_items) {
             out.push_str(&format!(
-                "{pad}if (llabs(_result) > {max_val}) {{ _size_error = 1; \
-                 cobol_store_numeric_display(_prev, {c_target_ptr}, {disp_size}); }} \
-                 else {{ cobol_store_numeric_display(_result, {c_target_ptr}, {disp_size}); }}\n"
+                "{pad}if (llabs(_result) > {max_val}) {{ _size_error = 1;\n"
             ));
+            emit_store_display_numeric(
+                out,
+                &format!("{pad}    "),
+                "_prev",
+                c_target,
+                disp_size,
+                data_items,
+            );
+            out.push_str(&format!("{pad}}} else {{\n"));
+            emit_store_display_numeric(
+                out,
+                &format!("{pad}    "),
+                "_result",
+                c_target,
+                disp_size,
+                data_items,
+            );
+            out.push_str(&format!("{pad}}}\n"));
         } else {
-            out.push_str(&format!(
-                "{pad}cobol_store_numeric_display(_result, {c_target_ptr}, {disp_size});\n"
-            ));
+            emit_store_display_numeric(out, pad, "_result", c_target, disp_size, data_items);
         }
         out.push_str(&format!("{pad}}}\n"));
         return;
@@ -8044,12 +8182,15 @@ fn numeric_edited_picture_scale(pic: &str) -> u32 {
 }
 
 fn numeric_edited_actual_decimal_byte(bytes: &[u8]) -> Option<u8> {
-    let dot_pos = bytes.iter().rposition(|b| *b == b'.');
-    let comma_pos = bytes.iter().rposition(|b| *b == b',');
-    match (dot_pos, comma_pos) {
-        (Some(dot), Some(comma)) => Some(if comma > dot { b',' } else { b'.' }),
-        (Some(_), None) => Some(b'.'),
-        _ => None,
+    let decimal_byte = if with_active_context(|ctx| ctx.decimal_point_is_comma()) {
+        b','
+    } else {
+        b'.'
+    };
+    if bytes.contains(&decimal_byte) {
+        Some(decimal_byte)
+    } else {
+        None
     }
 }
 
@@ -8164,16 +8305,6 @@ fn normalize_numeric_edited_decimal_statement(pic: &str) -> String {
     let integer_digits = numeric_edited_picture_integer_digits(pic);
     let scale = numeric_edited_picture_scale(pic);
     let total_digits = integer_digits + scale;
-    let pre_truncate = if integer_digits > 0 {
-        format!(
-            "if (_ned.scale >= 0) {{ int32_t _keep = {integer_digits} + _ned.scale; \
-             if (_keep > 0 && _keep <= 18) {{ int64_t _limit = 1; \
-             for (int32_t _i = 0; _i < _keep; _i++) _limit *= 10; \
-             _ned.value = (_ned.value >= 0) ? (_ned.value % _limit) : -((-_ned.value) % _limit); }} }} "
-        )
-    } else {
-        String::new()
-    };
     let post_truncate = if total_digits > 0 && total_digits <= 18 {
         format!(
             "int64_t _limit = 1; for (int32_t _i = 0; _i < {total_digits}; _i++) _limit *= 10; \
@@ -8183,7 +8314,7 @@ fn normalize_numeric_edited_decimal_statement(pic: &str) -> String {
         String::new()
     };
     format!(
-        "{pre_truncate}int32_t _dd = {scale} - _ned.scale; \
+        "int32_t _dd = {scale} - _ned.scale; \
          if (_dd > 0) _ned.value *= (int64_t)pow(10.0, _dd); \
          else if (_dd < 0) _ned.value /= (int64_t)pow(10.0, -_dd); \
          _ned.scale = {scale}; _ned.size = {total_digits}; {post_truncate}"
@@ -8532,7 +8663,11 @@ fn emit_fast_decimal_add_assign(
     data_items: &[HirDataItem],
     pad: &str,
 ) -> bool {
-    let target_scale = match decimal_expr_scale(target, data_items) {
+    let display_target = display_numeric_c_expr_metadata(c_target, data_items);
+    let target_scale = display_target
+        .map(|(_, scale, _)| scale)
+        .or_else(|| decimal_expr_scale(target, data_items));
+    let target_scale = match target_scale {
         Some(scale) => scale,
         None => return false,
     };
@@ -8540,7 +8675,16 @@ fn emit_fast_decimal_add_assign(
         Some(expr) => expr,
         None => return false,
     };
-    out.push_str(&format!("{pad}{c_target}.value += ({scaled_operand});\n"));
+    if let Some((target_size, _, _)) = display_target {
+        let current = format!(
+            "cobol_display_to_int64({}, {target_size})",
+            display_numeric_const_ptr(c_target)
+        );
+        let result = format!("(({current}) + ({scaled_operand}))");
+        emit_store_display_numeric(out, pad, &result, c_target, target_size, data_items);
+    } else {
+        out.push_str(&format!("{pad}{c_target}.value += ({scaled_operand});\n"));
+    }
     true
 }
 
@@ -8552,7 +8696,11 @@ fn emit_fast_decimal_sub_assign(
     data_items: &[HirDataItem],
     pad: &str,
 ) -> bool {
-    let target_scale = match decimal_expr_scale(target, data_items) {
+    let display_target = display_numeric_c_expr_metadata(c_target, data_items);
+    let target_scale = display_target
+        .map(|(_, scale, _)| scale)
+        .or_else(|| decimal_expr_scale(target, data_items));
+    let target_scale = match target_scale {
         Some(scale) => scale,
         None => return false,
     };
@@ -8560,7 +8708,16 @@ fn emit_fast_decimal_sub_assign(
         Some(expr) => expr,
         None => return false,
     };
-    out.push_str(&format!("{pad}{c_target}.value -= ({scaled_operand});\n"));
+    if let Some((target_size, _, _)) = display_target {
+        let current = format!(
+            "cobol_display_to_int64({}, {target_size})",
+            display_numeric_const_ptr(c_target)
+        );
+        let result = format!("(({current}) - ({scaled_operand}))");
+        emit_store_display_numeric(out, pad, &result, c_target, target_size, data_items);
+    } else {
+        out.push_str(&format!("{pad}{c_target}.value -= ({scaled_operand});\n"));
+    }
     true
 }
 
@@ -8824,6 +8981,19 @@ fn emit_rounded_decimal_multiply_by(
         return;
     }
 
+    if expr_is_scaled_display_numeric(operand, data_items) {
+        out.push_str(&format!("{pad}{{ "));
+        out.push_str(&decimal_init_statement("_mop", Some(operand), data_items));
+        out.push_str(&format!(
+            "__int128 _raw = (__int128){c_target}.value * (__int128)_mop.value; \
+             int64_t _divisor = (int64_t)pow(10.0, _mop.scale); \
+             {c_target}.value = (int64_t)((_raw >= 0) \
+             ? ((_raw + (_divisor / 2)) / _divisor) \
+             : ((_raw - (_divisor / 2)) / _divisor)); }}\n"
+        ));
+        return;
+    }
+
     let c_operand = emit_int_compatible_expr(operand, data_items);
     out.push_str(&format!("{pad}{c_target}.value *= ({c_operand});\n"));
 }
@@ -8878,8 +9048,15 @@ fn decimal_init_statement(
         {
             let c_ptr = display_numeric_const_ptr(&raw_c_expr);
             let signed = if is_signed { "true" } else { "false" };
+            let raw_value = format!("cobol_display_to_int64({c_ptr}, {size})");
+            let value = find_data_item_by_c_name(&raw_c_expr, data_items)
+                .or_else(|| find_data_item(&raw_c_expr, data_items))
+                .filter(|item| item.scale_adjustment > 0)
+                .map_or(raw_value.clone(), |item| {
+                    apply_scale_adjustment_to_read(&raw_value, item.scale_adjustment)
+                });
             return format!(
-                "CobolDecimal {var_name}; cobol_decimal_from_int(cobol_display_to_int64({c_ptr}, {size}), {scale}, &{var_name}); {var_name}.size = {size}; {var_name}.scale = {scale}; {var_name}.is_signed = {signed}; "
+                "CobolDecimal {var_name}; cobol_decimal_from_int({value}, {scale}, &{var_name}); {var_name}.size = {size}; {var_name}.scale = {scale}; {var_name}.is_signed = {signed}; "
             );
         }
         let c_expr = emit_int_compatible_expr(expr, data_items);
@@ -9035,6 +9212,11 @@ fn emit_decimal_divide_to_display_statement(
     else {
         return String::new();
     };
+    let target_scale_adjustment = find_data_item_by_c_name(target, data_items)
+        .or_else(|| find_data_item(target, data_items))
+        .filter(|item| item.scale_adjustment > 0)
+        .map_or(0, |item| item.scale_adjustment);
+    let target_meta_scale = target_scale as i32 - target_scale_adjustment;
     let target_ptr = display_numeric_ptr(target);
     let target_signed = if target_signed { "1" } else { "0" };
     let guard_digit = if rounded {
@@ -9070,7 +9252,7 @@ fn emit_decimal_divide_to_display_statement(
         )
     };
     format!(
-        "{pad}{{ CobolDecimal _target_meta = {{ .value = 0, .scale = {target_scale}, .size = {target_size}, .is_signed = {target_signed} }}; \
+        "{pad}{{ CobolDecimal _target_meta = {{ .value = 0, .scale = {target_meta_scale}, .size = {target_size}, .is_signed = {target_signed} }}; \
          int32_t _target_scale; \
          {init_a} {init_b} \
          {guard_digit} \

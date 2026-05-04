@@ -559,6 +559,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -635,6 +636,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -803,6 +805,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -844,6 +847,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -885,6 +889,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -922,6 +927,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1134,6 +1140,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1175,6 +1182,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1224,6 +1232,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1272,6 +1281,7 @@ PROCEDURE DIVISION.
             variable_record_depending: std::collections::HashMap::new(),
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
+            decimal_point_is_comma: false,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };

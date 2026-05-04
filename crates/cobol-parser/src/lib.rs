@@ -901,6 +901,32 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_parse_picture_p_does_not_contribute_storage_size() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-P-SIZE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  TRAILING-P PIC 9P.
+01  LEADING-P PIC P(4)9.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let program = parse_free(src).unwrap();
+        let data = program.data.unwrap();
+        let trailing = data.working_storage[0]
+            .picture
+            .as_ref()
+            .expect("trailing P picture");
+        let leading = data.working_storage[1]
+            .picture
+            .as_ref()
+            .expect("leading P picture");
+        assert_eq!(trailing.size, 1);
+        assert_eq!(leading.size, 1);
+    }
+
+    #[test]
     fn test_parse_rewrite_statement() {
         let src = "\
 IDENTIFICATION DIVISION.

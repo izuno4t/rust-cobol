@@ -162,7 +162,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                         .with_initial_value(HirLiteral::Integer(0)),
                     );
                 }
-                for cond_name in entry.on_condition.iter().chain(entry.off_condition.iter()) {
+                if let Some(cond_name) = &entry.on_condition {
                     data_items.push(
                         HirDataItem::new(
                             cond_name.clone(),
@@ -174,6 +174,20 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                             entry.span,
                         )
                         .with_initial_value(HirLiteral::Integer(0)),
+                    );
+                }
+                if let Some(cond_name) = &entry.off_condition {
+                    data_items.push(
+                        HirDataItem::new(
+                            cond_name.clone(),
+                            HirType::Numeric {
+                                size: 1,
+                                decimal_places: 0,
+                                is_signed: false,
+                            },
+                            entry.span,
+                        )
+                        .with_initial_value(HirLiteral::Integer(1)),
                     );
                 }
             }
@@ -316,6 +330,11 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         variable_record_depending,
         variable_record_bounds,
         same_record_areas,
+        decimal_point_is_comma: program
+            .environment
+            .as_ref()
+            .and_then(|env| env.configuration.as_ref())
+            .is_some_and(|config| config.decimal_point_is_comma),
         nested_programs: program.nested_programs.iter().map(lower_to_hir).collect(),
         span: program.span,
     };
@@ -1066,7 +1085,7 @@ fn effective_decimal_places(item: &DataItem) -> u32 {
     }
     let adjustment = picture_scale_adjustment(item);
     if adjustment < 0 {
-        pic.size
+        pic.size + (-adjustment) as u32
     } else {
         0
     }
@@ -1632,11 +1651,13 @@ fn lower_add(
             .first()
             .map(|t| resolve_canonical_data_name(&t.target))
             .unwrap_or_else(|| HirDataName::simple("FILLER"));
+        let rounded = add.to.first().is_some_and(|t| t.rounded);
         let on_size_error = lower_statements(&add.on_size_error, condition_names);
         let not_on_size_error = lower_statements(&add.not_on_size_error, condition_names);
         return HirStatement::AddCorresponding {
             from: from_name,
             to: to_name,
+            rounded,
             on_size_error,
             not_on_size_error,
             span: add.span,
@@ -1684,11 +1705,13 @@ fn lower_subtract(
             .first()
             .map(|t| resolve_canonical_data_name(&t.target))
             .unwrap_or_else(|| HirDataName::simple("FILLER"));
+        let rounded = sub.from.first().is_some_and(|t| t.rounded);
         let on_size_error = lower_statements(&sub.on_size_error, condition_names);
         let not_on_size_error = lower_statements(&sub.not_on_size_error, condition_names);
         return HirStatement::SubtractCorresponding {
             from: from_name,
             to: to_name,
+            rounded,
             on_size_error,
             not_on_size_error,
             span: sub.span,

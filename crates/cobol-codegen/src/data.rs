@@ -72,6 +72,7 @@ pub(crate) fn emit_fd_alias_macros(
                 &format!("{c_alias}.members"),
                 &duplicate_member_names,
                 &mut emitted_typedefs,
+                true,
             );
         } else if matches!(
             primary_item.map(|item| &item.data_type),
@@ -316,22 +317,17 @@ pub(crate) fn collect_duplicate_member_names(
 }
 
 fn top_level_numeric_redefined_as_display(item: &HirDataItem, all_items: &[HirDataItem]) -> bool {
-    matches!(
-        item.data_type,
-        HirType::Numeric {
-            decimal_places: 0,
-            ..
-        }
-    ) && all_items.iter().any(|other| {
-        other
-            .redefines
-            .as_ref()
-            .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
-            && matches!(
-                other.data_type,
-                HirType::Alphanumeric { .. } | HirType::Group { .. }
-            )
-    })
+    matches!(item.data_type, HirType::Numeric { .. })
+        && all_items.iter().any(|other| {
+            other
+                .redefines
+                .as_ref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                && matches!(
+                    other.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. }
+                )
+        })
 }
 
 pub(crate) fn emit_single_data_item(
@@ -399,6 +395,7 @@ pub(crate) fn emit_single_data_item(
                     &format!("(*({td}*)&{c_redef})"),
                     duplicate_member_names,
                     emitted_typedefs,
+                    true,
                 );
             }
             _ => {
@@ -451,17 +448,9 @@ pub(crate) fn emit_single_data_item(
                 out.push_str(&format!("static uint16_t {c_name}[{size}];\n"));
             }
         }
-        HirType::Numeric { decimal_places, .. }
-            if *decimal_places > 0 && item.sign.is_none_or(|sign| !sign.separate) =>
-        {
-            out.push_str(&format!("static CobolDecimal {c_name}{array_suffix};\n"));
-        }
-        HirType::Numeric {
-            size,
-            decimal_places: 0,
-            ..
-        } if item.sign.is_some_and(|sign| sign.separate)
-            || top_level_numeric_redefined_as_display(item, all_items) =>
+        HirType::Numeric { size, .. }
+            if item.sign.is_some_and(|sign| sign.separate)
+                || top_level_numeric_redefined_as_display(item, all_items) =>
         {
             let storage_size = if item.sign.is_some_and(|sign| sign.separate) {
                 size + 1
@@ -472,6 +461,9 @@ pub(crate) fn emit_single_data_item(
                 "static char {c_name}{array_suffix}[{}];\n",
                 storage_size
             ));
+        }
+        HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
+            out.push_str(&format!("static CobolDecimal {c_name}{array_suffix};\n"));
         }
         HirType::Numeric { .. } => {
             out.push_str(&format!("static int64_t {c_name}{array_suffix};\n"));
@@ -509,6 +501,7 @@ pub(crate) fn emit_single_data_item(
                 &format!("{c_name}.members"),
                 duplicate_member_names,
                 emitted_typedefs,
+                raw_display_layout,
             );
             out.push('\n');
         }
@@ -806,6 +799,7 @@ pub(crate) fn emit_group_redefines(
     path_prefix: &str,
     duplicate_names: &BTreeSet<String>,
     emitted_typedefs: &mut HashSet<String>,
+    raw_display_layout: bool,
 ) {
     for member in members {
         if member.renames.is_some() {
@@ -814,11 +808,14 @@ pub(crate) fn emit_group_redefines(
         if let Some(ref redef_name) = member.redefines {
             let c_name = sanitize_name(&member.name);
             let c_redef = sanitize_name(redef_name);
-            let c_type = if member.sign.is_some_and(|sign| sign.separate) {
-                "char"
-            } else {
-                c_type_for_hir_type(&member.data_type)
-            };
+            let c_type =
+                if raw_display_layout && matches!(member.data_type, HirType::Numeric { .. }) {
+                    "char"
+                } else if member.sign.is_some_and(|sign| sign.separate) {
+                    "char"
+                } else {
+                    c_type_for_hir_type(&member.data_type)
+                };
             let qualified_target = format!("{path_prefix}._m_{c_redef}");
             let emit_aliases = member.name != "FILLER" && member.name != "PIC";
             match &member.data_type {
@@ -863,10 +860,20 @@ pub(crate) fn emit_group_redefines(
                         &access_expr,
                         duplicate_names,
                         emitted_typedefs,
+                        true,
                     );
                 }
                 _ => {
-                    if member.occurs.is_some() {
+                    if raw_display_layout && matches!(member.data_type, HirType::Numeric { .. }) {
+                        let storage_size = data_item_storage_size(member);
+                        let alias_expr = format!(
+                            "(*(({c_type} (*)[{storage_size}])&{qualified_target})) /* REDEFINES {c_redef} */"
+                        );
+                        if emit_aliases && !duplicate_names.contains(&c_name) {
+                            out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                        }
+                        emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
+                    } else if member.occurs.is_some() {
                         // REDEFINES + OCCURS: pointer cast (acts as array base)
                         let c_type = c_type_for_redefines_occurs_item(member);
                         let alias_expr = format!(
@@ -910,6 +917,7 @@ pub(crate) fn emit_group_redefines(
                     &sub_prefix,
                     duplicate_names,
                     emitted_typedefs,
+                    raw_display_layout || group_members_need_raw_display_layout(sub_members),
                 );
             }
         }
@@ -1310,12 +1318,40 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 } else {
                     n.to_string()
                 };
+                let value = if item.scale_adjustment > 0 {
+                    apply_scale_adjustment_to_store(&value, item.scale_adjustment)
+                } else {
+                    value
+                };
                 emit_init_store_numeric_display(out, item, &c_name, &value, *size);
             }
             (
                 HirType::Numeric {
                     size,
-                    decimal_places: _,
+                    decimal_places,
+                    ..
+                },
+                HirLiteral::String(s),
+            ) if group_prefix.is_some()
+                || c_name.contains("__")
+                || c_name.contains("._m_")
+                || with_active_context(|ctx| ctx.has_display_numeric(&c_name)) =>
+            {
+                let value = s.trim().parse::<i64>().unwrap_or(0);
+                let mut value = if *decimal_places > 0 {
+                    format!("({value} * {})", 10_i64.pow(*decimal_places))
+                } else {
+                    value.to_string()
+                };
+                if item.scale_adjustment > 0 {
+                    value = apply_scale_adjustment_to_store(&value, item.scale_adjustment);
+                }
+                emit_init_store_numeric_display(out, item, &c_name, &value, *size);
+            }
+            (
+                HirType::Numeric {
+                    size,
+                    decimal_places,
                     ..
                 },
                 HirLiteral::Decimal(d),
@@ -1324,8 +1360,16 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 || c_name.contains("._m_")
                 || with_active_context(|ctx| ctx.has_display_numeric(&c_name)) =>
             {
-                let (scaled, _scale) = parse_decimal_literal(d);
-                let value = scaled.to_string();
+                let (scaled, scale) = parse_decimal_literal(d);
+                let mut value = scaled.to_string();
+                if *decimal_places > scale {
+                    value = format!("(({value}) * {})", 10_i64.pow(*decimal_places - scale));
+                } else if scale > *decimal_places {
+                    value = format!("(({value}) / {})", 10_i64.pow(scale - *decimal_places));
+                }
+                if item.scale_adjustment > 0 {
+                    value = apply_scale_adjustment_to_store(&value, item.scale_adjustment);
+                }
                 emit_init_store_numeric_display(out, item, &c_name, &value, *size);
             }
             (
