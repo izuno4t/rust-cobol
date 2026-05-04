@@ -880,6 +880,27 @@ PROCEDURE DIVISION.
     }
 
     #[test]
+    fn test_parse_unnamed_picture_item_keeps_picture_clause() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-FILLER-PIC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  REC.
+    05 PIC X(7) VALUE 'XXXXXXX'.
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let program = parse_free(src).unwrap();
+        let data = program.data.unwrap();
+        let child = &data.working_storage[0].children[0];
+        assert!(child.name.is_none());
+        let picture = child.picture.as_ref().expect("unnamed PIC item");
+        assert_eq!(picture.raw_string, "X(7)");
+        assert_eq!(picture.size, 7);
+    }
+
+    #[test]
     fn test_parse_rewrite_statement() {
         let src = "\
 IDENTIFICATION DIVISION.

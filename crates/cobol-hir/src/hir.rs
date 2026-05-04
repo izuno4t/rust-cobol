@@ -1169,7 +1169,11 @@ pub enum HirInspectKind {
         replacing: Vec<HirInspectReplacing>,
     },
     /// INSPECT CONVERTING.
-    Converting { from: HirExpr, to: HirExpr },
+    Converting {
+        from: HirExpr,
+        to: HirExpr,
+        before_after: Vec<HirBeforeAfter>,
+    },
 }
 
 /// A tallying phrase in INSPECT TALLYING.

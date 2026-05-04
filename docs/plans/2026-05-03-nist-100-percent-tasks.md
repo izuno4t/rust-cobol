@@ -2013,7 +2013,7 @@ TASK-011時点での判断:
 ### IMPL-018/IMPL-019 実施記録（進行中）
 
 - 最新ベースライン: `make nist-summary`を実行し、全体は
-  `391 total / 267 pass / 124 fail / 0 ready / 0 CErr / 0 RErr / 68%`。
+  `391 total / 271 pass / 120 fail / 0 ready / 0 CErr / 0 RErr / 69%`。
   `DB`, `IF`, `IX`は100% pass。残る最大阻害はruntime FAILである。
 - CErr分類: `make nist-compile-errors`は`Total: 0`。
   DISPLAY numericを`char[]`として保持する経路と、`CobolDecimal`構造体として扱う
@@ -2084,18 +2084,17 @@ TASK-011時点での判断:
   と`1.4`の和をtarget scaleへ揃える前に小数桁を失っていたこと。
   decimal operandを含む`ADD ... GIVING`は常にexact decimal和を作り、targetの
   PICTURE scaleへ丸めまたは切り捨ててからDISPLAY numericへ格納するようにした。
-- 進捗: `NC216A`は`INSPECT`共通仕様の修正で先頭失敗が
-  `21 passed / 36 failed`から`52 passed / 5 failed`まで前進した。原因は
+- 進捗: `NC115A`, `NC122A`, `NC216A`, `NC221A`は個別再実行でPASS。
+  原因は`INSPECT`共通仕様の複数欠陥だった。
   `BEFORE`/`AFTER INITIAL`をTALLYING側で無視していたこと、複数TALLYING phraseを
   独立走査していたこと、`TALLYING AND REPLACING`で元文字列を見ずに置換後文字列を
   次phraseのdelimiter/searchへ使っていたこと、signed DISPLAY numericのoverpunchを
   INSPECT対象として正規化していなかったこと、INSPECT target/operandの添字を
-  HIR/codegenで落としていたこと。
-- 残件: `NC216A`の次の根本原因は、無名 elementary item
-  `05 PIC X(7) VALUE "XXXXXXX"`がHIR上でsize 1の`PIC`項目として生成され、
-  `INSPECT-FIELDS`のgroup sizeが35ではなく5になっていること。`DATA-FIELD(SUB)`の
-  添字自体は生成Cへ出るようになったが、元storageが5バイトしか初期化されないため、
-  `INS-TEST-F1-30`はまだFAILする。
+  HIR/codegenで落としていたこと、`05 PIC X(7) VALUE "XXXXXXX"`のような無名
+  elementary itemを名前`PIC`・size 1として誤解析していたこと、固定形式の開いた
+  英数字リテラル継続で72桁目までの空白をpreprocessor/lexerが捨てていたこと、
+  `INSPECT CONVERTING`の`BEFORE`/`AFTER`句をHIRで落としていたこと、
+  添字付きINSPECT targetの一時ポインタ名を同一関数内で再定義していたこと。
 - 確認: `cargo test -p cobol-runtime string_ops::tests::test_store_numeric_display
   -- --nocapture`, `cargo test -p cobol-codegen --all-targets`,
   `cargo test -p cobol-driver --test e2e_test`, `cargo fmt --check`, `make release`,
@@ -2111,8 +2110,17 @@ TASK-011時点での判断:
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC111A`,
   `cargo test -p cobol-driver test_native_inspect --test e2e_test -- --nocapture`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC216A`,
+  `cargo test -p cobol-lexer continuation -- --nocapture`,
+  `cargo test -p cobol-lexer --all-targets`,
+  `cargo test -p cobol-preprocessor --all-targets`,
+  `cargo test -p cobol-hir
+  test_lower_fixed_open_literal_continuation_preserves_margin_spaces -- --nocapture`,
+  `cargo test -p cobol-driver test_native_inspect_converting --test e2e_test -- --nocapture`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC115A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC122A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC221A`,
   `make nist-summary`を実行。
-- 次の作業: runtime FAIL 125件を、numeric edited formatter/parser、
+- 次の作業: runtime FAIL 120件を、numeric edited formatter/parser、
   decimal算術/SIZE ERROR、MOVE CORRESPONDING、REDEFINES、PERFORM制御、
   REPORT/SORT/COMMUNICATIONへ再分類して、件数の大きい順に潰す。
 

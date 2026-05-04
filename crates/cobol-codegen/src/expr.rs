@@ -2941,7 +2941,18 @@ pub(crate) fn emit_inspect_tallying(
             ));
             out.push_str(&format!("{pad}    uint32_t _insp_start = 0;\n"));
             out.push_str(&format!("{pad}    uint32_t _insp_end = {target_size};\n"));
-            for (j, ba) in t.before_after.iter().enumerate() {
+            for (j, ba) in t
+                .before_after
+                .iter()
+                .enumerate()
+                .filter(|(_, ba)| !ba.is_before)
+                .chain(
+                    t.before_after
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ba)| ba.is_before),
+                )
+            {
                 let marker_label = format!("tally_ba{i}_{j}");
                 let (marker_ptr, marker_len) =
                     emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
@@ -3057,7 +3068,18 @@ pub(crate) fn emit_inspect_tallying_series(
             if matches!(t.kind, cobol_hir::HirTallyingKind::Leading(_)) {
                 out.push_str(&format!("{pad}    uint8_t _insp_leading_{i} = 1;\n"));
             }
-            for (j, ba) in t.before_after.iter().enumerate() {
+            for (j, ba) in t
+                .before_after
+                .iter()
+                .enumerate()
+                .filter(|(_, ba)| !ba.is_before)
+                .chain(
+                    t.before_after
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ba)| ba.is_before),
+                )
+            {
                 let marker_label = format!("series_ba{i}_{j}");
                 let (marker_ptr, marker_len) =
                     emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
@@ -3121,7 +3143,18 @@ pub(crate) fn emit_inspect_tallying_series(
         if matches!(t.kind, cobol_hir::HirTallyingKind::Leading(_)) {
             out.push_str(&format!("{pad}    uint8_t _insp_leading_{i} = 1;\n"));
         }
-        for (j, ba) in t.before_after.iter().enumerate() {
+        for (j, ba) in t
+            .before_after
+            .iter()
+            .enumerate()
+            .filter(|(_, ba)| !ba.is_before)
+            .chain(
+                t.before_after
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, ba)| ba.is_before),
+            )
+        {
             let marker_label = format!("series_ba{i}_{j}");
             let (marker_ptr, marker_len) =
                 emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
@@ -3356,7 +3389,18 @@ pub(crate) fn emit_inspect_replacing(
             ));
             out.push_str(&format!("{pad}    uint32_t _insp_start = 0;\n"));
             out.push_str(&format!("{pad}    uint32_t _insp_end = {target_size};\n"));
-            for (j, ba) in r.before_after.iter().enumerate() {
+            for (j, ba) in r
+                .before_after
+                .iter()
+                .enumerate()
+                .filter(|(_, ba)| !ba.is_before)
+                .chain(
+                    r.before_after
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ba)| ba.is_before),
+                )
+            {
                 let marker_label = format!("rep_ba{i}_{j}");
                 let (marker_ptr, marker_len) =
                     emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);
@@ -3461,7 +3505,18 @@ pub(crate) fn emit_inspect_replacing_series(
         if matches!(r.kind, cobol_hir::HirReplacingKind::First { .. }) {
             out.push_str(&format!("{pad}    uint8_t _insp_done_{i} = 0;\n"));
         }
-        for (j, ba) in r.before_after.iter().enumerate() {
+        for (j, ba) in r
+            .before_after
+            .iter()
+            .enumerate()
+            .filter(|(_, ba)| !ba.is_before)
+            .chain(
+                r.before_after
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, ba)| ba.is_before),
+            )
+        {
             let marker_label = format!("rep_series_ba{i}_{j}");
             let (marker_ptr, marker_len) =
                 emit_inspect_operand(out, &ba.value, &marker_label, data_items, pad);

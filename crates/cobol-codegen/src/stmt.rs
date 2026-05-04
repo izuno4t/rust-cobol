@@ -4080,10 +4080,9 @@ pub(crate) fn emit_statement_with_ctx(
                 _ => {
                     let (ptr, len) = emit_alphanumeric_operand(target, data_items);
                     let size = len.parse::<u32>().unwrap_or(0);
-                    out.push_str(&format!(
-                        "{pad}uint8_t* _inspect_target = (uint8_t*){ptr};\n"
-                    ));
-                    ("_inspect_target".to_string(), size)
+                    let temp_name = format!("_inspect_target_{}", out.len());
+                    out.push_str(&format!("{pad}uint8_t* {temp_name} = (uint8_t*){ptr};\n"));
+                    (temp_name, size)
                 }
             };
             out.push_str(&format!("{pad}/* INSPECT {c_target} */\n"));
@@ -4140,14 +4139,98 @@ pub(crate) fn emit_statement_with_ctx(
                         &pad,
                     );
                 }
-                cobol_hir::HirInspectKind::Converting { from, to } => {
+                cobol_hir::HirInspectKind::Converting {
+                    from,
+                    to,
+                    before_after,
+                } => {
                     let c_from = emit_inspect_operand(out, from, "conv_from", data_items, &pad);
                     let c_to = emit_inspect_operand(out, to, "conv_to", data_items, &pad);
                     let insp_tgt_ptr = c_ptr_expr(&c_target, data_items);
-                    out.push_str(&format!(
-                        "{pad}cobol_inspect_converting((uint8_t*){insp_tgt_ptr}, {target_size}, {}, {}, {}, {});\n",
-                        c_from.0, c_from.1, c_to.0, c_to.1
-                    ));
+                    if before_after.is_empty() {
+                        out.push_str(&format!(
+                            "{pad}cobol_inspect_converting((uint8_t*){insp_tgt_ptr}, {target_size}, {}, {}, {}, {});\n",
+                            c_from.0, c_from.1, c_to.0, c_to.1
+                        ));
+                    } else {
+                        out.push_str(&format!("{pad}{{\n"));
+                        out.push_str(&format!(
+                            "{pad}    uint8_t* _insp_base = (uint8_t*){insp_tgt_ptr};\n"
+                        ));
+                        out.push_str(&format!("{pad}    uint32_t _insp_start = 0;\n"));
+                        out.push_str(&format!("{pad}    uint32_t _insp_end = {target_size};\n"));
+                        for (j, ba) in before_after
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, ba)| !ba.is_before)
+                            .chain(
+                                before_after
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, ba)| ba.is_before),
+                            )
+                        {
+                            let marker_label = format!("conv_ba{j}");
+                            let (marker_ptr, marker_len) = emit_inspect_operand(
+                                out,
+                                &ba.value,
+                                &marker_label,
+                                data_items,
+                                &pad,
+                            );
+                            out.push_str(&format!(
+                                "{pad}    const uint8_t* _insp_marker_{j} = {marker_ptr};\n"
+                            ));
+                            out.push_str(&format!(
+                                "{pad}    uint32_t _insp_marker_len_{j} = {marker_len};\n"
+                            ));
+                            if ba.is_before {
+                                out.push_str(&format!(
+                                    "{pad}    if (_insp_marker_len_{j} == 0 || _insp_marker_len_{j} > _insp_end - _insp_start) {{\n"
+                                ));
+                                out.push_str(&format!("{pad}    }} else {{\n"));
+                                out.push_str(&format!(
+                                    "{pad}        uint32_t _insp_found = _insp_end;\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}        for (uint32_t _i = _insp_start; _i + _insp_marker_len_{j} <= _insp_end; _i++) {{\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}            if (memcmp(_insp_base + _i, _insp_marker_{j}, _insp_marker_len_{j}) == 0) {{ _insp_found = _i; break; }}\n"
+                                ));
+                                out.push_str(&format!("{pad}        }}\n"));
+                                out.push_str(&format!(
+                                    "{pad}        if (_insp_found != _insp_end) _insp_end = _insp_found;\n"
+                                ));
+                                out.push_str(&format!("{pad}    }}\n"));
+                            } else {
+                                out.push_str(&format!(
+                                    "{pad}    if (_insp_marker_len_{j} == 0 || _insp_marker_len_{j} > _insp_end - _insp_start) {{\n"
+                                ));
+                                out.push_str(&format!("{pad}        _insp_start = _insp_end;\n"));
+                                out.push_str(&format!("{pad}    }} else {{\n"));
+                                out.push_str(&format!(
+                                    "{pad}        uint32_t _insp_found = _insp_end;\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}        for (uint32_t _i = _insp_start; _i + _insp_marker_len_{j} <= _insp_end; _i++) {{\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}            if (memcmp(_insp_base + _i, _insp_marker_{j}, _insp_marker_len_{j}) == 0) {{ _insp_found = _i; break; }}\n"
+                                ));
+                                out.push_str(&format!("{pad}        }}\n"));
+                                out.push_str(&format!(
+                                    "{pad}        _insp_start = (_insp_found == _insp_end) ? _insp_end : _insp_found + _insp_marker_len_{j};\n"
+                                ));
+                                out.push_str(&format!("{pad}    }}\n"));
+                            }
+                        }
+                        out.push_str(&format!(
+                            "{pad}    cobol_inspect_converting(_insp_base + _insp_start, _insp_end - _insp_start, {}, {}, {}, {});\n",
+                            c_from.0, c_from.1, c_to.0, c_to.1
+                        ));
+                        out.push_str(&format!("{pad}}}\n"));
+                    }
                 }
             }
         }

@@ -650,6 +650,8 @@ impl Parser {
         let name = if self.check(TokenKind::Filler) {
             self.advance();
             None
+        } else if self.check(TokenKind::Pic) {
+            None
         } else if self.check(TokenKind::Identifier) || self.current().kind.is_keyword() {
             if self.check(TokenKind::Period) {
                 None

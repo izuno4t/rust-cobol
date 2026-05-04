@@ -289,9 +289,17 @@ impl Lexer {
                             dropped_prev_quote = true;
                         }
                         if !dropped_prev_quote {
-                            prev.text.truncate(prev_trimmed_len);
-                            if trailing_spaces == 1 {
-                                prev.text.push(' ');
+                            if prev_trimmed_len > 0
+                                && Self::ends_inside_string(&prev.text[..prev_trimmed_len], quote)
+                            {
+                                // An unterminated fixed-format nonnumeric literal
+                                // continues through the right margin; the spaces
+                                // before column 72 are literal content.
+                            } else {
+                                prev.text.truncate(prev_trimmed_len);
+                                if trailing_spaces == 1 {
+                                    prev.text.push(' ');
+                                }
                             }
                         }
 
@@ -1228,7 +1236,7 @@ mod tests {
     fn test_continuation_string_literal() {
         // Line 1: MOVE "THIS IS A VERY L
         // Line 2 (continuation): "ONG STRING" TO WS-VAR.
-        let line1 = fixed_line("000100", ' ', r#"MOVE "THIS IS A VERY L"#);
+        let line1 = fixed_line("000100", ' ', r#"MOVE "THIS IS A VERY L""#);
         let line2 = fixed_line("000200", '-', r#"    "ONG STRING" TO WS-VAR."#);
         let src = format!("{}{}", line1, line2);
         let tokens = lex(&src);
@@ -1257,8 +1265,8 @@ mod tests {
     fn test_continuation_multiple_lines() {
         // Three lines forming one long string:
         // "FIRST P" + "ART SECOND" + " PART THIRD PART"
-        let line1 = fixed_line("000100", ' ', r#"MOVE "FIRST P"#);
-        let line2 = fixed_line("000200", '-', r#"    "ART SECOND P"#);
+        let line1 = fixed_line("000100", ' ', r#"MOVE "FIRST P""#);
+        let line2 = fixed_line("000200", '-', r#"    "ART SECOND P""#);
         let line3 = fixed_line("000300", '-', r#"    "ART THIRD PART" TO X."#);
         let src = format!("{}{}{}", line1, line2, line3);
         let tokens = lex(&src);
@@ -1372,7 +1380,7 @@ mod tests {
     #[test]
     fn test_continuation_single_quoted_string() {
         // Same as test_continuation_string_literal but with single quotes
-        let line1 = fixed_line("000100", ' ', "MOVE 'HELLO WO");
+        let line1 = fixed_line("000100", ' ', "MOVE 'HELLO WO'");
         let line2 = fixed_line("000200", '-', "    'RLD' TO WS-VAR.");
         let src = format!("{}{}", line1, line2);
         let tokens = lex(&src);
@@ -1416,7 +1424,7 @@ mod tests {
         let line1 = fixed_line(
             "029900",
             ' ',
-            r#"MOVE " IF NO OTHER REPORT LINES APPEAR BELOW, ""COPY K7SEA"""#,
+            r#"MOVE " IF NO OTHER REPORT LINES APPEAR BELOW, ""COPY K7SEA""""#,
         );
         let line2 = fixed_line("030000", '-', r#"         "FAILED." TO PRINT-REC."#);
         let src = format!("{}{}", line1, line2);
@@ -1514,7 +1522,32 @@ mod tests {
             .iter()
             .find(|t| t.kind == TokenKind::StringLiteral)
             .expect("should have a closed string literal");
-        assert_eq!(str_tok.text, r#""LITERAL ENDS AT 72""#);
+        assert_eq!(
+            str_tok.text,
+            format!("\"LITERAL ENDS AT 72{}\"", " ".repeat(41))
+        );
+    }
+
+    #[test]
+    fn test_fixed_open_literal_continuation_preserves_margin_spaces() {
+        let src = concat!(
+            "183000     MOVE                                                         NC2164.2\n",
+            "183100     \"AH YES AH YES W.C                                           NC2164.2\n",
+            "183200-    \"            BE ALL BAD.\"                                    NC2164.2\n",
+        );
+        let tokens = lex(&src);
+
+        let str_tok = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::StringLiteral)
+            .expect("should have a continued string literal");
+        assert_eq!(
+            str_tok.text,
+            format!(
+                "\"AH YES AH YES W.C{}            BE ALL BAD.\"",
+                " ".repeat(43)
+            )
+        );
     }
 
     #[test]

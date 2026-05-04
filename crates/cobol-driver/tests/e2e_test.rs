@@ -3074,6 +3074,48 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_inspect_converting_before_after_limits_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSPECT-CONVERT-RANGE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(13) VALUE 'GADQAUZTABAGA'.
+PROCEDURE DIVISION.
+    INSPECT WS-DATA CONVERTING 'AU' TO '23' BEFORE 'B' AFTER 'Q'.
+    DISPLAY WS-DATA.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.contains("GADQ23ZT2BAGA"),
+        "INSPECT CONVERTING BEFORE/AFTER should limit the conversion range, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_native_inspect_converting_before_limits_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INSPECT-CONVERT-BEFORE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(13) VALUE 'GA4Q23ZT2BAGA'.
+PROCEDURE DIVISION.
+    INSPECT WS-DATA CONVERTING 'GA' TO '67' BEFORE 'B'.
+    DISPLAY WS-DATA.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.contains("674Q23ZT2BAGA"),
+        "INSPECT CONVERTING BEFORE should leave bytes after the delimiter unchanged, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn test_native_inspect_tallying_replacing_tally_phrases_share_scan_position() {
     let src = "\
 IDENTIFICATION DIVISION.

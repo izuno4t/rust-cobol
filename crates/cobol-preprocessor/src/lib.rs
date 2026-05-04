@@ -373,9 +373,14 @@ fn append_fixed_continuation(current: &mut String, continuation: &str) {
             dropped_prev_quote = true;
         }
         if !dropped_prev_quote {
-            current.truncate(trimmed_len);
-            if trailing_spaces == 1 {
-                current.push(' ');
+            if trimmed_len > 0 && ends_inside_string_with_quote(&current[..trimmed_len], quote) {
+                // In fixed format, an unterminated nonnumeric literal spans
+                // through column 72; the right-margin spaces are data.
+            } else {
+                current.truncate(trimmed_len);
+                if trailing_spaces == 1 {
+                    current.push(' ');
+                }
             }
         }
 
@@ -1653,6 +1658,36 @@ mod tests {
             .count();
 
         assert_eq!(warning_count, 2, "{:?}", result.diagnostics);
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_preprocess_fixed_open_literal_continuation_preserves_margin_spaces() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("test.cob");
+        fs::write(&source_path, "").unwrap();
+
+        let source = concat!(
+            "183000     MOVE                                                         NC2164.2\n",
+            "183100     \"AH YES AH YES W.C                                           NC2164.2\n",
+            "183200-    \"            BE ALL BAD.\"                                    NC2164.2\n",
+            "183300         TO ANS-XN-83-10.                                         NC2164.2\n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            max_copy_depth: 8,
+            source_format: SourceFormat::Fixed,
+        };
+
+        let result = preprocess(source, &source_path, &config);
+        assert!(
+            result.source.contains(&format!(
+                "\"AH YES AH YES W.C{}            BE ALL BAD.\"",
+                " ".repeat(43)
+            )),
+            "preprocessed source: {:?}",
+            result.source
+        );
         assert_no_errors(&result);
     }
 }

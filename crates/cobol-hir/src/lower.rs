@@ -2567,12 +2567,15 @@ fn lower_inspect(inspect: &cobol_ast::statement::InspectStatement) -> HirStateme
             tallying: tallying.iter().map(lower_inspect_tallying).collect(),
             replacing: replacing.iter().map(lower_inspect_replacing).collect(),
         },
-        cobol_ast::statement::InspectKind::Converting { from, to, .. } => {
-            HirInspectKind::Converting {
-                from: lower_expr(from),
-                to: lower_expr(to),
-            }
-        }
+        cobol_ast::statement::InspectKind::Converting {
+            from,
+            to,
+            before_after,
+        } => HirInspectKind::Converting {
+            from: lower_expr(from),
+            to: lower_expr(to),
+            before_after: before_after.iter().map(lower_before_after).collect(),
+        },
     };
     HirStatement::Inspect {
         target: lower_qualified_name_to_expr(&inspect.target),
@@ -4155,6 +4158,14 @@ mod tests {
         lower_to_hir(&program)
     }
 
+    fn parse_and_lower_fixed(source: &str) -> HirProgram {
+        let mut lexer = Lexer::new(source, FileId(0), SourceFormat::Fixed);
+        let tokens = lexer.lex_all();
+        let mut parser = Parser::new(tokens, FileId(0));
+        let program = parser.parse_program().unwrap();
+        lower_to_hir(&program)
+    }
+
     #[test]
     fn test_lower_hello_world() {
         let src = "\
@@ -4477,6 +4488,34 @@ PROCEDURE DIVISION.
         let hir = parse_and_lower(src);
         if let HirStatement::Move { to, .. } = &hir.body[0] {
             assert_eq!(to.len(), 2);
+        } else {
+            panic!("Expected MOVE statement");
+        }
+    }
+
+    #[test]
+    fn test_lower_fixed_open_literal_continuation_preserves_margin_spaces() {
+        let src = concat!(
+            "000100 IDENTIFICATION DIVISION.                                         TST\n",
+            "000200 PROGRAM-ID. T.                                                   TST\n",
+            "000300 DATA DIVISION.                                                   TST\n",
+            "000400 WORKING-STORAGE SECTION.                                         TST\n",
+            "000500 01 X PIC X(83).                                                  TST\n",
+            "000600 PROCEDURE DIVISION.                                              TST\n",
+            "000700     MOVE                                                         TST\n",
+            "000800     \"AH YES AH YES W.C                                           TST\n",
+            "000900-    \"            BE ALL BAD.\" TO X.                              TST\n",
+            "001000     STOP RUN.                                                    TST\n",
+        );
+        let hir = parse_and_lower_fixed(src);
+        if let HirStatement::Move { from, .. } = &hir.body[0] {
+            assert_eq!(
+                from,
+                &HirExpr::Literal(HirLiteral::String(SmolStr::from(format!(
+                    "AH YES AH YES W.C{}            BE ALL BAD.",
+                    " ".repeat(43)
+                ))))
+            );
         } else {
             panic!("Expected MOVE statement");
         }
