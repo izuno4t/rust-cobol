@@ -730,15 +730,24 @@ pub(crate) fn emit_group_macros(
         if let Some((from, thru)) = &member.renames {
             let c_name = sanitize_name(&member.name);
             let c_from = sanitize_name(from);
-            let alias_expr = match find_group_member_by_sanitized_name(&c_from, members) {
+            let resolved_source = find_renames_source_in_group(&c_from, members, qualifier_names);
+            let source_expr = resolved_source
+                .as_ref()
+                .map(|(expr, _)| expr.clone())
+                .unwrap_or_else(|| c_from.clone());
+            let source_item = resolved_source
+                .as_ref()
+                .map(|(_, item)| *item)
+                .or_else(|| find_group_member_by_sanitized_name(&c_from, members));
+            let alias_expr = match source_item {
                 Some(HirDataItem {
                     data_type: HirType::Group { .. },
                     ..
-                }) => format!("((char*)&{c_from})"),
-                Some(_) if thru.is_some() => format!("((char*)&{c_from})"),
-                Some(_) => c_from.clone(),
-                None if thru.is_some() => format!("((char*)&{c_from})"),
-                None => c_from.clone(),
+                }) => format!("((char*)&{source_expr})"),
+                Some(_) if thru.is_some() => format!("((char*)&{source_expr})"),
+                Some(_) => source_expr.clone(),
+                None if thru.is_some() => format!("((char*)&{source_expr})"),
+                None => source_expr.clone(),
             };
             if member.name != "FILLER" && member.name != "PIC" && !duplicate_names.contains(&c_name)
             {
@@ -805,6 +814,41 @@ pub(crate) fn emit_group_macros(
     }
 }
 
+fn find_renames_source_in_group<'a>(
+    target: &str,
+    members: &'a [HirDataItem],
+    qualifier_names: &[String],
+) -> Option<(String, &'a HirDataItem)> {
+    let mut member_name_counts: HashMap<String, u32> = HashMap::new();
+    for member in members {
+        let base_c_name = sanitize_name(&member.name);
+        let count = member_name_counts.entry(base_c_name.clone()).or_insert(0);
+        *count += 1;
+        let c_name = if *count > 1 {
+            format!("{}_{}", base_c_name, count)
+        } else {
+            base_c_name
+        };
+        let mut qualified = qualifier_names.to_vec();
+        if member.name != "PIC" {
+            qualified.push(c_name.clone());
+        }
+        if c_name == target {
+            return Some((qualified.join("__"), member));
+        }
+        if let HirType::Group {
+            members: sub_members,
+            ..
+        } = &member.data_type
+        {
+            if let Some(found) = find_renames_source_in_group(target, sub_members, &qualified) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 /// Emit REDEFINES members within a group as #define macros with qualified paths.
 pub(crate) fn emit_group_redefines(
     out: &mut String,
@@ -822,14 +866,14 @@ pub(crate) fn emit_group_redefines(
         if let Some(ref redef_name) = member.redefines {
             let c_name = sanitize_name(&member.name);
             let c_redef = sanitize_name(redef_name);
-            let c_type =
-                if raw_display_layout && matches!(member.data_type, HirType::Numeric { .. }) {
-                    "char"
-                } else if member.sign.is_some_and(|sign| sign.separate) {
-                    "char"
-                } else {
-                    c_type_for_hir_type(&member.data_type)
-                };
+            let c_type = if (raw_display_layout
+                && matches!(member.data_type, HirType::Numeric { .. }))
+                || member.sign.is_some_and(|sign| sign.separate)
+            {
+                "char"
+            } else {
+                c_type_for_hir_type(&member.data_type)
+            };
             let qualified_target = format!("{path_prefix}._m_{c_redef}");
             let emit_aliases = member.name != "FILLER" && member.name != "PIC";
             match &member.data_type {
@@ -1056,6 +1100,7 @@ pub(crate) fn emit_single_data_init_with_prefix(
             let (fill, literal): (char, Option<String>) = match init {
                 HirLiteral::String(s) => (' ', Some(s.to_string())),
                 HirLiteral::Integer(n) => (' ', Some(n.to_string())),
+                HirLiteral::Decimal(d) => (' ', Some(d.to_string())),
                 HirLiteral::Zero => ('0', None),
                 HirLiteral::Space => (' ', None),
                 _ => ('\0', None),
@@ -1143,9 +1188,9 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 out.push_str(&format!("    memset({c_name}, 0, sizeof({c_name}));\n"));
             }
             HirType::Alphanumeric { size } => {
-                if let Some(HirLiteral::String(s)) = &item.initial_value {
-                    let escaped = escape_c_string(s);
-                    let copy_len = (*size).min(s.len() as u32);
+                if let Some(value) = alphanumeric_initial_literal(&item.initial_value) {
+                    let escaped = escape_c_string(&value);
+                    let copy_len = (*size).min(value.len() as u32);
                     if group_prefix.is_some() {
                         out.push_str(&format!(
                             "    for (int _i = 0; _i < {n}; _i++) {{ memset({c_name}[_i], ' ', {size}); memcpy({c_name}[_i], \"{escaped}\", {copy_len}); }}\n"
@@ -1243,9 +1288,12 @@ pub(crate) fn emit_single_data_init_with_prefix(
     }
     if let Some(init) = &item.initial_value {
         match (&item.data_type, init) {
-            (HirType::Alphanumeric { size }, HirLiteral::String(s)) => {
-                let escaped = escape_c_string(s);
-                let copy_len = (*size).min(s.len() as u32);
+            (HirType::Alphanumeric { size }, _)
+                if alphanumeric_initial_literal(&item.initial_value).is_some() =>
+            {
+                let value = alphanumeric_initial_literal(&item.initial_value).unwrap();
+                let escaped = escape_c_string(&value);
+                let copy_len = (*size).min(value.len() as u32);
                 if in_group {
                     out.push_str(&format!(
                         "    memset({c_name}, ' ', {size});\n    memcpy({c_name}, \"{escaped}\", {copy_len});\n"
@@ -1312,20 +1360,6 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 } else {
                     out.push_str(&format!(
                         "    memset({c_name}, '\"', {size});\n    {c_name}[{size}] = '\\0';\n"
-                    ));
-                }
-            }
-            (HirType::Alphanumeric { size }, HirLiteral::Integer(n)) => {
-                let digits_raw = n.to_string();
-                let digits = escape_c_string(&digits_raw);
-                let copy_len = (*size).min(digits_raw.len() as u32);
-                if in_group {
-                    out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    memcpy({c_name}, \"{digits}\", {copy_len});\n"
-                    ));
-                } else {
-                    out.push_str(&format!(
-                        "    memset({c_name}, ' ', {size});\n    memcpy({c_name}, \"{digits}\", {copy_len});\n    {c_name}[{size}] = '\\0';\n"
                     ));
                 }
             }
@@ -1500,6 +1534,15 @@ pub(crate) fn emit_single_data_init_with_prefix(
         } else {
             emit_default_init(out, &item.data_type, &c_name, group_prefix.is_some());
         }
+    }
+}
+
+fn alphanumeric_initial_literal(init: &Option<HirLiteral>) -> Option<String> {
+    match init {
+        Some(HirLiteral::String(s)) => Some(s.to_string()),
+        Some(HirLiteral::Decimal(s)) => Some(s.to_string()),
+        Some(HirLiteral::Integer(n)) => Some(n.to_string()),
+        _ => None,
     }
 }
 

@@ -259,6 +259,9 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Extract file organization mappings.
     let file_organizations = extract_file_organizations(program);
 
+    // Extract file access mode mappings.
+    let file_access_modes = extract_file_access_modes(program);
+
     // Extract file assignment (ASSIGN TO) mappings.
     let file_assignments = extract_file_assignments(program);
 
@@ -342,6 +345,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         typedefs: Vec::new(),
         interfaces: Vec::new(),
         file_organizations,
+        file_access_modes,
         file_assignments,
         file_optionals,
         file_relative_keys,
@@ -1643,14 +1647,10 @@ fn lower_statement(stmt: &Statement, condition_names: &ConditionNameMap) -> Opti
             span: term.span,
         }),
         // Obsolete statements — lower to no-op or simple equivalents
-        Statement::StopLiteral(expr) => {
-            let hir_expr = lower_expr(expr);
-            Some(HirStatement::Display {
-                operands: vec![hir_expr],
-                no_advancing: false,
-                span: Span::new(0, 0, cobol_common::FileId(0)),
-            })
-        }
+        Statement::StopLiteral(expr) => Some(HirStatement::StopLiteral {
+            operand: lower_expr(expr),
+            span: Span::new(0, 0, cobol_common::FileId(0)),
+        }),
         Statement::Alter(alter) => Some(HirStatement::Alter {
             pairs: alter
                 .pairs
@@ -3821,6 +3821,27 @@ fn extract_file_organizations(program: &CobolProgram) -> HashMap<SmolStr, u32> {
         .collect()
 }
 
+fn extract_file_access_modes(program: &CobolProgram) -> HashMap<SmolStr, u32> {
+    use cobol_ast::AccessMode;
+    let Some(env) = &program.environment else {
+        return HashMap::new();
+    };
+    let Some(io) = &env.input_output else {
+        return HashMap::new();
+    };
+    io.file_controls
+        .iter()
+        .map(|fc| {
+            let access = match fc.access_mode {
+                Some(AccessMode::Random) => 1,
+                Some(AccessMode::Dynamic) => 2,
+                Some(AccessMode::Sequential) | None => 0,
+            };
+            (fc.file_name.clone(), access)
+        })
+        .collect()
+}
+
 /// Lower DECLARATIVES sections from the PROCEDURE DIVISION.
 ///
 /// Returns `(declaratives, extra_paragraphs)` where `extra_paragraphs` are the
@@ -4411,6 +4432,9 @@ fn fix_subscripts_in_statement(stmt: &mut HirStatement, occurs_dims: &HashMap<Sm
             for v in operands.iter_mut() {
                 fix_subscripts_in_expr(v, occurs_dims);
             }
+        }
+        HirStatement::StopLiteral { operand, .. } => {
+            fix_subscripts_in_expr(operand, occurs_dims);
         }
         HirStatement::Accept { target, .. } => {
             fix_subscripts_in_expr(target, occurs_dims);

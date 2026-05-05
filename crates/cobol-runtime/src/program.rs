@@ -26,6 +26,25 @@ pub extern "C" fn cobol_stop_run() -> ! {
     std::process::exit(0);
 }
 
+/// STOP literal -- wait for an operator continuation request.
+///
+/// Interactive COBOL systems suspend the run after displaying the literal.
+/// For unattended runs, EOF on stdin is treated as an operator kill.
+#[no_mangle]
+pub extern "C" fn cobol_stop_literal() {
+    use std::io::{BufRead, Write};
+
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    match std::io::stdin().lock().read_line(&mut line) {
+        Ok(0) | Err(_) => {
+            crate::file_io::close_all_files();
+            std::process::exit(0);
+        }
+        Ok(_) => {}
+    }
+}
+
 /// GOBACK -- return to the caller if in a sub-program, or exit if in main.
 ///
 /// If a jmp_buf has been pushed (by cobol_call_enter), longjmp back to it.

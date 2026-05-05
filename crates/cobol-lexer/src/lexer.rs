@@ -1535,7 +1535,7 @@ mod tests {
             "183100     \"AH YES AH YES W.C                                           NC2164.2\n",
             "183200-    \"            BE ALL BAD.\"                                    NC2164.2\n",
         );
-        let tokens = lex(&src);
+        let tokens = lex(src);
 
         let str_tok = tokens
             .iter()

@@ -384,11 +384,16 @@ impl CommAreaOutput {
         if self.ptr.is_null() || self.area_len == 0 {
             return;
         }
-        unsafe {
-            std::ptr::write_bytes(self.ptr, b'0', self.area_len as usize);
-        }
         if self.item_len == 0 || self.stride == 0 || self.count == 0 {
             return;
+        }
+        for idx in 0..self.count as usize {
+            let offset = idx * self.stride as usize;
+            if offset + self.item_len as usize <= self.area_len as usize {
+                unsafe {
+                    std::ptr::write_bytes(self.ptr.add(offset), b'0', self.item_len as usize);
+                }
+            }
         }
         if let Some(index) = invalid_destination {
             if index < self.count as usize {
@@ -1240,6 +1245,46 @@ mod tests {
             };
             assert_eq!(rc, 20);
             assert_eq!(&error_key, b"01");
+        });
+    }
+
+    #[test]
+    fn test_comm_send_marks_invalid_destination_with_padded_error_key_rows() {
+        with_comm_test(|| {
+            let mut script = tempfile::NamedTempFile::new().unwrap();
+            writeln!(script, "enable CM-OUTQUE-1").unwrap();
+            writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE").unwrap();
+            writeln!(script, "config CM-OUTQUE-1 dest OUTQUEUE-2").unwrap();
+            unsafe {
+                std::env::set_var("COBOL_COMM_SCRIPT", script.path());
+            }
+
+            let mut error_key = [[b'0', 0], [b'0', 0]];
+            let rc = unsafe {
+                cobol_comm_send(
+                    b"CM_OUTQUE_1".as_ptr(),
+                    11,
+                    b"PING".as_ptr(),
+                    4,
+                    4,
+                    0,
+                    0,
+                    0,
+                    b"OUTQUEUE\0    GARBAGE\0    ".as_ptr(),
+                    12,
+                    13,
+                    2,
+                    2,
+                    26,
+                    error_key.as_mut_ptr().cast(),
+                    1,
+                    2,
+                    2,
+                    4,
+                )
+            };
+            assert_eq!(rc, 20);
+            assert_eq!(error_key, [[b'0', 0], [b'1', 0]]);
         });
     }
 

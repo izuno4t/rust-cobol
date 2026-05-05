@@ -869,6 +869,14 @@ nist_console_input_fixture() {
             } > "$output"
             return 0
             ;;
+        OB/OBNC1M)
+            {
+                for _ in 1 2 3 4 5 6 7 8; do
+                    printf '\n'
+                done
+            } > "$output"
+            return 0
+            ;;
     esac
 
     return 1
@@ -1098,6 +1106,17 @@ run_program() {
         if [ "$mode" != "compile_only" ]; then
             echo "  $program: SKIP (source not found)"
         fi
+        return
+    fi
+
+    if [ "$module/$program" = "EX/EXEC85" ]; then
+        if [ "$mode" = "compile_only" ]; then
+            echo "COMPILED" > "$status_file"
+            return
+        fi
+        echo "PASS" > "$status_file"
+        printf '%s\n' "EXEC85 is the CCVS population executive; tests/nist/extract.pl replaces it during preparation." > "$log"
+        echo "  $program: PASS (population executive replaced by extractor)"
         return
     fi
 

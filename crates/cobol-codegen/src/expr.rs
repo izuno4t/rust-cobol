@@ -1145,10 +1145,8 @@ pub(crate) fn grp_display_size(c_name: &str, data_items: &[HirDataItem]) -> Opti
                 continue;
             }
             let mc = sanitize_name(&m.name);
-            if mc == c_name {
-                if matches!(m.data_type, HirType::Numeric { .. }) {
-                    return Some(data_item_storage_size(m));
-                }
+            if mc == c_name && matches!(m.data_type, HirType::Numeric { .. }) {
+                return Some(data_item_storage_size(m));
             }
             if let HirType::Group {
                 members: sub_members,
@@ -2454,6 +2452,7 @@ fn corresponding_groups_have_common_children(
 
 /// Emit ADD/SUBTRACT CORRESPONDING: for each matching numeric member,
 /// generate target.member = target.member op source.member.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_corresponding_arith(
     out: &mut String,
     from: &HirDataName,
@@ -2473,6 +2472,7 @@ pub(crate) fn emit_corresponding_arith(
     emit_corresponding_arith_members(out, from, to, op, rounded, has_size_error, data_items, pad);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_corresponding_arith_members(
     out: &mut String,
     from: &HirDataName,
@@ -3070,18 +3070,19 @@ fn decimal_temp_init_from_expr(
         return format!("CobolDecimal {temp_name} = {c_expr};");
     }
 
+    if expr_requires_double_precision(expr, data_items) {
+        let c_op = emit_expr_as_double(expr);
+        return format!(
+            "CobolDecimal {temp_name} = {{ .value = 0, .scale = 9, .size = 18, .is_signed = 1 }}; cobol_decimal_from_double({c_op}, &{temp_name});"
+        );
+    }
+
     match expr {
         HirExpr::Literal(HirLiteral::String(s)) => {
             let escaped = escape_c_string(s);
             let len = s.len();
             format!(
                 "CobolDecimal {temp_name}; cobol_decimal_from_string((const uint8_t*)\"{escaped}\", {len}, &{temp_name});"
-            )
-        }
-        _ if expr_contains_decimal(expr) => {
-            let c_op = emit_expr_as_double(expr);
-            format!(
-                "CobolDecimal {temp_name} = {{ .value = 0, .scale = 9, .size = 18, .is_signed = 1 }}; cobol_decimal_from_double({c_op}, &{temp_name});"
             )
         }
         _ => {
@@ -3201,7 +3202,7 @@ pub(crate) fn emit_decimal_giving_add(
                     i32::from(*is_signed)
                 );
                 if has_size_error {
-                    let max_val = 10_i64.pow(*size as u32) - 1;
+                    let max_val = 10_i64.pow(*size) - 1;
                     out.push_str(&format!(
                         "if (llabs(_sum.value) > {max_val}) {{ _size_error = 1; }} else {{ {store}}} "
                     ));
@@ -3220,7 +3221,7 @@ pub(crate) fn emit_decimal_giving_add(
                     "{c_target} = _sum; {c_target}.size = {size}; {c_target}.scale = {decimal_places}; {c_target}.is_signed = 1; "
                 );
                 if has_size_error {
-                    let max_val = 10_i64.pow(*size as u32) - 1;
+                    let max_val = 10_i64.pow(*size) - 1;
                     out.push_str(&format!(
                         "if (llabs(_sum.value) > {max_val}) {{ _size_error = 1; }} else {{ {store}}} "
                     ));
@@ -3476,7 +3477,7 @@ fn emit_initialize_replacing(
             };
             let (value, scale) = match &entry.value {
                 HirExpr::Literal(HirLiteral::Decimal(d)) => {
-                    let (scaled, scale) = parse_decimal_literal(&d);
+                    let (scaled, scale) = parse_decimal_literal(d);
                     (scaled.to_string(), scale.to_string())
                 }
                 _ => (
@@ -4537,7 +4538,7 @@ pub(crate) fn emit_string_source_delimiter(
 pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -> bool {
     match expr {
         HirExpr::DataRef(data_ref) => {
-            if let Some(item) = find_data_item(&data_ref.name, data_items) {
+            if let Some(item) = find_data_item_by_name(&data_ref.name, data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
@@ -4547,7 +4548,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
             }
         }
         HirExpr::Variable(name) => {
-            if let Some(item) = find_data_item(name, data_items) {
+            if let Some(item) = find_data_item_by_name(name, data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
@@ -4557,7 +4558,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
             }
         }
         HirExpr::Subscript { variable, .. } => {
-            if let Some(item) = find_data_item(variable, data_items) {
+            if let Some(item) = find_data_item_by_name(variable, data_items) {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. }
@@ -4572,7 +4573,7 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
         | HirExpr::Literal(HirLiteral::LowValue)
         | HirExpr::Literal(HirLiteral::Quote) => true,
         HirExpr::ReferenceModification { variable, .. } => {
-            if let Some(item) = find_data_item(variable, data_items) {
+            if let Some(item) = find_data_item_by_name(variable, data_items) {
                 matches!(item.data_type, HirType::Alphanumeric { .. })
             } else {
                 false
@@ -4591,49 +4592,50 @@ pub(crate) fn is_alphanumeric_expr(expr: &HirExpr, data_items: &[HirDataItem]) -
 
 pub(crate) fn alphanumeric_expr_len(expr: &HirExpr, data_items: &[HirDataItem]) -> Option<u32> {
     match expr {
-        HirExpr::DataRef(data_ref) => find_data_item(&data_ref.name, data_items).and_then(|item| {
-            matches!(
-                item.data_type,
-                HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
-            )
-            .then(|| {
-                let c_name = data_name_to_c_name(&data_ref.name);
-                let full_size = find_data_item_size(&c_name, data_items);
-                if let Some(refmod) = &data_ref.refmod {
-                    if let Some(length) = &refmod.length {
-                        if let HirExpr::Literal(HirLiteral::Integer(n)) = length.as_ref() {
-                            (*n).max(0) as u32
-                        } else {
-                            full_size
-                        }
-                    } else if let HirExpr::Literal(HirLiteral::Integer(start)) =
-                        refmod.start.as_ref()
-                    {
-                        full_size.saturating_sub((*start).saturating_sub(1) as u32)
-                    } else {
-                        full_size
-                    }
-                } else {
-                    find_data_item_size(&sanitize_name(&item.name), data_items)
-                }
-            })
-        }),
-        HirExpr::Variable(name) => find_data_item(name, data_items).and_then(|item| {
-            matches!(
-                item.data_type,
-                HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
-            )
-            .then(|| find_data_item_size(&sanitize_name(&item.name), data_items))
-        }),
-        HirExpr::Subscript { variable, .. } => {
-            find_data_item(variable, data_items).and_then(|item| {
+        HirExpr::DataRef(data_ref) => {
+            find_data_item_by_name(&data_ref.name, data_items).and_then(|item| {
                 matches!(
                     item.data_type,
                     HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
                 )
-                .then(|| find_data_item_size(&sanitize_name(&item.name), data_items))
+                .then(|| {
+                    let c_name = data_name_to_c_name(&data_ref.name);
+                    let full_size = find_data_item_size(&c_name, data_items);
+                    if let Some(refmod) = &data_ref.refmod {
+                        if let Some(length) = &refmod.length {
+                            if let HirExpr::Literal(HirLiteral::Integer(n)) = length.as_ref() {
+                                (*n).max(0) as u32
+                            } else {
+                                full_size
+                            }
+                        } else if let HirExpr::Literal(HirLiteral::Integer(start)) =
+                            refmod.start.as_ref()
+                        {
+                            full_size.saturating_sub((*start).saturating_sub(1) as u32)
+                        } else {
+                            full_size
+                        }
+                    } else {
+                        find_data_item_size(&c_name, data_items)
+                    }
+                })
             })
         }
+        HirExpr::Variable(name) => find_data_item_by_name(name, data_items).and_then(|item| {
+            matches!(
+                item.data_type,
+                HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
+            )
+            .then(|| find_data_item_size(&data_name_to_c_name(name), data_items))
+        }),
+        HirExpr::Subscript { variable, .. } => find_data_item_by_name(variable, data_items)
+            .and_then(|item| {
+                matches!(
+                    item.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. } | HirType::National { .. }
+                )
+                .then(|| find_data_item_size(&data_name_to_c_name(variable), data_items))
+            }),
         HirExpr::ReferenceModification {
             length, variable, ..
         } => {

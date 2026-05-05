@@ -18,9 +18,7 @@ impl Parser {
         let number = self.current_text().parse::<u32>().ok();
         self.advance();
 
-        let Some(number) = number else {
-            return None;
-        };
+        let number = number?;
 
         if self.object_segment_limit.is_some_and(|limit| limit >= 20)
             || (self.object_segment_limit.is_none() && number == 1)
@@ -2182,21 +2180,15 @@ impl Parser {
 
     /// Parse a paragraph name for ALTER: accepts identifiers, keywords, or
     /// integer literals (e.g. `ALTER 02 TO PROCEED TO 77`).
-    /// Also consumes optional IN/OF qualification (e.g. `PARA-5A IN SECTION-1`).
+    /// Optional IN/OF section qualification must be preserved because ALTER
+    /// targets duplicate paragraph names by their qualified procedure name.
     fn parse_alter_proc_name(&mut self) -> Result<SmolStr, ()> {
-        let name = if self.check(TokenKind::IntegerLiteral) {
-            self.advance().text
-        } else {
-            self.expect_identifier()?
-        };
-        // Consume optional IN/OF qualification (ignored since ALTER is a no-op)
+        let mut name = self.expect_procedure_name()?;
         if self.check(TokenKind::In) || self.check(TokenKind::Of) {
-            self.advance(); // IN or OF
-            if self.check(TokenKind::IntegerLiteral)
-                || self.check(TokenKind::Identifier)
-                || self.current().kind.is_keyword()
-            {
-                self.advance();
+            self.advance();
+            if self.check_procedure_name_token() {
+                let qualifier = self.expect_procedure_name()?;
+                name = format!("{qualifier}--{name}").into();
             }
         }
         Ok(name)

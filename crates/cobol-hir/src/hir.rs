@@ -136,6 +136,8 @@ pub struct HirProgram {
     pub interfaces: Vec<HirInterface>,
     /// File organization mapping: file_name → org value for runtime.
     pub file_organizations: std::collections::HashMap<SmolStr, u32>,
+    /// File access mode mapping: file_name → access mode for runtime.
+    pub file_access_modes: std::collections::HashMap<SmolStr, u32>,
     /// File assignment mapping: file_name → ASSIGN TO path/name.
     pub file_assignments: std::collections::HashMap<SmolStr, SmolStr>,
     /// SELECT OPTIONAL mapping: files declared with OPTIONAL.
@@ -561,6 +563,10 @@ pub enum HirStatement {
     Display {
         operands: Vec<HirExpr>,
         no_advancing: bool,
+        span: Span,
+    },
+    StopLiteral {
+        operand: HirExpr,
         span: Span,
     },
     Move {
@@ -1364,6 +1370,9 @@ fn write_stmt(
                 write!(f, " WITH NO ADVANCING")?;
             }
             writeln!(f)
+        }
+        HirStatement::StopLiteral { operand, .. } => {
+            writeln!(f, "{pad}STOP {}", format_expr(operand))
         }
         HirStatement::Enable {
             mode,

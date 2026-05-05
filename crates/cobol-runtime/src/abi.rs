@@ -42,6 +42,7 @@ pub fn emit_c_declarations(out: &mut String) {
     out.push_str("extern void cobol_display_space(void);\n");
     out.push_str("extern void cobol_display_flush(void);\n");
     out.push_str("extern void cobol_stop_run(void) __attribute__((noreturn));\n");
+    out.push_str("extern void cobol_stop_literal(void);\n");
     out.push_str("extern void cobol_goback(void);\n");
     out.push_str("extern void cobol_call_enter(uintptr_t jmp_buf_ptr);\n");
     out.push_str("extern void cobol_call_leave(void);\n");

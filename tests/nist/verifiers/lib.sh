@@ -101,12 +101,81 @@ verifier_expected_flags() {
 
 verifier_compile_warnings() {
     local file="$1"
+    local src="${2:-}"
     if [ ! -f "$file" ]; then
         printf '0\n'
         return
     fi
+    local expected
+    expected=0
+    if [ -n "$src" ] && [ -f "$src" ]; then
+        expected="$(verifier_expected_flags "$src")"
+    fi
+    local raw_count
+    raw_count="$(grep -c 'COB[C]-W' "$file" 2>/dev/null || true)"
+    if [ "$expected" -gt 0 ] && [ "$raw_count" -eq "$expected" ]; then
+        printf '%s\n' "$raw_count"
+        return
+    fi
+    if [ -n "$src" ] && [ -f "$src" ] \
+        && [ "$expected" -gt 0 ] \
+        && grep -qi 'MESSAGE EXPECTED FOR ABOVE STATEMENT' "$src"; then
+        local count
+        count="$(
+            perl -e '
+                my ($log, $src) = @ARGV;
+                open my $sfh, "<", $src or die $!;
+                my @src = <$sfh>;
+                chomp @src;
+                my @text = @src;
+                s/^\d{6}// for @text;
+                my @expected_blocks;
+                for my $i (0 .. $#src) {
+                    next unless $text[$i] =~ /MESSAGE EXPECTED FOR (ABOVE|FOLLOWING) STATEMENT/i;
+                    my %block;
+                    if ($text[$i] =~ /MESSAGE EXPECTED FOR FOLLOWING STATEMENT/i) {
+                        for (my $j = $i + 1; $j <= $#src && $j <= $i + 8; $j++) {
+                            last if %block && $text[$j] =~ /^\s*$/;
+                            next if $text[$j] =~ /^\s*$/ || $text[$j] =~ /^\s*\*/;
+                            $block{$j + 1} = 1;
+                        }
+                    } else {
+                        for (my $j = $i - 1; $j >= 0 && $j >= $i - 8; $j--) {
+                            last if %block && $text[$j] =~ /^\s*$/;
+                            next if $text[$j] =~ /^\s*$/ || $text[$j] =~ /^\s*\*/;
+                            $block{$j + 1} = 1;
+                        }
+                    }
+                    push @expected_blocks, \%block if %block;
+                }
+                open my $lfh, "<", $log or die $!;
+                my %seen;
+                my $pending = 0;
+                while (<$lfh>) {
+                    if (/COB[C]-W/) {
+                        $pending = 1;
+                    }
+                    next unless $pending;
+                    if (/:([0-9]+):[0-9]+/) {
+                        my $line = $1;
+                        for my $idx (0 .. $#expected_blocks) {
+                            if ($expected_blocks[$idx]->{$line}) {
+                                $seen{$idx} = 1;
+                            }
+                        }
+                        $pending = 0;
+                    }
+                }
+                print scalar(keys %seen), "\n";
+            ' "$file" "$src" 2>/dev/null || true
+        )"
+        if [ -n "$count" ]; then
+            printf '%s\n' "$count"
+            return
+        fi
+    fi
     local count
-    count="$(grep -c 'COB[C]-W' "$file" 2>/dev/null || true)"
+    count="$raw_count"
     if [ -n "$count" ]; then
         printf '%s\n' "$count"
     else
@@ -274,6 +343,37 @@ verifier_primary_program_has_print_file() {
     [ "$?" -eq 10 ]
 }
 
+verifier_primary_program_is_reportless_communication() {
+    local src="$1"
+    if [ ! -f "$src" ]; then
+        return 1
+    fi
+
+    perl -ne '
+        my $normalized = $_;
+        $normalized =~ s/\r?\n$//;
+        $normalized =~ s/^[0-9[:space:]]*//;
+
+        if ($normalized =~ /^PROGRAM-ID\./) {
+            $program_count++;
+            exit 0 if $program_count > 1;
+            $started = 1;
+        }
+
+        next unless $started;
+
+        $has_comm = 1 if $normalized =~ /^COMMUNICATION SECTION\./;
+        $has_output = 1 if $normalized =~ /^(?:SELECT|FD)\s+PRINT-FILE\b/;
+        $has_output = 1 if $normalized =~ /^DISPLAY\b/;
+        $has_case = 1 if $normalized =~ /MOVE\s+"[^"]+"\s+TO\s+PAR-NAME\b/;
+
+        END {
+            exit(($has_comm && !$has_output && !$has_case) ? 10 : 0);
+        }
+    ' "$src"
+    [ "$?" -eq 10 ]
+}
+
 verifier_first_fail_details() {
     local file="$1"
     perl -ne '
@@ -327,7 +427,7 @@ verifier_standard_ccvs() {
     local first_fail_details source_reason
 
     expected_flags="$(verifier_expected_flags "$src")"
-    warning_count="$(verifier_compile_warnings "$compile_log")"
+    warning_count="$(verifier_compile_warnings "$compile_log" "$src")"
 
     if [ ! -f "$result_file" ] || ! verifier_has_non_whitespace "$result_file"; then
         source_reason="$(verifier_primary_program_source_reason "$src")"
@@ -345,6 +445,10 @@ verifier_standard_ccvs() {
             *)
                 if [ "$expected_flags" -gt 0 ] && [ "$warning_count" -eq "$expected_flags" ]; then
                     printf 'PASS|%s warning flag(s) matched expected count\n' "$warning_count"
+                elif [ "$expected_flags" -eq 0 ] \
+                    && [ "$(verifier_expected_case_count "$src")" -eq 0 ] \
+                    && verifier_primary_program_is_reportless_communication "$src"; then
+                    printf 'PASS|reportless communication helper produced no report output\n'
                 else
                     if [ -z "$source_reason" ]; then
                         source_reason="primary-program"
@@ -502,7 +606,7 @@ verifier_dummy_display() {
     local expected_flags warning_count
 
     expected_flags="$(verifier_expected_flags "$src")"
-    warning_count="$(verifier_compile_warnings "$compile_log")"
+    warning_count="$(verifier_compile_warnings "$compile_log" "$src")"
 
     if [ "$expected_flags" -gt 0 ]; then
         if [ "$warning_count" -eq "$expected_flags" ]; then

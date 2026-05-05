@@ -34,7 +34,7 @@ pub(crate) struct SubscriptPathInfo {
 #[derive(Debug, Clone)]
 pub(crate) struct AlterableParagraphInfo {
     pub(crate) dispatch_var: String,
-    pub(crate) default_target: HirTransferTarget,
+    pub(crate) default_target: Option<HirTransferTarget>,
     pub(crate) targets: Vec<HirTransferTarget>,
 }
 
@@ -47,6 +47,7 @@ pub(crate) struct CodegenContext {
     file_record_map: FileRecordMap,
     same_record_peers: HashMap<String, Vec<String>>,
     file_organizations: HashMap<String, u32>,
+    file_access_modes: HashMap<String, u32>,
     file_assignments: HashMap<String, String>,
     file_optionals: HashSet<String>,
     file_relative_keys: HashMap<String, String>,
@@ -95,6 +96,7 @@ impl CodegenContext {
             &program.data_items,
             &program.file_records,
             &program.file_organizations,
+            &program.file_access_modes,
             &program.file_assignments,
             &program.file_optionals,
             &program.file_relative_keys,
@@ -149,6 +151,14 @@ impl CodegenContext {
                 .file_organizations
                 .iter()
                 .map(|(f, org)| (sanitize_name(f), *org)),
+        );
+
+        let mut file_access_modes = parent.file_access_modes.clone();
+        file_access_modes.extend(
+            program
+                .file_access_modes
+                .iter()
+                .map(|(f, access)| (sanitize_name(f), *access)),
         );
 
         let mut file_assignments = parent.file_assignments.clone();
@@ -245,6 +255,7 @@ impl CodegenContext {
             file_record_map,
             same_record_peers,
             file_organizations,
+            file_access_modes,
             file_assignments,
             file_optionals,
             file_relative_keys,
@@ -292,10 +303,12 @@ impl CodegenContext {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         data_items: &[HirDataItem],
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         file_organizations_map: &HashMap<smol_str::SmolStr, u32>,
+        file_access_modes_map: &HashMap<smol_str::SmolStr, u32>,
         file_assignments_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         file_optionals_set: &HashSet<smol_str::SmolStr>,
         file_relative_keys_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
@@ -317,6 +330,10 @@ impl CodegenContext {
             file_organizations: file_organizations_map
                 .iter()
                 .map(|(f, org)| (sanitize_name(f), *org))
+                .collect(),
+            file_access_modes: file_access_modes_map
+                .iter()
+                .map(|(f, access)| (sanitize_name(f), *access))
                 .collect(),
             file_assignments: file_assignments_map
                 .iter()
@@ -443,6 +460,14 @@ impl CodegenContext {
             .unwrap_or_else(|| sanitized_file_name.to_string())
     }
 
+    pub(crate) fn file_for_record(&self, sanitized_record_name: &str) -> Option<String> {
+        self.file_record_map
+            .iter()
+            .find_map(|(file_name, record_name)| {
+                (record_name == sanitized_record_name).then(|| file_name.clone())
+            })
+    }
+
     pub(crate) fn same_record_peers(&self, sanitized_file_name: &str) -> &[String] {
         self.same_record_peers
             .get(sanitized_file_name)
@@ -452,6 +477,10 @@ impl CodegenContext {
 
     pub(crate) fn file_organization(&self, sanitized_file_name: &str) -> Option<u32> {
         self.file_organizations.get(sanitized_file_name).copied()
+    }
+
+    pub(crate) fn file_access_mode(&self, sanitized_file_name: &str) -> Option<u32> {
+        self.file_access_modes.get(sanitized_file_name).copied()
     }
 
     pub(crate) fn file_assignment(&self, sanitized_file_name: &str) -> Option<&str> {
@@ -607,14 +636,14 @@ fn collect_alterable_paragraphs(
                 targets,
                 depending_on: None,
                 ..
-            } if !targets.is_empty() => Some(targets[0].clone()),
+            } => Some(targets.first().cloned()),
             _ => None,
         }) else {
             continue;
         };
 
         let dispatch_var = format!("_alter_target_{}", sanitize_name(&paragraph.name));
-        let mut targets = vec![default_target.clone()];
+        let mut targets = default_target.iter().cloned().collect::<Vec<_>>();
         for target in alter_targets {
             if !targets.iter().any(|existing| existing == &target) {
                 targets.push(target);

@@ -647,6 +647,24 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_alphanumeric_decimal_value_literal_preserves_leading_zeroes() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-ALPHA-DECIMAL-VALUE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-PASSWORD PIC X(10) VALUE
+    0001.
+PROCEDURE DIVISION.
+    DISPLAY WS-PASSWORD.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.starts_with("0001"), "stdout: {stdout:?}");
+}
+
+#[test]
 fn test_nested_if() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3890,6 +3908,7 @@ fn test_c2_move_corresponding() {
         interfaces: Vec::new(),
         using_params: Vec::new(),
         file_organizations: std::collections::HashMap::new(),
+        file_access_modes: std::collections::HashMap::new(),
         file_assignments: std::collections::HashMap::new(),
         file_optionals: std::collections::HashSet::new(),
         file_relative_keys: std::collections::HashMap::new(),
@@ -4047,6 +4066,7 @@ fn test_c2_add_corresponding() {
         interfaces: Vec::new(),
         using_params: Vec::new(),
         file_organizations: std::collections::HashMap::new(),
+        file_access_modes: std::collections::HashMap::new(),
         file_assignments: std::collections::HashMap::new(),
         file_optionals: std::collections::HashSet::new(),
         file_relative_keys: std::collections::HashMap::new(),
@@ -6105,6 +6125,84 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_88_level_multiple_alphanumeric_values() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. LEVEL88-MULTI-ALNUM.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SIGN PIC X VALUE '+'.
+   88 VALID-SIGN VALUE '-', '+', '0'.
+PROCEDURE DIVISION.
+    IF VALID-SIGN
+        DISPLAY 'OK'
+    ELSE
+        DISPLAY 'BAD'
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_nist_if107a_current_date_88_ranges() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IF107A-CURRENT-DATE-RANGES.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 TEMP1 PIC X(21).
+01 WS-DATE.
+   02 WS-YEAR PIC 9999.
+      88 CON-YEAR VALUE 1990 THRU 9999.
+   02 WS-MONTH PIC 99.
+      88 CON-MONTH VALUE 01 THRU 12.
+   02 WS-DAY PIC 99.
+      88 CON-DAY VALUE 01 THRU 31.
+   02 WS-HOUR PIC 99.
+      88 CON-HOUR VALUE 00 THRU 23.
+   02 WS-MIN PIC 99.
+      88 CON-MIN VALUE 00 THRU 59.
+   02 WS-SECOND PIC 99.
+      88 CON-SEC VALUE 00 THRU 59.
+   02 WS-HUNDSEC PIC 99.
+      88 CON-HUNDSEC VALUE 00 THRU 99.
+   02 WS-GREENW PIC X.
+      88 CON-GREENW VALUE '-', '+', '0'.
+   02 WS-OFFSET PIC 99.
+      88 CON-OFFSET VALUE 00 THRU 13.
+   02 WS-OFFSET2 PIC 99.
+      88 CON-OFFSET2 VALUE 00 THRU 59.
+PROCEDURE DIVISION.
+    MOVE FUNCTION CURRENT-DATE TO TEMP1.
+    MOVE TEMP1 TO WS-DATE.
+    IF CON-YEAR AND CON-MONTH AND CON-DAY AND CON-HOUR
+       AND CON-MIN AND CON-SEC AND CON-HUNDSEC AND CON-GREENW
+       AND CON-OFFSET AND CON-OFFSET2
+        DISPLAY 'ALL-OK'
+    ELSE
+        DISPLAY TEMP1
+        IF NOT CON-YEAR DISPLAY 'BAD-YEAR' END-IF
+        IF NOT CON-MONTH DISPLAY 'BAD-MONTH' END-IF
+        IF NOT CON-DAY DISPLAY 'BAD-DAY' END-IF
+        IF NOT CON-HOUR DISPLAY 'BAD-HOUR' END-IF
+        IF NOT CON-MIN DISPLAY 'BAD-MIN' END-IF
+        IF NOT CON-SEC DISPLAY 'BAD-SEC' END-IF
+        IF NOT CON-HUNDSEC DISPLAY 'BAD-HUNDSEC' END-IF
+        IF NOT CON-GREENW DISPLAY 'BAD-GREENW' END-IF
+        IF NOT CON-OFFSET DISPLAY 'BAD-OFFSET' END-IF
+        IF NOT CON-OFFSET2 DISPLAY 'BAD-OFFSET2' END-IF
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "ALL-OK", "stdout={stdout:?}");
+}
+
+#[test]
 fn test_native_initialize_statement() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -6906,6 +7004,30 @@ PROCEDURE DIVISION.
         stdout.trim(),
         "OK",
         "ACOS(0) should fall between 1 and 2 radians, got '{}'",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn test_nist_if101a_evaluate_acos_zero_decimal_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IF101A-EVAL.
+PROCEDURE DIVISION.
+    EVALUATE FUNCTION ACOS(0)
+    WHEN 1.57076 THRU 1.57082
+        DISPLAY 'OK'
+    WHEN OTHER
+        DISPLAY 'BAD'
+    END-EVALUATE.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run(src);
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout.trim(),
+        "OK",
+        "ACOS(0) should match the decimal range used by IF101A, got '{}'",
         stdout.trim()
     );
 }
@@ -7789,7 +7911,9 @@ PROCEDURE DIVISION.
     let hir = parse_and_lower(src);
     let c_code = generate_c(&hir);
     assert!(
-        c_code.contains("cobol_file_start(FILE_ID_IX_FILE, (const uint8_t*)IX_KEY, 5, 0, 0)"),
+        c_code.contains(
+            "cobol_file_start(FILE_ID_IX_FILE, (const uint8_t*)IX_RECORD__IX_KEY, 5, 0, 0)"
+        ),
         "START without KEY should use the indexed file's record key, got:\n{}",
         c_code
     );
@@ -8763,6 +8887,37 @@ ALTERED-TARGET.
 }
 
 #[test]
+fn test_native_alter_qualified_target_redirects_duplicate_paragraph() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-ALTER-QUALIFIED.
+PROCEDURE DIVISION.
+QUAL-SECTION-1 SECTION.
+START-PARA.
+    ALTER PARA-5A IN QUAL-SECTION-1 TO PROCEED TO PARA-5C OF QUAL-SECTION-2.
+PARA-5A.
+    GO TO PARA-5C OF QUAL-SECTION-1.
+PARA-5C.
+    DISPLAY \"WRONG\".
+    STOP RUN.
+QUAL-SECTION-2 SECTION.
+PARA-5C.
+    DISPLAY \"RIGHT\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "RIGHT"),
+        "stdout should include the qualified altered target, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.lines().any(|line| line.trim() == "WRONG"),
+        "stdout should not include the unqualified duplicate target, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn test_native_alter_multiple_pairs_redirect_each_go_to_target() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -9069,6 +9224,7 @@ fn test_typedef_codegen() {
             }],
             interfaces: vec![],
             file_organizations: std::collections::HashMap::new(),
+            file_access_modes: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
             file_optionals: std::collections::HashSet::new(),
             file_relative_keys: std::collections::HashMap::new(),
@@ -9805,4 +9961,46 @@ PROCEDURE DIVISION.
         "line 4 should be 34, got: {}",
         lines[3]
     );
+}
+
+#[test]
+fn test_relative_random_read_without_key_uses_relative_key() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RLRAND.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT RL-FD ASSIGN TO \"rl.dat\"
+        ORGANIZATION IS RELATIVE
+        ACCESS MODE IS RANDOM
+        RELATIVE RL-KEY.
+DATA DIVISION.
+FILE SECTION.
+FD RL-FD.
+01 RL-REC PIC X(10).
+WORKING-STORAGE SECTION.
+01 RL-KEY PIC 9(4).
+PROCEDURE DIVISION.
+    OPEN I-O RL-FD.
+    READ RL-FD RECORD.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    assert_eq!(hir.file_access_modes.get("RL-FD").copied(), Some(1));
+    assert_eq!(hir.file_organizations.get("RL-FD").copied(), Some(2));
+    assert_eq!(
+        hir.file_relative_keys.get("RL-FD").map(|s| s.as_str()),
+        Some("RL-KEY")
+    );
+
+    let HirStatement::Read { key, is_next, .. } = &hir.body[1] else {
+        panic!("Expected READ statement");
+    };
+    assert!(!is_next);
+    assert_eq!(key.as_deref(), Some("RL-KEY"));
+
+    let c_code = generate_c(&hir);
+    assert!(c_code.contains("cobol_file_read_relative(FILE_ID_RL_FD"));
+    assert!(!c_code.contains("cobol_file_read_next(FILE_ID_RL_FD"));
 }

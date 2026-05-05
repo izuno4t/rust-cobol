@@ -880,7 +880,7 @@ fn format_floating_numeric_edited(
         .iter()
         .filter(|&&c| c == '9' || c == 'Z' || c == '*')
         .count();
-    let floating_frac_digits = frac_pic.iter().any(|&c| c == floating_symbol);
+    let floating_frac_digits = frac_pic.contains(&floating_symbol);
     let mandatory_frac_digits = frac_pic.iter().any(|&c| c == '9' || c == 'Z' || c == '*');
     let all_zero = int_val == 0 && frac_str.chars().all(|ch| ch == '0');
     if all_zero && mandatory_int_digits == 0 && !mandatory_frac_digits {
@@ -981,7 +981,7 @@ fn floating_integer_text(value: u64, mandatory_digits: usize, grouped: bool) -> 
 fn grouped_digits(digits: &str) -> String {
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (idx, ch) in digits.chars().enumerate() {
-        if idx > 0 && (digits.len() - idx) % 3 == 0 {
+        if idx > 0 && (digits.len() - idx).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);

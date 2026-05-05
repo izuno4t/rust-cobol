@@ -140,12 +140,7 @@ impl SourceReader {
             // If the indicator is not a valid COBOL fixed-format indicator,
             // treat the line as a comment. This handles trailing non-COBOL data
             // appended after the program (e.g., NIST CCVS test character sets).
-            let indicator = if let Some(indicator) = Self::normalize_fixed_indicator(raw_indicator)
-            {
-                indicator
-            } else {
-                '*'
-            };
+            let indicator = Self::normalize_fixed_indicator(raw_indicator).unwrap_or('*');
 
             // Content area: columns 8-72 (0-indexed: bytes 7..72)
             let content_start = 7.min(line_len);
@@ -202,12 +197,7 @@ impl SourceReader {
 
             // If the indicator is not a valid COBOL fixed-format indicator,
             // treat the line as a comment (same logic as parse_fixed).
-            let indicator = if let Some(indicator) = Self::normalize_fixed_indicator(raw_indicator)
-            {
-                indicator
-            } else {
-                '*'
-            };
+            let indicator = Self::normalize_fixed_indicator(raw_indicator).unwrap_or('*');
 
             // Variable format: content extends to end of line (no right margin)
             let content_start = 7.min(line_len);

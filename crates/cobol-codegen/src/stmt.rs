@@ -69,6 +69,11 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}cobol_display_flush();\n"));
             }
         }
+        HirStatement::StopLiteral { operand, .. } => {
+            emit_display_operand(out, operand, data_items, &pad);
+            out.push_str(&format!("{pad}cobol_display_newline();\n"));
+            out.push_str(&format!("{pad}cobol_stop_literal();\n"));
+        }
         HirStatement::Move { from, to, .. } => {
             emit_debug_numeric_identifier_source_event(out, &pad, from, data_items);
             for target in to {
@@ -1539,9 +1544,9 @@ pub(crate) fn emit_statement_with_ctx(
                         .and_then(|name| find_data_item_by_name(name, data_items))
                         .is_some_and(|i| needs_decimal(&i.data_type));
                     let display_target = display_numeric_c_expr_metadata(&c_target, data_items);
-                    if target_is_decimal && display_target.is_some() {
-                        let (target_size, target_scale, _) =
-                            display_target.expect("checked is_some");
+                    if let (true, Some((target_size, target_scale, _))) =
+                        (target_is_decimal, display_target)
+                    {
                         out.push_str(&format!("{pad}{{ "));
                         out.push_str(&decimal_init_statement("_mt", Some(target), data_items));
                         out.push_str(&decimal_init_statement("_mo", Some(operand), data_items));
@@ -1876,8 +1881,8 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&emit_decimal_divide_to_display_statement(
                             &pad,
                             &c_target,
-                            &init_a,
-                            &init_b,
+                            init_a,
+                            init_b,
                             rounded,
                             has_size_error,
                             max_val,
@@ -1891,8 +1896,8 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&emit_decimal_divide_to_target_statement(
                             &pad,
                             &c_target,
-                            &init_a,
-                            &init_b,
+                            init_a,
+                            init_b,
                             rounded,
                             has_size_error,
                             max_val,
@@ -1905,8 +1910,8 @@ pub(crate) fn emit_statement_with_ctx(
                             &pad,
                             &c_target,
                             item,
-                            &init_a,
-                            &init_b,
+                            init_a,
+                            init_b,
                             rounded,
                             has_size_error,
                             max_val,
@@ -1920,8 +1925,8 @@ pub(crate) fn emit_statement_with_ctx(
                             out,
                             &pad,
                             &c_target,
-                            &init_a,
-                            &init_b,
+                            init_a,
+                            init_b,
                             rounded,
                             has_size_error,
                             max_val,
@@ -2315,15 +2320,9 @@ pub(crate) fn emit_statement_with_ctx(
                     with_active_context(|ctx| ctx.is_nested_program_name(&prog_name));
                 out.push_str(&format!("{inner_pad}{{\n"));
                 if is_nested_call {
-                    if has_exception_handlers {
-                        out.push_str(&format!(
-                            "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }}\n"
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }}\n"
-                        ));
-                    }
+                    out.push_str(&format!(
+                        "{inner_pad}    jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}(); cobol_call_leave(); }}\n"
+                    ));
                 } else {
                     out.push_str(&format!(
                         "{inner_pad}    void (*_fp)(void) = (void(*)(void))dlsym(RTLD_DEFAULT, \"{prog_name}\");\n"
@@ -2378,15 +2377,9 @@ pub(crate) fn emit_statement_with_ctx(
                 let types_str = param_types.join(", ");
                 let values_str = param_values.join(", ");
                 if is_nested_call {
-                    if has_exception_handlers {
-                        out.push_str(&format!(
-                            "{call_pad}jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            "{call_pad}jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
-                        ));
-                    }
+                    out.push_str(&format!(
+                        "{call_pad}jmp_buf _jbuf; if (setjmp(_jbuf) == 0) {{ cobol_call_enter((uintptr_t)&_jbuf); {prog_name}({values_str}); cobol_call_leave(); }}\n"
+                    ));
                 } else {
                     out.push_str(&format!(
                         "{call_pad}void (*_fp)({types_str}) = (void(*)({types_str}))dlsym(RTLD_DEFAULT, \"{prog_name}\");\n"
@@ -2660,24 +2653,45 @@ pub(crate) fn emit_statement_with_ctx(
             if needs_read_conv {
                 out.push_str(&format!("{pad}    uint8_t _file_flat[{rec_len}];\n"));
             }
+            let effective_key = key.as_deref().or_else(|| {
+                if !*is_next
+                    && ctx.file_organization(&c_name) == Some(2)
+                    && ctx.file_access_mode(&c_name) != Some(0)
+                {
+                    ctx.relative_key_for_file(&c_name)
+                } else {
+                    None
+                }
+            });
             if *is_next {
                 out.push_str(&format!(
                     "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, {read_buffer}, {rec_len});\n"
                 ));
-            } else if let Some(key_name) = key {
-                let c_key = sanitize_name(key_name);
+            } else if let Some(key_name) = effective_key {
+                let resolved_key = resolve_record_key_item(key_name, &record_var, data_items);
+                let c_key = resolved_key
+                    .as_ref()
+                    .map(|(c_key, _, _)| c_key.clone())
+                    .unwrap_or_else(|| sanitize_name(key_name));
                 if ctx.file_organization(&c_name) == Some(2) {
                     let rel_expr = emit_numeric_expr_for_var(&c_key, data_items);
                     out.push_str(&format!(
                         "{pad}    uint32_t _fs = cobol_file_read_relative(FILE_ID_{c_name}, (uint64_t)({rel_expr}), {read_buffer}, {rec_len});\n"
                     ));
                 } else {
-                    let key_size = find_data_item_size(&c_key, data_items);
-                    let is_key_group = find_data_item(key_name.as_str(), data_items)
-                        .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
+                    let key_size = resolved_key
+                        .as_ref()
+                        .map(|(_, size, _)| *size)
+                        .unwrap_or_else(|| find_data_item_size(&c_key, data_items));
+                    let is_key_group = resolved_key
+                        .as_ref()
+                        .map(|(_, _, is_group)| *is_group)
+                        .unwrap_or_else(|| {
+                            find_data_item(key_name, data_items)
+                                .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
+                        });
                     let addr_prefix = if is_key_group { "&" } else { "" };
                     let key_offset = if ctx.file_organization(&c_name) == Some(3) {
-                        let record_var = resolve_file_record(&c_name);
                         find_field_offset_and_size(key_name, &record_var, data_items)
                             .map(|(offset, _)| offset)
                             .unwrap_or(u32::MAX)
@@ -2692,6 +2706,16 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!(
                     "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, {read_buffer}, {rec_len});\n"
                 ));
+            }
+            if (effective_key.is_none() || *is_next) && ctx.file_organization(&c_name) == Some(2) {
+                if let Some(relative_key) = ctx.relative_key_for_file(&c_name) {
+                    let c_relative_key = sanitize_name(relative_key);
+                    let key_digits = relative_key_integer_digits(&c_relative_key, data_items);
+                    let key_max = relative_key_max_value(key_digits);
+                    out.push_str(&format!(
+                        "{pad}    if ((_fs == 0 || _fs == 2) && cobol_file_current_record(FILE_ID_{c_name}) > {key_max}ULL) _fs = 14;\n"
+                    ));
+                }
             }
             emit_file_status_update(
                 out,
@@ -2807,7 +2831,7 @@ pub(crate) fn emit_statement_with_ctx(
                 }
                 out.push_str(&format!("{pad}    }}\n"));
             }
-            if *is_next && ctx.file_organization(&c_name) == Some(2) {
+            if (effective_key.is_none() || *is_next) && ctx.file_organization(&c_name) == Some(2) {
                 if let Some(relative_key) = ctx.relative_key_for_file(&c_name) {
                     out.push_str(&format!("{pad}    if ({read_success_guard}) {{\n"));
                     emit_store_int(
@@ -2898,7 +2922,8 @@ pub(crate) fn emit_statement_with_ctx(
         } => {
             let c_name = sanitize_name(record_name);
             let c_file = if file_name.is_empty() {
-                c_name.clone()
+                ctx.file_for_record(&c_name)
+                    .unwrap_or_else(|| c_name.clone())
             } else {
                 sanitize_name(file_name)
             };
@@ -2946,7 +2971,9 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 format!("(const uint8_t*)&{c_name}")
             };
-            let write_call = if ctx.file_organization(&c_file) == Some(2) {
+            let write_call = if ctx.file_organization(&c_file) == Some(2)
+                && ctx.file_access_mode(&c_file) != Some(0)
+            {
                 if let Some(relative_key) = ctx.relative_key_for_file(&c_file) {
                     let rel_expr = emit_numeric_expr_for_var(relative_key, data_items);
                     format!(
@@ -3113,7 +3140,8 @@ pub(crate) fn emit_statement_with_ctx(
         } => {
             let c_name = sanitize_name(record_name);
             let c_file = if file_name.is_empty() {
-                c_name.clone()
+                ctx.file_for_record(&c_name)
+                    .unwrap_or_else(|| c_name.clone())
             } else {
                 sanitize_name(file_name)
             };
@@ -3323,6 +3351,7 @@ pub(crate) fn emit_statement_with_ctx(
                         paragraphs,
                         &format!("{pad}        "),
                         in_body,
+                        current_paragraph,
                     );
                     out.push_str(&format!("{pad}        break;\n"));
                 }
@@ -3330,18 +3359,50 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}}}\n"));
             } else if let Some(target) = targets.first() {
                 if let Some(info) = alter_info {
-                    if info.default_target == *target {
-                        emit_alterable_goto_dispatch(out, &info, paragraphs, &pad, in_body);
+                    if info.default_target.as_ref() == Some(target) {
+                        emit_alterable_goto_dispatch(
+                            out,
+                            &info,
+                            paragraphs,
+                            &pad,
+                            in_body,
+                            current_paragraph,
+                        );
                     } else {
-                        emit_transfer_to_target(out, target, paragraphs, &pad, in_body);
+                        emit_transfer_to_target(
+                            out,
+                            target,
+                            paragraphs,
+                            &pad,
+                            in_body,
+                            current_paragraph,
+                        );
                     }
                 } else {
-                    emit_transfer_to_target(out, target, paragraphs, &pad, in_body);
+                    emit_transfer_to_target(
+                        out,
+                        target,
+                        paragraphs,
+                        &pad,
+                        in_body,
+                        current_paragraph,
+                    );
                 }
             } else {
-                // GO TO. (no target) - alterable GO TO without ALTER applied.
-                // Fall through to the next statement (no-op).
-                out.push_str(&format!("{pad}/* GO TO (no target - alterable) */\n"));
+                if let Some(info) = alter_info {
+                    emit_alterable_goto_dispatch(
+                        out,
+                        &info,
+                        paragraphs,
+                        &pad,
+                        in_body,
+                        current_paragraph,
+                    );
+                } else {
+                    // GO TO. (no target) - alterable GO TO without ALTER applied.
+                    // Fall through to the next statement (no-op).
+                    out.push_str(&format!("{pad}/* GO TO (no target - alterable) */\n"));
+                }
             }
         }
         HirStatement::Alter { pairs, .. } => {
@@ -4556,6 +4617,7 @@ pub(crate) fn emit_statement_with_ctx(
                         fs_map,
                         has_declaratives,
                         indent + 1,
+                        should_emit_debug_events(),
                     );
                     out.push_str(&format!("{pad}    _goto_target = 0;\n"));
                 }
@@ -4636,6 +4698,7 @@ pub(crate) fn emit_statement_with_ctx(
                         fs_map,
                         has_declaratives,
                         indent + 1,
+                        should_emit_debug_events(),
                     );
                     out.push_str(&format!("{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"));
                 }
@@ -4663,6 +4726,7 @@ pub(crate) fn emit_statement_with_ctx(
                         fs_map,
                         has_declaratives,
                         indent + 1,
+                        should_emit_debug_events(),
                     );
                 }
                 out.push_str(&format!(
@@ -4714,6 +4778,7 @@ pub(crate) fn emit_statement_with_ctx(
                         fs_map,
                         has_declaratives,
                         indent + 1,
+                        should_emit_debug_events(),
                     );
                 }
                 out.push_str(&format!("{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"));
@@ -5048,19 +5113,31 @@ pub(crate) fn emit_statement_with_ctx(
             let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
             out.push_str(&format!("{pad}{{\n"));
             let start_call = if let Some(key_name) = key {
-                let c_key = sanitize_name(key_name);
+                let record_var = resolve_file_record(&c_name);
+                let resolved_key = resolve_record_key_item(key_name, &record_var, data_items);
+                let c_key = resolved_key
+                    .as_ref()
+                    .map(|(c_key, _, _)| c_key.clone())
+                    .unwrap_or_else(|| sanitize_name(key_name));
                 if ctx.file_organization(&c_name) == Some(2) {
                     let rel_expr = emit_numeric_expr_for_var(&c_key, data_items);
                     format!(
                         "cobol_file_start_relative(FILE_ID_{c_name}, (uint64_t)({rel_expr}), {mode_val})"
                     )
                 } else {
-                    let key_size = find_data_item_size(&c_key, data_items);
-                    let is_key_group = find_data_item(key_name.as_str(), data_items)
-                        .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
+                    let key_size = resolved_key
+                        .as_ref()
+                        .map(|(_, size, _)| *size)
+                        .unwrap_or_else(|| find_data_item_size(&c_key, data_items));
+                    let is_key_group = resolved_key
+                        .as_ref()
+                        .map(|(_, _, is_group)| *is_group)
+                        .unwrap_or_else(|| {
+                            find_data_item(key_name.as_str(), data_items)
+                                .is_some_and(|i| matches!(i.data_type, HirType::Group { .. }))
+                        });
                     let addr_prefix = if is_key_group { "&" } else { "" };
                     let key_offset = if ctx.file_organization(&c_name) == Some(3) {
-                        let record_var = resolve_file_record(&c_name);
                         find_field_offset_and_size(key_name, &record_var, data_items)
                             .map(|(offset, _)| offset)
                             .unwrap_or(u32::MAX)
@@ -5411,6 +5488,7 @@ pub(crate) fn emit_statement_with_ctx(
                     fs_map,
                     has_declaratives,
                     indent + 1,
+                    should_emit_debug_events(),
                 );
                 out.push_str(&format!("{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"));
                 out.push_str(&format!("{pad}    free(_merge_buf);\n"));
@@ -5675,12 +5753,12 @@ pub(crate) fn emit_statement_with_ctx(
                 .filter(|v| {
                     !*all && index_belongs_to_table(&c_table, &sanitize_name(v), data_items)
                 })
-                .map(|v| sanitize_name(v));
+                .map(sanitize_name);
             let c_idx = varying_index
                 .or_else(|| table_index.clone())
-                .or_else(|| varying.as_ref().map(|v| sanitize_name(v)))
+                .or_else(|| varying.as_ref().map(sanitize_name))
                 .unwrap_or_else(|| format!("{c_table}_IDX"));
-            let varying_c = varying.as_ref().map(|v| sanitize_name(v));
+            let varying_c = varying.as_ref().map(sanitize_name);
             let sync_varying = varying_c.as_ref().filter(|v| **v != c_idx);
             let max_occurs = find_occurs_bound_expr(&c_table, data_items);
             let inner_pad = "    ".repeat(indent + 1);
@@ -6163,6 +6241,7 @@ fn emit_transfer_to_target(
     paragraphs: &[HirParagraph],
     pad: &str,
     in_body: bool,
+    current_paragraph: Option<HirParagraphId>,
 ) {
     let c_target = transfer_target_c_name(target, paragraphs);
     let target_name = escape_c_string(target.name());
@@ -6181,6 +6260,13 @@ fn emit_transfer_to_target(
     let label_id = paragraph_label_id.or(body_label_id);
     if let Some(id) = label_id {
         emit_optional_debug_event(out, pad, &target_name, "");
+        if let Some(target_id) = target.paragraph_id() {
+            if should_suppress_segment_reset(target_id, paragraphs, current_paragraph) {
+                out.push_str(&format!("{pad}_suppress_segment_reset = 1;\n"));
+            } else {
+                out.push_str(&format!("{pad}_suppress_segment_reset = 0;\n"));
+            }
+        }
         if in_body && paragraph_label_id.is_none() && body_label_id.is_some() {
             out.push_str(&format!("{pad}_goto_target = {id}; return;\n"));
         } else {
@@ -6198,6 +6284,7 @@ fn emit_alterable_goto_dispatch(
     paragraphs: &[HirParagraph],
     pad: &str,
     in_body: bool,
+    current_paragraph: Option<HirParagraphId>,
 ) {
     out.push_str(&format!("{pad}switch ({}) {{\n", info.dispatch_var));
     for target in &info.targets {
@@ -6205,11 +6292,77 @@ fn emit_alterable_goto_dispatch(
             continue;
         };
         out.push_str(&format!("{pad}    case {}:\n", target_id.0));
-        emit_transfer_to_target(out, target, paragraphs, &format!("{pad}        "), in_body);
+        emit_transfer_to_target(
+            out,
+            target,
+            paragraphs,
+            &format!("{pad}        "),
+            in_body,
+            current_paragraph,
+        );
         out.push_str(&format!("{pad}        break;\n"));
     }
     out.push_str(&format!("{pad}    default: break;\n"));
     out.push_str(&format!("{pad}}}\n"));
+}
+
+fn resolve_record_key_item(
+    key_name: &str,
+    record_var: &str,
+    data_items: &[HirDataItem],
+) -> Option<(String, u32, bool)> {
+    let target = sanitize_name(key_name);
+    let record = data_items
+        .iter()
+        .find(|item| sanitize_name(&item.name) == record_var)?;
+    let mut matches = Vec::new();
+    let mut qualifiers = vec![sanitize_name(&record.name)];
+    collect_record_key_item_matches(record, &target, &mut qualifiers, &mut matches);
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
+}
+
+fn collect_record_key_item_matches(
+    item: &HirDataItem,
+    target: &str,
+    qualifiers: &mut Vec<String>,
+    matches: &mut Vec<(String, u32, bool)>,
+) {
+    let HirType::Group { members, .. } = &item.data_type else {
+        return;
+    };
+    let mut member_name_counts = HashMap::new();
+    for member in members {
+        let c_name = dedup_record_member_context_name(member, &mut member_name_counts);
+        qualifiers.push(c_name.clone());
+        if c_name == target {
+            let is_group = matches!(member.data_type, HirType::Group { .. });
+            matches.push((
+                qualifiers.join("__"),
+                data_item_storage_size(member),
+                is_group,
+            ));
+        }
+        collect_record_key_item_matches(member, target, qualifiers, matches);
+        qualifiers.pop();
+    }
+}
+
+fn dedup_record_member_context_name(
+    member: &HirDataItem,
+    member_name_counts: &mut HashMap<String, u32>,
+) -> String {
+    let base_c_name = sanitize_name(&member.name);
+    let count = member_name_counts.entry(base_c_name.clone()).or_insert(0);
+    *count += 1;
+    if *count > 1 {
+        format!("{}_{}", base_c_name, count)
+    } else {
+        base_c_name
+    }
 }
 
 fn emit_optional_debug_event(out: &mut String, pad: &str, name: &str, contents: &str) {
@@ -6316,6 +6469,7 @@ fn emit_debug_spaces_event(out: &mut String, pad: &str, name: &str) {
     out.push_str(&format!("{pad}}}\n"));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_debug_data_name_event(
     out: &mut String,
     pad: &str,
@@ -6642,14 +6796,11 @@ fn emit_debug_numeric_unique_source_events(
         };
         if excluded_names
             .iter()
-            .any(|excluded_name| excluded_name == &name.name)
+            .any(|excluded_name| excluded_name == name.name)
         {
             continue;
         }
-        if seen
-            .iter()
-            .any(|seen_name: &String| seen_name == &name.name)
-        {
+        if seen.iter().any(|seen_name: &String| seen_name == name.name) {
             continue;
         }
         seen.push(name.name.to_string());
@@ -8366,6 +8517,7 @@ pub(crate) fn emit_move_to_refmod(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_perform(
     out: &mut String,
     kind: &HirPerformKind,
@@ -8559,7 +8711,7 @@ pub(crate) fn emit_perform(
                 emit_debug_identifier_value_event(
                     out,
                     &pad,
-                    &debug_var_name,
+                    debug_var_name,
                     &c_var_target,
                     debug_var_width,
                     data_items,
@@ -8579,7 +8731,7 @@ pub(crate) fn emit_perform(
                     emit_debug_identifier_value_event(
                         out,
                         &pad,
-                        &ac_debug_var_name,
+                        ac_debug_var_name,
                         &ac_var,
                         ac_debug_var_width,
                         data_items,
@@ -8595,7 +8747,7 @@ pub(crate) fn emit_perform(
                         emit_debug_identifier_value_event(
                             out,
                             &after_pad,
-                            &debug_var_name,
+                            debug_var_name,
                             &c_var_target,
                             debug_var_width,
                             data_items,
@@ -8651,7 +8803,7 @@ pub(crate) fn emit_perform(
                     emit_debug_identifier_value_event(
                         out,
                         &lpad,
-                        &ac_debug_var_name,
+                        ac_debug_var_name,
                         &ac_var,
                         ac_debug_var_width,
                         data_items,
@@ -8688,7 +8840,7 @@ pub(crate) fn emit_perform(
                         emit_debug_identifier_value_event(
                             out,
                             &after_pad,
-                            &debug_var_name,
+                            debug_var_name,
                             &c_var_target,
                             debug_var_width,
                             data_items,
@@ -8701,7 +8853,7 @@ pub(crate) fn emit_perform(
                 emit_debug_identifier_value_event(
                     out,
                     &after_pad,
-                    &debug_var_name,
+                    debug_var_name,
                     &c_var_target,
                     debug_var_width,
                     data_items,
@@ -8744,7 +8896,11 @@ pub(crate) fn emit_perform(
                     let reversed = si > ei;
                     let include_section_headers =
                         matches!(paragraphs[si].kind, HirParagraphKind::Section)
-                            || matches!(paragraphs[ei].kind, HirParagraphKind::Section);
+                            || matches!(paragraphs[ei].kind, HirParagraphKind::Section)
+                            || (should_emit_debug_events()
+                                && paragraphs[si.min(ei)..=si.max(ei)].iter().any(|paragraph| {
+                                    matches!(paragraph.kind, HirParagraphKind::Section)
+                                }));
                     let thru_paras: Vec<_> = if reversed {
                         let group_end = paragraph_group_end(paragraphs, si);
                         effective_perform_thru_paragraphs(
@@ -8757,7 +8913,13 @@ pub(crate) fn emit_perform(
                             include_section_headers,
                         )
                     };
-                    let thru_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
+                    let non_reversed_group_end =
+                        if !reversed && matches!(paragraphs[ei].kind, HirParagraphKind::Section) {
+                            paragraph_group_end(paragraphs, ei)
+                        } else {
+                            ei + 1
+                        };
+                    let mut thru_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
                         thru_paras
                             .iter()
                             .flat_map(|paragraph| {
@@ -8774,6 +8936,71 @@ pub(crate) fn emit_perform(
                             })
                             .collect()
                     });
+                    let mut thru_preserve_target_ids = HashMap::new();
+                    if !reversed {
+                        for section_idx in si..=ei {
+                            let section = &paragraphs[section_idx];
+                            if !matches!(section.kind, HirParagraphKind::Section) {
+                                continue;
+                            }
+                            if section_idx >= ei {
+                                continue;
+                            }
+                            let Some(entry) =
+                                paragraphs[section_idx + 1..=ei].iter().find(|paragraph| {
+                                    thru_paras
+                                        .iter()
+                                        .any(|thru_paragraph| thru_paragraph.id == paragraph.id)
+                                })
+                            else {
+                                continue;
+                            };
+                            with_active_context(|ctx| {
+                                if let Some(id) = ctx.label_id(section.id) {
+                                    if !thru_ids.iter().any(|(_, existing)| *existing == id) {
+                                        thru_ids.push((entry.id, id));
+                                    }
+                                }
+                                if let Some(id) = ctx.body_label_id(section.id) {
+                                    if !thru_ids.iter().any(|(_, existing)| *existing == id) {
+                                        thru_ids.push((entry.id, id));
+                                    }
+                                }
+                            });
+                        }
+                        if include_section_headers {
+                            let selected_section_ids: HashSet<_> = thru_paras
+                                .iter()
+                                .filter(|paragraph| {
+                                    matches!(paragraph.kind, HirParagraphKind::Section)
+                                })
+                                .map(|paragraph| paragraph.id)
+                                .collect();
+                            for paragraph in &paragraphs[si..non_reversed_group_end] {
+                                let Some(section_id) = paragraph.section_id else {
+                                    continue;
+                                };
+                                if !selected_section_ids.contains(&section_id) {
+                                    continue;
+                                }
+                                with_active_context(|ctx| {
+                                    let local_id = local_section_label_id(paragraphs, paragraph.id);
+                                    let mut add_id = |id| {
+                                        if !thru_ids.iter().any(|(_, existing)| *existing == id) {
+                                            thru_ids.push((section_id, id));
+                                        }
+                                        thru_preserve_target_ids.insert(id, local_id.unwrap_or(id));
+                                    };
+                                    if let Some(id) = ctx.label_id(paragraph.id) {
+                                        add_id(id);
+                                    }
+                                    if let Some(id) = ctx.body_label_id(paragraph.id) {
+                                        add_id(id);
+                                    }
+                                });
+                            }
+                        }
+                    }
                     let dispatch_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
                         paragraphs
                             .iter()
@@ -8791,9 +9018,26 @@ pub(crate) fn emit_perform(
                             })
                             .collect()
                     });
+                    let fallthrough_ids: HashMap<usize, usize> = with_active_context(|ctx| {
+                        let mut ids = HashMap::new();
+                        for pair in paragraphs.windows(2) {
+                            let current = &pair[0];
+                            let next = &pair[1];
+                            let Some(next_id) = ctx.label_id(next.id) else {
+                                continue;
+                            };
+                            if let Some(id) = ctx.label_id(current.id) {
+                                ids.insert(id, next_id);
+                            }
+                            if let Some(id) = ctx.body_label_id(current.id) {
+                                ids.insert(id, next_id);
+                            }
+                        }
+                        ids
+                    });
                     let after_thru_ids: Vec<usize> = if !reversed {
                         paragraphs
-                            .get(ei + 1)
+                            .get(non_reversed_group_end)
                             .map(|paragraph| {
                                 with_active_context(|ctx| {
                                     let mut ids = Vec::new();
@@ -8867,6 +9111,19 @@ pub(crate) fn emit_perform(
                         out.push_str(&format!(
                             "{pad}int _suppress_segment_resume_{suffix} = 0;\n"
                         ));
+                        out.push_str(&format!(
+                            "{pad}int _suppress_segment_preserved_{suffix} = 0;\n"
+                        ));
+                        out.push_str(&format!("{pad}int _perform_external_flow_{suffix} = 0;\n"));
+
+                        let through_section_id = thru
+                            .paragraph_id()
+                            .and_then(|through_id| {
+                                paragraphs
+                                    .iter()
+                                    .find(|paragraph| paragraph.id == through_id)
+                            })
+                            .and_then(paragraph_section_id);
 
                         // Emit each paragraph call with goto dispatch
                         for (idx, paragraph) in thru_paras.iter().enumerate() {
@@ -8891,7 +9148,39 @@ pub(crate) fn emit_perform(
                                     &pad,
                                 );
                             }
-                            out.push_str(&format!("{pad}para_{pn}();\n"));
+                            emit_independent_segment_state_save(
+                                out,
+                                paragraph.id,
+                                paragraphs,
+                                current_paragraph,
+                                &pad,
+                                &format!("{suffix}_{idx}"),
+                            );
+                            let section_entry_id = paragraph.section_id.filter(|section_id| {
+                                reversed && through_section_id != Some(*section_id)
+                            });
+                            if let (Some(section_id), Some(local_id)) = (
+                                section_entry_id,
+                                local_section_label_id(paragraphs, paragraph.id),
+                            ) {
+                                if let Some(section_pn) = paragraph_c_name(paragraphs, section_id) {
+                                    out.push_str(&format!(
+                                        "{pad}_goto_target = {local_id}; para_{section_pn}();\n"
+                                    ));
+                                } else {
+                                    out.push_str(&format!("{pad}para_{pn}();\n"));
+                                }
+                            } else {
+                                out.push_str(&format!("{pad}para_{pn}();\n"));
+                            }
+                            emit_independent_segment_state_restore(
+                                out,
+                                paragraph.id,
+                                paragraphs,
+                                current_paragraph,
+                                &pad,
+                                &format!("{suffix}_{idx}"),
+                            );
                             if !suppress_thru_segment {
                                 emit_segment_reset_suppression_end(
                                     out,
@@ -8903,9 +9192,21 @@ pub(crate) fn emit_perform(
                             }
                             if suppress_thru_segment {
                                 out.push_str(&format!(
+                                    "{pad}if (_suppress_segment_resume_{suffix} && _suppress_segment_preserved_{suffix} && _goto_target == _suppress_segment_preserved_{suffix}) {{ _goto_target = 0; }}\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}if (_suppress_segment_resume_{suffix}) {{ _suppress_segment_preserved_{suffix} = 0; }}\n"
+                                ));
+                                out.push_str(&format!(
                                     "{pad}if (_suppress_segment_resume_{suffix}) {{ _suppress_segment_resume_{suffix} = 0; }}\n"
                                 ));
                             } else {
+                                out.push_str(&format!(
+                                    "{pad}if (_suppress_segment_resume_{suffix} && _suppress_segment_preserved_{suffix} && _goto_target == _suppress_segment_preserved_{suffix}) {{ _goto_target = 0; }}\n"
+                                ));
+                                out.push_str(&format!(
+                                    "{pad}if (_suppress_segment_resume_{suffix}) {{ _suppress_segment_preserved_{suffix} = 0; }}\n"
+                                ));
                                 out.push_str(&format!(
                                     "{pad}if (_suppress_segment_resume_{suffix}) {{ _suppress_segment_reset = 0; _suppress_segment_resume_{suffix} = 0; }}\n"
                                 ));
@@ -8960,43 +9261,80 @@ pub(crate) fn emit_perform(
                                 out.push_str(&format!(
                                     "_goto_target = 0; goto _pt_end_{suffix}; }}\n"
                                 ));
-                            } else if thru_ids.iter().any(|(thru_paragraph_id, thru_label_id)| {
-                                thru_paragraph_id == paragraph_id && thru_label_id == id
-                            }) {
-                                out.push_str(&format!(
-                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; _suppress_segment_resume_{suffix} = 1; goto _pt_{suffix}_{pn}; }}\n"
-                                ));
+                            } else if let Some((entry_paragraph_id, _)) = thru_ids
+                                .iter()
+                                .find(|(_, thru_label_id)| thru_label_id == id)
+                            {
+                                let Some(entry_pn) =
+                                    paragraph_c_name(paragraphs, *entry_paragraph_id)
+                                else {
+                                    continue;
+                                };
+                                if let Some(local_id) = thru_preserve_target_ids.get(id) {
+                                    out.push_str(&format!(
+                                        "{pad}  if (_t == {id}) {{ _perform_external_flow_{suffix} = 0; _goto_target = {local_id}; _suppress_segment_preserved_{suffix} = {local_id}; _suppress_segment_resume_{suffix} = 1; goto _pt_{suffix}_{entry_pn}; }}\n"
+                                    ));
+                                } else {
+                                    out.push_str(&format!(
+                                        "{pad}  if (_t == {id}) {{ _perform_external_flow_{suffix} = 0; _goto_target = 0; _suppress_segment_resume_{suffix} = 1; goto _pt_{suffix}_{entry_pn}; }}\n"
+                                    ));
+                                }
                             } else {
-                                out.push_str(&format!(
-                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; "
-                                ));
-                                emit_perform_segment_dispatch_call(
-                                    out,
+                                out.push_str(&format!("{pad}  if (_t == {id}) {{ "));
+                                if is_same_procedure_scope(
                                     *paragraph_id,
-                                    &pn,
                                     paragraphs,
-                                    perform_segment,
                                     current_paragraph,
-                                    &pad,
-                                    &suffix,
-                                    suppress_thru_segment,
-                                );
-                                out.push_str(&format!(
-                                    "_goto_target = 0; goto _pt_end_{suffix}; }}\n"
-                                ));
+                                ) {
+                                    out.push_str(&format!(
+                                        "_perform_external_flow_{suffix} = 1; _goto_target = 0; "
+                                    ));
+                                    if suppress_thru_segment {
+                                        out.push_str("_suppress_segment_reset = 1; ");
+                                    }
+                                    out.push_str(&format!("para_{pn}(); "));
+                                    if suppress_thru_segment {
+                                        out.push_str("_suppress_segment_reset = 0; ");
+                                    }
+                                    if let Some(next_id) = fallthrough_ids.get(id) {
+                                        out.push_str(&format!(
+                                            "if (!_goto_target) {{ _goto_target = {next_id}; }} "
+                                        ));
+                                    }
+                                    out.push_str(&format!(
+                                        "if (_goto_target) goto _pt_disp_{suffix}; "
+                                    ));
+                                    if suppress_thru_segment {
+                                        out.push_str("_suppress_segment_reset = 0; ");
+                                    }
+                                    out.push_str(&format!("goto _pt_end_{suffix}; }}\n"));
+                                } else {
+                                    out.push_str(&format!(
+                                        "if (_perform_external_flow_{suffix}) {{ _goto_target = _t; "
+                                    ));
+                                    if suppress_thru_segment {
+                                        out.push_str("_suppress_segment_reset = 0; ");
+                                    }
+                                    out.push_str("goto _goto_dispatch; } ");
+                                    out.push_str("_goto_target = 0; ");
+                                    if suppress_thru_segment {
+                                        out.push_str("_suppress_segment_reset = 0; ");
+                                    }
+                                    out.push_str(&format!("goto _pt_end_{suffix}; }}\n"));
+                                }
                             }
                         }
                         if !after_thru_ids.is_empty() {
                             for id in &after_thru_ids {
                                 out.push_str(&format!(
-                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; goto _pt_end_{suffix}; }}\n"
+                                    "{pad}  if (_t == {id}) {{ if (_perform_external_flow_{suffix}) {{ _goto_target = _t; goto _goto_dispatch; }} _goto_target = 0; goto _pt_end_{suffix}; }}\n"
                                 ));
                             }
                         }
                         if !enclosing_section_ids.is_empty() {
                             for id in &enclosing_section_ids {
                                 out.push_str(&format!(
-                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; goto _pt_end_{suffix}; }}\n"
+                                    "{pad}  if (_t == {id}) {{ if (_perform_external_flow_{suffix}) {{ _goto_target = _t; goto _goto_dispatch; }} _goto_target = 0; goto _pt_end_{suffix}; }}\n"
                                 ));
                             }
                         }
@@ -9027,7 +9365,23 @@ pub(crate) fn emit_perform(
                                 current_paragraph,
                                 &pad,
                             );
+                            emit_independent_segment_state_save(
+                                out,
+                                paragraph.id,
+                                paragraphs,
+                                current_paragraph,
+                                &pad,
+                                &format!("seq_{}", paragraph.id.0),
+                            );
                             out.push_str(&format!("{pad}para_{pn}();\n"));
+                            emit_independent_segment_state_restore(
+                                out,
+                                paragraph.id,
+                                paragraphs,
+                                current_paragraph,
+                                &pad,
+                                &format!("seq_{}", paragraph.id.0),
+                            );
                             emit_segment_reset_suppression_end(
                                 out,
                                 paragraph.id,
@@ -9056,9 +9410,25 @@ pub(crate) fn emit_perform(
                             current_paragraph,
                             &pad,
                         );
+                        emit_independent_segment_state_save(
+                            out,
+                            target_id,
+                            paragraphs,
+                            current_paragraph,
+                            &pad,
+                            "single",
+                        );
                     }
                     out.push_str(&format!("{pad}para_{c_name}();\n"));
                     if let Some(target_id) = target.paragraph_id() {
+                        emit_independent_segment_state_restore(
+                            out,
+                            target_id,
+                            paragraphs,
+                            current_paragraph,
+                            &pad,
+                            "single",
+                        );
                         emit_segment_reset_suppression_end(
                             out,
                             target_id,
@@ -9084,9 +9454,25 @@ pub(crate) fn emit_perform(
                         current_paragraph,
                         &pad,
                     );
+                    emit_independent_segment_state_save(
+                        out,
+                        target_id,
+                        paragraphs,
+                        current_paragraph,
+                        &pad,
+                        "single",
+                    );
                 }
                 out.push_str(&format!("{pad}para_{c_name}();\n"));
                 if let Some(target_id) = target.paragraph_id() {
+                    emit_independent_segment_state_restore(
+                        out,
+                        target_id,
+                        paragraphs,
+                        current_paragraph,
+                        &pad,
+                        "single",
+                    );
                     emit_segment_reset_suppression_end(
                         out,
                         target_id,
@@ -9132,6 +9518,124 @@ fn emit_segment_reset_suppression_end(
     }
 }
 
+fn emit_independent_segment_state_save(
+    out: &mut String,
+    target_id: HirParagraphId,
+    paragraphs: &[HirParagraph],
+    current_paragraph: Option<HirParagraphId>,
+    pad: &str,
+    suffix: &str,
+) {
+    let vars = current_independent_section_alter_vars(target_id, paragraphs, current_paragraph);
+    if vars.is_empty() {
+        return;
+    }
+    out.push_str(&format!("{pad}{{\n"));
+    for (idx, var) in vars.iter().enumerate() {
+        out.push_str(&format!(
+            "{pad}    uint32_t _saved_alter_{suffix}_{idx} = {var};\n"
+        ));
+    }
+}
+
+fn emit_independent_segment_state_restore(
+    out: &mut String,
+    target_id: HirParagraphId,
+    paragraphs: &[HirParagraph],
+    current_paragraph: Option<HirParagraphId>,
+    pad: &str,
+    suffix: &str,
+) {
+    let vars = current_independent_section_alter_vars(target_id, paragraphs, current_paragraph);
+    for (idx, var) in vars.iter().enumerate() {
+        out.push_str(&format!("{pad}    {var} = _saved_alter_{suffix}_{idx};\n"));
+    }
+    if !vars.is_empty() {
+        out.push_str(&format!("{pad}}}\n"));
+    }
+}
+
+fn current_independent_section_alter_vars(
+    target_id: HirParagraphId,
+    paragraphs: &[HirParagraph],
+    current_paragraph: Option<HirParagraphId>,
+) -> Vec<String> {
+    let Some(current_id) = current_paragraph else {
+        return Vec::new();
+    };
+    let Some(target) = paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == target_id)
+    else {
+        return Vec::new();
+    };
+    let Some(current) = paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == current_id)
+    else {
+        return Vec::new();
+    };
+    if current
+        .segment_number
+        .is_none_or(|segment_number| segment_number <= 49)
+        || target
+            .segment_number
+            .is_none_or(|segment_number| segment_number <= 49)
+    {
+        return Vec::new();
+    }
+    let current_section = paragraph_section_id(current);
+    let target_section = paragraph_section_id(target);
+    if current_section.is_none() || current_section == target_section {
+        return Vec::new();
+    }
+
+    let Some(current_section) = current_section else {
+        return Vec::new();
+    };
+    with_active_context(|ctx| {
+        paragraphs
+            .iter()
+            .filter(|paragraph| paragraph_section_id(paragraph) == Some(current_section))
+            .filter_map(|paragraph| {
+                ctx.alterable_paragraph(paragraph.id)
+                    .map(|info| info.dispatch_var)
+            })
+            .collect()
+    })
+}
+
+fn paragraph_section_id(paragraph: &HirParagraph) -> Option<HirParagraphId> {
+    if matches!(paragraph.kind, HirParagraphKind::Section) {
+        Some(paragraph.id)
+    } else {
+        paragraph.section_id
+    }
+}
+
+fn local_section_label_id(
+    paragraphs: &[HirParagraph],
+    paragraph_id: HirParagraphId,
+) -> Option<usize> {
+    let paragraph = paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == paragraph_id)?;
+    let section_id = paragraph.section_id?;
+    let mut local_id = 1usize;
+    for candidate in paragraphs {
+        if candidate.id == section_id {
+            continue;
+        }
+        if candidate.section_id == Some(section_id) {
+            local_id += 1;
+            if candidate.id == paragraph_id {
+                return Some(local_id);
+            }
+        }
+    }
+    None
+}
+
 fn should_suppress_segment_reset(
     target_id: HirParagraphId,
     paragraphs: &[HirParagraph],
@@ -9144,7 +9648,7 @@ fn should_suppress_segment_reset(
         .iter()
         .find(|paragraph| paragraph.id == target_id)
         .and_then(|paragraph| paragraph.segment_number);
-    if !target_segment.is_some_and(|number| number > 49) {
+    if target_segment.is_none_or(|number| number <= 49) {
         return false;
     }
     let current_segment = paragraphs
@@ -9154,6 +9658,43 @@ fn should_suppress_segment_reset(
     current_segment == target_segment
 }
 
+fn is_same_procedure_scope(
+    target_id: HirParagraphId,
+    paragraphs: &[HirParagraph],
+    current_paragraph: Option<HirParagraphId>,
+) -> bool {
+    let Some(current_id) = current_paragraph else {
+        return true;
+    };
+    let Some(current) = paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == current_id)
+    else {
+        return true;
+    };
+    let Some(target) = paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == target_id)
+    else {
+        return false;
+    };
+    if target.id == current.id {
+        return true;
+    }
+    let current_section = if matches!(current.kind, HirParagraphKind::Section) {
+        Some(current.id)
+    } else {
+        current.section_id
+    };
+    let target_section = if matches!(target.kind, HirParagraphKind::Section) {
+        Some(target.id)
+    } else {
+        target.section_id
+    };
+    current_section.is_some() && current_section == target_section
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_perform_segment_dispatch_call(
     out: &mut String,
     target_id: HirParagraphId,
@@ -11677,9 +12218,15 @@ fn emit_optional_comm_area_layout(
 ) -> CommAreaLayoutArg {
     name.map(|name| {
         let item_len = find_data_item_element_size(name, data_items);
-        let stride = find_data_item_stride(name, data_items);
         let count = find_data_item_occurs_count(name, data_items);
-        let area_len = find_data_item_area_size(name, data_items);
+        let (stride, area_len) = comm_area_physical_stride_and_area_len(
+            name,
+            data_items,
+            item_len,
+            find_data_item_stride(name, data_items),
+            count,
+            find_data_item_area_size(name, data_items),
+        );
         CommAreaLayoutArg {
             ptr: c_ptr_expr(name, data_items),
             item_len: item_len.to_string(),
@@ -11695,6 +12242,25 @@ fn emit_optional_comm_area_layout(
         count: "0".to_string(),
         area_len: "0".to_string(),
     })
+}
+
+fn comm_area_physical_stride_and_area_len(
+    name: &str,
+    data_items: &[HirDataItem],
+    item_len: u32,
+    stride: u32,
+    count: u32,
+    area_len: u32,
+) -> (u32, u32) {
+    let lookup = extract_leaf_member(name);
+    let Some(item) = find_original_data_item_by_sanitized_name(lookup, data_items) else {
+        return (stride, area_len);
+    };
+    if item.occurs.is_some() && matches!(item.data_type, HirType::Alphanumeric { .. }) {
+        let physical_stride = item_len + 1;
+        return (physical_stride, physical_stride.saturating_mul(count));
+    }
+    (stride, area_len)
 }
 
 fn emit_comm_selectors(
@@ -11731,6 +12297,13 @@ fn emit_numeric_expr_for_var(name: &str, data_items: &[HirDataItem]) -> String {
             display_numeric_ptr(name),
             size
         )
+    } else if find_data_item_by_c_name(name, data_items).is_some_and(|item| {
+        matches!(
+            item.data_type,
+            HirType::Numeric { .. } | HirType::Binary { .. } | HirType::Index
+        )
+    }) {
+        name.to_string()
     } else {
         let ptr = c_ptr_expr(name, data_items);
         format!("(*(const int64_t*){ptr})")
@@ -11895,6 +12468,7 @@ fn sort_file_runtime_org(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_sort_procedure_call(
     out: &mut String,
     proc_name: &str,
@@ -11904,6 +12478,7 @@ fn emit_sort_procedure_call(
     fs_map: &FileStatusMap,
     has_declaratives: bool,
     indent: usize,
+    preserve_existing_debug_event: bool,
 ) {
     let Some(target) = transfer_target_for_paragraph_name(proc_name, paragraphs) else {
         let pad = "    ".repeat(indent);
@@ -11911,6 +12486,10 @@ fn emit_sort_procedure_call(
         out.push_str(&format!("{pad}para_{c_proc}();\n"));
         return;
     };
+    let pad = "    ".repeat(indent);
+    if preserve_existing_debug_event {
+        out.push_str(&format!("{pad}_preserve_debug_event_once = 1;\n"));
+    }
     let through = thru_name.and_then(|name| transfer_target_for_paragraph_name(name, paragraphs));
     let kind = HirPerformKind::ProcedureName { target, through };
     emit_perform(
@@ -11923,6 +12502,9 @@ fn emit_sort_procedure_call(
         None,
         indent,
     );
+    if preserve_existing_debug_event {
+        out.push_str(&format!("{pad}_preserve_debug_event_once = 0;\n"));
+    }
 }
 
 fn transfer_target_for_paragraph_name(
@@ -12067,7 +12649,7 @@ fn emit_field_deserialize(
     let mut offset = base_offset;
     let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for member in members {
-        if member.redefines.is_some() {
+        if member.redefines.is_some() || member.renames.is_some() {
             continue;
         }
         let c_name = dedup_member_name(&member.name, &mut name_counts);
@@ -12206,7 +12788,7 @@ fn emit_field_serialize(
     let mut offset = base_offset;
     let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for member in members {
-        if member.redefines.is_some() {
+        if member.redefines.is_some() || member.renames.is_some() {
             continue;
         }
         let c_name = dedup_member_name(&member.name, &mut name_counts);
@@ -12288,4 +12870,28 @@ fn sort_record_member_memcpy_pointer(
         HirType::Alphanumeric { .. } | HirType::National { .. } => member_expr,
         _ => format!("&{member_expr}"),
     }
+}
+
+fn relative_key_integer_digits(c_name: &str, data_items: &[HirDataItem]) -> u32 {
+    find_data_item_by_c_name(c_name, data_items)
+        .or_else(|| find_data_item(c_name, data_items))
+        .map(|item| match &item.data_type {
+            HirType::Numeric {
+                size,
+                decimal_places,
+                ..
+            }
+            | HirType::Comp3 {
+                size,
+                decimal_places,
+            } => size.saturating_sub(*decimal_places).max(1),
+            HirType::Binary { size } => *size,
+            _ => find_data_item_size(c_name, data_items),
+        })
+        .unwrap_or_else(|| find_data_item_size(c_name, data_items))
+}
+
+fn relative_key_max_value(digits: u32) -> u64 {
+    let capped_digits = digits.min(18);
+    10_u64.pow(capped_digits).saturating_sub(1)
 }

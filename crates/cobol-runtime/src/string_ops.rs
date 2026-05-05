@@ -496,6 +496,9 @@ pub unsafe extern "C" fn cobol_store_numeric_display(value: i64, dst_ptr: *mut u
 /// Store DISPLAY numeric with SIGN IS SEPARATE CHARACTER.
 ///
 /// `position` is 0 for leading sign, 1 for trailing sign.
+///
+/// # Safety
+/// `dst_ptr` must point to a writable buffer of `dst_len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_store_numeric_display_separate_sign(
     value: i64,
@@ -529,6 +532,9 @@ pub unsafe extern "C" fn cobol_store_numeric_display_separate_sign(
 }
 
 /// Store DISPLAY numeric with SIGN IS LEADING, using embedded overpunch.
+///
+/// # Safety
+/// `dst_ptr` must point to a writable buffer of `dst_len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn cobol_store_numeric_display_leading_sign(
     value: i64,

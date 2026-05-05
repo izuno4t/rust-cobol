@@ -320,12 +320,22 @@ fn emit_file_declarative_dispatch(
         "static void {fn_name}(const char* file_c_name, const char* declarative_mode, int fs) {{\n"
     ));
     out.push_str("    if (fs == 0 || fs == 5) return;\n");
+    let has_debug_declaratives = declaratives
+        .iter()
+        .chain(inherited_global_declaratives.iter())
+        .any(|decl| decl.use_kind == HirDeclarativeUse::ForDebugging);
     for decl in declaratives
         .iter()
         .chain(inherited_global_declaratives.iter())
         .filter(|decl| decl.use_kind == HirDeclarativeUse::AfterException)
     {
         let c_decl = sanitize_name(&decl.name);
+        let debug_decl_name = escape_c_string(&decl.name);
+        let debug_event = if has_debug_declaratives {
+            format!(" _set_debug_event(\"{debug_decl_name}\", \"USE PROCEDURE\", \"\");")
+        } else {
+            String::new()
+        };
         let is_mode_based = decl.file_names.iter().any(|f| {
             let upper = f.to_uppercase();
             matches!(upper.as_str(), "I-O" | "INPUT" | "OUTPUT" | "EXTEND")
@@ -349,13 +359,13 @@ fn emit_file_declarative_dispatch(
                 .collect::<Vec<_>>()
                 .join(" || ");
             out.push_str(&format!(
-                "    if ({mode_guard}) {{ decl_{c_decl}(); return; }}\n",
+                "    if ({mode_guard}) {{{debug_event} decl_{c_decl}(); return; }}\n",
             ));
         } else {
             for fname in &decl.file_names {
                 let c_file = sanitize_name(fname);
                 out.push_str(&format!(
-                    "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{ decl_{c_decl}(); return; }}\n"
+                    "    if (strcmp(file_c_name, \"{c_file}\") == 0) {{{debug_event} decl_{c_decl}(); return; }}\n"
                 ));
             }
         }
@@ -584,7 +594,7 @@ pub fn generate_c(program: &HirProgram) -> String {
             }
             with_active_context(|ctx| ctx.set_in_body_context(false));
         } else {
-            emit_top_level_entry_flow(&mut out, &program.paragraphs, &label_map);
+            emit_top_level_entry_flow(&mut out, &program.paragraphs, &label_map, &ctx);
         }
         cg_timing!("emit_body_statements", t_body);
 
@@ -707,7 +717,7 @@ pub fn generate_c(program: &HirProgram) -> String {
                 }
                 with_active_context(|ctx| ctx.set_in_body_context(false));
             } else {
-                emit_top_level_entry_flow(&mut out, &program.paragraphs, &label_map);
+                emit_top_level_entry_flow(&mut out, &program.paragraphs, &label_map, &ctx);
             }
             // Emit goto dispatch table for sub-program if labels exist
             if has_labels && !use_top_level_entry_flow {
@@ -853,6 +863,7 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
     out.push_str("static char _debug_event_line[81];\n");
     out.push_str("static int _suppress_debug_event = 0;\n");
     out.push_str("static int _debug_event_explicit = 0;\n");
+    out.push_str("static int _preserve_debug_event_once = 0;\n");
     out.push_str(
         "static void _debug_copy_text_field(char* dst, size_t dst_size, const char* src) {\n",
     );
@@ -867,6 +878,7 @@ fn emit_debug_declarative_support(out: &mut String, program: &HirProgram) {
         "static void _set_debug_event(const char* name, const char* contents, const char* line) {\n",
     );
     out.push_str("    if (_suppress_debug_event) return;\n");
+    out.push_str("    if (_preserve_debug_event_once && contents && strcmp(contents, \"PERFORM LOOP\") == 0) { _preserve_debug_event_once = 0; return; }\n");
     out.push_str("    _debug_event_explicit = 1;\n");
     out.push_str("    _debug_copy_text_field(_debug_event_name, sizeof(_debug_event_name), name ? name : \"\");\n");
     out.push_str("    _debug_copy_text_field(_debug_event_contents, sizeof(_debug_event_contents), contents ? contents : \"\");\n");
@@ -1168,7 +1180,7 @@ fn emit_nested_program(
             }
             with_active_context(|ctx| ctx.set_in_body_context(false));
         } else {
-            emit_top_level_entry_flow(out, &program.paragraphs, &label_map);
+            emit_top_level_entry_flow(out, &program.paragraphs, &label_map, &ctx);
         }
 
         if !label_map.is_empty() && !use_top_level_entry_flow {
@@ -1508,12 +1520,15 @@ fn emit_alterable_paragraph_state(out: &mut String, ctx: &CodegenContext) {
     }
     out.push_str("/* ALTER paragraph dispatch state */\n");
     for info in alterable_paragraphs {
-        let Some(default_target_id) = info.default_target.paragraph_id() else {
-            continue;
-        };
+        let default_target_id = info
+            .default_target
+            .as_ref()
+            .and_then(|target| target.paragraph_id())
+            .map(|id| id.0)
+            .unwrap_or(0);
         out.push_str(&format!(
             "static uint32_t {} = {};\n",
-            info.dispatch_var, default_target_id.0
+            info.dispatch_var, default_target_id
         ));
     }
     out.push('\n');
@@ -1526,7 +1541,7 @@ fn emit_independent_segment_state_reset(
     ctx: &CodegenContext,
     pad: &str,
 ) {
-    if !segment_number.is_some_and(|number| number > 49) {
+    if segment_number.is_none_or(|number| number <= 49) {
         return;
     }
 
@@ -1538,12 +1553,15 @@ fn emit_independent_segment_state_reset(
         let Some(info) = ctx.alterable_paragraph(paragraph.id) else {
             continue;
         };
-        let Some(default_target_id) = info.default_target.paragraph_id() else {
-            continue;
-        };
+        let default_target_id = info
+            .default_target
+            .as_ref()
+            .and_then(|target| target.paragraph_id())
+            .map(|id| id.0)
+            .unwrap_or(0);
         out.push_str(&format!(
             "{pad}    {} = {};\n",
-            info.dispatch_var, default_target_id.0
+            info.dispatch_var, default_target_id
         ));
     }
     out.push_str(&format!("{pad}}}\n"));
@@ -1555,6 +1573,7 @@ fn emit_inline_dispatch_loop(
     label_map: &HashMap<HirParagraphId, usize>,
     next_override_map: Option<&HashMap<HirParagraphId, usize>>,
     handled_ids: Option<&HashSet<HirParagraphId>>,
+    ctx: &CodegenContext,
 ) {
     if label_map.is_empty() {
         return;
@@ -1578,16 +1597,31 @@ fn emit_inline_dispatch_loop(
                 next_label_map.get(&paragraph.id).copied()
             };
             if let Some(next_id) = next_id {
+                let reset_on_fallthrough = paragraph
+                    .segment_number
+                    .is_some_and(|segment_number| segment_number > 49)
+                    && segment_for_label(paragraphs, label_map, next_id)
+                        != paragraph.segment_number;
                 if has_active_debug_declaratives() {
-                    out.push_str(&format!(
-                        "        case {id}: para_{c_name}(); if (!_goto_target) {{ _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\"); _goto_target = {next_id}; }} break;\n",
-                        escape_c_string(&paragraph.name)
-                    ));
+                    out.push_str(&format!("        case {id}: para_{c_name}(); if (!_goto_target) {{ _set_fallthrough_debug_event(\"{}\", \"FALL THROUGH\", \"\"); ", escape_c_string(&paragraph.name)));
                 } else {
                     out.push_str(&format!(
-                        "        case {id}: para_{c_name}(); if (!_goto_target) {{ _goto_target = {next_id}; }} break;\n"
+                        "        case {id}: para_{c_name}(); if (!_goto_target) {{ "
                     ));
                 }
+                if reset_on_fallthrough {
+                    out.push('\n');
+                    out.push_str("            _suppress_segment_reset = 0;\n");
+                    emit_independent_segment_state_reset(
+                        out,
+                        paragraph.segment_number,
+                        paragraphs,
+                        ctx,
+                        "            ",
+                    );
+                    out.push_str("            ");
+                }
+                out.push_str(&format!("_goto_target = {next_id}; }} break;\n"));
             } else {
                 out.push_str(&format!("        case {id}: para_{c_name}(); break;\n"));
             }
@@ -1598,10 +1632,25 @@ fn emit_inline_dispatch_loop(
     out.push_str("    }\n");
 }
 
+fn segment_for_label(
+    paragraphs: &[HirParagraph],
+    label_map: &HashMap<HirParagraphId, usize>,
+    label: usize,
+) -> Option<u32> {
+    let paragraph_id = label_map
+        .iter()
+        .find_map(|(paragraph_id, id)| (*id == label).then_some(*paragraph_id))?;
+    paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == paragraph_id)
+        .and_then(|paragraph| paragraph.segment_number)
+}
+
 fn emit_top_level_entry_flow(
     out: &mut String,
     paragraphs: &[HirParagraph],
     label_map: &HashMap<HirParagraphId, usize>,
+    ctx: &CodegenContext,
 ) {
     let top_level_next_map = build_top_level_next_label_map(paragraphs, label_map);
     let top_level_entry_ids = top_level_group_entry_ids(paragraphs, label_map);
@@ -1623,7 +1672,14 @@ fn emit_top_level_entry_flow(
                 "    if (!_goto_target) _goto_target = {first_label_id};\n"
             ));
         }
-        emit_inline_dispatch_loop(out, paragraphs, label_map, Some(&top_level_next_map), None);
+        emit_inline_dispatch_loop(
+            out,
+            paragraphs,
+            label_map,
+            Some(&top_level_next_map),
+            None,
+            ctx,
+        );
     }
 }
 
@@ -1807,6 +1863,7 @@ fn emit_runtime_declarations(out: &mut String) {
 fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
+    let empty_access_modes: HashMap<smol_str::SmolStr, u32> = HashMap::new();
     let empty_assignments: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_optionals: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
@@ -1819,6 +1876,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
         &[],
         &empty_records,
         &empty_orgs,
+        &empty_access_modes,
         &empty_assignments,
         &empty_optionals,
         &empty_relative_keys,
@@ -1953,6 +2011,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
 fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
+    let empty_access_modes: HashMap<smol_str::SmolStr, u32> = HashMap::new();
     let empty_assignments: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_optionals: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
@@ -1965,6 +2024,7 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
         &[],
         &empty_records,
         &empty_orgs,
+        &empty_access_modes,
         &empty_assignments,
         &empty_optionals,
         &empty_relative_keys,

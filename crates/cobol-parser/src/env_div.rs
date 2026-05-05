@@ -354,6 +354,10 @@ impl Parser {
                 self.advance();
                 self.eat_is();
                 relative_key = Some(self.parse_qualified_name()?);
+            } else if self.check(TokenKind::Relative) && self.peek(1).kind == TokenKind::Identifier
+            {
+                self.advance();
+                relative_key = Some(self.parse_qualified_name()?);
             } else if self.check(TokenKind::AlternateRecordKey) {
                 let warning_span = self.span();
                 self.advance();

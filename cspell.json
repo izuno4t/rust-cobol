@@ -79,6 +79,7 @@
         "cobol-terms"
       ],
       "ignoreRegExpList": [
+        "/\\b[A-Z0-9]{2,}\\b/",
         "/\\b[A-Z]{2,10}TEST\\b/",
         "/\\b(AABB|ABCABC|XBCABC|XXBABC|XXBBXXCCXX|XBCXBC|CDEFG|EDCBA|AABABC|AAABBC|AABBAACCA|AABBAACCAA|CCCCCAAAAABBBBB|CCCCCBBBBBAAAAA|AAAAABBBBBCCCCC|HELO|helo)\\b/",
         "/\\b(NOTAKEYWORD|SUBPROG|MULDIV|VARI|DECLTEST|FULLTEST)\\b/",
@@ -93,6 +94,7 @@
         "cobol-terms"
       ],
       "ignoreRegExpList": [
+        "/\\b[A-Z0-9]{2,}\\b/",
         "/\\b(NOTAKEYWORD|SUBPROG|MULDIV|FULLTEST|DECLTEST)\\b/"
       ]
     }
