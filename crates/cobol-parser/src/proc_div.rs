@@ -10,6 +10,36 @@ use smol_str::SmolStr;
 use crate::parser::Parser;
 
 impl Parser {
+    fn parse_optional_section_segment_number(&mut self, span: Span) {
+        if !self.check(TokenKind::IntegerLiteral) {
+            return;
+        }
+
+        let number = self.current_text().parse::<u32>().ok();
+        self.advance();
+
+        let Some(number) = number else {
+            return;
+        };
+
+        if self.object_segment_limit.is_some_and(|limit| limit >= 20)
+            || (self.object_segment_limit.is_none() && number == 1)
+        {
+            self.warning_at(span, "SECTION segment number is an obsolete feature");
+        } else if self.object_segment_limit.is_some_and(|limit| limit < 20)
+            && self.procedure_segment_numbers.contains(&number)
+            && self.last_procedure_segment_number != Some(number)
+        {
+            self.warning_at(
+                span,
+                "non-contiguous duplicate SECTION segment number is a non-conforming feature",
+            );
+        }
+
+        self.procedure_segment_numbers.push(number);
+        self.last_procedure_segment_number = Some(number);
+    }
+
     fn check_procedure_name_token(&self) -> bool {
         self.check(TokenKind::Identifier)
             || self.current().kind.is_keyword()
@@ -152,10 +182,7 @@ impl Parser {
             let section_start = self.span();
             let section_name = self.expect_procedure_name()?;
             self.expect(TokenKind::Section)?;
-            // Optional segment/priority number (e.g., SECTION 00.)
-            if self.check(TokenKind::IntegerLiteral) {
-                self.advance();
-            }
+            self.parse_optional_section_segment_number(section_start);
             self.expect(TokenKind::Period)?;
 
             // Parse USE statement
@@ -336,12 +363,10 @@ impl Parser {
                         paragraphs.push(para);
                     }
 
+                    let section_header_span = self.span();
                     let section_name = self.expect_procedure_name()?;
                     self.advance(); // SECTION
-                                    // Optional segment/priority number (e.g., SECTION 00.)
-                    if self.check(TokenKind::IntegerLiteral) {
-                        self.advance();
-                    }
+                    self.parse_optional_section_segment_number(section_header_span);
                     self.expect(TokenKind::Period)?;
 
                     let section_start = self.span();
@@ -612,6 +637,12 @@ impl Parser {
         }
 
         let corresponding = self.eat(TokenKind::Corresponding).is_some();
+        if corresponding {
+            self.warning_at(
+                start_span,
+                "MOVE CORRESPONDING is a non-conforming high subset feature",
+            );
+        }
         let from = self.parse_expr()?;
         while self.check(TokenKind::Comma) || self.check(TokenKind::Semicolon) {
             self.advance();
@@ -663,6 +694,10 @@ impl Parser {
     fn parse_compute_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Compute)?;
+        self.warning_at(
+            start_span,
+            "COMPUTE statement is a non-conforming high subset feature",
+        );
 
         let mut targets = Vec::new();
         loop {
@@ -697,6 +732,12 @@ impl Parser {
         self.expect(TokenKind::Add)?;
 
         let corresponding = self.eat(TokenKind::Corresponding).is_some();
+        if corresponding {
+            self.warning_at(
+                start_span,
+                "ADD CORRESPONDING is a non-conforming high subset feature",
+            );
+        }
 
         let mut operands = Vec::new();
         while !self.check(TokenKind::To) && !self.check(TokenKind::Giving) && !self.at_eof() {
@@ -765,6 +806,12 @@ impl Parser {
         self.expect(TokenKind::Subtract)?;
 
         let corresponding = self.eat(TokenKind::Corresponding).is_some();
+        if corresponding {
+            self.warning_at(
+                start_span,
+                "SUBTRACT CORRESPONDING is a non-conforming high subset feature",
+            );
+        }
 
         let mut operands = Vec::new();
         while !self.check(TokenKind::From) && !self.at_eof() {
@@ -846,6 +893,10 @@ impl Parser {
     fn parse_multiply_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Multiply)?;
+        self.warning_at(
+            start_span,
+            "MULTIPLY statement is a non-conforming high subset feature",
+        );
 
         let operand = self.parse_expr()?;
         self.expect(TokenKind::By)?;
@@ -963,6 +1014,10 @@ impl Parser {
                 }
             }
             if self.eat(TokenKind::Remainder).is_some() {
+                self.warning_at(
+                    start_span,
+                    "DIVIDE REMAINDER phrase is a non-conforming high subset feature",
+                );
                 remainder = Some(self.parse_qualified_name()?);
             }
             let (on_size_error, not_on_size_error) =
@@ -1037,6 +1092,10 @@ impl Parser {
         }
 
         if self.eat(TokenKind::Remainder).is_some() {
+            self.warning_at(
+                start_span,
+                "DIVIDE REMAINDER phrase is a non-conforming high subset feature",
+            );
             remainder = Some(self.parse_qualified_name()?);
         }
 
@@ -1067,6 +1126,10 @@ impl Parser {
 
         while !self.at_statement_terminator() && !self.at_statement_start() && !self.at_eof() {
             if self.check_identifier("UPON") {
+                self.warning_at(
+                    start_span,
+                    "DISPLAY UPON is a non-conforming high subset feature",
+                );
                 self.advance();
                 upon = Some(self.expect_identifier()?);
                 continue;
@@ -1131,6 +1194,10 @@ impl Parser {
                     Some(AcceptSource::Date)
                 }
             } else if self.check_identifier("DAY-OF-WEEK") {
+                self.warning_at(
+                    start_span,
+                    "ACCEPT FROM DAY-OF-WEEK is a non-conforming high subset feature",
+                );
                 self.advance();
                 Some(AcceptSource::DayOfWeek)
             } else if self.check_identifier("DAY") {
@@ -1368,6 +1435,10 @@ impl Parser {
     fn parse_evaluate_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Evaluate)?;
+        self.warning_at(
+            start_span,
+            "EVALUATE statement is a non-conforming high subset feature",
+        );
 
         let mut subjects = Vec::new();
         let subject = self.parse_evaluate_subject()?;
@@ -2187,7 +2258,30 @@ impl Parser {
                 && !self.at_statement_terminator()
                 && !Self::is_open_mode_token(self.current().kind)
             {
+                if self.check_identifier("WITH") {
+                    let warning_span = self.span();
+                    self.advance();
+                    if self.check_identifier("NO") {
+                        self.advance();
+                        self.eat_identifier("REWIND");
+                        self.warning_at(
+                            warning_span,
+                            "OPEN WITH NO REWIND is a non-conforming file feature",
+                        );
+                        continue;
+                    }
+                }
+                if self.check_identifier("REVERSED") || self.check_identifier("REVERSE") {
+                    let warning_span = self.span();
+                    self.advance();
+                    self.warning_at(warning_span, "OPEN REVERSED is an obsolete feature");
+                    continue;
+                }
+
                 let file_name = self.advance().text;
+                if matches!(mode, OpenMode::Extend) {
+                    self.warning_at(start_span, "OPEN EXTEND is a non-conforming file feature");
+                }
                 entries.push(OpenEntry { mode, file_name });
                 // Skip optional comma separator between file names
                 if self.check(TokenKind::Comma) {
@@ -2222,7 +2316,33 @@ impl Parser {
             && !self.at_eof()
         {
             let file_name = self.advance().text;
+            let option_span = self.span();
             let close_option = self.parse_close_option();
+            match close_option {
+                Some(CloseOption::Reel) | Some(CloseOption::Unit) => {
+                    if self.check_identifier("FOR") {
+                        self.advance();
+                        self.eat_identifier("REMOVAL");
+                    }
+                    self.warning_at(
+                        option_span,
+                        "CLOSE REEL/UNIT is a non-conforming file feature",
+                    );
+                }
+                Some(CloseOption::WithNoRewind) => {
+                    self.warning_at(
+                        option_span,
+                        "CLOSE WITH NO REWIND is a non-conforming file feature",
+                    );
+                }
+                Some(CloseOption::WithLock) => {
+                    self.warning_at(
+                        option_span,
+                        "CLOSE WITH LOCK is a non-conforming file feature",
+                    );
+                }
+                None => {}
+            }
             files.push(CloseEntry {
                 file_name,
                 close_option,
@@ -2275,6 +2395,12 @@ impl Parser {
 
         // Skip optional NEXT keyword (parsed as identifier)
         let is_next = self.eat_identifier("NEXT");
+        if is_next {
+            self.warning_at(
+                start_span,
+                "READ NEXT is a non-conforming sequential input-output feature",
+            );
+        }
         // Skip optional RECORD keyword
         self.eat(TokenKind::Record);
 
@@ -2498,6 +2624,12 @@ impl Parser {
                 "WRITE with INVALID KEY/NOT INVALID KEY is a non-conforming indexed feature",
             );
         }
+        if !at_eop.is_empty() || !not_at_eop.is_empty() {
+            self.warning_at(
+                start_span,
+                "WRITE with END-OF-PAGE is a non-conforming sequential input-output feature",
+            );
+        }
 
         let end_span = self.span();
         Ok(Statement::Write(Box::new(WriteStatement {
@@ -2516,6 +2648,10 @@ impl Parser {
     fn parse_initialize_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Initialize)?;
+        self.warning_at(
+            start_span,
+            "INITIALIZE statement is a non-conforming high subset feature",
+        );
 
         let mut targets = Vec::new();
         while (self.check(TokenKind::Identifier) || self.current().kind.is_keyword())
@@ -2590,6 +2726,10 @@ impl Parser {
     fn parse_set_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Set)?;
+        self.warning_at(
+            start_span,
+            "SET statement is a non-conforming high subset feature",
+        );
 
         if self.check(TokenKind::Identifier) || self.current().kind.is_keyword() {
             let checkpoint = self.checkpoint();
@@ -2712,6 +2852,10 @@ impl Parser {
     fn parse_string_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::String)?;
+        self.warning_at(
+            start_span,
+            "STRING statement is a non-conforming high subset feature",
+        );
 
         let mut sources = Vec::new();
         let mut items = Vec::new();
@@ -2784,6 +2928,10 @@ impl Parser {
     fn parse_unstring_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Unstring)?;
+        self.warning_at(
+            start_span,
+            "UNSTRING statement is a non-conforming high subset feature",
+        );
 
         let source = self.parse_qualified_name()?;
 
@@ -2885,6 +3033,10 @@ impl Parser {
     fn parse_inspect_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Inspect)?;
+        self.warning_at(
+            start_span,
+            "INSPECT statement is a non-conforming high subset feature",
+        );
 
         let target = self.parse_qualified_name()?;
 
@@ -3190,6 +3342,12 @@ impl Parser {
         };
 
         let (invalid_key, not_invalid_key) = self.parse_invalid_key_phrases(TokenKind::EndStart)?;
+        if !invalid_key.is_empty() || !not_invalid_key.is_empty() {
+            self.warning_at(
+                start_span,
+                "START with INVALID KEY/NOT INVALID KEY is a non-conforming file feature",
+            );
+        }
 
         let end_span = self.span();
         Ok(Statement::Start(Box::new(StartStatement {
@@ -3233,6 +3391,10 @@ impl Parser {
     fn parse_search_statement(&mut self) -> Result<Statement, ()> {
         let start_span = self.span();
         self.expect(TokenKind::Search)?;
+        self.warning_at(
+            start_span,
+            "SEARCH statement is a non-conforming high subset feature",
+        );
 
         // SEARCH ALL = binary search
         let all = self.eat(TokenKind::All).is_some();

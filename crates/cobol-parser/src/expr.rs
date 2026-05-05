@@ -38,6 +38,12 @@ impl Parser {
         let mut subscripts = Vec::new();
         let mut ref_mod = None;
         self.parse_subscripts_into(&mut subscripts);
+        if !subscripts.is_empty() {
+            self.warning_at(
+                start_span,
+                "subscripted data reference is a non-conforming high subset feature",
+            );
+        }
 
         let mut qualifiers = Vec::new();
         while self.check(TokenKind::Of) || self.check(TokenKind::In) {
@@ -46,11 +52,21 @@ impl Parser {
             qualifiers.push(qual);
             self.parse_subscripts_into(&mut subscripts);
         }
+        if !qualifiers.is_empty() {
+            self.warning_at(
+                start_span,
+                "qualified data reference is a non-conforming high subset feature",
+            );
+        }
 
         if self.check(TokenKind::LeftParen) && self.is_reference_modification_ahead() {
             // Reference modification: consume (start:length)
             let (ref_start, ref_length) = self.parse_reference_modification()?;
             ref_mod = Some((Box::new(ref_start), ref_length.map(Box::new)));
+            self.warning_at(
+                start_span,
+                "reference modification is a non-conforming high subset feature",
+            );
         }
 
         let end_span = self.span();
@@ -472,6 +488,20 @@ impl Parser {
                 self.advance();
                 // ALL followed by a string literal
                 if let Some(lit) = self.try_parse_literal() {
+                    match &lit {
+                        Literal::FigurativeConstant(FigurativeConstant::HighValue) => {
+                            return Some(Literal::FigurativeConstant(
+                                FigurativeConstant::HighValue,
+                            ));
+                        }
+                        Literal::FigurativeConstant(FigurativeConstant::LowValue) => {
+                            return Some(Literal::FigurativeConstant(FigurativeConstant::LowValue));
+                        }
+                        Literal::FigurativeConstant(FigurativeConstant::Quote) => {
+                            return Some(Literal::FigurativeConstant(FigurativeConstant::Quote));
+                        }
+                        _ => {}
+                    }
                     let s = match &lit {
                         Literal::String(s) => s.clone(),
                         Literal::FigurativeConstant(FigurativeConstant::Zero) => "0".into(),
@@ -602,6 +632,10 @@ impl Parser {
         let mut left = self.parse_and_condition()?;
 
         while self.check(TokenKind::Or) {
+            self.warning_at(
+                self.span(),
+                "compound OR condition is a non-conforming high subset feature",
+            );
             self.advance();
 
             // Handle abbreviated conditions: IF A > B OR < C
@@ -823,6 +857,10 @@ impl Parser {
         let mut left = self.parse_not_condition()?;
 
         while self.check(TokenKind::And) {
+            self.warning_at(
+                self.span(),
+                "compound AND condition is a non-conforming high subset feature",
+            );
             self.advance();
 
             // Handle abbreviated conditions: IF A > B AND < C
@@ -858,6 +896,7 @@ impl Parser {
                     if is_not {
                         abbreviated = Condition::Not(Box::new(abbreviated));
                     }
+                    abbreviated = self.wrap_abbreviated_or(abbreviated)?;
                     left = Condition::And(Box::new(left), Box::new(abbreviated));
                     continue;
                 }
@@ -929,6 +968,108 @@ impl Parser {
         }
 
         Ok(left)
+    }
+
+    fn wrap_abbreviated_or(&mut self, mut or_right: Condition) -> Result<Condition, ()> {
+        while self.check(TokenKind::Or) {
+            self.advance();
+
+            if self.check_identifier("IS") {
+                let next = self.peek(1).kind;
+                if next == TokenKind::Not || is_comparison_op_kind(next) {
+                    self.advance();
+                }
+            }
+
+            let or_is_not = self.check(TokenKind::Not);
+            let or_has_abbrev = if or_is_not {
+                is_comparison_op_kind(self.peek(1).kind)
+            } else {
+                self.is_comparison_op()
+            };
+            if or_has_abbrev {
+                if let Some(ref left_expr) = extract_comparison_left(&or_right) {
+                    if or_is_not {
+                        self.advance();
+                    }
+                    let op = self.parse_comparison_op()?;
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let mut or_abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    if or_is_not {
+                        or_abbreviated = Condition::Not(Box::new(or_abbreviated));
+                    }
+                    or_right = Condition::Or(Box::new(or_right), Box::new(or_abbreviated));
+                    continue;
+                }
+            }
+
+            if is_abbreviated_subject_only(self.current().kind)
+                && !is_comparison_op_kind(self.peek(1).kind)
+                && self.peek(1).kind != TokenKind::Not
+            {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&or_right) {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let or_abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    or_right = Condition::Or(Box::new(or_right), Box::new(or_abbreviated));
+                    continue;
+                }
+            }
+
+            if (self.current().kind == TokenKind::Identifier || self.current().kind.is_keyword())
+                && self.current().kind != TokenKind::Not
+                && self.current().kind != TokenKind::Function
+                && !is_comparison_op_kind(self.peek(1).kind)
+                && self.peek(1).kind != TokenKind::Not
+                && self.peek(1).kind != TokenKind::Of
+                && self.peek(1).kind != TokenKind::In
+                && self.peek(1).kind != TokenKind::LeftParen
+                && !is_sign_or_class_condition_kind(self.peek(1).kind)
+                && !self.starts_full_condition_after_identifier()
+            {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&or_right) {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let or_abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    or_right = Condition::Or(Box::new(or_right), Box::new(or_abbreviated));
+                    continue;
+                }
+            }
+
+            if matches!(self.current().kind, TokenKind::Minus | TokenKind::Plus) {
+                if let Some((ref left_expr, op)) = extract_comparison_left_and_op(&or_right) {
+                    let right_expr = self.parse_expr()?;
+                    let span = self.span();
+                    let or_abbreviated = Condition::Comparison {
+                        left: left_expr.clone(),
+                        op,
+                        right: right_expr,
+                        span,
+                    };
+                    or_right = Condition::Or(Box::new(or_right), Box::new(or_abbreviated));
+                    continue;
+                }
+            }
+
+            break;
+        }
+        Ok(or_right)
     }
 
     fn parse_not_condition(&mut self) -> Result<Condition, ()> {
@@ -1015,6 +1156,10 @@ impl Parser {
 
         // Sign conditions
         if self.check(TokenKind::Positive) {
+            self.warning_at(
+                self.span(),
+                "sign condition is a non-conforming high subset feature",
+            );
             self.advance();
             return Ok(Condition::SignCondition {
                 operand: expr,
@@ -1024,6 +1169,10 @@ impl Parser {
             });
         }
         if self.check(TokenKind::Negative) {
+            self.warning_at(
+                self.span(),
+                "sign condition is a non-conforming high subset feature",
+            );
             self.advance();
             return Ok(Condition::SignCondition {
                 operand: expr,
@@ -1033,6 +1182,10 @@ impl Parser {
             });
         }
         if self.check(TokenKind::Zero) {
+            self.warning_at(
+                self.span(),
+                "sign condition is a non-conforming high subset feature",
+            );
             self.advance();
             return Ok(Condition::SignCondition {
                 operand: expr,
@@ -1048,6 +1201,12 @@ impl Parser {
             let op = if is_not { negate_compare_op(op) } else { op };
             let right = self.parse_expr()?;
             let span = self.span();
+            if expr_has_arithmetic_operator(&expr) || expr_has_arithmetic_operator(&right) {
+                self.warning_at(
+                    span,
+                    "arithmetic expression condition is a non-conforming high subset feature",
+                );
+            }
             return Ok(Condition::Comparison {
                 left: expr,
                 op,
@@ -1160,6 +1319,10 @@ impl Parser {
     }
 }
 
+fn expr_has_arithmetic_operator(expr: &Expr) -> bool {
+    matches!(expr, Expr::BinaryOp { .. } | Expr::UnaryOp { .. })
+}
+
 /// Negate a comparison operator (for NOT EQUAL, etc.).
 fn negate_compare_op(op: CompareOp) -> CompareOp {
     match op {
@@ -1241,7 +1404,9 @@ fn extract_comparison_left(cond: &Condition) -> Option<Expr> {
 fn extract_comparison_left_and_op(cond: &Condition) -> Option<(Expr, CompareOp)> {
     match cond {
         Condition::Comparison { left, op, .. } => Some((left.clone(), *op)),
-        Condition::And(_, right) | Condition::Or(_, right) => extract_comparison_left_and_op(right),
+        Condition::And(left, right) | Condition::Or(left, right) => {
+            extract_comparison_left_and_op(right).or_else(|| extract_comparison_left_and_op(left))
+        }
         Condition::Not(inner) => extract_comparison_left_and_op(inner),
         _ => None,
     }

@@ -383,6 +383,7 @@ pub fn generate_c(program: &HirProgram) -> String {
 
         // Runtime function declarations
         emit_runtime_declarations(&mut out);
+        emit_collating_sequence_table(&mut out, &ctx);
 
         // Global data items
         let t_data = std::time::Instant::now();
@@ -742,6 +743,21 @@ pub fn generate_c(program: &HirProgram) -> String {
 
         out
     })
+}
+
+fn emit_collating_sequence_table(out: &mut String, ctx: &CodegenContext) {
+    let Some(weights) = ctx.collating_weights() else {
+        return;
+    };
+    out.push_str("static const uint16_t COBOL_COLLATING_WEIGHTS[256] = {\n");
+    for chunk in weights.chunks(16) {
+        out.push_str("    ");
+        for weight in chunk {
+            out.push_str(&format!("{weight}, "));
+        }
+        out.push('\n');
+    }
+    out.push_str("};\n\n");
 }
 
 fn emit_debug_special_registers(out: &mut String, program: &HirProgram) {

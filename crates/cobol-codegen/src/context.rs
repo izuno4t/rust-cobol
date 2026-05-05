@@ -1,5 +1,5 @@
 use super::*;
-use cobol_hir::HirParagraphId;
+use cobol_hir::{HirClassRange, HirParagraphId};
 use std::cell::{Cell, RefCell};
 
 pub(crate) type FileStatusMap = HashMap<String, String>;
@@ -58,9 +58,12 @@ pub(crate) struct CodegenContext {
     decimal_names: HashSet<String>,
     group_names: HashSet<String>,
     alpha_names: HashSet<String>,
+    index_names: HashSet<String>,
     display_numeric_sizes: HashMap<String, u32>,
     display_numeric_scales: HashMap<String, u32>,
     decimal_point_is_comma: bool,
+    special_class_conditions: HashMap<String, Vec<HirClassRange>>,
+    collating_weights: Option<[u16; 256]>,
     group_alpha_names: HashSet<String>,
     justified_names: HashSet<String>,
     data_item_size_cache: HashMap<String, u32>,
@@ -110,6 +113,11 @@ impl CodegenContext {
             .iter()
             .any(|decl| decl.use_kind == HirDeclarativeUse::ForDebugging);
         ctx.decimal_point_is_comma = program.decimal_point_is_comma;
+        ctx.special_class_conditions = sanitize_class_conditions(&program.special_class_conditions);
+        ctx.collating_weights = program
+            .program_collating_sequence
+            .as_ref()
+            .map(|sequence| build_collating_weights(sequence));
         ctx.alterable_paragraphs = collect_alterable_paragraphs(program);
         ctx
     }
@@ -186,6 +194,9 @@ impl CodegenContext {
         let mut alpha_names = parent.alpha_names.clone();
         alpha_names.extend(build_alpha_names(&program.data_items));
 
+        let mut index_names = parent.index_names.clone();
+        index_names.extend(build_index_names(&program.data_items));
+
         let mut display_numeric_sizes = parent.display_numeric_sizes.clone();
         display_numeric_sizes.extend(build_display_numeric_sizes(&program.data_items));
         let mut display_numeric_scales = parent.display_numeric_scales.clone();
@@ -204,6 +215,9 @@ impl CodegenContext {
         occurs_counts.extend(build_occurs_counts(&program.data_items));
         let mut redefines_occurs_strides = parent.redefines_occurs_strides.clone();
         redefines_occurs_strides.extend(build_redefines_occurs_strides(&program.data_items));
+        let mut special_class_conditions = parent.special_class_conditions.clone();
+        special_class_conditions
+            .extend(sanitize_class_conditions(&program.special_class_conditions));
 
         let mut fd_max_record_sizes = parent.fd_max_record_sizes.clone();
         fd_max_record_sizes.extend(build_fd_max_record_sizes(
@@ -230,9 +244,16 @@ impl CodegenContext {
             decimal_names,
             group_names,
             alpha_names,
+            index_names,
             display_numeric_sizes,
             display_numeric_scales,
             decimal_point_is_comma: program.decimal_point_is_comma,
+            special_class_conditions,
+            collating_weights: program
+                .program_collating_sequence
+                .as_ref()
+                .map(|sequence| build_collating_weights(sequence))
+                .or(parent.collating_weights),
             group_alpha_names,
             justified_names,
             data_item_size_cache,
@@ -298,9 +319,12 @@ impl CodegenContext {
             decimal_names: build_decimal_names(data_items),
             group_names: build_group_names(data_items),
             alpha_names: build_alpha_names(data_items),
+            index_names: build_index_names(data_items),
             display_numeric_sizes: build_display_numeric_sizes(data_items),
             display_numeric_scales: build_display_numeric_scales(data_items),
             decimal_point_is_comma: false,
+            special_class_conditions: HashMap::new(),
+            collating_weights: None,
             group_alpha_names: build_group_alpha_names(data_items),
             justified_names: build_justified_names(data_items),
             data_item_size_cache: build_data_item_size_cache(data_items),
@@ -340,6 +364,16 @@ impl CodegenContext {
 
     pub(crate) fn decimal_point_is_comma(&self) -> bool {
         self.decimal_point_is_comma
+    }
+
+    pub(crate) fn special_class_condition(&self, name: &str) -> Option<&[HirClassRange]> {
+        self.special_class_conditions
+            .get(&sanitize_name(name))
+            .map(Vec::as_slice)
+    }
+
+    pub(crate) fn collating_weights(&self) -> Option<&[u16; 256]> {
+        self.collating_weights.as_ref()
     }
 
     pub(crate) fn set_label_map(&self, map: HashMap<HirParagraphId, usize>) {
@@ -453,6 +487,10 @@ impl CodegenContext {
 
     pub(crate) fn is_alpha_name(&self, c_name: &str) -> bool {
         self.alpha_names.contains(c_name)
+    }
+
+    pub(crate) fn is_index_name(&self, c_name: &str) -> bool {
+        self.index_names.contains(c_name)
     }
 
     pub(crate) fn is_justified_name(&self, c_name: &str) -> bool {
@@ -608,6 +646,59 @@ fn build_communication_map(
         .collect()
 }
 
+fn sanitize_class_conditions(
+    classes: &HashMap<smol_str::SmolStr, Vec<HirClassRange>>,
+) -> HashMap<String, Vec<HirClassRange>> {
+    classes
+        .iter()
+        .map(|(name, ranges)| (sanitize_name(name), ranges.clone()))
+        .collect()
+}
+
+fn build_collating_weights(sequence: &[Vec<smol_str::SmolStr>]) -> [u16; 256] {
+    let mut weights = [0_u16; 256];
+    let mut next_rank = 1_u16;
+    let mut assigned = [false; 256];
+
+    for group in sequence {
+        let rank = next_rank;
+        let mut assigned_any = false;
+        for value in group {
+            for byte in collating_value_bytes(value) {
+                weights[byte as usize] = rank;
+                assigned[byte as usize] = true;
+                assigned_any = true;
+            }
+        }
+        if assigned_any {
+            next_rank = next_rank.saturating_add(1);
+        }
+    }
+
+    weights[0] = 1;
+    assigned[0] = true;
+    weights[255] = u16::MAX;
+    assigned[255] = true;
+
+    for byte in 0_u16..=255 {
+        if !assigned[byte as usize] {
+            weights[byte as usize] = next_rank.saturating_add(byte);
+        }
+    }
+    weights
+}
+
+fn collating_value_bytes(value: &str) -> Vec<u8> {
+    match value.to_ascii_uppercase().as_str() {
+        "LOW-VALUE" | "LOW-VALUES" => vec![0],
+        "HIGH-VALUE" | "HIGH-VALUES" => vec![u8::MAX],
+        "SPACE" | "SPACES" => vec![b' '],
+        "QUOTE" | "QUOTES" => vec![b'"'],
+        "ZERO" | "ZEROS" | "ZEROES" => vec![b'0'],
+        _ => value.as_bytes().to_vec(),
+    }
+}
+
 fn build_alpha_names(items: &[HirDataItem]) -> HashSet<String> {
     fn collect(items: &[HirDataItem], acc: &mut HashSet<String>) {
         for item in items {
@@ -733,7 +824,13 @@ pub(crate) fn build_display_numeric_sizes(data_items: &[HirDataItem]) -> HashMap
                         .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
                 })
                 || group_members_need_raw_display_layout(members);
-            collect_display_numeric_sizes(&mut map, members, raw_display_layout);
+            let root_name = sanitize_name(&item.name);
+            collect_display_numeric_sizes_with_qualifiers(
+                &mut map,
+                members,
+                raw_display_layout,
+                &[root_name],
+            );
         }
     }
     map
@@ -771,20 +868,30 @@ pub(crate) fn build_display_numeric_scales(data_items: &[HirDataItem]) -> HashMa
                         .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
                 })
                 || group_members_need_raw_display_layout(members);
-            collect_display_numeric_scales(&mut map, members, raw_display_layout);
+            let root_name = sanitize_name(&item.name);
+            collect_display_numeric_scales_with_qualifiers(
+                &mut map,
+                members,
+                raw_display_layout,
+                &[root_name],
+            );
         }
     }
     map
 }
 
-pub(crate) fn collect_display_numeric_sizes(
+fn collect_display_numeric_sizes_with_qualifiers(
     map: &mut HashMap<String, u32>,
     members: &[HirDataItem],
     raw_display_layout: bool,
+    ancestor_names: &[String],
 ) {
     let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
         let c_name = dedup_group_member_context_name(member, &mut member_name_counts);
+        let mut qualified_names = ancestor_names.to_vec();
+        qualified_names.push(c_name.clone());
+        let qualified_key = qualified_names.join("__");
         match &member.data_type {
             HirType::Numeric { size, .. } if raw_display_layout => {
                 let storage_size = if member.sign.is_some_and(|sign| sign.separate) {
@@ -793,14 +900,16 @@ pub(crate) fn collect_display_numeric_sizes(
                     *size
                 };
                 map.insert(c_name, storage_size);
+                map.insert(qualified_key, storage_size);
             }
             HirType::Group {
                 members: sub_members,
                 ..
-            } => collect_display_numeric_sizes(
+            } => collect_display_numeric_sizes_with_qualifiers(
                 map,
                 sub_members,
                 raw_display_layout || group_members_need_raw_display_layout(sub_members),
+                &qualified_names,
             ),
             _ => {}
         }
@@ -820,25 +929,31 @@ pub(crate) fn collect_display_numeric_sizes(
     }
 }
 
-pub(crate) fn collect_display_numeric_scales(
+fn collect_display_numeric_scales_with_qualifiers(
     map: &mut HashMap<String, u32>,
     members: &[HirDataItem],
     raw_display_layout: bool,
+    ancestor_names: &[String],
 ) {
     let mut member_name_counts: HashMap<String, u32> = HashMap::new();
     for member in members {
         let c_name = dedup_group_member_context_name(member, &mut member_name_counts);
+        let mut qualified_names = ancestor_names.to_vec();
+        qualified_names.push(c_name.clone());
+        let qualified_key = qualified_names.join("__");
         match &member.data_type {
             HirType::Numeric { decimal_places, .. } if raw_display_layout => {
                 map.insert(c_name, *decimal_places);
+                map.insert(qualified_key, *decimal_places);
             }
             HirType::Group {
                 members: sub_members,
                 ..
-            } => collect_display_numeric_scales(
+            } => collect_display_numeric_scales_with_qualifiers(
                 map,
                 sub_members,
                 raw_display_layout || group_members_need_raw_display_layout(sub_members),
+                &qualified_names,
             ),
             _ => {}
         }
@@ -905,6 +1020,27 @@ pub(crate) fn build_group_alpha_names(data_items: &[HirDataItem]) -> HashSet<Str
         }
     }
     set
+}
+
+pub(crate) fn build_index_names(data_items: &[HirDataItem]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    collect_index_names(&mut set, data_items, &[]);
+    set
+}
+
+fn collect_index_names(set: &mut HashSet<String>, items: &[HirDataItem], ancestors: &[String]) {
+    for item in items {
+        let c_name = sanitize_name(&item.name);
+        let mut qualified = ancestors.to_vec();
+        qualified.push(c_name.clone());
+        if matches!(item.data_type, HirType::Index) {
+            set.insert(c_name);
+            set.insert(qualified.join("__"));
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            collect_index_names(set, members, &qualified);
+        }
+    }
 }
 
 pub(crate) fn collect_group_alpha_names(set: &mut HashSet<String>, members: &[HirDataItem]) {
@@ -1064,12 +1200,23 @@ fn populate_occurs_counts(items: &[HirDataItem], map: &mut HashMap<String, u32>)
 }
 
 pub(crate) fn populate_size_cache(items: &[HirDataItem], map: &mut HashMap<String, u32>) {
+    populate_size_cache_with_qualifiers(items, map, &[]);
+}
+
+fn populate_size_cache_with_qualifiers(
+    items: &[HirDataItem],
+    map: &mut HashMap<String, u32>,
+    ancestor_names: &[String],
+) {
     for item in items {
         let c_name = sanitize_name(&item.name);
-        let size = data_item_byte_size(&item.data_type);
+        let size = data_item_storage_size(item);
         map.entry(c_name).or_insert(size);
+        let mut qualified_names = ancestor_names.to_vec();
+        qualified_names.push(sanitize_name(&item.name));
+        map.insert(qualified_names.join("__"), size);
         if let HirType::Group { members, .. } = &item.data_type {
-            populate_size_cache(members, map);
+            populate_size_cache_with_qualifiers(members, map, &qualified_names);
         }
     }
 }

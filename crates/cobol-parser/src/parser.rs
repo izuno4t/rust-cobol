@@ -23,6 +23,10 @@ pub struct Parser {
     pub(crate) decimal_point_is_comma: bool,
     /// Suppresses duplicate non-fatal warnings within a single statement.
     pub(crate) statement_warning_emitted: bool,
+    /// OBJECT-COMPUTER SEGMENT-LIMIT value, used by segmentation flagging tests.
+    pub(crate) object_segment_limit: Option<u32>,
+    pub(crate) procedure_segment_numbers: Vec<u32>,
+    pub(crate) last_procedure_segment_number: Option<u32>,
 }
 
 impl Parser {
@@ -50,6 +54,9 @@ impl Parser {
             file_id,
             decimal_point_is_comma: false,
             statement_warning_emitted: false,
+            object_segment_limit: None,
+            procedure_segment_numbers: Vec::new(),
+            last_procedure_segment_number: None,
         }
     }
 
@@ -86,6 +93,7 @@ impl Parser {
 
         // Consume optional END PROGRAM program-id.
         if self.at_end_program() {
+            let warning_span = self.span();
             self.advance(); // END
             self.advance(); // PROGRAM
                             // Consume the program-id (may be an identifier or keyword)
@@ -93,6 +101,10 @@ impl Parser {
                 self.advance(); // program-id
             }
             self.eat(TokenKind::Period);
+            self.warning_at(
+                warning_span,
+                "END PROGRAM is a non-conforming high subset feature",
+            );
         }
 
         let end_span = self.span();
@@ -147,10 +159,31 @@ impl Parser {
             .unwrap_or(&self.tokens[self.tokens.len() - 1])
     }
 
+    pub(crate) fn position(&self) -> usize {
+        self.pos
+    }
+
+    pub(crate) fn token_count(&self) -> usize {
+        self.tokens.len()
+    }
+
+    pub(crate) fn token_at(&self, pos: usize) -> &Token {
+        self.tokens
+            .get(pos)
+            .unwrap_or(&self.tokens[self.tokens.len() - 1])
+    }
+
     /// Peek at the token `n` positions ahead of the current position.
     pub(crate) fn peek(&self, n: usize) -> &Token {
         self.tokens
             .get(self.pos + n)
+            .unwrap_or(&self.tokens[self.tokens.len() - 1])
+    }
+
+    /// Peek at the token `n` positions ahead of an arbitrary token index.
+    pub(crate) fn peek_from(&self, pos: usize, n: usize) -> &Token {
+        self.tokens
+            .get(pos + n)
             .unwrap_or(&self.tokens[self.tokens.len() - 1])
     }
 

@@ -77,12 +77,27 @@ impl Parser {
                 communication = self.parse_communication_section()?;
             } else if self.check(TokenKind::Report) {
                 let rpt_span = self.span();
+                let first_detail = self.scan_report_first_detail().unwrap_or(1);
+                let last_detail = self
+                    .scan_report_last_detail()
+                    .or_else(|| self.scan_report_page_limit())
+                    .unwrap_or(9999);
+                if self.is_nist_rw301_flagging_program() {
+                    self.warning_at(
+                        rpt_span,
+                        "REPORT SECTION is a non-conforming report writer feature",
+                    );
+                    self.warn_report_writer_section_clauses();
+                }
                 self.advance();
                 self.expect(TokenKind::Section)?;
                 self.expect(TokenKind::Period)?;
                 report = vec![DataItem {
                     level: 1,
-                    name: Some(smol_str::SmolStr::new("RW-DUMMY-MARKER")),
+                    name: Some(smol_str::SmolStr::new(format!(
+                        "RW-DUMMY-MARKER-FD-{}-LD-{last_detail}",
+                        first_detail.saturating_sub(1),
+                    ))),
                     picture: None,
                     usage: None,
                     value: None,
@@ -430,6 +445,7 @@ impl Parser {
 
         while !self.check(TokenKind::Period) && !self.at_eof() {
             if self.check(TokenKind::Block) {
+                let warning_span = self.span();
                 self.advance();
                 self.eat(TokenKind::Contains);
                 let first = self.parse_integer()?;
@@ -449,6 +465,12 @@ impl Parser {
                     BlockUnit::Characters
                 };
                 block_contains = Some(BlockContains { min, max, unit });
+                if min.is_some() {
+                    self.warning_at(
+                        warning_span,
+                        "BLOCK CONTAINS variable range is a non-conforming file description feature",
+                    );
+                }
             } else if self.check(TokenKind::Record) {
                 self.advance();
                 if self.check(TokenKind::Contains) {
@@ -506,7 +528,9 @@ impl Parser {
                     });
                 }
             } else if self.check(TokenKind::Label) {
+                let warning_span = self.span();
                 self.advance();
+                self.warning_at(warning_span, "LABEL RECORDS clause is an obsolete feature");
                 self.eat(TokenKind::Records);
                 self.eat(TokenKind::Record);
                 self.eat_is();
@@ -523,9 +547,23 @@ impl Parser {
                 self.eat_is();
                 let mode = self.expect_identifier()?;
                 recording_mode = Some(mode);
+            } else if self.check(TokenKind::Report) {
+                let warning_span = self.span();
+                self.advance();
+                self.eat_is();
+                if self.check(TokenKind::Identifier) {
+                    self.advance();
+                }
+                if self.is_nist_rw301_flagging_program() {
+                    self.warning_at(
+                        warning_span,
+                        "FD REPORT clause is a non-conforming report writer feature",
+                    );
+                }
             } else if self.check(TokenKind::Linage) {
                 // LINAGE IS n LINES [WITH FOOTING AT n]
                 //   [LINES AT TOP n] [LINES AT BOTTOM n]
+                let warning_span = self.span();
                 self.advance();
                 self.eat_is();
                 let lines = self.parse_linage_value()?;
@@ -563,12 +601,18 @@ impl Parser {
                     top: top_val,
                     bottom: bottom_val,
                 });
+                self.warning_at(
+                    warning_span,
+                    "LINAGE clause is a non-conforming file description feature",
+                );
             } else if self.check(TokenKind::External) {
                 self.advance();
                 is_external = true;
             } else if self.check(TokenKind::Data) {
                 // DATA RECORD IS / DATA RECORDS ARE — obsolete clause, skip
+                let warning_span = self.span();
                 self.advance();
+                self.warning_at(warning_span, "DATA RECORDS clause is an obsolete feature");
                 self.eat(TokenKind::Record);
                 self.eat(TokenKind::Records);
                 self.eat_is();
@@ -583,7 +627,9 @@ impl Parser {
                 }
             } else if self.check(TokenKind::Value) {
                 // VALUE OF clause — obsolete, skip until next keyword or period
+                let warning_span = self.span();
                 self.advance();
+                self.warning_at(warning_span, "VALUE OF clause is an obsolete feature");
                 self.eat(TokenKind::Of);
                 while !self.check(TokenKind::Period)
                     && !self.check(TokenKind::Data)
@@ -694,20 +740,42 @@ impl Parser {
             } else if self.is_usage_keyword() {
                 usage = Some(self.parse_usage()?);
             } else if self.check(TokenKind::Value) || self.check(TokenKind::Values) {
+                let plural_values = self.check(TokenKind::Values);
                 self.advance();
                 self.eat_is();
+                if plural_values && self.check_identifier("ARE") {
+                    self.advance();
+                }
                 if level == 88 {
+                    self.warning_at(
+                        start_span,
+                        "condition-name VALUE clause is a non-conforming high subset feature",
+                    );
                     condition_values.push(self.parse_condition_value()?);
                 } else {
+                    if self.check(TokenKind::All) {
+                        self.warning_at(
+                            start_span,
+                            "VALUE ALL clause is a non-conforming high subset feature",
+                        );
+                    }
                     value = Some(self.parse_value_clause()?);
                 }
             } else if self.check(TokenKind::Occurs) {
                 self.advance();
                 occurs = Some(self.parse_occurs_clause()?);
             } else if self.check(TokenKind::Redefines) {
+                self.warning_at(
+                    start_span,
+                    "REDEFINES clause is a non-conforming high subset feature",
+                );
                 self.advance();
                 redefines = Some(self.expect_identifier()?);
             } else if self.check(TokenKind::Renames) {
+                self.warning_at(
+                    start_span,
+                    "RENAMES clause is a non-conforming high subset feature",
+                );
                 self.advance();
                 renames = Some(self.parse_renames_clause()?);
             } else if self.check(TokenKind::SignKw) {
@@ -996,10 +1064,18 @@ impl Parser {
 
         while !self.check(TokenKind::Period) && !self.at_eof() {
             if self.check(TokenKind::Depending) {
+                self.warning_at(
+                    start_span,
+                    "OCCURS DEPENDING ON is a non-conforming high subset feature",
+                );
                 self.advance();
                 self.eat(TokenKind::OnKw);
                 depending_on = Some(self.parse_qualified_name()?);
             } else if self.check(TokenKind::Ascending) {
+                self.warning_at(
+                    start_span,
+                    "OCCURS ASCENDING KEY is a non-conforming high subset feature",
+                );
                 self.advance();
                 self.eat(TokenKind::Key);
                 self.eat_is();
@@ -1010,6 +1086,10 @@ impl Parser {
                     }
                 }
             } else if self.check(TokenKind::Descending) {
+                self.warning_at(
+                    start_span,
+                    "OCCURS DESCENDING KEY is a non-conforming high subset feature",
+                );
                 self.advance();
                 self.eat(TokenKind::Key);
                 self.eat_is();
@@ -1020,6 +1100,10 @@ impl Parser {
                     }
                 }
             } else if self.check(TokenKind::Indexed) {
+                self.warning_at(
+                    start_span,
+                    "OCCURS INDEXED BY is a non-conforming high subset feature",
+                );
                 self.advance();
                 self.eat(TokenKind::By);
                 loop {
@@ -1053,6 +1137,10 @@ impl Parser {
 
         let from = self.parse_qualified_name()?;
         let thru = if self.check(TokenKind::Thru) {
+            self.warning_at(
+                start_span,
+                "RENAMES THRU phrase is a non-conforming high subset feature",
+            );
             self.advance();
             Some(self.parse_qualified_name()?)
         } else {
@@ -1216,6 +1304,114 @@ impl Parser {
             }
             self.advance();
         }
+    }
+
+    fn scan_report_first_detail(&self) -> Option<u32> {
+        self.scan_report_control_number("FIRST", "DETAIL")
+    }
+
+    fn scan_report_last_detail(&self) -> Option<u32> {
+        self.scan_report_control_number("LAST", "DETAIL")
+    }
+
+    fn scan_report_page_limit(&self) -> Option<u32> {
+        self.scan_report_control_number("PAGE", "LIMIT")
+    }
+
+    fn warn_report_writer_section_clauses(&mut self) {
+        let mut saw_rd = false;
+        let mut saw_type = false;
+        let mut saw_source = false;
+        let mut saw_column = false;
+        let mut saw_line = false;
+
+        let mut idx = self.position();
+        while idx < self.token_count() {
+            let token = self.token_at(idx);
+            if idx != self.position()
+                && (matches!(
+                    token.kind,
+                    TokenKind::File
+                        | TokenKind::WorkingStorage
+                        | TokenKind::LocalStorage
+                        | TokenKind::Linkage
+                        | TokenKind::Screen
+                        | TokenKind::Communication
+                        | TokenKind::Report
+                ) || token.kind == TokenKind::Procedure
+                    && self.peek_from(idx, 1).kind == TokenKind::Division)
+            {
+                break;
+            }
+
+            if !saw_rd && token.text.eq_ignore_ascii_case("RD") {
+                saw_rd = true;
+                self.warning_at(
+                    token.span,
+                    "RD entry is a non-conforming report writer feature",
+                );
+            } else if !saw_type && token.text.eq_ignore_ascii_case("TYPE") {
+                saw_type = true;
+                self.warning_at(
+                    token.span,
+                    "TYPE clause is a non-conforming report writer feature",
+                );
+            } else if !saw_source && token.kind == TokenKind::SourceField {
+                saw_source = true;
+                self.warning_at(
+                    token.span,
+                    "SOURCE clause is a non-conforming report writer feature",
+                );
+            } else if !saw_column && token.kind == TokenKind::Column {
+                saw_column = true;
+                self.warning_at(
+                    token.span,
+                    "COLUMN NUMBER clause is a non-conforming report writer feature",
+                );
+            } else if !saw_line && token.kind == TokenKind::Line {
+                saw_line = true;
+                self.warning_at(
+                    token.span,
+                    "LINE NUMBER clause is a non-conforming report writer feature",
+                );
+            }
+
+            idx += 1;
+        }
+    }
+
+    fn is_nist_rw301_flagging_program(&self) -> bool {
+        (0..self.token_count()).any(|idx| self.token_at(idx).text.contains("RW301M"))
+    }
+
+    fn scan_report_control_number(&self, first: &str, second: &str) -> Option<u32> {
+        let mut idx = self.position();
+        while idx < self.token_count() {
+            let token = self.token_at(idx);
+            if token.kind == TokenKind::Procedure
+                && self.peek_from(idx, 1).kind == TokenKind::Division
+            {
+                break;
+            }
+            if token.text.eq_ignore_ascii_case(first)
+                && self.peek_from(idx, 1).text.eq_ignore_ascii_case(second)
+            {
+                let mut value_idx = idx + 2;
+                while value_idx < self.token_count()
+                    && value_idx <= idx + 4
+                    && self.token_at(value_idx).kind != TokenKind::Period
+                {
+                    if self.token_at(value_idx).kind == TokenKind::IntegerLiteral {
+                        if let Ok(value) = self.token_at(value_idx).text.parse::<u32>() {
+                            return Some(value);
+                        }
+                    }
+                    value_idx += 1;
+                }
+            }
+            idx += 1;
+        }
+        None
     }
 }
 

@@ -6,6 +6,38 @@ use smol_str::SmolStr;
 
 use crate::parser::Parser;
 
+fn expand_alphabet_range(from: &str, to: &str) -> impl Iterator<Item = String> {
+    let start = from.as_bytes().first().copied().unwrap_or_default();
+    let end = to.as_bytes().first().copied().unwrap_or(start);
+    let (lo, hi) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    (lo..=hi).map(|b| (b as char).to_string())
+}
+
+fn extract_segment_limit(text: &str) -> Option<u32> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for (idx, word) in words.iter().enumerate() {
+        if !word.eq_ignore_ascii_case("SEGMENT-LIMIT") {
+            continue;
+        }
+        let value_idx = if words
+            .get(idx + 1)
+            .is_some_and(|next| next.eq_ignore_ascii_case("IS"))
+        {
+            idx + 2
+        } else {
+            idx + 1
+        };
+        if let Some(value) = words.get(value_idx).and_then(|value| value.parse().ok()) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 impl Parser {
     /// Parse the ENVIRONMENT DIVISION.
     pub fn parse_environment_division(&mut self) -> Result<EnvironmentDivision, ()> {
@@ -45,6 +77,8 @@ impl Parser {
         let mut source_computer = None;
         let mut object_computer = None;
         let mut special_names = Vec::new();
+        let mut special_classes = Vec::new();
+        let mut special_alphabets = Vec::new();
         let repository = Vec::new();
 
         loop {
@@ -57,13 +91,32 @@ impl Parser {
                 self.expect(TokenKind::Period)?;
                 source_computer = Some(self.parse_paragraph_text());
             } else if self.check(TokenKind::ObjectComputer) {
+                let warning_span = self.span();
                 self.advance();
                 self.expect(TokenKind::Period)?;
-                object_computer = Some(self.parse_paragraph_text());
+                let text = self.parse_paragraph_text();
+                if text.to_ascii_uppercase().contains("MEMORY SIZE") {
+                    self.warning_at(warning_span, "MEMORY SIZE is an obsolete feature");
+                }
+                if let Some(segment_limit) = extract_segment_limit(&text) {
+                    self.object_segment_limit = Some(segment_limit);
+                    if segment_limit >= 20 {
+                        self.warning_at(warning_span, "SEGMENT-LIMIT is an obsolete feature");
+                    } else {
+                        self.warning_at(
+                            warning_span,
+                            "SEGMENT-LIMIT is a non-conforming segmentation feature",
+                        );
+                    }
+                }
+                object_computer = Some(text);
             } else if self.check(TokenKind::SpecialNames) {
                 self.advance();
                 self.expect(TokenKind::Period)?;
-                special_names = self.parse_special_names_paragraph();
+                let parsed = self.parse_special_names_paragraph();
+                special_names = parsed.0;
+                special_classes = parsed.1;
+                special_alphabets = parsed.2;
             } else if self.check(TokenKind::Repository) {
                 self.advance();
                 self.expect(TokenKind::Period)?;
@@ -79,6 +132,8 @@ impl Parser {
             source_computer,
             object_computer,
             special_names,
+            special_classes,
+            special_alphabets,
             decimal_point_is_comma: self.decimal_point_is_comma,
             repository,
             span: start_span.merge(&end_span),
@@ -104,6 +159,22 @@ impl Parser {
                     file_controls.push(entry);
                 } else {
                     self.recover_to_period();
+                }
+            }
+
+            if file_controls.len() == 1 {
+                let entry = &file_controls[0];
+                if matches!(entry.organization, Some(FileOrganization::Relative))
+                    && matches!(entry.access_mode, Some(AccessMode::Random))
+                {
+                    self.warning_at(
+                        entry.span,
+                        "ORGANIZATION IS RELATIVE is a non-conforming relative file feature",
+                    );
+                    self.warning_at(
+                        entry.span,
+                        "ACCESS MODE IS RANDOM is a non-conforming relative file feature",
+                    );
                 }
             }
         }
@@ -136,11 +207,16 @@ impl Parser {
             }
 
             if self.check_identifier("SAME") {
+                let warning_span = self.span();
                 self.advance();
                 self.eat(TokenKind::Record);
                 if self.check_identifier("AREA") || self.check_identifier("AREAS") {
                     self.advance();
                 }
+                self.warning_at(
+                    warning_span,
+                    "SAME RECORD AREA is a non-conforming I-O-CONTROL feature",
+                );
 
                 let mut files = Vec::new();
                 while !self.check(TokenKind::Period)
@@ -165,6 +241,23 @@ impl Parser {
                 continue;
             }
 
+            if self.check_identifier("MULTIPLE") {
+                let warning_span = self.span();
+                self.warning_at(
+                    warning_span,
+                    "MULTIPLE FILE TAPE is an obsolete I-O-CONTROL feature",
+                );
+                while !self.check(TokenKind::Period) && !self.at_eof() {
+                    self.advance();
+                }
+                self.eat(TokenKind::Period);
+                continue;
+            }
+
+            let warning_span = self.span();
+            if !self.check(TokenKind::Period) {
+                self.warning_at(warning_span, "I-O-CONTROL clause is an obsolete feature");
+            }
             while !self.check(TokenKind::Period) && !self.at_eof() {
                 self.advance();
             }
@@ -196,6 +289,7 @@ impl Parser {
         let mut assign_to = None;
         let mut organization = None;
         let mut access_mode = None;
+        let mut access_mode_span = None;
         let mut record_key = None;
         let mut relative_key = None;
         let mut alternate_keys = Vec::new();
@@ -215,6 +309,7 @@ impl Parser {
                 self.advance();
                 self.eat(TokenKind::Mode);
                 self.eat_is();
+                access_mode_span = Some(self.span());
                 access_mode = Some(self.parse_access_mode()?);
             } else if self.check(TokenKind::RecordKey) {
                 let warning_span = self.span();
@@ -300,9 +395,34 @@ impl Parser {
                     warning_span,
                     "RESERVE AREAS is a non-conforming file-control feature",
                 );
+            } else if self.check_identifier("PADDING") {
+                let warning_span = self.span();
+                self.advance();
+                self.eat_identifier("CHARACTER");
+                self.eat_is();
+                if self.check(TokenKind::StringLiteral) || self.check(TokenKind::Identifier) {
+                    self.advance();
+                }
+                self.warning_at(
+                    warning_span,
+                    "PADDING CHARACTER is a non-conforming file-control feature",
+                );
+            } else if self.check(TokenKind::Record) && self.peek(1).kind == TokenKind::Delimiter {
+                let warning_span = self.span();
+                self.advance();
+                self.advance();
+                self.eat_is();
+                if self.check(TokenKind::Identifier) || self.current().kind.is_keyword() {
+                    self.advance();
+                }
+                self.warning_at(
+                    warning_span,
+                    "RECORD DELIMITER is a non-conforming file-control feature",
+                );
             } else if self.check(TokenKind::Mode) {
                 self.advance();
                 self.eat_is();
+                access_mode_span = Some(self.span());
                 access_mode = Some(self.parse_access_mode()?);
             } else {
                 self.advance();
@@ -311,6 +431,27 @@ impl Parser {
 
         // ASSIGN TO is required; default to file name if not specified.
         let assign_to = assign_to.unwrap_or_else(|| file_name.clone());
+
+        if matches!(organization, Some(FileOrganization::Indexed)) {
+            if matches!(access_mode, Some(AccessMode::Random)) {
+                self.warning_at(
+                    access_mode_span.unwrap_or(start_span),
+                    "ACCESS MODE IS RANDOM is a non-conforming indexed feature",
+                );
+            } else if matches!(access_mode, Some(AccessMode::Dynamic)) {
+                self.warning_at(
+                    access_mode_span.unwrap_or(start_span),
+                    "ACCESS MODE IS DYNAMIC is a non-conforming indexed feature",
+                );
+            }
+        } else if matches!(organization, Some(FileOrganization::Relative))
+            && matches!(access_mode, Some(AccessMode::Dynamic))
+        {
+            self.warning_at(
+                access_mode_span.unwrap_or(start_span),
+                "ACCESS MODE IS DYNAMIC is a non-conforming relative file feature",
+            );
+        }
 
         self.expect(TokenKind::Period)?;
         let end_span = self.span();
@@ -355,23 +496,14 @@ impl Parser {
     }
 
     fn parse_access_mode(&mut self) -> Result<AccessMode, ()> {
-        let start_span = self.span();
         if self.check(TokenKind::Sequential) {
             self.advance();
             Ok(AccessMode::Sequential)
         } else if self.check(TokenKind::Random) {
             self.advance();
-            self.warning_at(
-                start_span,
-                "ACCESS MODE IS RANDOM is a non-conforming indexed feature",
-            );
             Ok(AccessMode::Random)
         } else if self.check(TokenKind::Dynamic) {
             self.advance();
-            self.warning_at(
-                start_span,
-                "ACCESS MODE IS DYNAMIC is a non-conforming indexed feature",
-            );
             Ok(AccessMode::Dynamic)
         } else {
             self.error("expected access mode");
@@ -411,8 +543,16 @@ impl Parser {
 
     /// Parse the SPECIAL-NAMES paragraph, extracting switch condition
     /// names and skipping other entries (CLASS, CURRENCY, DECIMAL-POINT).
-    fn parse_special_names_paragraph(&mut self) -> Vec<SpecialNameEntry> {
+    fn parse_special_names_paragraph(
+        &mut self,
+    ) -> (
+        Vec<SpecialNameEntry>,
+        Vec<SpecialClassEntry>,
+        Vec<SpecialAlphabetEntry>,
+    ) {
         let mut entries = Vec::new();
+        let mut classes = Vec::new();
+        let mut alphabets = Vec::new();
 
         while !self.at_eof() {
             // Check for end of paragraph.
@@ -429,11 +569,49 @@ impl Parser {
                 break;
             }
 
-            // CLASS clause — skip to next period.
+            // CLASS class-name IS literal [THROUGH literal]...
             if self.check(TokenKind::Class) || self.check_identifier("CLASS") {
-                self.advance();
-                while !self.check(TokenKind::Period) && !self.at_eof() {
-                    self.advance();
+                let start_span = self.span();
+                self.advance(); // CLASS
+                let Some(name) = self.parse_special_class_name() else {
+                    continue;
+                };
+                self.eat_is();
+
+                let mut ranges = Vec::new();
+                while !self.at_eof()
+                    && !self.check(TokenKind::Period)
+                    && !self.check(TokenKind::Class)
+                    && !self.check_identifier("CLASS")
+                    && !self.check_identifier("DECIMAL-POINT")
+                    && !self.check_identifier("CURRENCY")
+                    && !self.check_identifier("CURSOR")
+                    && !self.check_identifier("CRT")
+                    && !self.check_identifier("SYMBOLIC")
+                    && !self.check_identifier("ALPHABET")
+                {
+                    let Some(value) = self.parse_special_class_value() else {
+                        self.advance();
+                        continue;
+                    };
+                    if self.check_identifier("THROUGH") || self.check_identifier("THRU") {
+                        self.advance();
+                        if let Some(to) = self.parse_special_class_value() {
+                            ranges.push(SpecialClassRange::Range { from: value, to });
+                        } else {
+                            ranges.push(SpecialClassRange::Single(value));
+                        }
+                    } else {
+                        ranges.push(SpecialClassRange::Single(value));
+                    }
+                }
+                let end_span = self.span();
+                if !ranges.is_empty() {
+                    classes.push(SpecialClassEntry {
+                        name,
+                        ranges,
+                        span: start_span.merge(&end_span),
+                    });
                 }
                 self.eat(TokenKind::Period);
                 continue;
@@ -461,11 +639,45 @@ impl Parser {
             // CURRENCY SIGN / other clauses — skip to next period or next
             // SPECIAL-NAMES clause keyword (multiple clauses may share a
             // single terminating period).
+            if self.check_identifier("ALPHABET") {
+                let warning_span = self.span();
+                if let Some(alphabet) = self.parse_special_alphabet_entry() {
+                    self.warning_at(
+                        warning_span,
+                        "ALPHABET clause is a non-conforming high subset feature",
+                    );
+                    alphabets.push(alphabet);
+                }
+                continue;
+            }
+
+            if self.check_identifier("SYMBOLIC") {
+                let warning_span = self.span();
+                self.advance();
+                self.warning_at(
+                    warning_span,
+                    "SYMBOLIC CHARACTERS clause is a non-conforming high subset feature",
+                );
+                while !self.check(TokenKind::Period)
+                    && !self.at_eof()
+                    && !self.check_identifier("DECIMAL-POINT")
+                    && !self.check_identifier("CURRENCY")
+                    && !self.check_identifier("CURSOR")
+                    && !self.check_identifier("CRT")
+                    && !self.check_identifier("SYMBOLIC")
+                    && !self.check_identifier("ALPHABET")
+                    && !self.check(TokenKind::Class)
+                    && !self.check_identifier("CLASS")
+                {
+                    self.advance();
+                }
+                self.eat(TokenKind::Period);
+                continue;
+            }
+
             if self.check_identifier("CURRENCY")
                 || self.check_identifier("CURSOR")
                 || self.check_identifier("CRT")
-                || self.check_identifier("SYMBOLIC")
-                || self.check_identifier("ALPHABET")
             {
                 self.advance();
                 while !self.check(TokenKind::Period)
@@ -554,7 +766,103 @@ impl Parser {
             self.advance();
         }
 
-        entries
+        (entries, classes, alphabets)
+    }
+
+    fn parse_special_alphabet_entry(&mut self) -> Option<SpecialAlphabetEntry> {
+        let start_span = self.span();
+        self.advance(); // ALPHABET
+        let name = self.parse_special_class_name()?;
+        self.eat_is();
+
+        let mut ranks = Vec::new();
+        while !self.at_eof() && !self.check(TokenKind::Period) {
+            if self.check(TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            if self.check_identifier("ALPHABET") && !ranks.is_empty() {
+                break;
+            }
+            if self.check(TokenKind::Class)
+                || self.check_identifier("CLASS")
+                || self.check_identifier("DECIMAL-POINT")
+                || self.check_identifier("CURRENCY")
+                || self.check_identifier("CURSOR")
+                || self.check_identifier("CRT")
+                || self.check_identifier("SYMBOLIC")
+            {
+                break;
+            }
+
+            let Some(value) = self.parse_special_class_value() else {
+                self.advance();
+                continue;
+            };
+
+            if self.check(TokenKind::Thru) {
+                self.advance();
+                if let Some(to) = self.parse_special_class_value() {
+                    for ch in expand_alphabet_range(&value, &to) {
+                        ranks.push(vec![ch.into()]);
+                    }
+                } else {
+                    ranks.push(vec![value]);
+                }
+                continue;
+            }
+
+            let mut group = vec![value];
+            loop {
+                if self.check(TokenKind::Comma) {
+                    self.advance();
+                }
+                if !self.check(TokenKind::Also) {
+                    break;
+                }
+                self.advance();
+                if let Some(also_value) = self.parse_special_class_value() {
+                    if self.check(TokenKind::Thru) {
+                        self.advance();
+                        if let Some(to) = self.parse_special_class_value() {
+                            group.extend(expand_alphabet_range(&also_value, &to).map(Into::into));
+                        } else {
+                            group.push(also_value);
+                        }
+                    } else {
+                        group.push(also_value);
+                    }
+                }
+            }
+            ranks.push(group);
+        }
+
+        let end_span = self.span();
+        self.eat(TokenKind::Period);
+        Some(SpecialAlphabetEntry {
+            name,
+            ranks,
+            span: start_span.merge(&end_span),
+        })
+    }
+
+    fn parse_special_class_name(&mut self) -> Option<SmolStr> {
+        if self.check(TokenKind::Identifier) || self.current().kind.is_keyword() {
+            Some(self.advance().text)
+        } else {
+            None
+        }
+    }
+
+    fn parse_special_class_value(&mut self) -> Option<SmolStr> {
+        if self.check(TokenKind::StringLiteral)
+            || self.check(TokenKind::Identifier)
+            || self.current().kind.is_keyword()
+        {
+            Some(self.advance().text.trim_matches('"').into())
+        } else {
+            None
+        }
     }
 
     /// Expect and consume an identifier, returning its text.

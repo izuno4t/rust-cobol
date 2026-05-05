@@ -448,6 +448,12 @@ pub(crate) fn emit_single_data_item(
                 out.push_str(&format!("static uint16_t {c_name}[{size}];\n"));
             }
         }
+        _ if item.is_numeric_edited => {
+            let storage_size = data_item_storage_size(item);
+            out.push_str(&format!(
+                "static char {c_name}{array_suffix}[{storage_size}];\n"
+            ));
+        }
         HirType::Numeric { size, .. }
             if item.sign.is_some_and(|sign| sign.separate)
                 || top_level_numeric_redefined_as_display(item, all_items) =>
@@ -1239,6 +1245,20 @@ pub(crate) fn emit_single_data_init_with_prefix(
                 } else {
                     out.push_str(&format!(
                         "    memset({c_name}, ' ', {size});\n    memcpy({c_name}, \"{escaped}\", {copy_len});\n    {c_name}[{size}] = '\\0';\n"
+                    ));
+                }
+            }
+            (HirType::Alphanumeric { size }, HirLiteral::AllChar(s)) => {
+                let pattern = if s.is_empty() { " " } else { s.as_str() };
+                let escaped = escape_c_string(pattern);
+                let pattern_len = pattern.len();
+                if in_group {
+                    out.push_str(&format!(
+                        "    {{ const char* _all = \"{escaped}\"; for (uint32_t _i = 0; _i < {size}; _i++) {c_name}[_i] = _all[_i % {pattern_len}]; }}\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "    {{ const char* _all = \"{escaped}\"; for (uint32_t _i = 0; _i < {size}; _i++) {c_name}[_i] = _all[_i % {pattern_len}]; }}\n    {c_name}[{size}] = '\\0';\n"
                     ));
                 }
             }

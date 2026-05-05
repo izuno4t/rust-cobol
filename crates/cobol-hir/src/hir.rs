@@ -92,6 +92,23 @@ pub struct HirRefMod {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct HirInitializeReplacing {
+    pub category: HirInitializeCategory,
+    pub value: HirExpr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirInitializeCategory {
+    Alphabetic,
+    Alphanumeric,
+    Numeric,
+    AlphanumericEdited,
+    NumericEdited,
+    National,
+    NationalEdited,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct HirDataRef {
     pub item_id: HirItemId,
     pub name: HirDataName,
@@ -143,9 +160,19 @@ pub struct HirProgram {
     pub same_record_areas: Vec<Vec<SmolStr>>,
     /// SPECIAL-NAMES DECIMAL-POINT IS COMMA.
     pub decimal_point_is_comma: bool,
+    /// SPECIAL-NAMES CLASS clauses.
+    pub special_class_conditions: std::collections::HashMap<SmolStr, Vec<HirClassRange>>,
+    /// PROGRAM COLLATING SEQUENCE ranks. Each inner vector has equal rank.
+    pub program_collating_sequence: Option<Vec<Vec<SmolStr>>>,
     /// Nested programs (COBOL 85 inter-program communication).
     pub nested_programs: Vec<HirProgram>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirClassRange {
+    pub from: SmolStr,
+    pub to: SmolStr,
 }
 
 #[derive(Debug, Clone)]
@@ -519,6 +546,12 @@ pub enum HirSendOption {
     Identifier(HirExpr),
 }
 
+#[derive(Debug, Clone)]
+pub enum HirWriteAdvancing {
+    Lines(HirExpr),
+    Page,
+}
+
 /// An executable statement in the HIR.
 #[derive(Debug, Clone)]
 pub enum HirStatement {
@@ -532,6 +565,10 @@ pub enum HirStatement {
         to: Vec<HirMoveTarget>,
         span: Span,
     },
+    SetConditionTrue {
+        assignments: Vec<(HirMoveTarget, HirExpr)>,
+        span: Span,
+    },
     SetSwitchStatus {
         assignments: Vec<(SmolStr, bool)>,
         span: Span,
@@ -539,7 +576,9 @@ pub enum HirStatement {
     /// MOVE CORRESPONDING: move matching fields from source group to target group.
     MoveCorresponding {
         from: HirDataName,
+        from_subscripts: Vec<HirExpr>,
         to: HirDataName,
+        to_subscripts: Vec<HirExpr>,
         span: Span,
     },
     /// ADD CORRESPONDING: add matching numeric fields from source to target group.
@@ -562,6 +601,7 @@ pub enum HirStatement {
     },
     Compute {
         targets: Vec<HirExpr>,
+        target_rounded: Vec<bool>,
         expr: HirExpr,
         on_size_error: Vec<HirStatement>,
         not_on_size_error: Vec<HirStatement>,
@@ -680,8 +720,11 @@ pub enum HirStatement {
         /// The file name this record belongs to (for FILE_ID resolution).
         file_name: SmolStr,
         from: Option<HirExpr>,
+        advancing: Option<HirWriteAdvancing>,
         invalid_key: Vec<HirStatement>,
         not_invalid_key: Vec<HirStatement>,
+        at_eop: Vec<HirStatement>,
+        not_at_eop: Vec<HirStatement>,
         span: Span,
     },
     /// REWRITE statement.
@@ -710,6 +753,7 @@ pub enum HirStatement {
     /// INITIALIZE statement.
     Initialize {
         targets: Vec<SmolStr>,
+        replacing: Vec<HirInitializeReplacing>,
         span: Span,
     },
     /// SET statement (simplified to assignment).
@@ -728,20 +772,25 @@ pub enum HirStatement {
     StringStmt {
         into: SmolStr,
         sources: Vec<HirStringSource>,
+        pointer: Option<SmolStr>,
         on_overflow: Vec<HirStatement>,
+        not_on_overflow: Vec<HirStatement>,
         span: Span,
     },
     /// UNSTRING statement.
     UnstringStmt {
         source: SmolStr,
         delimiters: Vec<HirUnstringDelimiter>,
-        into: Vec<SmolStr>,
+        into: Vec<HirUnstringTarget>,
+        pointer: Option<SmolStr>,
+        tallying: Option<SmolStr>,
         on_overflow: Vec<HirStatement>,
+        not_on_overflow: Vec<HirStatement>,
         span: Span,
     },
     /// ACCEPT statement.
     Accept {
-        target: SmolStr,
+        target: HirExpr,
         source: HirAcceptSource,
         span: Span,
     },
@@ -1144,6 +1193,13 @@ pub struct HirUnstringDelimiter {
     pub value: HirExpr,
 }
 
+#[derive(Debug, Clone)]
+pub struct HirUnstringTarget {
+    pub target: SmolStr,
+    pub delimiter_in: Option<SmolStr>,
+    pub count_in: Option<SmolStr>,
+}
+
 /// A WHEN clause in a SEARCH statement.
 #[derive(Debug, Clone)]
 pub struct HirSearchWhen {
@@ -1414,6 +1470,15 @@ fn write_stmt(
                 targets.join(", ")
             )
         }
+        HirStatement::SetConditionTrue { assignments, .. } => {
+            let rendered: Vec<_> = assignments
+                .iter()
+                .map(|(target, value)| {
+                    format!("{} TO {}", format_move_target(target), format_expr(value))
+                })
+                .collect();
+            writeln!(f, "{pad}SET CONDITION {}", rendered.join(", "))
+        }
         HirStatement::SetSwitchStatus { assignments, .. } => {
             let rendered: Vec<_> = assignments
                 .iter()
@@ -1586,7 +1651,7 @@ fn write_stmt(
         }
         HirStatement::StringStmt { into, .. } => writeln!(f, "{pad}STRING INTO {into}"),
         HirStatement::UnstringStmt { source, .. } => writeln!(f, "{pad}UNSTRING {source}"),
-        HirStatement::Accept { target, .. } => writeln!(f, "{pad}ACCEPT {target}"),
+        HirStatement::Accept { target, .. } => writeln!(f, "{pad}ACCEPT {target:?}"),
         HirStatement::Sort { file_name, .. } => writeln!(f, "{pad}SORT {file_name}"),
         HirStatement::Inspect { .. } => writeln!(f, "{pad}INSPECT"),
         HirStatement::Search {

@@ -365,6 +365,7 @@ PROCEDURE DIVISION.
         let c_code = parse_lower_generate(src);
         let inner_increment = [
             "cobol_store_numeric_display(cobol_display_to_int64((const uint8_t*)&(J), 2) +",
+            "J = llabs(((((int64_t)(J +",
             "J +=",
         ]
         .into_iter()
@@ -560,6 +561,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -637,6 +640,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -806,6 +811,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -848,6 +855,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -890,6 +899,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -928,6 +939,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1141,6 +1154,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1183,6 +1198,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1233,6 +1250,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };
@@ -1282,6 +1301,8 @@ PROCEDURE DIVISION.
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::dummy(),
         };

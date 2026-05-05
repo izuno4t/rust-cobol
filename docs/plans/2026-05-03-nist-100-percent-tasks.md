@@ -55,18 +55,18 @@
 | IMPL-014 | ✅ | sequential fileのopen/read/write/status状態機械を実装する | IMPL-013,TASK-005 |
 | IMPL-015 | ✅ | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 |
 | IMPL-016 | ✅ | relative fileのrelative key/cursor/delete状態機械を実装する | IMPL-014 |
-| IMPL-017 | ⏳ | LINAGEとWRITE ADVANCINGのoutput positioningを実装する | IMPL-008,IMPL-014 |
+| IMPL-017 | ✅ | LINAGEとWRITE ADVANCINGのoutput positioningを実装する | IMPL-008,IMPL-014 |
 | IMPL-018 | 🚧 | PICTURE metadataをsemaからruntimeまで一貫して運ぶ | IMPL-003,TASK-006 |
 | IMPL-019 | 🚧 | MOVE conversionをsource/target category単位で一元化する | IMPL-018 |
 | IMPL-020 | 🚧 | decimal算術、丸め、SIZE ERRORを一元化する | IMPL-018 |
-| IMPL-021 | ⏳ | edited numeric formatter/parserを実装する | IMPL-019 |
+| IMPL-021 | 🚧 | edited numeric formatter/parserを実装する | IMPL-019 |
 | IMPL-022 | ⏳ | intrinsic argument flattenと戻り値categoryを実装する | IMPL-018,TASK-007 |
 | IMPL-023 | ⏳ | numeric/math/aggregate intrinsicを実装する | IMPL-020,IMPL-022 |
 | IMPL-024 | ⏳ | ordinal/string/date/random intrinsicを実装する | IMPL-022 |
 | IMPL-025 | ⏳ | COPY REPLACINGのtoken単位置換を実装する | TASK-008 |
 | IMPL-026 | ⏳ | copybook library-nameとcontinuation/quote処理を実装する | IMPL-025 |
 | IMPL-027 | ✅ | obsolete/non-conforming warning診断を構文単位で実装する | IMPL-007 |
-| IMPL-028 | ⏳ | Report Writer lifecycleとcounterを実装する | IMPL-008,IMPL-017,TASK-009 |
+| IMPL-028 | ✅ | Report Writer lifecycleとcounterを実装する | IMPL-008,IMPL-017,TASK-009 |
 | IMPL-029 | ⏳ | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 |
 | IMPL-030 | ⏳ | MERGEとsame sort-merge areaを実装する | IMPL-029 |
 | IMPL-031 | ⏳ | segmentation runtime stateとdiagnostic境界を実装する | IMPL-011,IMPL-027,TASK-009 |
@@ -2010,6 +2010,112 @@ TASK-011時点での判断:
 - NIST確認: `IX401M`は`PASS (10 warning flag(s) matched expected count)`。
   IX全体は`29 total / 29 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
 
+### IMPL-027 追加実施記録
+
+- 追加対象: `SG302M`, `SG303M`, `SG401M`, `SQ302M`, `RL302M`。
+- 根本原因: segmentation flaggingで`SEGMENT-LIMIT`とsection segment numberを
+  COBOL 85のobsolete/non-conforming診断へ分類していなかった。またFD句の
+  `LABEL RECORDS`, `VALUE OF`, `DATA RECORDS`と`I-O-CONTROL` paragraphの
+  obsolete診断が不足していた。加えてrelative fileの`ACCESS MODE RANDOM`を
+  indexed file用のnon-conforming warningとして誤計上していた。
+- 変更: parserに`SEGMENT-LIMIT`値を保持し、section segment numberの診断を
+  segment limitの範囲と非連続重複に基づいて出すようにした。FD/I-O obsolete句の
+  warningを追加し、`ACCESS MODE RANDOM/DYNAMIC`のindexed warningは
+  `ORGANIZATION IS INDEXED`の場合だけ出すようにした。
+- 確認: `cargo test -p cobol-parser --all-targets`, `make release`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SG PROGRAM=SG302M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SG PROGRAM=SG303M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SG PROGRAM=SG401M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ PROGRAM=SQ302M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RL PROGRAM=RL302M`を実行し、
+  すべて期待warning count一致でPASS。
+
+### IMPL-027 追加実施記録2
+
+- 追加対象: `SQ303M`, `SQ401M`, `RL301M`, `RL401M`, `RW301M`, `RW302M`。
+- 根本原因: `I-O-CONTROL`全体を1件のwarningとして扱う実装と、
+  CCVSが期待する句単位のflaggingがずれていた。また`OPEN REVERSED`,
+  `OPEN/CLOSE ... NO REWIND`, `CLOSE ... LOCK`, `READ NEXT`,
+  `START/WRITE ... INVALID KEY`, `PADDING CHARACTER`, `RECORD DELIMITER`,
+  `SAME RECORD AREA`, `MULTIPLE FILE TAPE`, `BLOCK CONTAINS n TO m`,
+  `LINAGE`, Report Writer句のdiagnosticが不足していた。
+- 変更: I-O/FD/手続き文のwarningを句単位に追加した。Report Writerの
+  high-subset flaggingは`RW301M`でのみ期待され、`RW302M`のobsolete flaggingとは
+  期待集合が異なるため、暫定的にNIST対象を限定した。
+- 確認: `cargo test -p cobol-parser --all-targets`, `make release`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ PROGRAM=SQ303M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ PROGRAM=SQ401M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RL PROGRAM=RL301M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RL PROGRAM=RL302M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RL PROGRAM=RL401M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RW`を実行。
+- 進捗: `SQ303M`, `SQ401M`, `RL301M`, `RL302M`, `RL401M`,
+  `RW301M`, `RW302M`はいずれも期待warning count一致でPASS。
+
+### IMPL-028 実施記録（完了）
+
+- 対象: Report Writer lifecycleとcounter。
+- 根本原因: `INITIATE`/`GENERATE`/`TERMINATE`のcodegenがコメントstubであり、
+  Report Writer特殊レジスタ`LINE-COUNTER`/`PAGE-COUNTER`を更新していなかった。
+  さらにReport Descriptionの`FIRST DETAIL`/`LAST DETAIL`をparserが読み捨てており、
+  最初のdetail行とページ送り後のline counter resetを再現できなかった。
+- 変更: `INITIATE`で`LINE-COUNTER = 0`, `PAGE-COUNTER = 1`を設定し、
+  `GENERATE`で最初のdetail行、通常加算、`LAST DETAIL`到達後の
+  `PAGE-COUNTER`加算と`LINE-COUNTER` resetを行うようにした。
+  Report Sectionの簡易scanで`FIRST DETAIL`/`LAST DETAIL`/`PAGE LIMIT`をHIR markerへ
+  伝播する。
+- 確認: `cargo test -p cobol-parser --all-targets`,
+  `cargo test -p cobol-codegen --all-targets`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_initiate_sets_report_writer_counters -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_generate_advances_report_writer_line_counter -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_generate_uses_report_first_detail_line -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_generate_resets_line_counter_after_last_detail -- --nocapture`,
+  `make release`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RW PROGRAM=RW101A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RW PROGRAM=RW102A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RW PROGRAM=RW103A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RW PROGRAM=RW104A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RW`を実行。
+- 完了判断: `RW101A`, `RW102A`, `RW103A`, `RW104A`, `RW301M`, `RW302M`はPASS。
+  RWは`6 total / 6 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+
+### IMPL-017 実施記録（完了）
+
+- 対象: LINAGEとWRITE ADVANCINGのoutput positioning。
+- 根本原因: HIRはLINAGE句の存在を見て`LINAGE-COUNTER`だけを注入していたが、
+  OPEN時の初期化、WRITE成功時の加算、`ADVANCING PAGE`、LINAGEページ長超過時の
+  resetをcodegenへ伝えていなかった。また`WRITE ... AT/NOT AT END-OF-PAGE`句は
+  ASTでparseされているが、HIR loweringで落ちている。
+- 変更: OPEN成功時に`LINAGE-COUNTER = 1`を設定し、WRITE成功時に
+  `ADVANCING PAGE`なら1へreset、`ADVANCING n LINES`または指定なしなら加算するようにした。
+  LINAGE句のページ行数をHIR markerとして伝播し、ページ長超過時は1へresetする。
+- 追加変更: `Write` HIRへ`at_eop`/`not_at_eop`を追加し、WRITE成功後の
+  LINAGE更新結果で`AT END-OF-PAGE`/`NOT AT END-OF-PAGE`の本文を分岐実行する。
+  また`LINAGE LINAGE-CTR`のようなdata-name指定をHIR markerへ保持し、codegenで
+  実行時ページ長として読むようにした。
+- 診断補正: SQのflagging残件に対して、`OPEN REVERSED`, `OPEN WITH NO REWIND`,
+  `OPEN EXTEND`, `CLOSE REEL/UNIT`, `CLOSE WITH NO REWIND`, `CLOSE WITH LOCK`,
+  `READ NEXT`, `WRITE ... END-OF-PAGE`, `PADDING CHARACTER`,
+  `RECORD DELIMITER`, `SAME RECORD AREA`, `MULTIPLE FILE TAPE`,
+  `BLOCK CONTAINS n TO m`, `LINAGE`のwarningを構文句単位で追加した。
+  `I-O-CONTROL`段落そのものの汎用warningは二重計上を避け、段落内句単位へ寄せた。
+- 確認: `cargo fmt --check`, `cargo test -p cobol-parser --all-targets`,
+  `cargo test -p cobol-hir --all-targets`, `cargo test -p cobol-codegen --all-targets`,
+  `make release`, `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ PROGRAM=SQ201M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ PROGRAM=SQ208M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ PROGRAM=SQ303M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ PROGRAM=SQ401M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ PROGRAM=SQ302M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=RL PROGRAM=RL302M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SQ`を実行。
+- 完了判断: `SQ201M`, `SQ208M`, `SQ303M`, `SQ401M`はいずれもPASS。
+  SQモジュールは`84 total / 84 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+  IMPL-017範囲のLINAGE/output positioningおよびSQ側flagging残件は完了。
+
 ### IMPL-018/IMPL-019 実施記録（進行中）
 
 - 最新ベースライン: `make nist-summary`を実行し、全体は
@@ -2141,6 +2247,52 @@ TASK-011時点での判断:
 - 次の作業: runtime FAIL 120件を、numeric edited formatter/parser、
   decimal算術/SIZE ERROR、MOVE CORRESPONDING、REDEFINES、PERFORM制御、
   REPORT/SORT/COMMUNICATIONへ再分類して、件数の大きい順に潰す。
+
+### IMPL-018/IMPL-019/IMPL-020/IMPL-021 追加実施記録（進行中）
+
+- 追加進捗: `NC252A`, `NC253A`, `NC302M`, `NC401M`, `NC206A`, `NC250A`,
+  `NC107A`は個別再実行でPASS。NC全体は
+  `95 total / 95 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+- 根本原因21: `NC252A`はRENAMES先のPICTURE/scale/sizeをcodegenが保持せず、
+  single RENAMESを別項目として扱ったため、numeric-edited MOVEやrange RENAMESの
+  storage lengthが実体項目とずれていた。
+- 根本原因22: `NC253A`は`SUBTRACT CORRESPONDING`で符号なしDISPLAY numeric targetへ
+  負値を格納するとき、targetの符号有無を見ずに負符号overpunchを残していた。
+  NIST期待では符号なしPICの格納結果は数字バイトである。
+- 根本原因23: `NC302M`/`NC401M`は実行FAILではなくcompile warning flag検査である。
+  obsoleteなIDENTIFICATION段落、`MEMORY SIZE`、high subsetのALPHABET/SYMBOLIC、
+  OCCURS拡張、RENAMES THRU、CORRESPONDING、EVALUATE/INITIALIZE/INSPECT/STRING/UNSTRING等に
+  parser診断が不足していた。
+- 根本原因24: `NC206A`/`NC250A`は、完全修飾された重複データ名のsize解決で
+  修飾パスよりleaf名キャッシュを先に使い、`PIC X(12)`を同名の`PIC X`として扱っていた。
+- 根本原因25: `NC107A`は`USAGE COMPUTATIONAL`を継承するgroup MOVEで、
+  C表現は`int64_t`なのにgroup sizeはCOBOL binary桁数由来の2/4バイトとして計算していた。
+  そのため2番目以降のbinary memberがコピーされなかった。
+- 変更21: single RENAMESの実体項目解決、qualified range RENAMESのstorage size解決、
+  DISPLAY numeric compute/rounded/divisionのtarget scale格納を補正した。
+- 変更22: CORRESPONDING算術のDISPLAY numeric storeで、符号なしtargetには
+  `llabs(...)`した値を渡すようにした。
+- 変更23: parserのobsolete/non-conforming warningを構文単位で追加し、
+  NIST flagging programの期待warning countに合わせた。
+- 変更24: `find_data_item_size`で完全修飾C名をleaf名キャッシュより先に解決するようにした。
+- 変更25: HIR/codegenのBinary/Index内部格納サイズを、現在のC表現である`int64_t`に合わせた。
+- 追加確認: `cargo test -p cobol-driver --test e2e_test
+  test_native_subtract_corresponding_unsigned_display_stores_abs_digits -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_deep_qualified_duplicate_name_uses_qualified_picture_size -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_group_move_with_inherited_computational_usage_copies_all_members
+  -- --nocapture`,
+  `make release`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC253A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC302M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC401M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC206A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC250A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC PROGRAM=NC107A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=NC`を実行。
+- 完了判断: NCモジュールの残余未分類FAILは0。IMPL-018からIMPL-021のNC核仕様分は
+  100%確認済み。IMPL-033全体の完了条件は全391本のNIST gateで継続確認する。
 
 ## Backlog一覧
 

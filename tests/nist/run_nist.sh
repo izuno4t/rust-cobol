@@ -799,6 +799,53 @@ prepare_runtime_artifacts() {
     return 0
 }
 
+nist_console_input_fixture() {
+    local module="$1"
+    local program="$2"
+    local output="$3"
+
+    case "$module/$program" in
+        NC/NC109M)
+            {
+                printf '%s\n' 'ABCDEFGHIJKLMNOPQRSTUVWXY Z'
+                printf '%s\n' '0123456789'
+                printf '%s\n' '().+-*/$, ='
+                printf '%s\n' '9'
+                printf '%s\n' '0'
+                printf '%s\n' ' ABC            XYZ '
+                printf '%s\n' '012345678'
+                printf '%s\n' ' '
+                printf '%s\n' '"'
+                printf '%s\n' 'ABCD'
+                printf '%s\n' 'A B C D E F G H I J K L M N O P Q R S T U V W X Y Z  0123456789'
+            } > "$output"
+            return 0
+            ;;
+        NC/NC204M)
+            {
+                printf '%s\n' 'ABCDEFGHIJKLMNOPQRSTUVWXY Z'
+                printf '%s\n' '0123456789'
+                printf '%s\n' '().+-*/$, ='
+                printf '%s\n' '9'
+                printf '%s\n' '0'
+                printf '%s\n' ' ABC            XYZ '
+                printf '%s\n' ' 9'
+                printf '%s\n' '"'
+                printf '%s\n' 'Q'
+                printf '%s\n' 'ABCD'
+                printf '%s\n' 'ABCD'
+                printf '%s\n' 'A B C D E F G H I J K L M N O P Q R S T U V W X Y Z  0123456789'
+                printf '%s\n' 'D001*002*003*004*005*006*007*008*009*010*011*012*013*014*015*016*017*018*019*020D021*022*023*024*025*026*027*028*029*030*031*032*033*034*035*036*037*038*039*040D041*042*043*044*045*046*047*048*049*050'
+                printf '%s\n' 'ABCDEFGHIJ'
+                printf '%s\n' 'KLMNO'
+            } > "$output"
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
 execute_program_binary() {
     local module="$1"
     local program_tmpdir="$2"
@@ -809,6 +856,11 @@ execute_program_binary() {
     local trace_log="${7:-}"
     local program
     program="$(basename "$program_tmpdir")"
+    local stdin_file="$program_tmpdir/stdin.fixture"
+    local stdin_redirect="/dev/null"
+    if nist_console_input_fixture "$module" "$program" "$stdin_file"; then
+        stdin_redirect="$stdin_file"
+    fi
 
     local exit_code=0
     (
@@ -855,7 +907,7 @@ execute_program_binary() {
                 exec { $ARGV[1] } $ARGV[1] or die "exec failed: $!";
             ' "$program_tmpdir" "$bin"
         fi
-    ) < /dev/null > "$log" 2>&1 &
+    ) < "$stdin_redirect" > "$log" 2>&1 &
     CURRENT_RUN_PID=$!
     wait "$CURRENT_RUN_PID" || exit_code=$?
     CURRENT_RUN_PID=""

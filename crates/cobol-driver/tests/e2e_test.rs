@@ -73,6 +73,17 @@ fn compile_to_c(source: &str) -> String {
     generate_c(&hir)
 }
 
+fn compact_c_code(c_code: &str) -> String {
+    c_code.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn assert_display_numeric_update(c_code: &str, c_name: &str, op: &str) {
+    assert!(c_code.contains("cobol_store_numeric_display"));
+    assert!(c_code.contains("cobol_display_to_int64"));
+    assert!(c_code.contains(c_name));
+    assert!(c_code.contains(op));
+}
+
 #[test]
 fn test_parse_and_lower_hello_world() {
     let src = "\
@@ -366,8 +377,8 @@ PROCEDURE DIVISION.
         .iter()
         .any(|s| matches!(s, HirStatement::Add { .. })));
 
-    let c_code = compile_to_c(src);
-    assert!(c_code.contains("WS_B +="));
+    let c_code = compact_c_code(&compile_to_c(src));
+    assert_display_numeric_update(&c_code, "WS_B", "+");
 }
 
 #[test]
@@ -390,8 +401,8 @@ PROCEDURE DIVISION.
         .iter()
         .any(|s| matches!(s, HirStatement::Subtract { .. })));
 
-    let c_code = compile_to_c(src);
-    assert!(c_code.contains("WS_B -="));
+    let c_code = compact_c_code(&compile_to_c(src));
+    assert_display_numeric_update(&c_code, "WS_B", "-");
 }
 
 #[test]
@@ -414,8 +425,8 @@ PROCEDURE DIVISION.
         .iter()
         .any(|s| matches!(s, HirStatement::Multiply { .. })));
 
-    let c_code = compile_to_c(src);
-    assert!(c_code.contains("WS_B *="));
+    let c_code = compact_c_code(&compile_to_c(src));
+    assert_display_numeric_update(&c_code, "WS_B", "*");
 }
 
 #[test]
@@ -438,8 +449,8 @@ PROCEDURE DIVISION.
         .iter()
         .any(|s| matches!(s, HirStatement::Divide { .. })));
 
-    let c_code = compile_to_c(src);
-    assert!(c_code.contains("WS_B /="));
+    let c_code = compact_c_code(&compile_to_c(src));
+    assert_display_numeric_update(&c_code, "WS_B", "/");
 }
 
 #[test]
@@ -492,12 +503,12 @@ PROCEDURE DIVISION.
         .iter()
         .any(|s| matches!(s, HirStatement::Perform { .. })));
 
-    let c_code = compile_to_c(src);
+    let c_code = compact_c_code(&compile_to_c(src));
     assert!(c_code.contains("WS_I = "));
     assert!(c_code.contains("for (;;)"));
     assert!(c_code.contains("if ("));
     assert!(c_code.contains("break;"));
-    assert!(c_code.contains("WS_I +="));
+    assert_display_numeric_update(&c_code, "WS_I", "+");
 }
 
 #[test]
@@ -1041,7 +1052,7 @@ PROCEDURE DIVISION.
 // ===========================================================================
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Helper: compile COBOL source to a native binary and run it.
 /// Returns (stdout, stderr, exit_code).
@@ -1077,6 +1088,44 @@ fn compile_and_run(source: &str) -> (String, String, i32) {
 /// use features sema doesn't fully support yet).
 fn compile_and_run_no_sema(source: &str) -> (String, String, i32) {
     compile_and_run_no_sema_with_env(source, &[])
+}
+
+fn compile_and_run_no_sema_with_stdin(source: &str, stdin: &str) -> (String, String, i32) {
+    use std::io::Write;
+
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let c_path = tmp.path().join("test.c");
+    let exe_path = temp_exe_path(tmp.path(), "test_exe");
+
+    let hir = parse_and_lower(source);
+    let c_code = generate_c(&hir);
+
+    std::fs::write(&c_path, &c_code).expect("write C file");
+
+    let runtime_lib_path = find_test_runtime_lib();
+
+    cobol_codegen::compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
+        .expect("C compilation should succeed");
+
+    let mut child = Command::new(&exe_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("execute compiled binary");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(stdin.as_bytes())
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait for compiled binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(-1);
+
+    (stdout, stderr, code)
 }
 
 fn compile_and_run_no_sema_with_env(source: &str, envs: &[(&str, &str)]) -> (String, String, i32) {
@@ -1271,6 +1320,157 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_numeric_edited_zero_star_fill_suppresses_currency() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ZERO-STAR-CURRENCY.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  EDITED PIC $**.**CR VALUE ZERO.
+01  VIEW-EDITED PIC X(8).
+PROCEDURE DIVISION.
+    MOVE ZERO TO EDITED.
+    MOVE EDITED TO VIEW-EDITED.
+    DISPLAY VIEW-EDITED.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("***.****"),
+        "zero star fill should suppress the floating currency symbol, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_add_negative_to_unsigned_display_stores_unsigned_digits() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ADD-NEG-UNSIGNED.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77  A PIC S9(18) VALUE -555555555555555555 COMPUTATIONAL.
+77  B PIC 9(18) VALUE ZERO.
+PROCEDURE DIVISION.
+    MOVE 000000777777777777 TO B.
+    ADD A TO B.
+    IF B = 555554777777777778
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY B
+    END-IF.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("PASS"),
+        "ADD into unsigned DISPLAY should store unsigned digits after arithmetic, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_add_giving_size_error_preserves_all_receiving_items() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ADD-GIVING-SIZE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77  BIG PIC S9(17) VALUE 22222222222222222.
+77  A PIC 9V9 VALUE 1.1.
+77  B PIC 9V9 VALUE 2.3.
+77  R1 PIC 99V9 VALUE ZERO.
+77  R2 PIC 99 VALUE ZERO.
+77  FLAG PIC X VALUE SPACE.
+PROCEDURE DIVISION.
+    ADD BIG A 6 B GIVING R1 R2 R1 ROUNDED R2 ROUNDED
+        ON SIZE ERROR MOVE \"A\" TO FLAG.
+    IF R1 = ZERO AND R2 = ZERO AND FLAG = \"A\"
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY R1
+        DISPLAY R2
+        DISPLAY FLAG
+    END-IF.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("PASS"),
+        "ADD GIVING with SIZE ERROR should preserve receiving items, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_divide_giving_decimal_target_preserves_fraction() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DIV-GIVING-FRAC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77  DIVISOR PIC S99 VALUE 16.
+77  DIVIDEND PIC S999 VALUE 174.
+77  QUOTIENT PIC S9(4)V9 VALUE ZERO.
+77  REM PIC ***99 VALUE ZERO.
+PROCEDURE DIVISION.
+    DIVIDE DIVISOR INTO DIVIDEND GIVING QUOTIENT REMAINDER REM.
+    IF QUOTIENT = 10.8
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY QUOTIENT
+        DISPLAY REM
+    END-IF.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("PASS"),
+        "DIVIDE GIVING should preserve the quotient target scale, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_divide_giving_rounded_remainder_uses_truncated_quotient() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DIV-ROUNDED-REM.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77  DIVISOR PIC 99V9 VALUE 10.0.
+77  DIVIDEND PIC 9V9(17) VALUE 3.14159265358979323.
+77  QUOTIENT PIC 9V9(5) VALUE ZERO.
+77  REM PIC .9999/99999,99999,99 VALUE ZERO.
+PROCEDURE DIVISION.
+    DIVIDE DIVISOR INTO DIVIDEND GIVING QUOTIENT ROUNDED REMAINDER REM.
+    IF QUOTIENT = 0.31416 AND REM = \".0000/92653,58979,32\"
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY QUOTIENT
+        DISPLAY REM
+    END-IF.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("PASS"),
+        "DIVIDE ROUNDED REMAINDER should use the unrounded quotient for remainder, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
 fn test_native_special_names_switch_conditions_are_complements() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -1297,6 +1497,79 @@ PROCEDURE DIVISION.
     assert!(
         stdout.lines().any(|line| line.trim() == "1"),
         "ON/OFF switch condition names should be boolean complements, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_special_names_switch_conditions_follow_set_status() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SWITCH-SET-STATUS.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    XXXXX051 IS SW-1
+        ON STATUS IS ON-SWITCH-1
+        OFF STATUS IS OFF-SWITCH-1
+    XXXXX052 IS SW-2
+        ON IS ON-SWITCH-2
+        OFF IS OFF-SWITCH-2.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  COUNT-X PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+    IF ON-SWITCH-1 ADD 1 TO COUNT-X.
+    IF OFF-SWITCH-2 ADD 1 TO COUNT-X.
+    SET SW-1 SW-2 TO OFF.
+    IF OFF-SWITCH-1 ADD 1 TO COUNT-X.
+    IF OFF-SWITCH-2 ADD 1 TO COUNT-X.
+    SET SW-1 TO ON
+        SW-2 TO OFF.
+    IF ON-SWITCH-1 ADD 1 TO COUNT-X.
+    IF OFF-SWITCH-2 ADD 1 TO COUNT-X.
+    DISPLAY COUNT-X.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "6"),
+        "SPECIAL-NAMES switch conditions should follow the switch storage and SET status, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_special_names_custom_class_condition() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CUSTOM-CLASS.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CLASS ORDINAL-A-THROUGH-D IS \"A\" THROUGH \"D\"
+    CLASS ACTUAL-ABCD IS \"ABCD\".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-A PIC X VALUE \"C\".
+01  WS-B PIC X(5) VALUE \"ADCBA\".
+01  WS-C PIC X(5) VALUE \"VWXYZ\".
+01  COUNT-X PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+    IF WS-A ORDINAL-A-THROUGH-D ADD 1 TO COUNT-X.
+    IF WS-B ACTUAL-ABCD ADD 1 TO COUNT-X.
+    IF WS-C NOT ACTUAL-ABCD ADD 1 TO COUNT-X.
+    DISPLAY COUNT-X.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "3"),
+        "SPECIAL-NAMES custom CLASS clauses should define character sets, stdout={stdout:?}, stderr={stderr:?}"
     );
 }
 
@@ -2234,6 +2507,652 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_88_values_are_thru_range_with_qualification() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VALUES-ARE-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77  WS-NUM PIC 9.
+    88 DUP VALUE 1.
+77  WS-SCORE PIC 9.
+    88 DUP VALUES ARE 2 THRU 4.
+PROCEDURE DIVISION.
+    MOVE 3 TO WS-SCORE.
+    IF DUP OF WS-SCORE
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY \"FAIL\"
+    END-IF.
+    STOP RUN.
+";
+    let (output, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={output:?}, stderr={stderr:?}"
+    );
+    assert_eq!(
+        output.trim(),
+        "PASS",
+        "qualified 88 VALUES ARE THRU range should resolve to its parent item"
+    );
+}
+
+#[test]
+fn test_native_all_zeroes_numeric_comparison_uses_numeric_value() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALL-ZERO-NUMERIC-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  ZERO-D PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+    IF ALL ZEROES = ZERO-D
+        DISPLAY \"PASS1\"
+    ELSE
+        DISPLAY \"FAIL1\"
+    END-IF.
+    IF ALL \"00\" NOT > ZERO-D
+        DISPLAY \"PASS2\"
+    ELSE
+        DISPLAY \"FAIL2\"
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("PASS1"),
+        "ALL ZEROES should compare as numeric zero"
+    );
+    assert!(
+        stdout.contains("PASS2"),
+        "ALL \"00\" should compare as numeric zero"
+    );
+}
+
+#[test]
+fn test_native_abbreviated_relation_inherits_not_and_falls_back_left() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ABBREV-REL-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SMALL-VALU PIC 99 VALUE 7.
+01 SMALLER-VALU PIC 99 VALUE 6.
+01 SMALLEST-VALU PIC 99 VALUE 5.
+01 EVEN-SMALLER PIC 99 VALUE 1.
+PROCEDURE DIVISION.
+    IF SMALLEST-VALU GREATER THAN SMALL-VALU
+        AND IS NOT LESS THAN EVEN-SMALLER OR SMALLER-VALU
+        DISPLAY \"FAIL1\"
+    ELSE
+        DISPLAY \"PASS1\"
+    END-IF.
+    IF SMALLEST-VALU LESS THAN SMALL-VALU
+        AND NOT EVEN-SMALLER OR SMALLER-VALU
+        DISPLAY \"PASS2\"
+    ELSE
+        DISPLAY \"FAIL2\"
+    END-IF.
+    MOVE 9 TO SMALL-VALU.
+    MOVE 8 TO SMALLER-VALU.
+    MOVE 7 TO SMALLEST-VALU.
+    IF SMALL-VALU > SMALLER-VALU AND NOT < 10 OR 11
+        DISPLAY \"PASS3\"
+    ELSE
+        DISPLAY \"FAIL3\"
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("PASS1"),
+        "NOT relation abbreviation should be inherited"
+    );
+    assert!(
+        stdout.contains("PASS2"),
+        "OR abbreviation should fall back to the left comparison"
+    );
+    assert!(
+        stdout.contains("PASS3"),
+        "OR abbreviation should stay in the AND branch"
+    );
+}
+
+#[test]
+fn test_native_add_size_error_to_numeric_renames_uses_display_storage() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RENAMES-ADD-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  W-RENAMES-DATA.
+    02 WIDGET-4 PIC 9(4).
+66  RENAME-12 RENAMES WIDGET-4.
+PROCEDURE DIVISION.
+    MOVE 8000 TO WIDGET-4.
+    ADD 3500 TO RENAME-12 ON SIZE ERROR
+        DISPLAY \"SIZE\"
+    END-ADD.
+    IF RENAME-12 = 8000
+        DISPLAY \"UNCHANGED\"
+    ELSE
+        DISPLAY \"CHANGED\"
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("SIZE"),
+        "overflow on renamed PIC 9(4) should set SIZE ERROR"
+    );
+    assert!(
+        stdout.contains("UNCHANGED"),
+        "ON SIZE ERROR should preserve renamed display numeric storage"
+    );
+}
+
+#[test]
+fn test_native_move_decimal_to_numeric_edited_renames_uses_source_picture() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RENAMES-EDITED-MOVE-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  W-RENAMES-DATA.
+    02 WIDGET-2 PIC ***,***.**.
+66  RENAME-11 RENAMES WIDGET-2.
+PROCEDURE DIVISION.
+    MOVE SPACES TO W-RENAMES-DATA.
+    MOVE 234.5 TO RENAME-11.
+    DISPLAY WIDGET-2.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("****234.50"),
+        "MOVE to numeric-edited RENAMES should use the source item's PIC: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_initiate_sets_report_writer_counters() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RW-INIT-COUNTERS.
+DATA DIVISION.
+REPORT SECTION.
+RD RPT.
+01 TYPE DETAIL.
+PROCEDURE DIVISION.
+    INITIATE RPT.
+    DISPLAY PAGE-COUNTER.
+    DISPLAY LINE-COUNTER.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<_> = stdout.lines().map(str::trim).collect();
+    assert_eq!(lines, vec!["1", "0"]);
+}
+
+#[test]
+fn test_native_generate_advances_report_writer_line_counter() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RW-GENERATE-COUNTER.
+DATA DIVISION.
+REPORT SECTION.
+RD RPT.
+01 DETAIL-LINE TYPE DETAIL.
+PROCEDURE DIVISION.
+    INITIATE RPT.
+    GENERATE DETAIL-LINE.
+    GENERATE DETAIL-LINE.
+    DISPLAY LINE-COUNTER.
+    DISPLAY PAGE-COUNTER.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<_> = stdout.lines().map(str::trim).collect();
+    assert_eq!(lines, vec!["2", "1"]);
+}
+
+#[test]
+fn test_native_generate_uses_report_first_detail_line() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RW-FIRST-DETAIL.
+DATA DIVISION.
+REPORT SECTION.
+RD RPT
+    FIRST DETAIL 6.
+01 DETAIL-LINE TYPE DETAIL.
+PROCEDURE DIVISION.
+    INITIATE RPT.
+    DISPLAY LINE-COUNTER.
+    GENERATE DETAIL-LINE.
+    DISPLAY LINE-COUNTER.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<_> = stdout.lines().map(str::trim).collect();
+    assert_eq!(lines, vec!["0", "6"]);
+}
+
+#[test]
+fn test_native_generate_resets_line_counter_after_last_detail() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RW-LAST-DETAIL.
+DATA DIVISION.
+REPORT SECTION.
+RD RPT
+    FIRST DETAIL 2
+    LAST DETAIL 3.
+01 DETAIL-LINE TYPE DETAIL.
+PROCEDURE DIVISION.
+    INITIATE RPT.
+    GENERATE DETAIL-LINE.
+    GENERATE DETAIL-LINE.
+    GENERATE DETAIL-LINE.
+    DISPLAY LINE-COUNTER.
+    DISPLAY PAGE-COUNTER.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<_> = stdout.lines().map(str::trim).collect();
+    assert_eq!(lines, vec!["2", "2"]);
+}
+
+#[test]
+fn test_native_group_move_to_redefined_base_uses_logical_target_size() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. REDEF-MOVE-SIZE-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  BASE-GROUP.
+    02 BASE-A PIC X(4).
+01  LARGE-REDEF REDEFINES BASE-GROUP.
+    02 LARGE-A PIC X(8).
+01  SOURCE-GROUP.
+    02 SOURCE-A PIC X(8) VALUE \"AAAAAAAA\".
+PROCEDURE DIVISION.
+    MOVE SPACES TO LARGE-REDEF.
+    MOVE SOURCE-GROUP TO BASE-GROUP.
+    IF LARGE-A = \"AAAA    \"
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY LARGE-A
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(
+        stdout.trim(),
+        "PASS",
+        "group MOVE to redefined base should affect only the base group's logical size"
+    );
+}
+
+#[test]
+fn test_native_single_and_range_renames_use_renamed_storage_length() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RENAMES-LENGTH-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  RENAMES-DATA.
+    02 NAME1.
+        03 NAME1A PIC XX VALUE SPACE.
+        03 NAME1B PIC XXX VALUE SPACE.
+    02 NAME2 PIC X(10) VALUE SPACE.
+66  RENAME2 RENAMES NAME1A THRU NAME1B.
+66  RENAME4 RENAMES NAME1.
+PROCEDURE DIVISION.
+    MOVE \"AB\" TO NAME1A.
+    MOVE \"CD\" TO NAME1B.
+    IF RENAME4 = \"ABCD \"
+        DISPLAY \"PASS1\"
+    ELSE
+        DISPLAY RENAME4
+    END-IF.
+    MOVE ALL \"X\" TO RENAME2.
+    IF NAME1 = \"XXXXX\"
+        DISPLAY \"PASS2\"
+    ELSE
+        DISPLAY NAME1
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("PASS1"),
+        "single RENAMES should use source group length: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("PASS2"),
+        "range RENAMES should use full range length: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_qualified_duplicate_range_renames_use_own_group_length() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RENAMES-QUAL-RANGE-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  T-RENAMES-DATA.
+    02 TAG-1.
+        03 TAG-1A PIC X(4).
+        03 TAG-1B PIC X(6).
+66  RENAME-5 RENAMES TAG-1A THRU TAG-1B.
+01  U-RENAMES-DATA.
+    02 UNIT-1.
+        03 UNIT-1A PIC X(7).
+        03 UNIT-1B PIC X(4).
+    02 NAME-2 PIC X(5).
+66  RENAME-5 RENAMES UNIT-1A THRU UNIT-1B.
+PROCEDURE DIVISION.
+    MOVE SPACES TO U-RENAMES-DATA.
+    MOVE \"CHICAGO ILLINOIS\" TO RENAME-5 OF U-RENAMES-DATA.
+    IF U-RENAMES-DATA = \"CHICAGO ILL     \"
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY U-RENAMES-DATA
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("PASS"),
+        "qualified range RENAMES should not reuse an earlier duplicate RENAMES size: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_compute_decimal_expression_to_display_numeric_rescales_to_picture() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COMPUTE-DISPLAY-SCALE-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  COMPUTE-5  PIC 9999V99 VALUE ZERO.
+01  COMPUTE-5A PIC 999V9 VALUE 11.1.
+PROCEDURE DIVISION.
+    COMPUTE COMPUTE-5 = COMPUTE-5A * 36.1.
+    DISPLAY COMPUTE-5.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("0400.71"),
+        "COMPUTE into PIC 9999V99 should store the value scaled to two decimal places: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_compute_rounded_to_display_integer_uses_decimal_scale() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COMPUTE-ROUNDED-DISPLAY-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  COMPUTE-DATA.
+    02 COMPUTE-9  PIC 9999 VALUE ZERO.
+    02 COMPUTE-6A PIC 999V9 VALUE 374.4.
+PROCEDURE DIVISION.
+    COMPUTE COMPUTE-9 ROUNDED = COMPUTE-6A * 7.0.
+    DISPLAY COMPUTE-9.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("2621"),
+        "ROUNDED COMPUTE into PIC 9999 should use decimal source scale before rounding: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_compute_rounded_integer_division_to_decimal_target_preserves_fraction() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COMPUTE-ROUNDED-DIV-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77  W-11 PIC S99V9 VALUE ZERO.
+PROCEDURE DIVISION.
+    COMPUTE W-11 ROUNDED = 25 / 10.
+    DISPLAY W-11.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("2.5"),
+        "COMPUTE division into a decimal target should preserve the fractional quotient: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_compute_rounded_decimal_expression_to_integer_target_rounds() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COMPUTE-ROUNDED-INT-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77  WRK-DS-02V00 PIC S99 VALUE ZERO.
+77  A99-DS-02V00 PIC S99 VALUE 99.
+77  AZERO-DS-05V05 PIC S9(5)V9(5) VALUE ZERO.
+PROCEDURE DIVISION.
+    COMPUTE WRK-DS-02V00 ROUNDED = A99-DS-02V00 + AZERO-DS-05V05 - 2.5.
+    DISPLAY WRK-DS-02V00.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("97"),
+        "ROUNDED COMPUTE into an integer target should round 96.5 to 97: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_compute_integer_division_to_subscripted_display_decimal_target_keeps_fraction() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COMPUTE-SUB-DISPLAY-DIV-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  GRP-0010.
+    02 WRK-O005F-0012 OCCURS 2 TIMES.
+       03 WRK-O003F-0013 OCCURS 2 TIMES.
+          05 WRK-DS-03V04-0003F-0014 PIC S9(3)V9999 OCCURS 2 TIMES.
+PROCEDURE DIVISION.
+    COMPUTE WRK-DS-03V04-0003F-0014 (2, 2, 2) = 174 / 16.
+    IF WRK-DS-03V04-0003F-0014 (2, 2, 2) > 10.8749
+        AND WRK-DS-03V04-0003F-0014 (2, 2, 2) < 10.8751
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY \"FAIL\"
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("PASS"),
+        "COMPUTE integer division into subscripted PIC S9(3)V9999 should preserve four fractional digits: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_subtract_corresponding_unsigned_display_stores_abs_digits() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SUB-CORR-UNSIGNED-DISPLAY-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC-GROUP.
+    05 A PIC S99 VALUE 11.
+    05 B PIC S99 VALUE 22.
+01  DST-GROUP.
+    05 A PIC 99.
+    05 B PIC 99.
+PROCEDURE DIVISION.
+    MOVE ZERO TO DST-GROUP.
+    SUBTRACT CORRESPONDING SRC-GROUP FROM DST-GROUP.
+    IF DST-GROUP = \"1122\"
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY DST-GROUP
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("PASS"),
+        "SUBTRACT CORRESPONDING into unsigned DISPLAY PIC should store unsigned digit bytes, not negative overpunch: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_deep_qualified_duplicate_name_uses_qualified_picture_size() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DEEP-QUAL-SIZE-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  TABLE-LEVEL-5A.
+    02 TABLE-LEVEL-4A.
+       03 TABLE-LEVEL-3A.
+          04 TABLE-LEVEL-2A.
+             05 TABLE-LEVEL-1A.
+                06 TBL-LEVEL-0A PIC X(12) VALUE \"5A4A3A2A1A0A\".
+01  TABLE-LEVEL-5B.
+    02 TABLE-LEVEL-4A.
+       03 TABLE-LEVEL-3A.
+          04 TABLE-LEVEL-2A.
+             05 TABLE-LEVEL-1A.
+                06 TBL-LEVEL-0A PIC X VALUE \"Z\".
+01  OUT-FIELD PIC X(12).
+PROCEDURE DIVISION.
+    IF TBL-LEVEL-0A OF TABLE-LEVEL-1A IN TABLE-LEVEL-2A OF
+        TABLE-LEVEL-3A IN TABLE-LEVEL-4A OF TABLE-LEVEL-5A =
+        \"5A4A3A2A1A0A\"
+        MOVE TBL-LEVEL-0A OF TABLE-LEVEL-1A IN TABLE-LEVEL-2A OF
+            TABLE-LEVEL-3A IN TABLE-LEVEL-4A OF TABLE-LEVEL-5A TO OUT-FIELD
+    END-IF.
+    DISPLAY OUT-FIELD.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("5A4A3A2A1A0A"),
+        "deep qualified duplicate data-name should use the fully qualified PIC X(12) size: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_group_move_with_inherited_computational_usage_copies_all_members() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. GROUP-COMP-MOVE-TEST.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC-GROUP USAGE COMPUTATIONAL.
+    05 A PIC 9 VALUE 5.
+    05 B PIC 9 VALUE 6.
+01  DST-GROUP USAGE COMPUTATIONAL.
+    05 A PIC 9.
+    05 B PIC 9.
+PROCEDURE DIVISION.
+    MOVE SRC-GROUP TO DST-GROUP.
+    IF B OF DST-GROUP = 6
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY B OF DST-GROUP
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("PASS"),
+        "group MOVE between USAGE COMPUTATIONAL groups should copy the full internal storage for all members: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
 fn test_a4_class_condition_numeric() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -2871,7 +3790,9 @@ fn test_c2_move_corresponding() {
         paragraphs: Vec::new(),
         body: vec![HirStatement::MoveCorresponding {
             from: cobol_hir::HirDataName::simple("WS-SRC"),
+            from_subscripts: Vec::new(),
             to: cobol_hir::HirDataName::simple("WS-DST"),
+            to_subscripts: Vec::new(),
             span: Span::dummy(),
         }],
         classes: Vec::new(),
@@ -2891,6 +3812,8 @@ fn test_c2_move_corresponding() {
         variable_record_bounds: std::collections::HashMap::new(),
         same_record_areas: Vec::new(),
         decimal_point_is_comma: false,
+        special_class_conditions: std::collections::HashMap::new(),
+        program_collating_sequence: None,
         nested_programs: Vec::new(),
         span: Span::dummy(),
     };
@@ -3045,6 +3968,8 @@ fn test_c2_add_corresponding() {
         variable_record_bounds: std::collections::HashMap::new(),
         same_record_areas: Vec::new(),
         decimal_point_is_comma: false,
+        special_class_conditions: std::collections::HashMap::new(),
+        program_collating_sequence: None,
         nested_programs: Vec::new(),
         span: Span::dummy(),
     };
@@ -3655,6 +4580,35 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_perform_varying_after_reinitializes_after_outer_increment() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VARY-AFTER-ORDER.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  A PIC 9(5) VALUE 0.
+01  B PIC 9(5) VALUE 0.
+01  CNT PIC 9(5) VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM
+        VARYING A FROM 1 BY 1 UNTIL A > 3
+        AFTER B FROM A BY 1 UNTIL B > 3
+        ADD 1 TO CNT
+    END-PERFORM.
+    DISPLAY CNT.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.trim().ends_with("00006") || stdout.trim().ends_with('6'),
+        "AFTER varying should use the incremented outer value for reinitialization, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
 fn test_native_move_corresponding_run() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3687,6 +4641,568 @@ PROCEDURE DIVISION.
         "FIELD-C should remain 999: got '{}'",
         lines[1]
     );
+}
+
+#[test]
+fn test_native_move_corresponding_skips_unmatched_group_children() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CORR-GROUP-SKIP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC.
+   05 GRP.
+      10 A PIC X(2) VALUE 'AA'.
+01 DST.
+   05 GRP.
+      10 B PIC X(2) VALUE 'BB'.
+PROCEDURE DIVISION.
+    MOVE CORRESPONDING SRC TO DST.
+    DISPLAY B OF DST.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "BB");
+}
+
+#[test]
+fn test_native_move_corresponding_moves_elementary_to_same_named_group_storage() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CORR-ELEM-GROUP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC.
+   05 D-LEVEL.
+      10 DICK PIC X(4) VALUE 'DICK'.
+01 DST.
+   05 D-LEVEL.
+      10 DICK.
+         15 RICHARD OCCURS 2 TIMES PIC X(2).
+PROCEDURE DIVISION.
+    MOVE 'TTTT' TO DICK OF DST.
+    MOVE CORRESPONDING D-LEVEL OF SRC TO D-LEVEL OF DST.
+    DISPLAY DICK OF DST.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "DICK");
+}
+
+#[test]
+fn test_native_move_corresponding_skips_redefines_target() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CORR-REDEF.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC.
+   05 DD-LEVEL.
+      10 HARRY PIC X(5) VALUE 'HARRY'.
+01 DST.
+   05 DD-LEVEL-FALSE PIC X(5) VALUE 'TTTTT'.
+   05 DD-LEVEL REDEFINES DD-LEVEL-FALSE.
+      10 HARRY PIC X(5).
+PROCEDURE DIVISION.
+    MOVE CORRESPONDING SRC TO DST.
+    DISPLAY HARRY OF DD-LEVEL OF DST.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "TTTTT");
+}
+
+#[test]
+fn test_native_move_corresponding_preserves_target_subscript() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CORR-SUB.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC.
+   05 GRP.
+      10 A PIC X(3) VALUE 'TOM'.
+01 VIEW.
+   05 TARGET-A PIC X(3) VALUE 'OLD'.
+01 TABLE-AREA REDEFINES VIEW.
+   05 ROW OCCURS 1 TIMES.
+      10 GRP.
+         15 A PIC X(3).
+PROCEDURE DIVISION.
+    MOVE CORRESPONDING GRP OF SRC TO GRP OF ROW (1).
+    DISPLAY TARGET-A.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "TOM");
+}
+
+#[test]
+fn test_native_add_giving_signed_separate_decimal_uses_numeric_digits_for_size_error() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ADD-SIZE-DIGITS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 R PIC S.9(18) SIGN IS LEADING SEPARATE VALUE ZERO.
+77 S PIC X VALUE SPACE.
+PROCEDURE DIVISION.
+    ADD -.999999999999999999 -.999999999999999999 -.34 -.01
+        +.999999999999999999 +.999999999999999999 +.1 .35
+        GIVING R
+        ON SIZE ERROR MOVE '1' TO S.
+    DISPLAY R.
+    DISPLAY S.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines
+            .first()
+            .is_some_and(|line| line.contains(".100000000000000000")),
+        "expected .100000000000000000, got stdout={stdout:?}"
+    );
+    assert_eq!(lines.get(1).copied().unwrap_or_default(), " ");
+}
+
+#[test]
+fn test_native_value_all_literal_and_figurative_constants_initialize_full_field() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALL-VALUE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 G.
+   05 A PIC X(6) VALUE ALL 'ABC'.
+   05 B PIC X(3) VALUE ALL QUOTES.
+   05 C PIC X(3) VALUE ALL HIGH-VALUES.
+   05 D PIC X(3) VALUE ALL LOW-VALUES.
+PROCEDURE DIVISION.
+    IF A = 'ABCABC' AND B = QUOTES AND C = HIGH-VALUES AND D = LOW-VALUES
+       DISPLAY 'OK'
+    ELSE
+       DISPLAY 'NG'
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_decimal_literal_comparison_preserves_fractional_precision() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DECLITCMP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SIX PIC 9 VALUE 6.
+PROCEDURE DIVISION.
+    IF 6.00000000000000001 NOT EQUAL TO SIX
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY \"NG\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line.contains("OK")),
+        "decimal literal should compare with fractional precision, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_native_alphanumeric_numeric_class_rejects_signed_text() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NUMCLASS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  CLASS-1 PIC X(5) VALUE \"+1234\".
+PROCEDURE DIVISION.
+    IF CLASS-1 NOT NUMERIC
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY \"NG\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_program_collating_sequence_alphabet_literal_and_also() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COLLSEQ.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+OBJECT-COMPUTER.
+    COMPUTER PROGRAM COLLATING SEQUENCE IS WILD.
+SPECIAL-NAMES.
+    ALPHABET WILD IS \"A\" THRU \"H\" \"I\" ALSO \"J\" ALSO \"K\"
+    ALSO \"L\" ALSO \"M\" ALSO \"N\" \"O\" THRU \"Z\" \"0\" THRU \"9\".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  A PIC X VALUE \"A\".
+01  I PIC X VALUE \"I\".
+01  N PIC X VALUE \"N\".
+01  NINE PIC 9 VALUE 9.
+PROCEDURE DIVISION.
+    IF A = LOW-VALUE AND I = N AND NINE < SPACE
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY \"NG\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_program_collating_sequence_treats_figuratives_as_values() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COLLFIG.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+OBJECT-COMPUTER.
+    COMPUTER PROGRAM COLLATING SEQUENCE IS WILD.
+SPECIAL-NAMES.
+    ALPHABET WILD IS \"F\" \"U\" \"N\" ALSO HIGH-VALUE ALSO LOW-VALUE \"Y\".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  F PIC X VALUE \"F\".
+01  U PIC X VALUE \"U\".
+01  N PIC X VALUE \"N\".
+01  Q PIC X VALUE \"Q\".
+PROCEDURE DIVISION.
+    IF F < U AND U < N AND F = LOW-VALUE
+        AND N NOT = HIGH-VALUE AND Q NOT = LOW-VALUE
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY \"NG\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_numeric_edited_deediting_preserves_floating_picture_digits() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. NEDEDIT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  A PIC $(4)9.99CR.
+01  B PIC S9(4)V99.
+01  C PIC --9B.99B99/99.
+01  D PIC S99V9(6).
+PROCEDURE DIVISION.
+    MOVE -123.45 TO A.
+    MOVE A TO B.
+    MOVE -42.9876 TO C.
+    MOVE C TO D.
+    IF A = \" $123.45CR\" AND B = -123.45
+        AND C = \"-42 .98 76/00\" AND D = -42.987600
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY A
+        DISPLAY B
+        DISPLAY C
+        DISPLAY D.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_string_updates_pointer_after_delimited_by_size() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STRPTR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  OUT PIC X(5) VALUE \"*****\".
+01  PTR PIC 99 VALUE 1.
+PROCEDURE DIVISION.
+    STRING \"ABCDEF\" DELIMITED BY SIZE INTO OUT WITH POINTER PTR.
+    IF OUT = \"ABCDE\" AND PTR = 6
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY OUT
+        DISPLAY PTR.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_string_uses_subscripted_identifier_delimiter() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STRDELIM.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  DELIM-TABLE PIC X(5) VALUE \"CDEFF\".
+01  DELIM-REDEF REDEFINES DELIM-TABLE.
+    05  DELIM-CHAR PIC X OCCURS 5 TIMES.
+01  SRC PIC X(7) VALUE \"ABCDEFG\".
+01  OUT PIC X(5) VALUE \"*****\".
+01  PTR PIC 99 VALUE 1.
+01  IDX PIC 99 VALUE 5.
+PROCEDURE DIVISION.
+    STRING SRC DELIMITED BY DELIM-CHAR(IDX) INTO OUT POINTER PTR.
+    IF OUT = \"ABCDE\" AND PTR = 6
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY OUT
+        DISPLAY PTR.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_string_treats_figurative_constants_as_single_characters() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STRFIG.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  OUT PIC X(5) VALUE \"*****\".
+01  PTR PIC 99 VALUE 1.
+PROCEDURE DIVISION.
+    STRING SPACE \"ABCDE\" DELIMITED BY \" ABCDE\" INTO OUT
+        POINTER PTR
+        ON OVERFLOW DISPLAY \"OV\".
+    IF OUT = \" ABCD\" AND PTR = 6
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY OUT
+        DISPLAY PTR.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line == "OK"),
+        "expected figurative SPACE to be a one-character source, got {stdout:?}"
+    );
+}
+
+#[test]
+fn test_native_unstring_updates_pointer_tally_count_and_overflow() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. USTRBASIC.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC X(7) VALUE \"1200000\".
+01  OUT PIC X VALUE ZERO.
+01  DELIM PIC X(4) VALUE \"****\".
+01  CNT PIC 99 VALUE 0.
+01  PTR PIC 99 VALUE 1.
+01  TALLY PIC 99 VALUE 0.
+PROCEDURE DIVISION.
+    UNSTRING SRC DELIMITED BY ZERO
+        INTO OUT DELIMITER IN DELIM COUNT IN CNT
+        WITH POINTER PTR
+        TALLYING TALLY
+        ON OVERFLOW DISPLAY \"OV\".
+    IF OUT = \"1\" AND DELIM = \"0   \" AND CNT = 2 AND PTR = 4 AND TALLY = 1
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY OUT
+        DISPLAY DELIM
+        DISPLAY CNT
+        DISPLAY PTR
+        DISPLAY TALLY.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line == "OV") && stdout.lines().any(|line| line == "OK"),
+        "expected UNSTRING overflow side effects, got {stdout:?}"
+    );
+}
+
+#[test]
+fn test_native_unstring_respects_justified_and_numeric_targets() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. USTRKINDS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC X(7) VALUE \"1200000\".
+01  OUT-J PIC X JUSTIFIED RIGHT VALUE SPACE.
+01  OUT-N PIC 9 VALUE ZERO.
+01  PTR PIC 99 VALUE 1.
+PROCEDURE DIVISION.
+    UNSTRING SRC DELIMITED BY ZERO INTO OUT-J POINTER PTR ON OVERFLOW CONTINUE.
+    MOVE 1 TO PTR.
+    UNSTRING SRC DELIMITED BY ZERO INTO OUT-N POINTER PTR ON OVERFLOW CONTINUE.
+    IF OUT-J = \"2\" AND OUT-N = 2
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY OUT-J
+        DISPLAY OUT-N.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_unstring_delimited_by_all_collapses_delimiter_run() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. USTRALL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC X(7) VALUE \"1200000\".
+01  OUT-N PIC S9 VALUE ZERO.
+01  DELIM PIC X(4) VALUE \"****\".
+01  CNT PIC 99 VALUE 0.
+01  PTR PIC 99 VALUE 1.
+01  TALLY PIC 99 VALUE 0.
+PROCEDURE DIVISION.
+    UNSTRING SRC DELIMITED BY ALL ZERO
+        INTO OUT-N DELIMITER DELIM COUNT CNT
+        POINTER PTR
+        TALLYING TALLY.
+    IF OUT-N = +2 AND DELIM = \"0   \" AND CNT = 2 AND PTR = 8 AND TALLY = 1
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY OUT-N
+        DISPLAY DELIM
+        DISPLAY CNT
+        DISPLAY PTR
+        DISPLAY TALLY.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_unstring_without_delimiter_splits_by_receiving_size() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. USTRSIZES.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC X(10) VALUE \"ABCDEFGHIJ\".
+01  GRP.
+    05  A PIC X.
+    05  B PIC XX.
+    05  C PIC XXX.
+    05  D PIC XXXX.
+PROCEDURE DIVISION.
+    MOVE SPACES TO GRP.
+    UNSTRING SRC INTO D C B A.
+    IF GRP = \"JHIEFGABCD\"
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY GRP.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_unstring_uses_earliest_or_delimiter() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. USTROR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC X(12) VALUE \"ABCDEFGHIJKL\".
+01  A PIC X VALUE SPACE.
+01  B PIC XX VALUE SPACES.
+01  C PIC XXX VALUE SPACES.
+01  TALLY PIC 99 VALUE 1.
+PROCEDURE DIVISION.
+    UNSTRING SRC DELIMITED BY \"E\" OR \"H\" OR \"K\" OR \"L\"
+        INTO C B A
+        TALLYING TALLY.
+    IF C = \"ABC\" AND B = \"FG\" AND A = \"I\" AND TALLY = 4
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY C
+        DISPLAY B
+        DISPLAY A
+        DISPLAY TALLY.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_native_unstring_delimited_identifier_exhausts_remaining_field() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. USTRREM.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SRC PIC X(7) VALUE \"ABCDEFG\".
+01  DELIMS PIC X(2) VALUE \"CE\".
+01  DELIMS-R REDEFINES DELIMS.
+    05  D PIC X OCCURS 2 TIMES.
+01  GRP.
+    05  A PIC X(5).
+    05  B PIC X.
+01  DEL1 PIC X(4) VALUE \"****\".
+01  DEL2 PIC X(4) VALUE \"****\".
+01  C1 PIC 99 VALUE 0.
+01  C2 PIC 99 VALUE 0.
+01  IDX PIC 99 VALUE 1.
+01  TALLY PIC 99 VALUE 1.
+PROCEDURE DIVISION.
+    MOVE SPACES TO GRP.
+    UNSTRING SRC DELIMITED BY D(IDX)
+        INTO A DELIMITER IN DEL1 COUNT IN C1
+             B DELIMITER IN DEL2 COUNT IN C2
+        TALLYING IN TALLY.
+    IF GRP = \"AB   D\" AND DEL1 = \"C   \" AND C1 = 2 AND C2 = 4
+        AND TALLY = 3
+        DISPLAY \"OK\"
+    ELSE
+        DISPLAY GRP
+        DISPLAY DEL1
+        DISPLAY C1
+        DISPLAY C2
+        DISPLAY TALLY.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
 }
 
 #[test]
@@ -4184,6 +5700,65 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_accept_console_reads_full_fixed_width_field() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ACCEPT-FIXED.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 ACCEPT-D1.
+   05 ACCEPT-D1-A PIC X(20).
+   05 ACCEPT-D1-B PIC X(7).
+01 ACCEPT-D2 PIC X(27) VALUE \"ABCDEFGHIJKLMNOPQRSTUVWXY Z\".
+PROCEDURE DIVISION.
+    ACCEPT ACCEPT-D1.
+    IF ACCEPT-D1 = ACCEPT-D2
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY ACCEPT-D1-A
+        DISPLAY ACCEPT-D1-B
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) =
+        compile_and_run_no_sema_with_stdin(src, "ABCDEFGHIJKLMNOPQRSTUVWXY Z\n");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("PASS"),
+        "ACCEPT should read the full 27-byte field, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_accept_console_preserves_subscripted_target() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ACCEPT-SUB.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 ACCEPT-VALUE PIC X(12) VALUE \"............\".
+01 ACCEPT-D21 REDEFINES ACCEPT-VALUE.
+   05 TAB-ACCEPT OCCURS 3 TIMES.
+      10 TAB-A PIC X(4).
+01 ACCEPT-D22 PIC X(12) VALUE \"....ABCD....\".
+PROCEDURE DIVISION.
+    ACCEPT TAB-ACCEPT(2).
+    IF ACCEPT-D21 = ACCEPT-D22
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY ACCEPT-D21
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema_with_stdin(src, "ABCD\n");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("PASS"),
+        "ACCEPT should keep the target subscript, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
 fn test_native_evaluate_with_values() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -4501,6 +6076,81 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_move_all_literal_repeats_into_group() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALL-GROUP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-GROUP.
+   05 WS-A PIC XX.
+   05 WS-B PIC XX.
+   05 WS-C PIC XX.
+PROCEDURE DIVISION.
+    MOVE ALL \"ABC\" TO WS-GROUP.
+    DISPLAY WS-A.
+    DISPLAY WS-B.
+    DISPLAY WS-C.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines, vec!["AB", "CA", "BC"]);
+}
+
+#[test]
+fn test_native_search_respects_occurs_depending_on_bound() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SEARCH-ODO.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 TBL-LEN PIC 9 VALUE 2.
+01 TBL.
+   05 ENT OCCURS 1 TO 3 DEPENDING ON TBL-LEN INDEXED BY IDX.
+      10 KEY-FLD PIC X.
+PROCEDURE DIVISION.
+    MOVE \"ABC\" TO TBL.
+    SET IDX TO 1.
+    SEARCH ENT AT END DISPLAY \"NOT-FOUND\"
+        WHEN KEY-FLD (IDX) = \"C\" DISPLAY \"FOUND\".
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["NOT-FOUND"]);
+}
+
+#[test]
+fn test_native_qualified_subscript_uses_exact_display_numeric_size() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. QUAL-SUB.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 GROUP-4-TABLE.
+   05 UNQUAL-ITEM PIC X OCCURS 15 TIMES.
+01 SUBSCRIPTS-PART1.
+   05 SUBSCRIPTS.
+      10 SUB1 PIC 9 VALUE 5.
+      10 SUB2 PIC 99 VALUE 12.
+01 SUBSCRIPTS-PART2.
+   05 SUBSCRIPTS.
+      10 SUB1 PIC 999 VALUE 5.
+01 TEMP-VALUE PIC X.
+PROCEDURE DIVISION.
+    MOVE \"ABCDEFGHIJKLMNO\" TO GROUP-4-TABLE.
+    MOVE UNQUAL-ITEM (SUB1 OF SUBSCRIPTS OF SUBSCRIPTS-PART1) TO TEMP-VALUE.
+    DISPLAY TEMP-VALUE.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["E"]);
+}
+
+#[test]
 fn test_native_exit_paragraph() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -4658,6 +6308,70 @@ PROCEDURE DIVISION.
         DISPLAY \"PASS\"
     ELSE
         DISPLAY NUM-9V9
+    END-IF.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "PASS", "unexpected output: '{stdout}'");
+}
+
+#[test]
+fn test_native_decimal_multiply_size_error_preserves_target() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MUL-SIZE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 TABLE1.
+   05 TABLE1-NUM PIC S9V99 OCCURS 3 INDEXED BY INDEX1.
+01 NUM-9V9 PIC 9V9.
+PROCEDURE DIVISION.
+    MOVE 7.00 TO TABLE1-NUM(3).
+    MOVE 6.0 TO NUM-9V9.
+    SET INDEX1 TO 3.
+    MULTIPLY TABLE1-NUM(INDEX1) BY NUM-9V9
+        ON SIZE ERROR
+            IF NUM-9V9 = 6.0
+                DISPLAY \"PASS\"
+            ELSE
+                DISPLAY \"CHANGED\"
+            END-IF
+        NOT ON SIZE ERROR
+            DISPLAY \"NOERR\"
+    END-MULTIPLY.
+    STOP RUN.
+";
+    let (stdout, _, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "PASS", "unexpected output: '{stdout}'");
+}
+
+#[test]
+fn test_native_divide_multiple_giving_uses_original_operands() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DIV-GIVING-SNAPSHOT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 DIVISOR PIC 9V9.
+01 DIVIDEND PIC 99.
+01 OUT-A PIC 99V9.
+01 OUT-B PIC 99.
+01 OUT-C PIC 99V9.
+PROCEDURE DIVISION.
+    MOVE 3.9 TO DIVISOR.
+    MOVE 10 TO DIVIDEND.
+    DIVIDE DIVISOR INTO DIVIDEND
+        GIVING OUT-A
+               DIVIDEND ROUNDED
+               OUT-C.
+    IF OUT-A = 2.5 AND DIVIDEND = 3 AND OUT-C = 2.5
+        DISPLAY \"PASS\"
+    ELSE
+        DISPLAY OUT-A
+        DISPLAY DIVIDEND
+        DISPLAY OUT-C
     END-IF.
     STOP RUN.
 ";
@@ -6797,6 +8511,8 @@ fn test_typedef_codegen() {
             variable_record_bounds: std::collections::HashMap::new(),
             same_record_areas: Vec::new(),
             decimal_point_is_comma: false,
+            special_class_conditions: std::collections::HashMap::new(),
+            program_collating_sequence: None,
             nested_programs: Vec::new(),
             span: Span::new(0, 0, FileId(0)),
         };

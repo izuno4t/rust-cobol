@@ -322,7 +322,7 @@ verifier_standard_ccvs() {
     local src="$1"
     local result_file="$2"
     local compile_log="$3"
-    local pass fail ccvs_pass ccvs_failed ccvs_inspect footer_errors
+    local pass fail ccvs_pass ccvs_failed ccvs_inspect ccvs_deleted footer_errors
     local expected_flags warning_count expected_cases feature_name feature_rows detail_paragraphs
     local first_fail_details source_reason
 
@@ -386,6 +386,7 @@ verifier_standard_ccvs() {
     if [ "$ccvs_inspect" -eq 0 ]; then
         ccvs_inspect=$(verifier_count_summary "$result_file" 'TESTS REQUIRE VISUAL INSPECTION')
     fi
+    ccvs_deleted=$(verifier_count_summary "$result_file" 'TEST\(S\) DELETED')
     footer_errors="$(verifier_footer_errors "$result_file")"
     expected_cases="$(verifier_expected_case_count "$src")"
     feature_name="$(verifier_expected_feature_name "$src")"
@@ -419,6 +420,16 @@ verifier_standard_ccvs() {
 
     if [ "$ccvs_pass" -gt 0 ]; then
         printf 'PASS|%s passed\n' "$ccvs_pass"
+        return 0
+    fi
+
+    if [ "$ccvs_pass" -eq 0 ] \
+        && [ "$ccvs_failed" -eq 0 ] \
+        && [ "$ccvs_deleted" -eq 0 ] \
+        && [ "$ccvs_inspect" -eq 0 ] \
+        && grep -q 'END OF TEST-' "$result_file" \
+        && grep -q 'NO  TEST(S) FAILED' "$result_file"; then
+        printf 'PASS|0 executable CCVS cases; no failures reported\n'
         return 0
     fi
 

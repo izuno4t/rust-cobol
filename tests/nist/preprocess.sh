@@ -74,8 +74,8 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
         s{(?<![A-Z0-9"])\QXXXXX068\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O68"}g;
         s{(?<![A-Z0-9"])\QXXXXX069\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O69"}g;
         s{(?<![A-Z0-9"])\QXXXXX081\E(?![A-Z0-9"])}{"COMPUTER"}g;
-        s{(?<![A-Z0-9"])\QXXXXX090\E(?![A-Z0-9"])}{COMPUTER}g;
-        s{(?<![A-Z0-9"])\QXXXXX091\E(?![A-Z0-9"])}{COMPUTER}g;
+        s{(?<![A-Z0-9"])\QXXXXX090\E(?![A-Z0-9"])}{"A"}g;
+        s{(?<![A-Z0-9"])\QXXXXX091\E(?![A-Z0-9"])}{"D"}g;
         s{(?<![A-Z0-9"])\QXXXXD001\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/../_shared/D1"}g;
         s{(?<![A-Z0-9"])\QXXXXD002\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/../_shared/D2"}g;
         s{(?<![A-Z0-9"])\QXXXXD003\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/../_shared/D3"}g;

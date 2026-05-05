@@ -443,6 +443,7 @@ pub unsafe extern "C" fn cobol_decimal_from_string(
     }
 
     let trimmed = &slice[start..end];
+    let upper_trimmed: Vec<u8> = trimmed.iter().map(|b| b.to_ascii_uppercase()).collect();
     let mut idx = 0usize;
     let mut negative = false;
     let mut is_signed = false;
@@ -457,6 +458,13 @@ pub unsafe extern "C" fn cobol_decimal_from_string(
             idx = 1;
         }
         _ => {}
+    }
+    if trimmed.last().is_some_and(|b| *b == b'-') || upper_trimmed.ends_with(b"CR") {
+        negative = true;
+        is_signed = true;
+    }
+    if upper_trimmed.ends_with(b"DB") {
+        is_signed = true;
     }
 
     let mut value: i64 = 0;
@@ -476,6 +484,8 @@ pub unsafe extern "C" fn cobol_decimal_from_string(
             b'.' if !seen_dot => {
                 seen_dot = true;
             }
+            b' ' | b'\t' | b'\r' | b'\n' | b'+' | b'-' | b',' | b'$' | b'/' => {}
+            _ if b.to_ascii_uppercase().is_ascii_uppercase() => {}
             _ => {
                 *r = CobolDecimal {
                     value: 0,
@@ -577,6 +587,12 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     }
     let zero_asterisk_fill =
         display_abs_value == 0 && chars.contains(&'*') && !has_mandatory_integer_digit;
+    let zero_asterisk_preserves_currency = zero_asterisk_fill
+        && actual_decimal_char.is_some()
+        && chars
+            .iter()
+            .skip_while(|&&c| Some(c) != actual_decimal_char)
+            .any(|&c| c == '9');
 
     // Count integer and fractional digit positions.
     let floating_symbol = numeric_edited_floating_symbol(&chars, actual_decimal_char);
@@ -653,12 +669,11 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
                     frac_idx += 1;
                 }
             }
+            '$' | 'W' if zero_asterisk_fill && zero_asterisk_preserves_currency => {
+                result.push(c);
+            }
             '$' | 'W' if zero_asterisk_fill => {
-                if chars.get(idx + 1).is_some_and(|next| *next == '*') {
-                    result.push(c);
-                } else {
-                    result.push('*');
-                }
+                result.push('*');
             }
             'S' => {
                 // Implicit sign — not emitted.
@@ -877,7 +892,21 @@ fn format_floating_numeric_edited(
         integer_text.push(symbol);
     }
     integer_text.push_str(&digit_text);
-    let mut result = right_align_floating_text(&integer_text, int_pic.len(), emitted_symbol);
+    let last_int_slot = int_pic
+        .iter()
+        .rposition(|&c| c == floating_symbol || c == '9' || c == 'Z' || c == '*');
+    let (int_core_width, trailing_int_insertions) = if let Some(last_slot) = last_int_slot {
+        (last_slot + 1, &int_pic[last_slot + 1..])
+    } else {
+        (int_pic.len(), &[][..])
+    };
+    let mut result = right_align_floating_text(&integer_text, int_core_width, emitted_symbol);
+    for &c in trailing_int_insertions {
+        result.push(match c {
+            'B' => ' ',
+            other => other,
+        });
+    }
     if decimal_idx < chars.len() {
         match chars[decimal_idx] {
             'V' => {}
@@ -911,6 +940,7 @@ fn format_floating_numeric_edited(
                     result.push(if negative { 'B' } else { ' ' });
                     idx += 1;
                 }
+                'B' => result.push(' '),
                 'S' => {}
                 other => result.push(other),
             }
@@ -1085,6 +1115,25 @@ mod tests {
     }
 
     #[test]
+    fn test_zero_star_fill_suppresses_single_floating_currency() {
+        let zero = make_dec(0, 2, 4, true);
+        let mut out = [0u8; 16];
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                b"$**.**CR".as_ptr(),
+                8,
+            )
+        };
+        assert_eq!(
+            std::str::from_utf8(&out[..len as usize]).unwrap(),
+            "***.****"
+        );
+    }
+
+    #[test]
     fn test_floating_numeric_edited_long_pictures() {
         let pic = b"$$,$$$,$$$,$$$,$$$,$$$.99";
         let mut out = [0u8; 32];
@@ -1207,6 +1256,23 @@ mod tests {
     }
 
     #[test]
+    fn test_currency_asterisk_zero_preserves_currency_with_mandatory_fraction() {
+        let pic = b"$**.99";
+        let mut out = [0u8; 16];
+        let zero = make_dec(0, 2, 4, true);
+        let len = unsafe {
+            cobol_decimal_to_display(
+                &zero,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                pic.as_ptr(),
+                pic.len() as u32,
+            )
+        };
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "$**.00");
+    }
+
+    #[test]
     fn test_asterisk_picture_replaces_suppressed_zeroes() {
         let mut out = [0u8; 16];
         let d = make_dec(1000, 2, 6, true);
@@ -1231,7 +1297,7 @@ mod tests {
                 6,
             )
         };
-        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "$**.00");
+        assert_eq!(std::str::from_utf8(&out[..len as usize]).unwrap(), "***.00");
 
         let len = unsafe {
             cobol_decimal_to_display(
@@ -1255,7 +1321,7 @@ mod tests {
         };
         assert_eq!(
             std::str::from_utf8(&out[..len as usize]).unwrap(),
-            "$**.****"
+            "***.****"
         );
 
         let negative = make_dec(-42, 0, 6, true);

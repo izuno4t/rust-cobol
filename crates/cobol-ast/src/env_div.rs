@@ -25,6 +25,10 @@ pub struct ConfigurationSection {
     pub object_computer: Option<SmolStr>,
     /// SPECIAL-NAMES paragraph entries.
     pub special_names: Vec<SpecialNameEntry>,
+    /// SPECIAL-NAMES CLASS clauses.
+    pub special_classes: Vec<SpecialClassEntry>,
+    /// SPECIAL-NAMES ALPHABET clauses.
+    pub special_alphabets: Vec<SpecialAlphabetEntry>,
     /// SPECIAL-NAMES DECIMAL-POINT IS COMMA.
     pub decimal_point_is_comma: bool,
     /// REPOSITORY paragraph entries (COBOL 2002+).
@@ -43,6 +47,27 @@ pub struct SpecialNameEntry {
     pub on_condition: Option<SmolStr>,
     /// Condition name for OFF STATUS (switch is off).
     pub off_condition: Option<SmolStr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecialClassEntry {
+    pub name: SmolStr,
+    pub ranges: Vec<SpecialClassRange>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpecialClassRange {
+    Single(SmolStr),
+    Range { from: SmolStr, to: SmolStr },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecialAlphabetEntry {
+    pub name: SmolStr,
+    /// Each inner vector contains characters with the same collating rank.
+    pub ranks: Vec<Vec<SmolStr>>,
     pub span: Span,
 }
 

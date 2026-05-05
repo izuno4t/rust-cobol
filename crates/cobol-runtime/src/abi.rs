@@ -28,6 +28,7 @@ pub fn emit_c_declarations(out: &mut String) {
     out.push_str("    uint8_t* delimiter_ptr;\n");
     out.push_str("    uint32_t delimiter_len;\n");
     out.push_str("    uint32_t* count_ptr;\n");
+    out.push_str("    uint32_t kind;\n");
     out.push_str("} CobolUnstringTarget;\n");
     out.push_str("typedef struct SortKey {\n");
     out.push_str("    uint32_t offset;\n");
@@ -121,12 +122,17 @@ pub fn emit_c_declarations(out: &mut String) {
     );
     out.push_str("/* Class condition runtime declarations */\n");
     out.push_str("extern int32_t cobol_is_numeric(const uint8_t* ptr, uint32_t len);\n");
+    out.push_str("extern int32_t cobol_is_numeric_strict(const uint8_t* ptr, uint32_t len);\n");
     out.push_str("extern int32_t cobol_is_alphabetic(const uint8_t* ptr, uint32_t len);\n");
     out.push_str("extern int32_t cobol_is_alphabetic_lower(const uint8_t* ptr, uint32_t len);\n");
     out.push_str("extern int32_t cobol_is_alphabetic_upper(const uint8_t* ptr, uint32_t len);\n");
+    out.push_str("extern int32_t cobol_is_custom_class(const uint8_t* ptr, uint32_t len, const uint8_t* ranges, uint32_t ranges_len);\n");
     out.push_str("/* Alphanumeric comparison runtime declaration */\n");
     out.push_str(
         "extern int32_t cobol_compare_alphanumeric(const uint8_t* a, uint32_t a_len, const uint8_t* b, uint32_t b_len);\n",
+    );
+    out.push_str(
+        "extern int32_t cobol_compare_alphanumeric_collated(const uint8_t* a, uint32_t a_len, const uint8_t* b, uint32_t b_len, const uint16_t* weights);\n",
     );
     out.push_str("/* String operations runtime declarations */\n");
     out.push_str(
@@ -155,7 +161,7 @@ pub fn emit_c_declarations(out: &mut String) {
         "extern int32_t cobol_string_concat(const CobolStringSource* sources, uint32_t source_count, uint8_t* dst, uint32_t dst_len, uint32_t* pointer);\n",
     );
     out.push_str(
-        "extern int32_t cobol_unstring(const uint8_t* src, uint32_t src_len, const uint8_t* delim, uint32_t delim_len, CobolUnstringTarget* targets, uint32_t target_count, uint32_t* pointer, uint32_t* tallying);\n",
+        "extern int32_t cobol_unstring(const uint8_t* src, uint32_t src_len, const uint8_t* delim, uint32_t delim_len, CobolUnstringTarget* targets, uint32_t target_count, uint32_t* pointer, uint32_t* tallying, uint32_t collapse_all, const CobolStringSource* delimiter_sources, uint32_t delimiter_count);\n",
     );
     out.push_str(
         "extern uint32_t cobol_inspect_tallying(const uint8_t* src, uint32_t src_len, const uint8_t* search, uint32_t search_len, uint32_t mode);\n",

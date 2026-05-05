@@ -35,6 +35,9 @@ pub struct CobolUnstringTarget {
     /// Pointer to the count field (receives the number of characters moved).
     /// May be null if not requested.
     pub count_ptr: *mut u32,
+    /// 0 = alphanumeric left, 1 = alphanumeric JUSTIFIED RIGHT,
+    /// 2 = native integer numeric.
+    pub kind: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +72,40 @@ pub unsafe extern "C" fn cobol_compare_alphanumeric(
             return -1;
         }
         if ca > cb {
+            return 1;
+        }
+    }
+    0
+}
+
+/// Compare two alphanumeric operands using a 256-entry collating weight table.
+///
+/// # Safety
+/// `a_ptr`, `b_ptr`, and `weights` must be valid for their respective lengths.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_compare_alphanumeric_collated(
+    a_ptr: *const u8,
+    a_len: u32,
+    b_ptr: *const u8,
+    b_len: u32,
+    weights: *const u16,
+) -> i32 {
+    if a_ptr.is_null() || b_ptr.is_null() || weights.is_null() {
+        return 0;
+    }
+    let a = std::slice::from_raw_parts(a_ptr, a_len as usize);
+    let b = std::slice::from_raw_parts(b_ptr, b_len as usize);
+    let weights = std::slice::from_raw_parts(weights, 256);
+    let max_len = a.len().max(b.len());
+    for i in 0..max_len {
+        let ca = if i < a.len() { a[i] } else { b' ' };
+        let cb = if i < b.len() { b[i] } else { b' ' };
+        let wa = weights[ca as usize];
+        let wb = weights[cb as usize];
+        if wa < wb {
+            return -1;
+        }
+        if wa > wb {
             return 1;
         }
     }
@@ -111,6 +148,27 @@ pub unsafe extern "C" fn cobol_is_numeric(ptr: *const u8, len: u32) -> i32 {
         }
     }
     if has_digit {
+        1
+    } else {
+        0
+    }
+}
+
+/// Check whether an alphanumeric field satisfies the NUMERIC class condition.
+///
+/// For nonnumeric character data, COBOL's NUMERIC class requires every
+/// character position to be a decimal digit; signs, decimal points, and spaces
+/// are not numeric characters.
+///
+/// # Safety
+/// `ptr` must be readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_is_numeric_strict(ptr: *const u8, len: u32) -> i32 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let data = std::slice::from_raw_parts(ptr, len as usize);
+    if data.iter().all(|b| b.is_ascii_digit()) {
         1
     } else {
         0
@@ -165,6 +223,41 @@ pub unsafe extern "C" fn cobol_is_alphabetic_upper(ptr: *const u8, len: u32) -> 
     let data = std::slice::from_raw_parts(ptr, len as usize);
     for &b in data {
         if !b.is_ascii_uppercase() && b != b' ' {
+            return 0;
+        }
+    }
+    1
+}
+
+/// Check if every byte belongs to one of the inclusive byte ranges.
+///
+/// # Safety
+/// `ptr` must be readable for `len` bytes. `ranges` must be readable for
+/// `ranges_len` bytes and contain two bytes per range.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_is_custom_class(
+    ptr: *const u8,
+    len: u32,
+    ranges: *const u8,
+    ranges_len: u32,
+) -> i32 {
+    if ptr.is_null() || ranges.is_null() || len == 0 || ranges_len < 2 {
+        return 0;
+    }
+    let data = std::slice::from_raw_parts(ptr, len as usize);
+    let range_data = std::slice::from_raw_parts(ranges, ranges_len as usize);
+    for &b in data {
+        let mut matched = false;
+        for pair in range_data.chunks_exact(2) {
+            let from = pair[0];
+            let to = pair[1];
+            let (low, high) = if from <= to { (from, to) } else { (to, from) };
+            if b >= low && b <= high {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
             return 0;
         }
     }
@@ -616,6 +709,32 @@ fn find_delimiter(data: &[u8], delim: &[u8]) -> Option<usize> {
     data.windows(delim.len()).position(|w| w == delim)
 }
 
+fn find_unstring_delimiter<'a>(
+    data: &[u8],
+    single_delim: Option<&'a [u8]>,
+    delimiter_sources: &'a [CobolStringSource],
+) -> Option<(usize, &'a [u8])> {
+    let mut best: Option<(usize, &'a [u8])> = None;
+    if let Some(delim) = single_delim {
+        if let Some(idx) = find_delimiter(data, delim) {
+            best = Some((idx, delim));
+        }
+    }
+    for source in delimiter_sources {
+        if source.ptr.is_null() || source.len == 0 {
+            continue;
+        }
+        let delim = unsafe { std::slice::from_raw_parts(source.ptr, source.len as usize) };
+        let Some(idx) = find_delimiter(data, delim) else {
+            continue;
+        };
+        if best.is_none_or(|(best_idx, _)| idx < best_idx) {
+            best = Some((idx, delim));
+        }
+    }
+    best
+}
+
 // ---------------------------------------------------------------------------
 // UNSTRING statement
 // ---------------------------------------------------------------------------
@@ -643,13 +762,21 @@ pub unsafe extern "C" fn cobol_unstring(
     target_count: u32,
     pointer: *mut u32,
     tallying: *mut u32,
+    collapse_all: u32,
+    delimiter_sources: *const CobolStringSource,
+    delimiter_count: u32,
 ) -> i32 {
     if src_ptr.is_null() || targets.is_null() {
         return 1;
     }
     let src = std::slice::from_raw_parts(src_ptr, src_len as usize);
-    let delim = if !delim_ptr.is_null() && delim_len > 0 {
-        std::slice::from_raw_parts(delim_ptr, delim_len as usize)
+    let single_delim = if !delim_ptr.is_null() && delim_len > 0 {
+        Some(std::slice::from_raw_parts(delim_ptr, delim_len as usize))
+    } else {
+        None
+    };
+    let delimiter_sources = if !delimiter_sources.is_null() && delimiter_count > 0 {
+        std::slice::from_raw_parts(delimiter_sources, delimiter_count as usize)
     } else {
         &[]
     };
@@ -668,6 +795,8 @@ pub unsafe extern "C" fn cobol_unstring(
 
     let mut pos = start;
     let mut tally_count = 0u32;
+    let mut overflow = false;
+    let has_delimiter = single_delim.is_some() || !delimiter_sources.is_empty();
 
     for tgt in tgts.iter_mut() {
         if pos >= src.len() {
@@ -676,29 +805,49 @@ pub unsafe extern "C" fn cobol_unstring(
 
         // Find the next delimiter.
         let remaining = &src[pos..];
-        let field_end = if !delim.is_empty() {
-            find_delimiter(remaining, delim).unwrap_or(remaining.len())
-        } else {
+        let matched_delim = find_unstring_delimiter(remaining, single_delim, delimiter_sources);
+        let field_end = if let Some((idx, _)) = matched_delim {
+            idx
+        } else if has_delimiter {
             remaining.len()
+        } else {
+            (tgt.len as usize).min(remaining.len())
         };
 
         let field = &remaining[..field_end];
 
-        // Move field data into the target (left-justified, space-padded).
+        // Move field data into the target according to the receiving category.
         let tgt_buf = std::slice::from_raw_parts_mut(tgt.ptr, tgt.len as usize);
         let copy_len = field.len().min(tgt_buf.len());
-        tgt_buf[..copy_len].copy_from_slice(&field[..copy_len]);
-        for b in tgt_buf[copy_len..].iter_mut() {
-            *b = b' ';
+        match tgt.kind {
+            1 => {
+                for b in tgt_buf.iter_mut() {
+                    *b = b' ';
+                }
+                let src_start = field.len().saturating_sub(copy_len);
+                let dst_start = tgt_buf.len().saturating_sub(copy_len);
+                tgt_buf[dst_start..].copy_from_slice(&field[src_start..]);
+            }
+            2 => {
+                let src_start = field.len().saturating_sub(copy_len);
+                let value = cobol_display_to_int64(field[src_start..].as_ptr(), copy_len as u32);
+                *(tgt.ptr as *mut i64) = value;
+            }
+            _ => {
+                tgt_buf[..copy_len].copy_from_slice(&field[..copy_len]);
+                for b in tgt_buf[copy_len..].iter_mut() {
+                    *b = b' ';
+                }
+            }
         }
 
         // Set the delimiter if requested.
         if !tgt.delimiter_ptr.is_null() && tgt.delimiter_len > 0 {
             let delim_buf =
                 std::slice::from_raw_parts_mut(tgt.delimiter_ptr, tgt.delimiter_len as usize);
-            if field_end < remaining.len() {
-                let d_copy = delim.len().min(delim_buf.len());
-                delim_buf[..d_copy].copy_from_slice(&delim[..d_copy]);
+            if let Some((_, matched)) = matched_delim {
+                let d_copy = matched.len().min(delim_buf.len());
+                delim_buf[..d_copy].copy_from_slice(&matched[..d_copy]);
                 for b in delim_buf[d_copy..].iter_mut() {
                     *b = b' ';
                 }
@@ -711,16 +860,30 @@ pub unsafe extern "C" fn cobol_unstring(
 
         // Set the count if requested.
         if !tgt.count_ptr.is_null() {
-            *tgt.count_ptr = copy_len as u32;
+            *tgt.count_ptr = field.len() as u32;
+        }
+
+        if field.len() > tgt_buf.len() {
+            overflow = true;
         }
 
         tally_count += 1;
 
         // Advance past the field and the delimiter.
         pos += field_end;
-        if field_end < remaining.len() {
-            pos += delim.len();
+        if let Some((_, matched)) = matched_delim {
+            pos += matched.len();
+            if collapse_all != 0 && !matched.is_empty() {
+                while pos + matched.len() <= src.len() && &src[pos..pos + matched.len()] == matched
+                {
+                    pos += matched.len();
+                }
+            }
         }
+    }
+
+    if pos < src.len() {
+        overflow = true;
     }
 
     if !pointer.is_null() {
@@ -730,7 +893,11 @@ pub unsafe extern "C" fn cobol_unstring(
         *tallying += tally_count;
     }
 
-    0
+    if overflow {
+        1
+    } else {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,6 +1175,16 @@ mod tests {
     }
 
     #[test]
+    fn test_is_numeric_strict_rejects_sign_and_spaces() {
+        let signed = b"+123";
+        let spaced = b"123  ";
+        let digits = b"12345";
+        assert_eq!(unsafe { cobol_is_numeric_strict(signed.as_ptr(), 4) }, 0);
+        assert_eq!(unsafe { cobol_is_numeric_strict(spaced.as_ptr(), 5) }, 0);
+        assert_eq!(unsafe { cobol_is_numeric_strict(digits.as_ptr(), 5) }, 1);
+    }
+
+    #[test]
     fn test_is_numeric_alpha() {
         let data = b"HELLO";
         assert_eq!(unsafe { cobol_is_numeric(data.as_ptr(), 5) }, 0);
@@ -1152,6 +1329,7 @@ mod tests {
                 delimiter_ptr: std::ptr::null_mut(),
                 delimiter_len: 0,
                 count_ptr: &mut c1,
+                kind: 0,
             },
             CobolUnstringTarget {
                 ptr: t2.as_mut_ptr(),
@@ -1159,6 +1337,7 @@ mod tests {
                 delimiter_ptr: std::ptr::null_mut(),
                 delimiter_len: 0,
                 count_ptr: &mut c2,
+                kind: 0,
             },
             CobolUnstringTarget {
                 ptr: t3.as_mut_ptr(),
@@ -1166,6 +1345,7 @@ mod tests {
                 delimiter_ptr: std::ptr::null_mut(),
                 delimiter_len: 0,
                 count_ptr: &mut c3,
+                kind: 0,
             },
         ];
         let mut pointer = 1u32;
@@ -1180,6 +1360,9 @@ mod tests {
                 3,
                 &mut pointer,
                 &mut tallying,
+                0,
+                std::ptr::null(),
+                0,
             )
         };
         assert_eq!(rc, 0);

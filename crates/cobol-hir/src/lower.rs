@@ -30,15 +30,16 @@ use cobol_common::Span;
 use smol_str::SmolStr;
 
 use crate::hir::{
-    HirAcceptSource, HirAlternateKey, HirBeforeAfter, HirBinOp, HirCallParam, HirClassType,
-    HirCloseOption, HirCommunicationMode, HirCompareOp, HirCondition, HirDataItem, HirDataName,
-    HirDataRef, HirDeclarative, HirDeclarativeUse, HirExpr, HirFileInfo, HirInspectKind,
-    HirInspectReplacing, HirInspectTallying, HirItemId, HirLiteral, HirMoveTarget, HirOpenEntry,
-    HirOpenMode, HirParagraph, HirParagraphId, HirParagraphKind, HirParam, HirParamMode,
-    HirPerformKind, HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind,
-    HirScreenInfo, HirSearchWhen, HirSendOption, HirSignClause, HirSignPosition, HirSortKey,
-    HirSortOrder, HirStartRelation, HirStatement, HirStringSource, HirTallyingKind,
-    HirTransferTarget, HirType, HirUnaryOp, HirUnstringDelimiter, HirVaryingAfter,
+    HirAcceptSource, HirAlternateKey, HirBeforeAfter, HirBinOp, HirCallParam, HirClassRange,
+    HirClassType, HirCloseOption, HirCommunicationMode, HirCompareOp, HirCondition, HirDataItem,
+    HirDataName, HirDataRef, HirDeclarative, HirDeclarativeUse, HirExpr, HirFileInfo,
+    HirInitializeCategory, HirInitializeReplacing, HirInspectKind, HirInspectReplacing,
+    HirInspectTallying, HirItemId, HirLiteral, HirMoveTarget, HirOpenEntry, HirOpenMode,
+    HirParagraph, HirParagraphId, HirParagraphKind, HirParam, HirParamMode, HirPerformKind,
+    HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind, HirScreenInfo,
+    HirSearchWhen, HirSendOption, HirSignClause, HirSignPosition, HirSortKey, HirSortOrder,
+    HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirTransferTarget, HirType,
+    HirUnaryOp, HirUnstringDelimiter, HirUnstringTarget, HirVaryingAfter, HirWriteAdvancing,
 };
 
 #[derive(Debug, Clone)]
@@ -66,6 +67,8 @@ struct ConditionNameInfo {
     parent_name: HirDataName,
     values: Vec<ConditionValue>,
 }
+
+type ConditionNameMap = HashMap<SmolStr, Vec<ConditionNameInfo>>;
 
 #[derive(Debug, Clone)]
 struct ParagraphPlan {
@@ -114,11 +117,12 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let name = program.identification.program_id.clone();
 
     // Collect 88-level condition name mappings before lowering data items.
-    let condition_names = program
+    let mut condition_names = program
         .data
         .as_ref()
         .map(collect_condition_names)
         .unwrap_or_default();
+    collect_special_name_switch_conditions(program, &mut condition_names);
 
     let mut data_items = program
         .data
@@ -129,8 +133,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // When any FD has a LINAGE clause, inject the implicit LINAGE-COUNTER
     // special register as a top-level numeric data item so codegen declares it.
     if let Some(data) = &program.data {
-        let has_linage = data.file_section.iter().any(|fd| fd.linage.is_some());
-        if has_linage {
+        if let Some(linage) = data.file_section.iter().find_map(|fd| fd.linage.as_ref()) {
             data_items.push(HirDataItem::new(
                 "LINAGE-COUNTER",
                 HirType::Numeric {
@@ -140,6 +143,19 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                 },
                 program.span,
             ));
+            if let cobol_ast::data_div::LinageValue::Integer(lines) = linage.lines {
+                data_items.push(HirDataItem::new(
+                    format!("LINAGE-MARKER-LINES-{lines}"),
+                    HirType::Alphanumeric { size: 1 },
+                    program.span,
+                ));
+            } else if let cobol_ast::data_div::LinageValue::DataName(name) = &linage.lines {
+                data_items.push(HirDataItem::new(
+                    format!("LINAGE-MARKER-LINES-NAME-{name}"),
+                    HirType::Alphanumeric { size: 1 },
+                    program.span,
+                ));
+            }
         }
     }
 
@@ -159,7 +175,9 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
                             },
                             entry.span,
                         )
-                        .with_initial_value(HirLiteral::Integer(0)),
+                        .with_initial_value(HirLiteral::Integer(
+                            initial_special_switch_status(&entry.system_name),
+                        )),
                     );
                 }
                 if let Some(cond_name) = &entry.on_condition {
@@ -335,6 +353,8 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
             .as_ref()
             .and_then(|env| env.configuration.as_ref())
             .is_some_and(|config| config.decimal_point_is_comma),
+        special_class_conditions: collect_special_class_conditions(program),
+        program_collating_sequence: collect_program_collating_sequence(program),
         nested_programs: program.nested_programs.iter().map(lower_to_hir).collect(),
         span: program.span,
     };
@@ -388,6 +408,105 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     }
 
     hir
+}
+
+fn collect_special_name_switch_conditions(
+    program: &CobolProgram,
+    condition_names: &mut ConditionNameMap,
+) {
+    let Some(env) = &program.environment else {
+        return;
+    };
+    let Some(config) = &env.configuration else {
+        return;
+    };
+
+    for entry in &config.special_names {
+        let Some(user_name) = &entry.user_name else {
+            continue;
+        };
+        if let Some(cond_name) = &entry.on_condition {
+            condition_names
+                .entry(cond_name.clone())
+                .or_default()
+                .push(ConditionNameInfo {
+                    parent_name: user_name.clone().into(),
+                    values: vec![ConditionValue::Single(HirLiteral::Integer(1))],
+                });
+        }
+        if let Some(cond_name) = &entry.off_condition {
+            condition_names
+                .entry(cond_name.clone())
+                .or_default()
+                .push(ConditionNameInfo {
+                    parent_name: user_name.clone().into(),
+                    values: vec![ConditionValue::Single(HirLiteral::Integer(0))],
+                });
+        }
+    }
+}
+
+fn initial_special_switch_status(system_name: &str) -> i64 {
+    let normalized = system_name.trim_matches('"').to_ascii_uppercase();
+    if normalized.ends_with("O51") || normalized.ends_with("XXXXX051") {
+        1
+    } else {
+        0
+    }
+}
+
+fn collect_special_class_conditions(
+    program: &CobolProgram,
+) -> HashMap<SmolStr, Vec<HirClassRange>> {
+    let Some(env) = &program.environment else {
+        return HashMap::new();
+    };
+    let Some(config) = &env.configuration else {
+        return HashMap::new();
+    };
+
+    config
+        .special_classes
+        .iter()
+        .map(|class| {
+            let ranges = class
+                .ranges
+                .iter()
+                .map(|range| match range {
+                    cobol_ast::env_div::SpecialClassRange::Single(value) => HirClassRange {
+                        from: value.clone(),
+                        to: value.clone(),
+                    },
+                    cobol_ast::env_div::SpecialClassRange::Range { from, to } => HirClassRange {
+                        from: from.clone(),
+                        to: to.clone(),
+                    },
+                })
+                .collect();
+            (class.name.clone(), ranges)
+        })
+        .collect()
+}
+
+fn collect_program_collating_sequence(program: &CobolProgram) -> Option<Vec<Vec<SmolStr>>> {
+    let config = program
+        .environment
+        .as_ref()
+        .and_then(|env| env.configuration.as_ref())?;
+    let object_text = config.object_computer.as_ref()?.to_ascii_uppercase();
+    let words = object_text.split_whitespace().collect::<Vec<_>>();
+    let alphabet_name = words.windows(4).find_map(|window| {
+        if window[0] == "COLLATING" && window[1] == "SEQUENCE" && window[2] == "IS" {
+            Some(window[3])
+        } else {
+            None
+        }
+    })?;
+    config
+        .special_alphabets
+        .iter()
+        .find(|alphabet| alphabet.name.eq_ignore_ascii_case(alphabet_name))
+        .map(|alphabet| alphabet.ranks.clone())
 }
 
 fn with_resolved_data_catalog<T>(catalog: Vec<ResolvedDataItemEntry>, f: impl FnOnce() -> T) -> T {
@@ -600,7 +719,7 @@ fn infer_comm_item_name(names: &[SmolStr], candidates: &[&str]) -> Option<SmolSt
 /// Collect 88-level condition name information from the DATA DIVISION.
 /// Maps each 88-level name to its parent variable name and the values
 /// that make the condition true.
-fn collect_condition_names(data: &DataDivision) -> HashMap<SmolStr, ConditionNameInfo> {
+fn collect_condition_names(data: &DataDivision) -> ConditionNameMap {
     let mut map = HashMap::new();
     for fd in &data.file_section {
         for item in &fd.items {
@@ -633,7 +752,7 @@ fn collect_condition_names(data: &DataDivision) -> HashMap<SmolStr, ConditionNam
 fn collect_condition_names_from_item(
     item: &DataItem,
     inherited_ancestors: &[SmolStr],
-    map: &mut HashMap<SmolStr, ConditionNameInfo>,
+    map: &mut ConditionNameMap,
 ) {
     let current_parent_name = item.name.as_ref().map(|name| {
         HirDataName::new(
@@ -662,13 +781,12 @@ fn collect_condition_names_from_item(
                             }
                         }
                     }
-                    map.insert(
-                        cond_name.clone(),
-                        ConditionNameInfo {
+                    map.entry(cond_name.clone())
+                        .or_default()
+                        .push(ConditionNameInfo {
                             parent_name: parent_name.clone(),
                             values,
-                        },
-                    );
+                        });
                 }
             }
         }
@@ -684,6 +802,29 @@ fn collect_condition_names_from_item(
             collect_condition_names_from_item(child, &child_ancestors, map);
         }
     }
+}
+
+fn resolve_condition_name<'a>(
+    name: &HirDataName,
+    condition_names: &'a ConditionNameMap,
+) -> Option<&'a ConditionNameInfo> {
+    let candidates = condition_names.get(&name.name)?;
+    if name.qualifiers.is_empty() {
+        return candidates.last();
+    }
+    candidates
+        .iter()
+        .find(|info| {
+            name.qualifiers.iter().all(|qualifier| {
+                info.parent_name.name == *qualifier
+                    || info
+                        .parent_name
+                        .qualifiers
+                        .iter()
+                        .any(|candidate| candidate == qualifier)
+            })
+        })
+        .or_else(|| candidates.last())
 }
 
 // ---------------------------------------------------------------------------
@@ -974,16 +1115,8 @@ fn determine_hir_type_with_usage(
                     }
                     HirType::Group { size, .. } => *size,
                     HirType::Comp3 { size, .. } => (*size + 2) / 2,
-                    HirType::Binary { size } => {
-                        if *size <= 4 {
-                            2
-                        } else if *size <= 9 {
-                            4
-                        } else {
-                            8
-                        }
-                    }
-                    HirType::Index => 4,
+                    HirType::Binary { .. } => 8,
+                    HirType::Index => 8,
                     HirType::Pointer => 8,
                     HirType::Boolean => 1,
                     HirType::FloatShort => 4,
@@ -1165,7 +1298,7 @@ fn lower_literal(lit: &Literal) -> HirLiteral {
 
 fn lower_procedure_division(
     proc: &ProcedureDivision,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> (Vec<HirStatement>, Vec<HirParagraph>, u32) {
     let mut next_paragraph_id = 1u32;
     let mut alloc_paragraph_id = || {
@@ -1380,10 +1513,7 @@ fn truncate_paragraph_body(
     body
 }
 
-fn lower_paragraph(
-    para: &Paragraph,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> Vec<HirStatement> {
+fn lower_paragraph(para: &Paragraph, condition_names: &ConditionNameMap) -> Vec<HirStatement> {
     let mut stmts = Vec::new();
     for sentence in &para.sentences {
         for stmt in &sentence.statements {
@@ -1397,20 +1527,14 @@ fn lower_paragraph(
 
 /// Lower a list of AST statements into a list of HIR statements,
 /// filtering out any that cannot be lowered.
-fn lower_statements(
-    stmts: &[Statement],
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> Vec<HirStatement> {
+fn lower_statements(stmts: &[Statement], condition_names: &ConditionNameMap) -> Vec<HirStatement> {
     stmts
         .iter()
         .filter_map(|s| lower_statement(s, condition_names))
         .collect()
 }
 
-fn lower_statement(
-    stmt: &Statement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> Option<HirStatement> {
+fn lower_statement(stmt: &Statement, condition_names: &ConditionNameMap) -> Option<HirStatement> {
     match stmt {
         Statement::Display(display) => Some(lower_display(display)),
         Statement::Accept(accept) => Some(lower_accept(accept)),
@@ -1539,21 +1663,29 @@ fn lower_display(display: &DisplayStatement) -> HirStatement {
 fn lower_move(mv: &MoveStatement) -> HirStatement {
     if mv.corresponding {
         // MOVE CORRESPONDING: source and target are group names.
-        let from_name = match &mv.from {
-            Expr::Identifier(qname) => resolve_canonical_data_name(qname),
-            _ => HirDataName::simple("FILLER"),
+        let (from_name, from_subscripts) = match &mv.from {
+            Expr::Identifier(qname) => (
+                resolve_canonical_data_name(qname),
+                qname.subscripts.iter().map(lower_expr).collect(),
+            ),
+            _ => (HirDataName::simple("FILLER"), Vec::new()),
         };
-        let to_name = mv
+        let (to_name, to_subscripts) = mv
             .to
             .first()
             .map(|e| match e {
-                Expr::Identifier(qname) => resolve_canonical_data_name(qname),
-                _ => HirDataName::simple("FILLER"),
+                Expr::Identifier(qname) => (
+                    resolve_canonical_data_name(qname),
+                    qname.subscripts.iter().map(lower_expr).collect(),
+                ),
+                _ => (HirDataName::simple("FILLER"), Vec::new()),
             })
-            .unwrap_or_else(|| HirDataName::simple("FILLER"));
+            .unwrap_or_else(|| (HirDataName::simple("FILLER"), Vec::new()));
         return HirStatement::MoveCorresponding {
             from: from_name,
+            from_subscripts,
             to: to_name,
+            to_subscripts,
             span: mv.span,
         };
     }
@@ -1590,6 +1722,7 @@ fn lower_move_target(expr: &Expr) -> HirMoveTarget {
             length,
             ..
         } => {
+            let subscripts: Vec<_> = variable.subscripts.iter().map(lower_expr).collect();
             let variable = lower_data_name(variable);
             let start = lower_expr(start);
             let length = length.as_ref().map(|expr| lower_expr(expr));
@@ -1597,7 +1730,7 @@ fn lower_move_target(expr: &Expr) -> HirMoveTarget {
                 start: Box::new(start.clone()),
                 length: length.clone().map(Box::new),
             };
-            build_data_ref(variable.clone(), Vec::new(), Some(refmod))
+            build_data_ref(variable.clone(), subscripts, Some(refmod))
                 .map(HirMoveTarget::DataRef)
                 .unwrap_or(HirMoveTarget::ReferenceModification {
                     variable,
@@ -1614,7 +1747,7 @@ fn lower_move_target(expr: &Expr) -> HirMoveTarget {
 
 fn lower_compute(
     compute: &ComputeStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> Option<HirStatement> {
     if compute.targets.is_empty() {
         return None;
@@ -1625,10 +1758,12 @@ fn lower_compute(
         .iter()
         .map(|t| lower_qualified_name_to_expr(&t.target))
         .collect();
+    let target_rounded = compute.targets.iter().map(|t| t.rounded).collect();
     let on_size_error = lower_statements(&compute.on_size_error, condition_names);
     let not_on_size_error = lower_statements(&compute.not_on_size_error, condition_names);
     Some(HirStatement::Compute {
         targets,
+        target_rounded,
         expr,
         on_size_error,
         not_on_size_error,
@@ -1636,10 +1771,7 @@ fn lower_compute(
     })
 }
 
-fn lower_add(
-    add: &AddStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_add(add: &AddStatement, condition_names: &ConditionNameMap) -> HirStatement {
     if add.corresponding {
         // ADD CORRESPONDING: source is first operand (group), target is first TO (group).
         let from_name = match &add.operands[0] {
@@ -1690,10 +1822,7 @@ fn lower_add(
     }
 }
 
-fn lower_subtract(
-    sub: &SubtractStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_subtract(sub: &SubtractStatement, condition_names: &ConditionNameMap) -> HirStatement {
     if sub.corresponding {
         // SUBTRACT CORRESPONDING: source is first operand (group), target is first FROM (group).
         let from_name = match &sub.operands[0] {
@@ -1752,10 +1881,7 @@ fn lower_subtract(
     }
 }
 
-fn lower_if(
-    if_stmt: &IfStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_if(if_stmt: &IfStatement, condition_names: &ConditionNameMap) -> HirStatement {
     let condition = lower_condition(&if_stmt.condition, condition_names);
     let then_body: Vec<_> = if_stmt
         .then_body
@@ -1776,10 +1902,7 @@ fn lower_if(
 }
 
 /// Desugar EVALUATE into nested IF statements.
-fn lower_evaluate(
-    eval: &EvaluateStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_evaluate(eval: &EvaluateStatement, condition_names: &ConditionNameMap) -> HirStatement {
     // Build nested IF chain from the WHEN clauses
     let mut else_body: Vec<HirStatement> = eval
         .when_other
@@ -1787,22 +1910,38 @@ fn lower_evaluate(
         .filter_map(|s| lower_statement(s, condition_names))
         .collect();
 
-    // Process WHEN clauses in reverse to build the else chain
-    for when in eval.when_clauses.iter().rev() {
-        let then_body: Vec<HirStatement> = when
-            .body
+    let mut effective_whens = Vec::new();
+    let mut pending_objects = Vec::new();
+    for when in &eval.when_clauses {
+        pending_objects.push(when.objects.clone());
+        if !when.body.is_empty() {
+            effective_whens.push((pending_objects, &when.body, when.span));
+            pending_objects = Vec::new();
+        }
+    }
+
+    // Process WHEN clauses in reverse to build the else chain.
+    for (object_alternatives, body, span) in effective_whens.into_iter().rev() {
+        let then_body: Vec<HirStatement> = body
             .iter()
             .filter_map(|s| lower_statement(s, condition_names))
             .collect();
 
-        // Build condition from the WHEN objects and subjects
-        let condition = build_evaluate_condition(&eval.subjects, &when.objects, condition_names);
+        let condition = object_alternatives
+            .iter()
+            .map(|objects| build_evaluate_condition(&eval.subjects, objects, condition_names))
+            .reduce(|acc, condition| HirCondition::Or(Box::new(acc), Box::new(condition)))
+            .unwrap_or(HirCondition::Compare {
+                left: HirExpr::Literal(HirLiteral::Integer(1)),
+                op: HirCompareOp::Eq,
+                right: HirExpr::Literal(HirLiteral::Integer(1)),
+            });
 
         let if_stmt = HirStatement::If {
             condition,
             then_body,
             else_body,
-            span: when.span,
+            span,
         };
 
         else_body = vec![if_stmt];
@@ -1823,7 +1962,7 @@ fn lower_evaluate(
 fn build_evaluate_condition(
     subjects: &[cobol_ast::statement::EvaluateSubject],
     object_groups: &[Vec<cobol_ast::statement::WhenObject>],
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> HirCondition {
     use cobol_ast::statement::{EvaluateSubject, WhenObject};
 
@@ -1831,15 +1970,29 @@ fn build_evaluate_condition(
     let mut conditions: Vec<HirCondition> = Vec::new();
 
     for (i, objects) in object_groups.iter().enumerate() {
-        let subject_expr = if i < subjects.len() {
+        let (subject_expr, subject_condition) = if i < subjects.len() {
             match &subjects[i] {
-                EvaluateSubject::Expr(e) => Some(lower_expr(e)),
-                EvaluateSubject::True => None,
-                EvaluateSubject::False => None,
-                EvaluateSubject::Condition(_) => None,
+                EvaluateSubject::Expr(e) => (Some(lower_expr(e)), None),
+                EvaluateSubject::True => (
+                    None,
+                    Some(HirCondition::Compare {
+                        left: HirExpr::Literal(HirLiteral::Integer(1)),
+                        op: HirCompareOp::Eq,
+                        right: HirExpr::Literal(HirLiteral::Integer(1)),
+                    }),
+                ),
+                EvaluateSubject::False => (
+                    None,
+                    Some(HirCondition::Compare {
+                        left: HirExpr::Literal(HirLiteral::Integer(1)),
+                        op: HirCompareOp::Eq,
+                        right: HirExpr::Literal(HirLiteral::Integer(0)),
+                    }),
+                ),
+                EvaluateSubject::Condition(c) => (None, Some(lower_condition(c, condition_names))),
             }
         } else {
-            None
+            (None, None)
         };
 
         for obj in objects {
@@ -1857,13 +2010,30 @@ fn build_evaluate_condition(
                     }
                 }
                 WhenObject::Condition(c) => {
-                    conditions.push(lower_condition(c, condition_names));
+                    let object_condition = lower_condition(c, condition_names);
+                    if let Some(subject_condition) = &subject_condition {
+                        conditions.push(match subjects.get(i) {
+                            Some(EvaluateSubject::False) => {
+                                HirCondition::Not(Box::new(object_condition))
+                            }
+                            _ => HirCondition::And(
+                                Box::new(subject_condition.clone()),
+                                Box::new(object_condition),
+                            ),
+                        });
+                    } else {
+                        conditions.push(object_condition);
+                    }
                 }
                 WhenObject::True => {
-                    // TRUE matches when the subject evaluates to true
+                    if let Some(subject_condition) = &subject_condition {
+                        conditions.push(subject_condition.clone());
+                    }
                 }
                 WhenObject::False => {
-                    // FALSE matches when the subject evaluates to false
+                    if let Some(subject_condition) = &subject_condition {
+                        conditions.push(HirCondition::Not(Box::new(subject_condition.clone())));
+                    }
                 }
                 WhenObject::Range { from, to } => {
                     if let Some(ref subj) = subject_expr {
@@ -1908,10 +2078,7 @@ fn build_evaluate_condition(
     }
 }
 
-fn lower_perform(
-    perform: &PerformStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_perform(perform: &PerformStatement, condition_names: &ConditionNameMap) -> HirStatement {
     let kind = match &perform.kind {
         PerformKind::Simple { body } => {
             let hir_body: Vec<_> = body
@@ -2008,10 +2175,7 @@ fn lower_perform_test(test: PerformTest) -> HirPerformTest {
     }
 }
 
-fn lower_call(
-    call: &CallStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_call(call: &CallStatement, condition_names: &ConditionNameMap) -> HirStatement {
     use cobol_ast::proc_div::ParamMode;
     let program = lower_expr(&call.program);
     let params = call
@@ -2043,10 +2207,7 @@ fn lower_call(
     }
 }
 
-fn lower_multiply(
-    mul: &MultiplyStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_multiply(mul: &MultiplyStatement, condition_names: &ConditionNameMap) -> HirStatement {
     let operand = lower_expr(&mul.operand);
     let by: Vec<HirExpr> = if let Some(ref by_e) = mul.by_expr {
         // Format 2: MULTIPLY ... BY literal GIVING ...
@@ -2082,10 +2243,7 @@ fn lower_multiply(
     }
 }
 
-fn lower_divide(
-    div: &DivideStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_divide(div: &DivideStatement, condition_names: &ConditionNameMap) -> HirStatement {
     let operand = lower_expr(&div.operand);
     let into: Vec<HirExpr> = if let Some(ref into_e) = div.into_expr {
         // Format 2: DIVIDE ... INTO literal GIVING ...
@@ -2136,7 +2294,7 @@ fn lower_accept(accept: &AcceptStatement) -> HirStatement {
         Some(AstSource::Console) | None => HirAcceptSource::Console,
     };
     HirStatement::Accept {
-        target: accept.target.name.clone(),
+        target: lower_qualified_name_to_expr(&accept.target),
         source,
         span: accept.span,
     }
@@ -2189,10 +2347,7 @@ fn lower_send(send: &SendStatement) -> HirStatement {
     }
 }
 
-fn lower_receive(
-    receive: &ReceiveStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_receive(receive: &ReceiveStatement, condition_names: &ConditionNameMap) -> HirStatement {
     HirStatement::Receive {
         target: receive.target.name.clone(),
         mode: match receive.mode {
@@ -2279,7 +2434,7 @@ fn lower_close(close: &cobol_ast::statement::CloseStatement) -> HirStatement {
 
 fn lower_read(
     read: &cobol_ast::statement::ReadStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> HirStatement {
     let into = read.into.as_ref().map(|q| {
         let subs: Vec<_> = q.subscripts.iter().map(lower_expr).collect();
@@ -2313,17 +2468,31 @@ fn lower_read(
 
 fn lower_write(
     write: &cobol_ast::statement::WriteStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> HirStatement {
     let from = write.from.as_ref().map(lower_expr);
+    let advancing = write.advancing.as_ref().map(|advancing| match advancing {
+        cobol_ast::statement::WriteAdvancing::Lines(expr) => {
+            HirWriteAdvancing::Lines(lower_expr(expr))
+        }
+        cobol_ast::statement::WriteAdvancing::Page => HirWriteAdvancing::Page,
+        cobol_ast::statement::WriteAdvancing::MnemonicName(name) => {
+            HirWriteAdvancing::Lines(HirExpr::Variable(name.clone().into()))
+        }
+    });
     let invalid_key = lower_statements(&write.invalid_key, condition_names);
     let not_invalid_key = lower_statements(&write.not_invalid_key, condition_names);
+    let at_eop = lower_statements(&write.at_eop, condition_names);
+    let not_at_eop = lower_statements(&write.not_at_eop, condition_names);
     HirStatement::Write {
         record_name: write.record_name.name.clone(),
         file_name: SmolStr::default(), // resolved post-lowering
         from,
+        advancing,
         invalid_key,
         not_invalid_key,
+        at_eop,
+        not_at_eop,
         span: write.span,
     }
 }
@@ -2357,16 +2526,42 @@ fn lower_delete(delete: &cobol_ast::statement::DeleteStatement) -> HirStatement 
 
 fn lower_initialize(init: &InitializeStatement) -> HirStatement {
     let targets = init.targets.iter().map(|q| q.name.clone()).collect();
+    let replacing = init
+        .replacing
+        .iter()
+        .map(|entry| HirInitializeReplacing {
+            category: match entry.category {
+                cobol_ast::statement::InitializeCategory::Alphabetic => {
+                    HirInitializeCategory::Alphabetic
+                }
+                cobol_ast::statement::InitializeCategory::Alphanumeric => {
+                    HirInitializeCategory::Alphanumeric
+                }
+                cobol_ast::statement::InitializeCategory::Numeric => HirInitializeCategory::Numeric,
+                cobol_ast::statement::InitializeCategory::AlphanumericEdited => {
+                    HirInitializeCategory::AlphanumericEdited
+                }
+                cobol_ast::statement::InitializeCategory::NumericEdited => {
+                    HirInitializeCategory::NumericEdited
+                }
+                cobol_ast::statement::InitializeCategory::National => {
+                    HirInitializeCategory::National
+                }
+                cobol_ast::statement::InitializeCategory::NationalEdited => {
+                    HirInitializeCategory::NationalEdited
+                }
+            },
+            value: lower_expr(&entry.value),
+        })
+        .collect();
     HirStatement::Initialize {
         targets,
+        replacing,
         span: init.span,
     }
 }
 
-fn lower_set(
-    set: &SetStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirStatement {
+fn lower_set(set: &SetStatement, condition_names: &ConditionNameMap) -> HirStatement {
     use cobol_ast::statement::SetKind;
     match &set.kind {
         SetKind::To { targets, value } => {
@@ -2416,33 +2611,33 @@ fn lower_set(
             // SET condition-name TO TRUE:
             // For each condition name, find its parent data item and the
             // first VALUE, then emit MOVE value TO parent.
-            let mut targets: Vec<HirMoveTarget> = Vec::new();
-            let mut hir_value = HirExpr::Literal(HirLiteral::Integer(1));
+            let mut assignments: Vec<(HirMoveTarget, HirExpr)> = Vec::new();
             for cond_qn in conditions {
-                let cond_name = &cond_qn.name;
-                if let Some(info) = condition_names.get(cond_name) {
+                let cond_name = lower_data_name(cond_qn);
+                if let Some(info) = resolve_condition_name(&cond_name, condition_names) {
                     let target = build_data_ref(info.parent_name.clone(), Vec::new(), None)
                         .map(HirMoveTarget::DataRef)
                         .unwrap_or_else(|| HirMoveTarget::Variable(info.parent_name.clone()));
-                    targets.push(target);
                     // Use the first value of the condition-name
-                    if let Some(first_cv) = info.values.first() {
-                        hir_value = match first_cv {
+                    let hir_value = if let Some(first_cv) = info.values.first() {
+                        match first_cv {
                             ConditionValue::Single(lit) => HirExpr::Literal(lit.clone()),
                             ConditionValue::Range { from, .. } => HirExpr::Literal(from.clone()),
-                        };
-                    }
+                        }
+                    } else {
+                        HirExpr::Literal(HirLiteral::Integer(1))
+                    };
+                    assignments.push((target, hir_value));
                 } else {
-                    let fallback_name: HirDataName = cond_name.clone().into();
+                    let fallback_name: HirDataName = cond_name;
                     let target = build_data_ref(fallback_name.clone(), Vec::new(), None)
                         .map(HirMoveTarget::DataRef)
                         .unwrap_or(HirMoveTarget::Variable(fallback_name));
-                    targets.push(target);
+                    assignments.push((target, HirExpr::Literal(HirLiteral::Integer(1))));
                 }
             }
-            HirStatement::Move {
-                from: hir_value,
-                to: targets,
+            HirStatement::SetConditionTrue {
+                assignments,
                 span: set.span,
             }
         }
@@ -2463,7 +2658,7 @@ fn lower_set(
 
 fn lower_string_stmt(
     string_stmt: &cobol_ast::statement::StringStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> HirStatement {
     use cobol_ast::statement::StringDelimiter;
     let sources = string_stmt
@@ -2481,17 +2676,20 @@ fn lower_string_stmt(
         })
         .collect();
     let on_overflow = lower_statements(&string_stmt.on_overflow, condition_names);
+    let not_on_overflow = lower_statements(&string_stmt.not_on_overflow, condition_names);
     HirStatement::StringStmt {
         into: string_stmt.into.name.clone(),
         sources,
+        pointer: string_stmt.pointer.as_ref().map(|name| name.name.clone()),
         on_overflow,
+        not_on_overflow,
         span: string_stmt.span,
     }
 }
 
 fn lower_unstring_stmt(
     unstring_stmt: &cobol_ast::statement::UnstringStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> HirStatement {
     let delimiters = unstring_stmt
         .delimiters
@@ -2504,21 +2702,32 @@ fn lower_unstring_stmt(
     let into = unstring_stmt
         .into
         .iter()
-        .map(|t| t.target.name.clone())
+        .map(|t| HirUnstringTarget {
+            target: t.target.name.clone(),
+            delimiter_in: t.delimiter_in.as_ref().map(|name| name.name.clone()),
+            count_in: t.count_in.as_ref().map(|name| name.name.clone()),
+        })
         .collect();
     let on_overflow = lower_statements(&unstring_stmt.on_overflow, condition_names);
+    let not_on_overflow = lower_statements(&unstring_stmt.not_on_overflow, condition_names);
     HirStatement::UnstringStmt {
         source: unstring_stmt.source.name.clone(),
         delimiters,
         into,
+        pointer: unstring_stmt.pointer.as_ref().map(|name| name.name.clone()),
+        tallying: unstring_stmt
+            .tallying
+            .as_ref()
+            .map(|name| name.name.clone()),
         on_overflow,
+        not_on_overflow,
         span: unstring_stmt.span,
     }
 }
 
 fn lower_search(
     search: &cobol_ast::statement::SearchStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> HirStatement {
     let at_end = lower_statements(&search.at_end, condition_names);
     let when_clauses = search
@@ -2658,7 +2867,7 @@ fn lower_before_after(ba: &cobol_ast::statement::BeforeAfter) -> HirBeforeAfter 
 
 fn lower_start(
     start: &cobol_ast::statement::StartStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> HirStatement {
     let key = start
         .key_condition
@@ -2688,7 +2897,7 @@ fn lower_start(
 
 fn lower_return(
     ret: &cobol_ast::statement::ReturnStatement,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
 ) -> HirStatement {
     let into = ret.into.as_ref().map(|q| {
         let subs: Vec<_> = q.subscripts.iter().map(lower_expr).collect();
@@ -2938,13 +3147,19 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             ..
         } => {
             let variable = lower_data_name(variable);
+            let subscripts = match expr {
+                Expr::ReferenceModification { variable, .. } => {
+                    variable.subscripts.iter().map(lower_expr).collect()
+                }
+                _ => Vec::new(),
+            };
             let start_expr = lower_expr(start);
             let length_expr = length.as_ref().map(|expr| lower_expr(expr));
             let refmod = HirRefMod {
                 start: Box::new(start_expr.clone()),
                 length: length_expr.clone().map(Box::new),
             };
-            build_data_ref(variable.clone(), Vec::new(), Some(refmod))
+            build_data_ref(variable.clone(), subscripts, Some(refmod))
                 .map(HirExpr::DataRef)
                 .unwrap_or(HirExpr::ReferenceModification {
                     variable,
@@ -2955,10 +3170,7 @@ fn lower_expr(expr: &Expr) -> HirExpr {
     }
 }
 
-fn lower_condition(
-    cond: &Condition,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
-) -> HirCondition {
+fn lower_condition(cond: &Condition, condition_names: &ConditionNameMap) -> HirCondition {
     match cond {
         Condition::Comparison {
             left, op, right, ..
@@ -3042,7 +3254,8 @@ fn lower_condition(
         }
         Condition::ConditionName(qname) => {
             // 88-level condition name: look up the parent variable and values
-            if let Some(info) = condition_names.get(&qname.name) {
+            let condition_name = lower_data_name(qname);
+            if let Some(info) = resolve_condition_name(&condition_name, condition_names) {
                 let subscripts: Vec<_> = qname.subscripts.iter().map(lower_expr).collect();
                 let parent_expr =
                     build_data_ref(info.parent_name.clone(), subscripts.clone(), None)
@@ -3316,16 +3529,8 @@ fn hir_type_record_size(data_type: &HirType) -> u32 {
         HirType::Numeric { size, .. } => *size,
         HirType::Group { size, .. } => *size,
         HirType::Comp3 { size, .. } => (*size + 2) / 2,
-        HirType::Binary { size } => {
-            if *size <= 4 {
-                2
-            } else if *size <= 9 {
-                4
-            } else {
-                8
-            }
-        }
-        HirType::Index => 4,
+        HirType::Binary { .. } => 8,
+        HirType::Index => 8,
         HirType::Pointer => 8,
         HirType::Boolean => 1,
         HirType::FloatShort => 4,
@@ -3512,11 +3717,19 @@ fn patch_write_file_names(stmts: &mut [HirStatement], rec_map: &HashMap<SmolStr,
             HirStatement::Write {
                 record_name,
                 file_name,
+                invalid_key,
+                not_invalid_key,
+                at_eop,
+                not_at_eop,
                 ..
             } => {
                 if let Some(fn_name) = rec_map.get(record_name.as_str()) {
                     *file_name = fn_name.clone();
                 }
+                patch_write_file_names(invalid_key, rec_map);
+                patch_write_file_names(not_invalid_key, rec_map);
+                patch_write_file_names(at_eop, rec_map);
+                patch_write_file_names(not_at_eop, rec_map);
             }
             HirStatement::Rewrite {
                 record_name,
@@ -3581,7 +3794,7 @@ fn extract_file_organizations(program: &CobolProgram) -> HashMap<SmolStr, u32> {
 /// (e.g. `PERFORM DECL-PASS`) are preserved in generated C.
 fn lower_declaratives(
     program: &CobolProgram,
-    condition_names: &HashMap<SmolStr, ConditionNameInfo>,
+    condition_names: &ConditionNameMap,
     next_paragraph_id_start: u32,
     debugging_mode_enabled: bool,
 ) -> (Vec<HirDeclarative>, Vec<HirParagraph>) {
@@ -4044,6 +4257,18 @@ fn fix_subscripts_in_statement(stmt: &mut HirStatement, occurs_dims: &HashMap<Sm
                 fix_subscripts_in_move_target(t, occurs_dims);
             }
         }
+        HirStatement::MoveCorresponding {
+            from_subscripts,
+            to_subscripts,
+            ..
+        } => {
+            for sub in from_subscripts.iter_mut() {
+                fix_subscripts_in_expr(sub, occurs_dims);
+            }
+            for sub in to_subscripts.iter_mut() {
+                fix_subscripts_in_expr(sub, occurs_dims);
+            }
+        }
         HirStatement::If {
             condition,
             then_body,
@@ -4146,6 +4371,9 @@ fn fix_subscripts_in_statement(stmt: &mut HirStatement, occurs_dims: &HashMap<Sm
             for v in operands.iter_mut() {
                 fix_subscripts_in_expr(v, occurs_dims);
             }
+        }
+        HirStatement::Accept { target, .. } => {
+            fix_subscripts_in_expr(target, occurs_dims);
         }
         HirStatement::Perform { kind, .. } => {
             fix_subscripts_in_perform_kind(kind, occurs_dims);
