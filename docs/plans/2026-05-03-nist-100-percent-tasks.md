@@ -2482,6 +2482,21 @@ TASK-011時点での判断:
 - NIST確認2: `SG103A`, `SG201A`はPASS。SG全体は
   `13 total / 10 pass / 3 fail / 0 CErr / 0 RErr / 76%`。
   残件は`SG102A`, `SG202A`, `SG203A`。
+- 追加調査3: `SG102A`は単純な「全paragraph入口でsegment stateを戻す」方式では
+  `computed=2- -`へ退行し、逆に「SECTION入口だけで戻す」方式では
+  `computed=5-6-8`となる。根はsegment初期化単体ではなく、
+  `PERFORM ... THRU ...`中の`_goto_target` dispatchがTHRU範囲外paragraphまで
+  PERFORM内部で呼び出してしまう制御フロー生成にある。
+- 不採用案3: `_current_segment`ガードとPERFORM呼び出し側のsegment差分リセットは、
+  `SG102A`をtimeoutまたは早期終了へ悪化させたため採用しない。
+- 変更3: `PERFORM THRU` dispatchをTHRU範囲内ターゲットだけ処理し、
+  範囲外ターゲットは外側dispatchへ伝播する方向へ修正中。
+- 追加確認3: `cargo fmt`, `cargo fmt --check`, `cargo check -p cobol-codegen`,
+  `make release`, `NIST_COMPILE_CACHE=0 make nist-run MODULE=SG PROGRAM=SG102A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SG PROGRAM=SG103A`を実行。
+  SG103AはPASSに戻した。SG102Aは
+  `ccvs-first-fail|0 passed, 0 failed|paragraph=SEG-TEST-3|computed=2- -|correct=2-4-6`
+  で未完了。
 - 残件: full NISTはまだ100%ではない。次は残余FAILの多い
   `SG`/`RL`/`CM`/`OB`/`EX`をIMPL-033内で継続分類する。
 
