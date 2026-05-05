@@ -2442,7 +2442,13 @@ pub(crate) fn emit_statement_with_ctx(
                 };
                 let escaped_name = escape_c_string(file_path_str);
                 let name_len = file_path_str.len();
-                let org_val = entry.organization;
+                let org_val = if entry.organization == 1
+                    && sort_record_needs_conversion(&record_var, data_items)
+                {
+                    0
+                } else {
+                    entry.organization
+                };
                 let access_val = entry.access_mode;
                 out.push_str(&format!("{pad}/* OPEN {mode_comment} {c_name} */\n"));
                 let has_fs = fs_map.contains_key(&c_name);
@@ -2632,18 +2638,27 @@ pub(crate) fn emit_statement_with_ctx(
                 }
             });
             let rec_len = find_record_len(&record_var, data_items);
+            let needs_read_conv = sort_record_needs_conversion(&read_target, data_items);
+            let read_buffer = if needs_read_conv {
+                "_file_flat".to_string()
+            } else {
+                format!("(uint8_t*)&{read_target}")
+            };
             out.push_str(&format!("{pad}/* READ {c_name} */\n"));
             out.push_str(&format!("{pad}{{\n"));
+            if needs_read_conv {
+                out.push_str(&format!("{pad}    uint8_t _file_flat[{rec_len}];\n"));
+            }
             if *is_next {
                 out.push_str(&format!(
-                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{read_target}, {rec_len});\n"
+                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, {read_buffer}, {rec_len});\n"
                 ));
             } else if let Some(key_name) = key {
                 let c_key = sanitize_name(key_name);
                 if ctx.file_organization(&c_name) == Some(2) {
                     let rel_expr = emit_numeric_expr_for_var(&c_key, data_items);
                     out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_read_relative(FILE_ID_{c_name}, (uint64_t)({rel_expr}), (uint8_t*)&{read_target}, {rec_len});\n"
+                        "{pad}    uint32_t _fs = cobol_file_read_relative(FILE_ID_{c_name}, (uint64_t)({rel_expr}), {read_buffer}, {rec_len});\n"
                     ));
                 } else {
                     let key_size = find_data_item_size(&c_key, data_items);
@@ -2659,12 +2674,12 @@ pub(crate) fn emit_statement_with_ctx(
                         0
                     };
                     out.push_str(&format!(
-                        "{pad}    uint32_t _fs = cobol_file_read_key(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, {key_offset}, (uint8_t*)&{read_target}, {rec_len});\n"
+                        "{pad}    uint32_t _fs = cobol_file_read_key(FILE_ID_{c_name}, (const uint8_t*){addr_prefix}{c_key}, {key_size}, {key_offset}, {read_buffer}, {rec_len});\n"
                     ));
                 }
             } else {
                 out.push_str(&format!(
-                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, (uint8_t*)&{read_target}, {rec_len});\n"
+                    "{pad}    uint32_t _fs = cobol_file_read_next(FILE_ID_{c_name}, {read_buffer}, {rec_len});\n"
                 ));
             }
             emit_file_status_update(
@@ -2699,6 +2714,17 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!(
                     "{pad}        if (_goto_target) goto _goto_dispatch;\n"
                 ));
+                out.push_str(&format!("{pad}    }}\n"));
+            }
+            if needs_read_conv {
+                out.push_str(&format!("{pad}    if ({read_success_guard}) {{\n"));
+                emit_sort_record_deserialize(
+                    out,
+                    &read_target,
+                    data_items,
+                    "_file_flat",
+                    &format!("{pad}        "),
+                );
                 out.push_str(&format!("{pad}    }}\n"));
             }
             emit_debug_data_name_event(
@@ -2868,6 +2894,7 @@ pub(crate) fn emit_statement_with_ctx(
             let rec_len = find_data_item_size(&c_name, data_items);
             let write_len = variable_record_io_len_expr(ctx, &c_file, rec_len);
             let boundary_error = variable_record_boundary_error_expr(ctx, &c_file);
+            let needs_write_conv = sort_record_needs_conversion(&c_name, data_items);
             let source = if let Some(from_expr) = from {
                 emit_expr(from_expr)
             } else {
@@ -2892,19 +2919,33 @@ pub(crate) fn emit_statement_with_ctx(
                 true,
                 true,
             );
+            if needs_write_conv {
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!("{pad}    uint8_t _file_flat[{rec_len}];\n"));
+                emit_sort_record_serialize(
+                    out,
+                    &c_name,
+                    data_items,
+                    "_file_flat",
+                    &format!("{pad}    "),
+                );
+            }
+            let write_ptr = if needs_write_conv {
+                "_file_flat".to_string()
+            } else {
+                format!("(const uint8_t*)&{c_name}")
+            };
             let write_call = if ctx.file_organization(&c_file) == Some(2) {
                 if let Some(relative_key) = ctx.relative_key_for_file(&c_file) {
                     let rel_expr = emit_numeric_expr_for_var(relative_key, data_items);
                     format!(
-                        "cobol_file_write_relative(FILE_ID_{c_file}, (uint64_t)({rel_expr}), (const uint8_t*)&{c_name}, {write_len})"
+                        "cobol_file_write_relative(FILE_ID_{c_file}, (uint64_t)({rel_expr}), {write_ptr}, {write_len})"
                     )
                 } else {
-                    format!("cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {write_len})")
+                    format!("cobol_file_write(FILE_ID_{c_file}, {write_ptr}, {write_len})")
                 }
             } else {
-                format!(
-                    "cobol_file_write(FILE_ID_{c_file}, (const uint8_t*)&{c_name}, {write_len})"
-                )
+                format!("cobol_file_write(FILE_ID_{c_file}, {write_ptr}, {write_len})")
             };
             let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
             if needs_rc {
@@ -3046,6 +3087,9 @@ pub(crate) fn emit_statement_with_ctx(
                         }
                     }
                 }
+            }
+            if needs_write_conv {
+                out.push_str(&format!("{pad}}}\n"));
             }
         }
         HirStatement::Rewrite {
@@ -4446,12 +4490,16 @@ pub(crate) fn emit_statement_with_ctx(
                 ));
                 for u in using {
                     let c_using = sanitize_name(u);
+                    let using_record = resolve_file_record(&c_using);
+                    let using_org = sort_file_runtime_org(ctx, &c_using, &using_record, data_items);
+                    let using_path = ctx.file_assignment(&c_using).unwrap_or(&c_using);
+                    let using_path_escaped = escape_c_string(using_path);
+                    let using_path_len = using_path.len();
                     out.push_str(&format!(
                         "{pad}    /* USING {c_using}: read all records */\n"
                     ));
                     out.push_str(&format!(
-                        "{pad}    cobol_file_open(FILE_ID_{c_using}, (const uint8_t*)\"{c_using}\", {using_name_len}, 1, 0, 0, {rec_len});\n",
-                        using_name_len = c_using.len()
+                        "{pad}    cobol_file_open(FILE_ID_{c_using}, (const uint8_t*)\"{using_path_escaped}\", {using_path_len}, {using_org}, 0, 0, {rec_len});\n"
                     ));
                     out.push_str(&format!("{pad}    while (1) {{\n"));
                     out.push_str(&format!(
@@ -4483,11 +4531,17 @@ pub(crate) fn emit_statement_with_ctx(
                             "{pad}    _set_debug_event(\"{event_name}\", \"SORT INPUT\", \"\");\n"
                         ));
                     }
-                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
-                    if let Some(thru_name) = thru {
-                        let c_thru = sanitize_name(thru_name);
-                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
-                    }
+                    emit_sort_procedure_call(
+                        out,
+                        proc_name,
+                        thru.as_deref(),
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                    );
+                    out.push_str(&format!("{pad}    _goto_target = 0;\n"));
                 }
                 // Convert CobolDecimal fields from display to binary in sort buffer
                 if sort_record_needs_conversion(&record_var, data_items) {
@@ -4508,12 +4562,17 @@ pub(crate) fn emit_statement_with_ctx(
                 if !giving.is_empty() {
                     for g in giving {
                         let c_giving = sanitize_name(g);
+                        let giving_record = resolve_file_record(&c_giving);
+                        let giving_org =
+                            sort_file_runtime_org(ctx, &c_giving, &giving_record, data_items);
+                        let giving_path = ctx.file_assignment(&c_giving).unwrap_or(&c_giving);
+                        let giving_path_escaped = escape_c_string(giving_path);
+                        let giving_path_len = giving_path.len();
                         out.push_str(&format!(
                             "{pad}    /* GIVING {c_giving}: write sorted records */\n"
                         ));
                         out.push_str(&format!(
-                            "{pad}    cobol_file_open(FILE_ID_{c_giving}, (const uint8_t*)\"{c_giving}\", {giving_name_len}, 1, 0, 2, {rec_len});\n",
-                            giving_name_len = c_giving.len()
+                            "{pad}    cobol_file_open(FILE_ID_{c_giving}, (const uint8_t*)\"{giving_path_escaped}\", {giving_path_len}, {giving_org}, 0, 1, {rec_len});\n"
                         ));
                         out.push_str(&format!(
                             "{pad}    for (uint32_t _si = 0; _si < _sort_count; _si++) {{\n"
@@ -4545,11 +4604,16 @@ pub(crate) fn emit_statement_with_ctx(
                             "{pad}    _set_debug_event(\"{event_name}\", \"SORT OUTPUT\", \"\");\n"
                         ));
                     }
-                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
-                    if let Some(thru_name) = thru {
-                        let c_thru = sanitize_name(thru_name);
-                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
-                    }
+                    emit_sort_procedure_call(
+                        out,
+                        proc_name,
+                        thru.as_deref(),
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                    );
                     out.push_str(&format!("{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"));
                 }
                 out.push_str(&format!("{pad}    free(_sort_buf);\n"));
@@ -4567,15 +4631,55 @@ pub(crate) fn emit_statement_with_ctx(
                             "{pad}    _set_debug_event(\"{event_name}\", \"SORT INPUT\", \"\");\n"
                         ));
                     }
-                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
-                    if let Some(thru_name) = thru {
-                        let c_thru = sanitize_name(thru_name);
-                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
+                    emit_sort_procedure_call(
+                        out,
+                        proc_name,
+                        thru.as_deref(),
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                    );
+                    if let Some(next_section_id) =
+                        next_section_after_procedure_id(proc_name, paragraphs)
+                    {
+                        out.push_str(&format!(
+                            "{pad}    if (!_goto_target) {{ _goto_target = {next_section_id}; goto _goto_dispatch; }}\n"
+                        ));
                     }
                 }
                 out.push_str(&format!(
                     "{pad}    cobol_sort_buffer_sort(_sort_buf_id, _sort_keys, {key_count});\n"
                 ));
+                if !giving.is_empty() {
+                    out.push_str(&format!("{pad}    uint8_t _sort_giving_rec[{rec_len}];\n"));
+                    for g in giving {
+                        let c_giving = sanitize_name(g);
+                        let giving_record = resolve_file_record(&c_giving);
+                        let giving_org =
+                            sort_file_runtime_org(ctx, &c_giving, &giving_record, data_items);
+                        let giving_path = ctx.file_assignment(&c_giving).unwrap_or(&c_giving);
+                        let giving_path_escaped = escape_c_string(giving_path);
+                        let giving_path_len = giving_path.len();
+                        out.push_str(&format!(
+                            "{pad}    /* GIVING {c_giving}: write sorted records */\n"
+                        ));
+                        out.push_str(&format!(
+                            "{pad}    cobol_file_open(FILE_ID_{c_giving}, (const uint8_t*)\"{giving_path_escaped}\", {giving_path_len}, {giving_org}, 0, 1, {rec_len});\n"
+                        ));
+                        out.push_str(&format!("{pad}    while (1) {{\n"));
+                        out.push_str(&format!(
+                            "{pad}        uint32_t _gfs = cobol_sort_buffer_return(_sort_buf_id, _sort_giving_rec, {rec_len});\n"
+                        ));
+                        out.push_str(&format!("{pad}        if (_gfs == 10) break;\n"));
+                        out.push_str(&format!(
+                            "{pad}        cobol_file_write(FILE_ID_{c_giving}, _sort_giving_rec, {rec_len});\n"
+                        ));
+                        out.push_str(&format!("{pad}    }}\n"));
+                        out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_giving});\n"));
+                    }
+                }
                 if let Some((proc_name, thru)) = output_procedure {
                     let c_proc = sanitize_name(proc_name);
                     let event_name = escape_c_string(proc_name);
@@ -4585,11 +4689,16 @@ pub(crate) fn emit_statement_with_ctx(
                             "{pad}    _set_debug_event(\"{event_name}\", \"SORT OUTPUT\", \"\");\n"
                         ));
                     }
-                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
-                    if let Some(thru_name) = thru {
-                        let c_thru = sanitize_name(thru_name);
-                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
-                    }
+                    emit_sort_procedure_call(
+                        out,
+                        proc_name,
+                        thru.as_deref(),
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                    );
                 }
                 out.push_str(&format!("{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"));
             } else {
@@ -6880,23 +6989,64 @@ pub(crate) fn emit_move_to(
                 )
             }) || alphanumeric_expr_len(from, data_items).is_some();
             if is_source_group {
-                let src_ptr = c_ptr_expr(&c_src, data_items);
                 let tgt_ptr = c_ptr_expr(c_target, data_items);
                 let src_sz = alphanumeric_expr_len_expr(from, data_items)
-                    .unwrap_or_else(|| format!("sizeof({c_src})"));
+                    .unwrap_or_else(|| find_data_item_storage_size(&c_src, data_items).to_string());
                 let tgt_sz = find_data_item_storage_size(c_target, data_items);
-                out.push_str(&format!(
-                    "{pad}{{\n\
-                     {pad}    size_t _src_sz = {src_sz};\n\
-                     {pad}    size_t _tgt_sz = {tgt_sz};\n\
-                     {pad}    size_t _cp_sz = _src_sz < _tgt_sz ? _src_sz : _tgt_sz;\n\
-                     {pad}    memcpy({tgt_ptr}, {src_ptr}, _cp_sz);\n\
-                     {pad}    if (_src_sz < _tgt_sz) {{\n\
-                     {pad}        memset((uint8_t*){tgt_ptr} + _src_sz, ' ', \
-                     _tgt_sz - _src_sz);\n\
-                     {pad}    }}\n\
-                     {pad}}}\n"
-                ));
+                let source_needs_conv = sort_record_needs_conversion(&c_src, data_items);
+                let target_needs_conv = sort_record_needs_conversion(c_target, data_items);
+                if source_needs_conv || target_needs_conv {
+                    let flat_len = src_sz.parse::<u32>().unwrap_or(tgt_sz).max(tgt_sz);
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!("{pad}    uint8_t _move_flat[{flat_len}];\n"));
+                    out.push_str(&format!("{pad}    memset(_move_flat, ' ', {flat_len});\n"));
+                    if source_needs_conv {
+                        emit_sort_record_serialize(
+                            out,
+                            &c_src,
+                            data_items,
+                            "_move_flat",
+                            &format!("{pad}    "),
+                        );
+                    } else {
+                        let src_ptr = c_ptr_expr(&c_src, data_items);
+                        out.push_str(&format!(
+                            "{pad}    memcpy(_move_flat, {src_ptr}, {src_sz});\n"
+                        ));
+                    }
+                    if target_needs_conv {
+                        emit_sort_record_deserialize(
+                            out,
+                            c_target,
+                            data_items,
+                            "_move_flat",
+                            &format!("{pad}    "),
+                        );
+                    } else {
+                        out.push_str(&format!(
+                            "{pad}    size_t _src_sz = {src_sz};\n\
+                             {pad}    size_t _tgt_sz = {tgt_sz};\n\
+                             {pad}    size_t _cp_sz = _src_sz < _tgt_sz ? _src_sz : _tgt_sz;\n\
+                             {pad}    memcpy({tgt_ptr}, _move_flat, _cp_sz);\n\
+                             {pad}    if (_src_sz < _tgt_sz) memset((uint8_t*){tgt_ptr} + _src_sz, ' ', _tgt_sz - _src_sz);\n"
+                        ));
+                    }
+                    out.push_str(&format!("{pad}}}\n"));
+                } else {
+                    let src_ptr = c_ptr_expr(&c_src, data_items);
+                    out.push_str(&format!(
+                        "{pad}{{\n\
+                         {pad}    size_t _src_sz = {src_sz};\n\
+                         {pad}    size_t _tgt_sz = {tgt_sz};\n\
+                         {pad}    size_t _cp_sz = _src_sz < _tgt_sz ? _src_sz : _tgt_sz;\n\
+                         {pad}    memcpy({tgt_ptr}, {src_ptr}, _cp_sz);\n\
+                         {pad}    if (_src_sz < _tgt_sz) {{\n\
+                         {pad}        memset((uint8_t*){tgt_ptr} + _src_sz, ' ', \
+                         _tgt_sz - _src_sz);\n\
+                         {pad}    }}\n\
+                         {pad}}}\n"
+                    ));
+                }
             } else if is_source_alpha_like {
                 let src_size = alphanumeric_expr_len(from, data_items)
                     .unwrap_or_else(|| find_data_item_layout(&c_src, data_items).item_len);
@@ -8322,6 +8472,52 @@ pub(crate) fn emit_perform(
                     } else {
                         thru_ids.clone()
                     };
+                    let after_thru_ids: Vec<usize> = if !reversed {
+                        paragraphs
+                            .get(ei + 1)
+                            .map(|paragraph| {
+                                with_active_context(|ctx| {
+                                    let mut ids = Vec::new();
+                                    if let Some(id) = ctx.label_id(paragraph.id) {
+                                        ids.push(id);
+                                    }
+                                    if let Some(id) = ctx.body_label_id(paragraph.id) {
+                                        if !ids.contains(&id) {
+                                            ids.push(id);
+                                        }
+                                    }
+                                    ids
+                                })
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    let enclosing_section_ids: Vec<usize> = if !reversed {
+                        paragraphs[..=si]
+                            .iter()
+                            .rposition(|paragraph| {
+                                matches!(paragraph.kind, HirParagraphKind::Section)
+                            })
+                            .map(|section_idx| {
+                                let section = &paragraphs[section_idx];
+                                with_active_context(|ctx| {
+                                    let mut ids = Vec::new();
+                                    if let Some(id) = ctx.label_id(section.id) {
+                                        ids.push(id);
+                                    }
+                                    if let Some(id) = ctx.body_label_id(section.id) {
+                                        if !ids.contains(&id) {
+                                            ids.push(id);
+                                        }
+                                    }
+                                    ids
+                                })
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
                     let reversed_thru_ids: Vec<usize> = if reversed {
                         thru.paragraph_id()
                             .map(|through_id| {
@@ -8392,6 +8588,20 @@ pub(crate) fn emit_perform(
                             } else {
                                 out.push_str(&format!(
                                     "{pad}  if (_t == {id}) {{ _goto_target = 0; goto _pt_{suffix}_{pn}; }}\n"
+                                ));
+                            }
+                        }
+                        if !after_thru_ids.is_empty() {
+                            for id in &after_thru_ids {
+                                out.push_str(&format!(
+                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; goto _pt_end_{suffix}; }}\n"
+                                ));
+                            }
+                        }
+                        if !enclosing_section_ids.is_empty() {
+                            for id in &enclosing_section_ids {
+                                out.push_str(&format!(
+                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; goto _pt_end_{suffix}; }}\n"
                                 ));
                             }
                         }
@@ -8670,7 +8880,7 @@ fn display_numeric_digit_count(
     target_size: u32,
     data_items: &[HirDataItem],
 ) -> u32 {
-    find_data_item_by_c_name(c_target, data_items)
+    find_data_item_by_c_name_or_leaf(c_target, data_items)
         .or_else(|| find_data_item(c_target, data_items))
         .and_then(|item| match item.data_type {
             HirType::Numeric { size, .. } => Some(size),
@@ -8691,9 +8901,34 @@ fn modulo_signed_expr(value_expr: &str, digits: u32) -> String {
 }
 
 fn display_numeric_target_is_unsigned(c_target: &str, data_items: &[HirDataItem]) -> bool {
-    find_data_item_by_c_name(c_target, data_items)
+    fn is_unsigned_display_item(item: &HirDataItem) -> bool {
+        !item.is_numeric_edited
+            && matches!(
+                item.data_type,
+                HirType::Numeric {
+                    is_signed: false,
+                    ..
+                }
+            )
+            && item
+                .picture
+                .as_ref()
+                .is_none_or(|pic| !pic.to_ascii_uppercase().contains('S'))
+    }
+
+    if let Some(item) = find_data_item_by_c_name(c_target, data_items)
         .or_else(|| find_data_item(c_target, data_items))
-        .is_some_and(|item| {
+    {
+        if matches!(item.data_type, HirType::Numeric { .. }) {
+            return is_unsigned_display_item(item);
+        }
+    }
+
+    let leaf = c_target.rsplit("__").next().unwrap_or(c_target);
+    let mut matches = Vec::new();
+    collect_data_items_by_sanitized_name(leaf, data_items, &mut matches);
+    !matches.is_empty()
+        && matches.iter().all(|item| {
             !item.is_numeric_edited
                 && matches!(
                     item.data_type,
@@ -8709,6 +8944,37 @@ fn display_numeric_target_is_unsigned(c_target: &str, data_items: &[HirDataItem]
         })
 }
 
+fn find_data_item_by_c_name_or_leaf<'a>(
+    c_name: &str,
+    data_items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    find_data_item_by_c_name(c_name, data_items).or_else(|| {
+        let leaf = c_name.rsplit("__").next().unwrap_or(c_name);
+        let mut matches = Vec::new();
+        collect_data_items_by_sanitized_name(leaf, data_items, &mut matches);
+        if matches.len() == 1 {
+            matches.into_iter().next()
+        } else {
+            None
+        }
+    })
+}
+
+fn collect_data_items_by_sanitized_name<'a>(
+    c_name: &str,
+    data_items: &'a [HirDataItem],
+    matches: &mut Vec<&'a HirDataItem>,
+) {
+    for item in data_items {
+        if sanitize_name(&item.name) == c_name {
+            matches.push(item);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            collect_data_items_by_sanitized_name(c_name, members, matches);
+        }
+    }
+}
+
 fn emit_store_display_numeric(
     out: &mut String,
     pad: &str,
@@ -8718,7 +8984,7 @@ fn emit_store_display_numeric(
     data_items: &[HirDataItem],
 ) {
     let target_ptr = display_numeric_ptr(c_target);
-    let blank_when_zero = find_data_item_by_c_name(c_target, data_items)
+    let blank_when_zero = find_data_item_by_c_name_or_leaf(c_target, data_items)
         .or_else(|| find_data_item(c_target, data_items))
         .is_some_and(|item| item.blank_when_zero);
     if blank_when_zero {
@@ -8749,6 +9015,10 @@ fn emit_store_display_numeric(
                 "{store_pad}cobol_store_numeric_display({value_expr}, {target_ptr}, {target_size});\n"
             ));
         }
+    } else if display_numeric_target_is_unsigned(c_target, data_items) {
+        out.push_str(&format!(
+            "{store_pad}cobol_store_numeric_display(llabs((int64_t)({value_expr})), {target_ptr}, {target_size});\n"
+        ));
     } else {
         out.push_str(&format!(
             "{store_pad}cobol_store_numeric_display({value_expr}, {target_ptr}, {target_size});\n"
@@ -8763,7 +9033,7 @@ fn display_numeric_sign_clause(
     c_target: &str,
     data_items: &[HirDataItem],
 ) -> Option<cobol_hir::HirSignClause> {
-    let item = find_data_item_by_c_name(c_target, data_items)
+    let item = find_data_item_by_c_name_or_leaf(c_target, data_items)
         .or_else(|| find_data_item(c_target, data_items))?;
     item.sign
 }
@@ -11078,6 +11348,83 @@ fn sort_record_needs_conversion(record_name: &str, data_items: &[HirDataItem]) -
         }
     }
     false
+}
+
+fn sort_file_runtime_org(
+    ctx: &CodegenContext,
+    file_name: &str,
+    record_name: &str,
+    data_items: &[HirDataItem],
+) -> u32 {
+    let org = ctx.file_organization(file_name).unwrap_or(1);
+    if org == 1 && sort_record_needs_conversion(record_name, data_items) {
+        0
+    } else {
+        org
+    }
+}
+
+fn emit_sort_procedure_call(
+    out: &mut String,
+    proc_name: &str,
+    thru_name: Option<&str>,
+    data_items: &[HirDataItem],
+    paragraphs: &[HirParagraph],
+    fs_map: &FileStatusMap,
+    has_declaratives: bool,
+    indent: usize,
+) {
+    let Some(target) = transfer_target_for_paragraph_name(proc_name, paragraphs) else {
+        let pad = "    ".repeat(indent);
+        let c_proc = sanitize_name(proc_name);
+        out.push_str(&format!("{pad}para_{c_proc}();\n"));
+        return;
+    };
+    let through = thru_name.and_then(|name| transfer_target_for_paragraph_name(name, paragraphs));
+    let kind = HirPerformKind::ProcedureName { target, through };
+    emit_perform(
+        out,
+        &kind,
+        data_items,
+        paragraphs,
+        fs_map,
+        has_declaratives,
+        indent,
+    );
+}
+
+fn next_section_after_procedure_id(proc_name: &str, paragraphs: &[HirParagraph]) -> Option<usize> {
+    let c_name = sanitize_name(proc_name);
+    let proc_idx = paragraphs
+        .iter()
+        .position(|paragraph| sanitize_name(&paragraph.name) == c_name)?;
+    let section_idx = paragraphs[..=proc_idx]
+        .iter()
+        .rposition(|paragraph| matches!(paragraph.kind, HirParagraphKind::Section))?;
+    paragraphs
+        .iter()
+        .skip(section_idx + 1)
+        .find(|paragraph| matches!(paragraph.kind, HirParagraphKind::Section))
+        .and_then(|paragraph| {
+            with_active_context(|ctx| {
+                ctx.label_id(paragraph.id)
+                    .or_else(|| ctx.body_label_id(paragraph.id))
+            })
+        })
+}
+
+fn transfer_target_for_paragraph_name(
+    name: &str,
+    paragraphs: &[HirParagraph],
+) -> Option<HirTransferTarget> {
+    let c_name = sanitize_name(name);
+    paragraphs
+        .iter()
+        .find(|paragraph| sanitize_name(&paragraph.name) == c_name)
+        .map(|paragraph| HirTransferTarget::Paragraph {
+            id: paragraph.id,
+            name: paragraph.name.clone(),
+        })
 }
 
 /// Emit code to deserialize display-format bytes from a flat buffer into the SD

@@ -461,6 +461,108 @@ mod tests {
     }
 
     #[test]
+    fn test_sort_display_numeric_mixed_directions() {
+        let mut data = *b"900009000000000009000000900009900008000000000009000000900008";
+        let keys = [
+            SortKey {
+                offset: 0,
+                length: 1,
+                ascending: true,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+            SortKey {
+                offset: 1,
+                length: 2,
+                ascending: false,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+            SortKey {
+                offset: 3,
+                length: 3,
+                ascending: true,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+            SortKey {
+                offset: 6,
+                length: 4,
+                ascending: false,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+            SortKey {
+                offset: 10,
+                length: 5,
+                ascending: false,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+        ];
+        unsafe { cobol_sort(data.as_mut_ptr(), 4, 15, keys.as_ptr(), keys.len() as u32) };
+        assert_eq!(
+            &data,
+            b"009000000900009009000000900008900008000000000900009000000000"
+        );
+    }
+
+    #[test]
+    fn test_sort_buffer_display_numeric_mixed_directions() {
+        let records = [
+            *b"900009000000000",
+            *b"009000000900009",
+            *b"900008000000000",
+            *b"009000000900008",
+        ];
+        let keys = [
+            SortKey {
+                offset: 0,
+                length: 1,
+                ascending: true,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+            SortKey {
+                offset: 1,
+                length: 2,
+                ascending: false,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+            SortKey {
+                offset: 3,
+                length: 3,
+                ascending: true,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+            SortKey {
+                offset: 6,
+                length: 4,
+                ascending: false,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+            SortKey {
+                offset: 10,
+                length: 5,
+                ascending: false,
+                key_type: SORT_KEY_DISPLAY_NUMERIC,
+            },
+        ];
+        unsafe {
+            let buf_id = cobol_sort_buffer_init(15);
+            for record in &records {
+                cobol_sort_buffer_release(buf_id, record.as_ptr(), 15);
+            }
+            cobol_sort_buffer_sort(buf_id, keys.as_ptr(), keys.len() as u32);
+            let mut out = [0u8; 15];
+            assert_eq!(cobol_sort_buffer_return(buf_id, out.as_mut_ptr(), 15), 0);
+            assert_eq!(&out, b"009000000900009");
+            assert_eq!(cobol_sort_buffer_return(buf_id, out.as_mut_ptr(), 15), 0);
+            assert_eq!(&out, b"009000000900008");
+            assert_eq!(cobol_sort_buffer_return(buf_id, out.as_mut_ptr(), 15), 0);
+            assert_eq!(&out, b"900008000000000");
+            assert_eq!(cobol_sort_buffer_return(buf_id, out.as_mut_ptr(), 15), 0);
+            assert_eq!(&out, b"900009000000000");
+            assert_eq!(cobol_sort_buffer_return(buf_id, out.as_mut_ptr(), 15), 10);
+            cobol_sort_buffer_free(buf_id);
+        }
+    }
+
+    #[test]
     fn test_sort_single_record() {
         let mut data = *b"HELLO";
         let keys = [SortKey {

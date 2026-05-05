@@ -67,7 +67,7 @@
 | IMPL-026 | ⏳ | copybook library-nameとcontinuation/quote処理を実装する | IMPL-025 |
 | IMPL-027 | ✅ | obsolete/non-conforming warning診断を構文単位で実装する | IMPL-007 |
 | IMPL-028 | ✅ | Report Writer lifecycleとcounterを実装する | IMPL-008,IMPL-017,TASK-009 |
-| IMPL-029 | ⏳ | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 |
+| IMPL-029 | 🚧 | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 |
 | IMPL-030 | ⏳ | MERGEとsame sort-merge areaを実装する | IMPL-029 |
 | IMPL-031 | ⏳ | segmentation runtime stateとdiagnostic境界を実装する | IMPL-011,IMPL-027,TASK-009 |
 | IMPL-032 | ⏳ | NIST full gateをCI必須checkへ昇格する | IMPL-001-IMPL-031 |

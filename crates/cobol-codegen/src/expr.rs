@@ -1206,8 +1206,11 @@ pub(crate) fn emit_store_int(
     data_items: &[HirDataItem],
     pad: &str,
 ) {
-    let target_item = find_data_item_by_c_name(c_target, data_items)
+    let direct_target_item = find_data_item_by_c_name(c_target, data_items)
         .or_else(|| find_data_item(c_target, data_items));
+    let target_item = direct_target_item
+        .filter(|item| !matches!(item.data_type, HirType::Group { .. }))
+        .or_else(|| find_data_item_by_leaf_if_uniform(c_target, data_items));
     let stored_value_expr = target_item
         .filter(|item| item.scale_adjustment != 0)
         .map(|item| apply_scale_adjustment_to_store(value_expr, item.scale_adjustment))
@@ -1230,10 +1233,7 @@ pub(crate) fn emit_store_int(
     } else {
         stored_value_expr
     };
-    if let Some(item) = find_data_item_by_c_name(c_target, data_items)
-        .or_else(|| find_data_item(c_target, data_items))
-        .filter(|item| item.is_numeric_edited)
-    {
+    if let Some(item) = target_item.filter(|item| item.is_numeric_edited) {
         let pic = item
             .picture
             .as_ref()
@@ -1288,13 +1288,52 @@ fn is_unsigned_numeric_storage(item: &HirDataItem) -> bool {
     match item.data_type {
         HirType::Numeric {
             is_signed: false, ..
-        }
-        | HirType::Comp3 { .. }
-        | HirType::Binary { .. } => item
+        } => item
+            .picture
+            .as_ref()
+            .is_none_or(|pic| !pic.to_ascii_uppercase().contains('S')),
+        HirType::Comp3 { .. } | HirType::Binary { .. } => item
             .picture
             .as_ref()
             .is_some_and(|pic| !pic.to_ascii_uppercase().contains('S')),
         _ => false,
+    }
+}
+
+fn find_data_item_by_leaf_if_uniform<'a>(
+    c_target: &str,
+    data_items: &'a [HirDataItem],
+) -> Option<&'a HirDataItem> {
+    let leaf = c_target.rsplit("__").next().unwrap_or(c_target);
+    let mut matches = Vec::new();
+    collect_data_items_by_sanitized_name(leaf, data_items, &mut matches);
+    if matches.is_empty() {
+        return None;
+    }
+    let first = matches[0];
+    if matches.iter().all(|item| {
+        item.is_numeric_edited == first.is_numeric_edited
+            && item.picture == first.picture
+            && std::mem::discriminant(&item.data_type) == std::mem::discriminant(&first.data_type)
+    }) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
+fn collect_data_items_by_sanitized_name<'a>(
+    c_name: &str,
+    data_items: &'a [HirDataItem],
+    matches: &mut Vec<&'a HirDataItem>,
+) {
+    for item in data_items {
+        if sanitize_name(&item.name) == c_name {
+            matches.push(item);
+        }
+        if let HirType::Group { members, .. } = &item.data_type {
+            collect_data_items_by_sanitized_name(c_name, members, matches);
+        }
     }
 }
 

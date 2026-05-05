@@ -47,6 +47,7 @@ pub(crate) struct CodegenContext {
     file_record_map: FileRecordMap,
     same_record_peers: HashMap<String, Vec<String>>,
     file_organizations: HashMap<String, u32>,
+    file_assignments: HashMap<String, String>,
     file_relative_keys: HashMap<String, String>,
     variable_record_files: HashSet<String>,
     variable_record_depending: HashMap<String, String>,
@@ -93,6 +94,7 @@ impl CodegenContext {
             &program.data_items,
             &program.file_records,
             &program.file_organizations,
+            &program.file_assignments,
             &program.file_relative_keys,
             &program.variable_record_files,
             &program.variable_record_depending,
@@ -145,6 +147,14 @@ impl CodegenContext {
                 .file_organizations
                 .iter()
                 .map(|(f, org)| (sanitize_name(f), *org)),
+        );
+
+        let mut file_assignments = parent.file_assignments.clone();
+        file_assignments.extend(
+            program
+                .file_assignments
+                .iter()
+                .map(|(f, assign)| (sanitize_name(f), assign.to_string())),
         );
 
         let mut file_relative_keys = parent.file_relative_keys.clone();
@@ -230,6 +240,7 @@ impl CodegenContext {
             file_record_map,
             same_record_peers,
             file_organizations,
+            file_assignments,
             file_relative_keys,
             variable_record_files,
             variable_record_depending,
@@ -279,6 +290,7 @@ impl CodegenContext {
         data_items: &[HirDataItem],
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         file_organizations_map: &HashMap<smol_str::SmolStr, u32>,
+        file_assignments_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         file_relative_keys_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         variable_record_files: &HashSet<smol_str::SmolStr>,
         variable_record_depending: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
@@ -298,6 +310,10 @@ impl CodegenContext {
             file_organizations: file_organizations_map
                 .iter()
                 .map(|(f, org)| (sanitize_name(f), *org))
+                .collect(),
+            file_assignments: file_assignments_map
+                .iter()
+                .map(|(f, assign)| (sanitize_name(f), assign.to_string()))
                 .collect(),
             file_relative_keys: file_relative_keys_map
                 .iter()
@@ -428,6 +444,12 @@ impl CodegenContext {
 
     pub(crate) fn file_organization(&self, sanitized_file_name: &str) -> Option<u32> {
         self.file_organizations.get(sanitized_file_name).copied()
+    }
+
+    pub(crate) fn file_assignment(&self, sanitized_file_name: &str) -> Option<&str> {
+        self.file_assignments
+            .get(sanitized_file_name)
+            .map(String::as_str)
     }
 
     pub(crate) fn relative_key_for_file(&self, sanitized_file_name: &str) -> Option<&str> {

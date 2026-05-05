@@ -1195,18 +1195,6 @@ pub unsafe extern "C" fn cobol_file_write(
         return FS_IO_ERROR;
     }
     let raw_data = std::slice::from_raw_parts(record_ptr, record_len as usize);
-    // Most records are already text data; avoid allocating unless we actually
-    // need to scrub embedded NUL bytes.
-    let scrubbed;
-    let data = if raw_data.contains(&0) {
-        scrubbed = raw_data
-            .iter()
-            .map(|&b| if b == 0 { b' ' } else { b })
-            .collect::<Vec<_>>();
-        scrubbed.as_slice()
-    } else {
-        raw_data
-    };
 
     with_file_table(|table| {
         let file = match table.get_mut(&file_id) {
@@ -1228,6 +1216,8 @@ pub unsafe extern "C" fn cobol_file_write(
                 return FS_WRITE_NOT_PERMITTED;
             }
         }
+
+        let data = raw_data;
 
         if file.org == FileOrganization::Indexed {
             let Some((key_offset, key_len)) = file

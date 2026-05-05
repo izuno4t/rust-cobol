@@ -1767,6 +1767,7 @@ fn emit_runtime_declarations(out: &mut String) {
 fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
+    let empty_assignments: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_variable_records: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_variable_depending: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
@@ -1777,6 +1778,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
         &[],
         &empty_records,
         &empty_orgs,
+        &empty_assignments,
         &empty_relative_keys,
         &empty_variable_records,
         &empty_variable_depending,
@@ -1909,6 +1911,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
 fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
+    let empty_assignments: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_variable_records: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_variable_depending: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
@@ -1919,6 +1922,7 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
         &[],
         &empty_records,
         &empty_orgs,
+        &empty_assignments,
         &empty_relative_keys,
         &empty_variable_records,
         &empty_variable_depending,
