@@ -129,17 +129,13 @@ fn report_nonconforming_source_manipulation_warnings(
     let fixed = source_format == SourceFormat::Fixed;
 
     for stmt in scanner::scan_copy_statements(source, fixed) {
-        if stmt.replacings.is_empty() {
-            continue;
-        }
+        let message = if stmt.replacings.is_empty() {
+            "COPY is a non-conforming source text manipulation feature"
+        } else {
+            "COPY ... REPLACING is a non-conforming source text manipulation feature"
+        };
         let span = Span::new(stmt.start as u32, (stmt.start + 4) as u32, FileId(0));
-        reporter.report(
-            Diagnostic::warning(
-                "COBC-W001",
-                "COPY ... REPLACING is a non-conforming source text manipulation feature",
-            )
-            .with_span(span),
-        );
+        reporter.report(Diagnostic::warning("COBC-W001", message).with_span(span));
     }
 
     for directive in scanner::scan_replace_directives(source, fixed) {
@@ -1622,6 +1618,37 @@ mod tests {
             .count();
 
         assert_eq!(warning_count, 2, "{:?}", result.diagnostics);
+        assert_no_errors(&result);
+    }
+
+    #[test]
+    fn test_preprocess_warns_for_plain_copy() {
+        let dir = setup_test_dir();
+        let source_path = dir.path().join("test.cob");
+        fs::write(&source_path, "").unwrap();
+        fs::write(dir.path().join("book.cpy"), "       DISPLAY \"X\".\n").unwrap();
+
+        let source = concat!(
+            "       IDENTIFICATION DIVISION.\n",
+            "       PROGRAM-ID. TEST.\n",
+            "       PROCEDURE DIVISION.\n",
+            "           COPY book.\n",
+            "           STOP RUN.\n",
+        );
+        let config = PreprocessorConfig {
+            copy_paths: vec![dir.path().to_path_buf()],
+            max_copy_depth: 8,
+            source_format: SourceFormat::Free,
+        };
+
+        let result = preprocess(source, &source_path, &config);
+        let warning_count = result
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.code == "COBC-W001")
+            .count();
+
+        assert_eq!(warning_count, 1, "{:?}", result.diagnostics);
         assert_no_errors(&result);
     }
 

@@ -273,6 +273,30 @@ compute_preprocess_signature() {
         "$(sha256_of_file "$PREPROCESS")"
 }
 
+prepare_program_copylib() {
+    local program_tmpdir="$1"
+    local copylib_out="$program_tmpdir/COPYLIB"
+
+    if [ ! -d "$COPYLIB_DIR" ]; then
+        printf '%s\n' "$COPYLIB_DIR"
+        return
+    fi
+
+    mkdir -p "$copylib_out"
+    find "$COPYLIB_DIR" -type f | LC_ALL=C sort | while IFS= read -r copybook; do
+        local rel="${copybook#$COPYLIB_DIR/}"
+        local out="$copylib_out/$rel"
+        mkdir -p "$(dirname "$out")"
+        NIST_TMPDIR="$program_tmpdir" "$PREPROCESS" "$copybook" "$out"
+    done
+    if [ -f "$COPYLIB_DIR/ALTL1.cpy" ]; then
+        mkdir -p "$copylib_out/COPYLIB_ALT"
+        NIST_TMPDIR="$program_tmpdir" "$PREPROCESS" \
+            "$COPYLIB_DIR/ALTL1.cpy" "$copylib_out/COPYLIB_ALT/ALTLB.cpy"
+    fi
+    printf '%s\n' "$copylib_out"
+}
+
 ccvs_summary_count() {
     local file="$1"
     local pattern="$2"
@@ -743,9 +767,13 @@ compile_program_artifacts() {
         fi
     fi
 
+    local program_copylib
+    program_copylib="$(prepare_program_copylib "$program_tmpdir")"
+
     if [ "$compile_cache_hit" -eq 0 ]; then
         rm -f "$bin" "$compile_log" "$compile_meta"
-        if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed --copy-path "$COPYLIB_DIR" \
+        if ! $COBOLC "$preprocessed" -o "$bin" --source-format fixed \
+            --copy-path "$program_copylib" --copy-path "$COPYLIB_DIR" \
             2>"$compile_log" || grep -q 'COB[C]-E' "$compile_log"; then
             if [ -x "$bin" ]; then
                 :

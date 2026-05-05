@@ -1261,6 +1261,34 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_filler_group_redefines_preserves_child_overlay() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FILLER-GROUP-REDEF.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  BASE-AREA PIC X(5).
+01  FILLER REDEFINES BASE-AREA.
+    05 FIRST-CHAR PIC X.
+    05 REST-CHARS PIC X(4).
+PROCEDURE DIVISION.
+    MOVE \"ABCDE\" TO BASE-AREA.
+    DISPLAY FIRST-CHAR.
+    MOVE \"Z\" TO FIRST-CHAR.
+    DISPLAY BASE-AREA.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("A") && stdout.contains("ZBCDE"),
+        "FILLER group REDEFINES children should share the target storage, stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
 fn test_native_currency_picture_redefines_occurs_and_blank_when_zero() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3644,6 +3672,67 @@ PROCEDURE DIVISION.
     );
 }
 
+#[test]
+fn test_native_nested_program_inherits_global_file_metadata_and_use_declarative() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let input_path = tmp.path().join("global-input.dat");
+    let missing_path = tmp.path().join("global-missing.dat");
+    std::fs::write(&input_path, "ABCDE\n").expect("write global input file");
+    let input_path = input_path.to_string_lossy();
+    let missing_path = missing_path.to_string_lossy();
+    let src = format!(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. OUTER.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT TEST-FILE ASSIGN TO "{input_path}".
+    SELECT MISSING-FILE ASSIGN TO "{missing_path}".
+DATA DIVISION.
+FILE SECTION.
+FD TEST-FILE GLOBAL.
+01 TEST-REC PIC X(5).
+FD MISSING-FILE GLOBAL.
+01 MISSING-REC PIC X.
+WORKING-STORAGE SECTION.
+01 USE-FLAG PIC X VALUE "N".
+PROCEDURE DIVISION.
+DECLARATIVES.
+USE-SECT SECTION.
+    USE GLOBAL AFTER ERROR PROCEDURE ON INPUT.
+USE-PARA.
+    MOVE "Y" TO USE-FLAG.
+END DECLARATIVES.
+MAIN-PARA.
+    CALL "INNER".
+    DISPLAY TEST-REC.
+    DISPLAY USE-FLAG.
+    STOP RUN.
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INNER.
+DATA DIVISION.
+PROCEDURE DIVISION.
+INNER-PARA.
+    OPEN INPUT TEST-FILE.
+    READ TEST-FILE.
+    CLOSE TEST-FILE.
+    OPEN INPUT MISSING-FILE.
+    EXIT PROGRAM.
+END PROGRAM INNER.
+END PROGRAM OUTER.
+"#
+    );
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(&src);
+    assert_eq!(code, 0, "program failed: stderr={stderr}");
+    assert!(
+        stdout.contains("ABCDE\nY\n"),
+        "nested program should inherit GLOBAL FD assignment and global USE declarative: stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Phase C-2: CORRESPONDING (CORR) matching
 // -----------------------------------------------------------------------
@@ -3802,6 +3891,7 @@ fn test_c2_move_corresponding() {
         using_params: Vec::new(),
         file_organizations: std::collections::HashMap::new(),
         file_assignments: std::collections::HashMap::new(),
+        file_optionals: std::collections::HashSet::new(),
         file_relative_keys: std::collections::HashMap::new(),
         file_status_vars: Vec::new(),
         declaratives: Vec::new(),
@@ -3958,6 +4048,7 @@ fn test_c2_add_corresponding() {
         using_params: Vec::new(),
         file_organizations: std::collections::HashMap::new(),
         file_assignments: std::collections::HashMap::new(),
+        file_optionals: std::collections::HashSet::new(),
         file_relative_keys: std::collections::HashMap::new(),
         file_status_vars: Vec::new(),
         declaratives: Vec::new(),
@@ -7996,6 +8087,134 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_merge_writes_all_giving_files() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MERGEMULTI.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT MERGE-FILE ASSIGN TO "/tmp/cobol_merge_multi_work.dat".
+    SELECT INPUT-A ASSIGN TO "/tmp/cobol_merge_multi_a.dat".
+    SELECT INPUT-B ASSIGN TO "/tmp/cobol_merge_multi_b.dat".
+    SELECT OUTPUT-A ASSIGN TO "/tmp/cobol_merge_multi_out_a.dat".
+    SELECT OUTPUT-B ASSIGN TO "/tmp/cobol_merge_multi_out_b.dat".
+DATA DIVISION.
+FILE SECTION.
+SD MERGE-FILE.
+01 MERGE-RECORD.
+   05 MERGE-KEY PIC 9(3).
+   05 MERGE-TEXT PIC X(2).
+FD INPUT-A.
+01 INPUT-A-RECORD PIC X(5).
+FD INPUT-B.
+01 INPUT-B-RECORD PIC X(5).
+FD OUTPUT-A.
+01 OUTPUT-A-RECORD PIC X(5).
+FD OUTPUT-B.
+01 OUTPUT-B-RECORD PIC X(5).
+WORKING-STORAGE SECTION.
+01 WS-EOF PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+    OPEN OUTPUT INPUT-A.
+    MOVE "001A1" TO INPUT-A-RECORD.
+    WRITE INPUT-A-RECORD.
+    CLOSE INPUT-A.
+    OPEN OUTPUT INPUT-B.
+    MOVE "002B2" TO INPUT-B-RECORD.
+    WRITE INPUT-B-RECORD.
+    CLOSE INPUT-B.
+    MERGE MERGE-FILE
+        ON ASCENDING KEY MERGE-KEY
+        USING INPUT-A INPUT-B
+        GIVING OUTPUT-A OUTPUT-B.
+    OPEN INPUT OUTPUT-B.
+    PERFORM UNTIL WS-EOF = 1
+        READ OUTPUT-B
+            AT END MOVE 1 TO WS-EOF
+            NOT AT END DISPLAY OUTPUT-B-RECORD
+        END-READ
+    END-PERFORM.
+    CLOSE OUTPUT-B.
+    STOP RUN.
+"#;
+    let _ = std::fs::remove_file("/tmp/cobol_merge_multi_a.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_multi_b.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_multi_out_a.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_multi_out_b.dat");
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_merge_multi_a.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_multi_b.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_multi_out_a.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_multi_out_b.dat");
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "001A1\n002B2\n");
+}
+
+#[test]
+fn test_native_merge_using_output_procedure_returns_records() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MERGEOUT.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT MERGE-FILE ASSIGN TO "/tmp/cobol_merge_out_work.dat".
+    SELECT INPUT-A ASSIGN TO "/tmp/cobol_merge_out_a.dat".
+    SELECT INPUT-B ASSIGN TO "/tmp/cobol_merge_out_b.dat".
+DATA DIVISION.
+FILE SECTION.
+SD MERGE-FILE.
+01 MERGE-RECORD.
+   05 MERGE-KEY PIC 9(3).
+   05 MERGE-TEXT PIC X(2).
+FD INPUT-A.
+01 INPUT-A-RECORD PIC X(5).
+FD INPUT-B.
+01 INPUT-B-RECORD PIC X(5).
+PROCEDURE DIVISION.
+    OPEN OUTPUT INPUT-A.
+    MOVE "001A1" TO INPUT-A-RECORD.
+    WRITE INPUT-A-RECORD.
+    MOVE "003A3" TO INPUT-A-RECORD.
+    WRITE INPUT-A-RECORD.
+    CLOSE INPUT-A.
+    OPEN OUTPUT INPUT-B.
+    MOVE "002B2" TO INPUT-B-RECORD.
+    WRITE INPUT-B-RECORD.
+    MOVE "004B4" TO INPUT-B-RECORD.
+    WRITE INPUT-B-RECORD.
+    CLOSE INPUT-B.
+    MERGE MERGE-FILE
+        ON ASCENDING KEY MERGE-KEY
+        USING INPUT-A INPUT-B
+        OUTPUT PROCEDURE IS DRAIN-MERGE THRU DRAIN-END.
+    STOP RUN.
+DRAIN-MERGE.
+    RETURN MERGE-FILE
+        AT END GO TO DRAIN-END
+    END-RETURN.
+    DISPLAY MERGE-RECORD.
+    GO TO DRAIN-MERGE.
+DRAIN-END.
+    EXIT.
+"#;
+    let _ = std::fs::remove_file("/tmp/cobol_merge_out_a.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_out_b.dat");
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_merge_out_a.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_out_b.dat");
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "001A1\n002B2\n003A3\n004B4\n");
+}
+
+#[test]
 fn test_native_sort_input_output_procedure_returns_sorted_records() {
     let src = r#"
 IDENTIFICATION DIVISION.
@@ -8851,6 +9070,7 @@ fn test_typedef_codegen() {
             interfaces: vec![],
             file_organizations: std::collections::HashMap::new(),
             file_assignments: std::collections::HashMap::new(),
+            file_optionals: std::collections::HashSet::new(),
             file_relative_keys: std::collections::HashMap::new(),
             file_status_vars: vec![],
             declaratives: vec![],

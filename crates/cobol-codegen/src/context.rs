@@ -48,6 +48,7 @@ pub(crate) struct CodegenContext {
     same_record_peers: HashMap<String, Vec<String>>,
     file_organizations: HashMap<String, u32>,
     file_assignments: HashMap<String, String>,
+    file_optionals: HashSet<String>,
     file_relative_keys: HashMap<String, String>,
     variable_record_files: HashSet<String>,
     variable_record_depending: HashMap<String, String>,
@@ -95,6 +96,7 @@ impl CodegenContext {
             &program.file_records,
             &program.file_organizations,
             &program.file_assignments,
+            &program.file_optionals,
             &program.file_relative_keys,
             &program.variable_record_files,
             &program.variable_record_depending,
@@ -156,6 +158,9 @@ impl CodegenContext {
                 .iter()
                 .map(|(f, assign)| (sanitize_name(f), assign.to_string())),
         );
+
+        let mut file_optionals = parent.file_optionals.clone();
+        file_optionals.extend(program.file_optionals.iter().map(sanitize_name));
 
         let mut file_relative_keys = parent.file_relative_keys.clone();
         file_relative_keys.extend(
@@ -241,6 +246,7 @@ impl CodegenContext {
             same_record_peers,
             file_organizations,
             file_assignments,
+            file_optionals,
             file_relative_keys,
             variable_record_files,
             variable_record_depending,
@@ -291,6 +297,7 @@ impl CodegenContext {
         file_records: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         file_organizations_map: &HashMap<smol_str::SmolStr, u32>,
         file_assignments_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
+        file_optionals_set: &HashSet<smol_str::SmolStr>,
         file_relative_keys_map: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
         variable_record_files: &HashSet<smol_str::SmolStr>,
         variable_record_depending: &HashMap<smol_str::SmolStr, smol_str::SmolStr>,
@@ -315,6 +322,7 @@ impl CodegenContext {
                 .iter()
                 .map(|(f, assign)| (sanitize_name(f), assign.to_string()))
                 .collect(),
+            file_optionals: file_optionals_set.iter().map(sanitize_name).collect(),
             file_relative_keys: file_relative_keys_map
                 .iter()
                 .map(|(f, k)| (sanitize_name(f), sanitize_name(k)))
@@ -450,6 +458,10 @@ impl CodegenContext {
         self.file_assignments
             .get(sanitized_file_name)
             .map(String::as_str)
+    }
+
+    pub(crate) fn file_is_optional(&self, sanitized_file_name: &str) -> bool {
+        self.file_optionals.contains(sanitized_file_name)
     }
 
     pub(crate) fn relative_key_for_file(&self, sanitized_file_name: &str) -> Option<&str> {

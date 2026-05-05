@@ -206,6 +206,15 @@ impl Parser {
                 break;
             }
 
+            if self.check_identifier("SAME") && self.peek(1).text.eq_ignore_ascii_case("SORT-MERGE")
+            {
+                while !self.check(TokenKind::Period) && !self.at_eof() {
+                    self.advance();
+                }
+                self.eat(TokenKind::Period);
+                continue;
+            }
+
             if self.check_identifier("SAME") {
                 let warning_span = self.span();
                 self.advance();

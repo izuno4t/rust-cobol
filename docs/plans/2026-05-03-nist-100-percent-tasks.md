@@ -67,11 +67,11 @@
 | IMPL-026 | ⏳ | copybook library-nameとcontinuation/quote処理を実装する | IMPL-025 |
 | IMPL-027 | ✅ | obsolete/non-conforming warning診断を構文単位で実装する | IMPL-007 |
 | IMPL-028 | ✅ | Report Writer lifecycleとcounterを実装する | IMPL-008,IMPL-017,TASK-009 |
-| IMPL-029 | 🚧 | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 |
-| IMPL-030 | ⏳ | MERGEとsame sort-merge areaを実装する | IMPL-029 |
+| IMPL-029 | ✅ | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 |
+| IMPL-030 | ✅ | MERGEとsame sort-merge areaを実装する | IMPL-029 |
 | IMPL-031 | ⏳ | segmentation runtime stateとdiagnostic境界を実装する | IMPL-011,IMPL-027,TASK-009 |
 | IMPL-032 | ⏳ | NIST full gateをCI必須checkへ昇格する | IMPL-001-IMPL-031 |
-| IMPL-033 | ⏳ | 残余未分類FAILを仕様カテゴリへ再分類して0にする | IMPL-032 |
+| IMPL-033 | 🚧 | 残余未分類FAILを仕様カテゴリへ再分類して0にする | IMPL-032 |
 
 ## タスク詳細（補足が必要な場合のみ）
 
@@ -2294,11 +2294,12 @@ TASK-011時点での判断:
 - 完了判断: NCモジュールの残余未分類FAILは0。IMPL-018からIMPL-021のNC核仕様分は
   100%確認済み。IMPL-033全体の完了条件は全391本のNIST gateで継続確認する。
 
-### IMPL-029 実施記録（進行中）
+### IMPL-029 実施記録（完了）
 
 - 対象: `crates/cobol-codegen/src/codegen.rs`,
   `crates/cobol-codegen/src/compiler.rs`, `crates/cobol-codegen/src/stmt.rs`,
-  `crates/cobol-driver/tests/e2e_test.rs`
+  `crates/cobol-driver/tests/e2e_test.rs`,
+  `crates/cobol-runtime/src/decimal.rs`
 - 根本原因1: Linux CIのe2eは生成Cが`true`/`false`を出力する一方で
   `<stdbool.h>`をincludeしておらず、NIST以前にCコンパイルで失敗していた。
 - 根本原因2: `SORT ... INPUT PROCEDURE`後に次sectionへ強制転送しており、
@@ -2309,11 +2310,25 @@ TASK-011時点での判断:
 - 根本原因4: SORT用フラットレコード長計算で`SIGN IS SEPARATE`の符号バイトを
   落としており、ST118Aの`S9 ... SEPARATE`/`SV9 ... SEPARATE`キーと後続フィールドの
   offset/lengthがCOBOL物理レイアウトからずれていた。
+- 根本原因5: nested groupのMOVE/SORT serialize/deserializeがトップレベル名だけで
+  データ項目を探しており、ネストされたgroup内の`COMP`フィールドをCOBOL物理レイアウトへ
+  変換できていなかった。
+- 根本原因6: `RELEASE ... FROM`と`RETURN ... INTO`がOCCURS DEPENDING ONの有効長ではなく
+  最大レコード長で`memcpy`しており、ST146Aで非アクティブODO要素が残るか、
+  受信先を越えてコピーしていた。
+- 根本原因7: numeric editedの`*`ゼロ抑制で、整数ゼロを`$**.99`へ出力する場合にも
+  通貨記号を残しており、期待されるasterisk fillとずれていた。
 - 変更: 生成Cヘッダへ`<stdbool.h>`を追加し、SORT input/output procedureは
   `PERFORM THRU`としてSORT文へ復帰させる。`PERFORM THRU` dispatcherは範囲外段落の
   呼出し後に`_goto_target`を再dispatchできるようにした。
 - 変更: SORTのファイル上バイト長を`HirType`単体ではなく`HirDataItem`単位で計算し、
   DISPLAY numericの`SIGN SEPARATE`では`size + 1`を使うようにした。
+- 変更: nested groupを`find_data_item_by_c_name`で解決し、SORT bufferのserialize/
+  deserializeとgroup MOVEでCOBOL物理レイアウトを使うようにした。
+- 変更: `RELEASE ... FROM`ではFROM元の有効長だけをSORT bufferへコピーし、残りを空白で
+  初期化する。`RETURN ... INTO`ではINTO先の有効長を上限にコピーする。
+- 変更: numeric editedの`*`ゼロ抑制は、小数スケールを持つゼロと整数ゼロを分け、
+  整数ゼロでは通貨記号位置も`*`で埋めるようにした。
 - 追加確認: `cargo test -p cobol-codegen test_generate_setjmp_header`,
   `cargo test -p cobol-driver --test e2e_test
   test_native_sort_input_output_procedure_returns_sorted_records -- --nocapture`,
@@ -2321,15 +2336,154 @@ TASK-011時点での判断:
   test_native_sort_input_procedure_sorts_redefined_display_numeric_keys -- --nocapture`,
   `cargo test -p cobol-driver --test e2e_test
   test_native_sort_preserves_separate_sign_display_numeric_record_layout -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_group_move_from_nested_group_uses_cobol_layout_for_binary_members
+  -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_sort_using_variable_file_giving_variable_file -- --nocapture`,
+  `cargo test -p cobol-runtime --lib
+  decimal::tests::test_asterisk_picture_replaces_suppressed_zeroes -- --nocapture`,
   `cargo fmt --check`, `make release`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST119A`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST118A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST127A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST137A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST146A`,
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST`を実行。
-- NIST確認: `ST118A`は`PASS (009 passed)`、`ST119A`は`PASS (027 passed)`。
-  ST全体は`25 total / 17 pass / 8 fail / 0 CErr / 0 RErr / 68%`。
-- 残件分類: STの残りは`ST127A`, `ST137A`, `ST139A`, `ST140A`, `ST144A`,
-  `ST146A`, `ST147A`, `ST301M`。IMPL-029でSORT残件を継続し、
-  MERGE固有はIMPL-030へ分離する。
+- NIST確認: `ST118A`, `ST119A`, `ST127A`, `ST137A`, `ST146A`は単体PASS。
+  ST全体は`25 total / 25 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+- 完了判断: SORT/RELEASE/RETURNとsort key compare由来のST残件は0。
+  MERGE固有の修正内容はIMPL-030実施記録へ分離する。
+
+### IMPL-030 実施記録（完了）
+
+- 対象: `crates/cobol-codegen/src/stmt.rs`,
+  `crates/cobol-driver/tests/e2e_test.rs`,
+  `crates/cobol-parser/src/env_div.rs`,
+  `tests/nist/preprocess.sh`
+- 根本原因1: `MERGE ... USING ... GIVING`が入力/出力ファイルをOPENせず、
+  さらに生成Cのkey配列がruntime ABIの`SortKey`と一致していなかったため、
+  ST139AのGIVING出力が空になっていた。
+- 根本原因2: `MERGE ... OUTPUT PROCEDURE`がRETURN対象のsort bufferを生成せず、
+  output procedureが読むべきレコード列を持っていなかったため、ST140A/ST144Aの
+  出力ファイルが空になっていた。
+- 根本原因3: 複数`GIVING`を持つMERGEで最初の出力ファイルだけへ書いており、
+  ST147Aの2個目以降のGIVINGファイルが空になっていた。
+- 根本原因4: NIST `XXXXX063`/`XXXXX064`はnative collating sequence期待値だが、
+  preprocessorがファイルパスとして置換しており、ST137Aの期待文字列が壊れていた。
+- 根本原因5: `SAME SORT-MERGE AREA`はpreprocessorで警告済みなのに、
+  parserが`SAME RECORD AREA`としても警告し、ST301Mのwarning countが1件過剰だった。
+- 変更: MERGEのSDレコード長、key offset/length/type、USING/GIVINGのOPEN/CLOSE、
+  variable record設定をSORTと同じ物理レイアウト規約へ揃えた。
+- 変更: OUTPUT PROCEDURE付きMERGEではUSING入力をMERGE bufferへ集めてsortし、
+  `cobol_sort_buffer_return`でRETURNできるようにした。
+- 変更: 複数GIVINGでは最初のGIVING結果を後続GIVINGへ複製し、COBOLの
+  複数出力ファイル契約を満たすようにした。
+- 変更: `SAME SORT-MERGE AREA`は`SAME RECORD AREA`として重複診断しない。
+- 追加確認: `cargo test -p cobol-driver --test e2e_test
+  test_native_merge_using_giving_variable_files -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_merge_using_output_procedure_returns_records -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_merge_writes_all_giving_files -- --nocapture`,
+  `cargo test -p cobol-parser --lib env_div -- --nocapture`,
+  `make release`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST139A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST140A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST147A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST301M`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST`を実行。
+- NIST確認: `ST139A`, `ST140A`, `ST144A`, `ST147A`, `ST301M`はPASS。
+  ST全体は`25 total / 25 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+- 完了判断: MERGEとsame sort-merge area由来のST残件は0。
+
+### IMPL-033 実施記録（進行中）
+
+- 対象: `crates/cobol-hir/src/hir.rs`, `crates/cobol-hir/src/lower.rs`,
+  `crates/cobol-codegen/src/context.rs`, `crates/cobol-codegen/src/stmt.rs`,
+  `crates/cobol-driver/tests/e2e_test.rs`
+- 根本原因1: `IC235A`の`PIC V9(4) COMPUTATIONAL` CALL BY REFERENCE失敗は、
+  古い生成Cでは`int64_t`化されていたが、現行HIR loweringでは小数桁あり
+  `COMPUTATIONAL`を`Numeric(decimal_places>0)`として扱うため再生成で解消済みだった。
+- 根本原因2: `IC233A`/`IC234A`は、内側プログラムが外側の`GLOBAL` FDを参照する際に
+  FILE-CONTROL由来の`ASSIGN TO`/`SELECT OPTIONAL`メタデータを継承していなかった。
+  そのため`OPEN INPUT TEST-FILE`が物理パスではなく`TEST-FILE`を開いていた。
+- 根本原因3: `OPEN`時のUSE declarative dispatchがFILE STATUS句の有無に依存しており、
+  FILE STATUSを持たない`GLOBAL`ファイルのOPEN失敗では`USE GLOBAL AFTER ERROR`
+  手続きが呼ばれなかった。
+- 変更: `HirProgram`へ`file_optionals`を追加し、loweringで`SELECT OPTIONAL`を保持する。
+- 変更: `CodegenContext::merged_with_program`で親プログラムのfile assignment、
+  organization、optionalを内側プログラムへ継承する。
+- 変更: `OPEN` codegenでHIR entryが空の場合はcontext側の継承済みfile assignmentと
+  organizationを使い、FILE STATUS句がなくてもdeclarativeがある場合はOPEN status
+  dispatchを生成する。
+- 追加確認: `cargo check -p cobol-codegen`,
+  `cargo test -p cobol-codegen --lib`,
+  `cargo test -p cobol-driver --test e2e_test`で
+  `test_native_nested_program_inherits_global_file_metadata_and_use_declarative`を実行、
+  `cargo test -p cobol-driver --test e2e_test`,
+  `cargo fmt --check`, `make release`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=IC PROGRAM=IC233A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=IC PROGRAM=IC234A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=IC PROGRAM=IC235A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=IC`を実行。
+- NIST確認: `IC233A`, `IC234A`, `IC235A`はPASS。
+  IC全体は`25 total / 25 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+- 追加対象: `crates/cobol-preprocessor/src/lib.rs`,
+  `crates/cobol-preprocessor/src/replacer.rs`,
+  `crates/cobol-preprocessor/src/scanner.rs`,
+  `crates/cobol-runtime/src/file_io.rs`, `tests/nist/preprocess.sh`,
+  `tests/nist/run_nist.sh`
+- 根本原因4: `SM103A`/`SM106A`/`SM203A`は、NIST runnerがcopybookを
+  事前preprocessせず元copybookを直接参照していたため、固定形式のT/U行や
+  source manipulationが本体と同じ前提で解釈されなかった。
+- 根本原因5: `SM301M`は、plain `COPY`もobsolete/non-conforming source
+  manipulationとしてwarning flag対象だが、実装は`COPY REPLACING`だけを
+  warning対象にしていた。
+- 根本原因6: `SM207A`は`COPY ... OF/IN`のlibrary-name差分をrunnerが
+  平坦な`COPYLIB`へ潰しており、`XXXXX048`が別libraryの`ALTLB`を解決できなかった。
+- 根本原因7: `SM206A`は、同一`COPY REPLACING`句内で置換結果へ後続置換が
+  再適用されるcascading、固定形式継続で数値トークン間へ空白を挿入する処理、
+  pseudo-text照合中の固定形式コメント行の扱いが標準のsource text比較とずれていた。
+- 根本原因8: `SM208A`は、固定形式継続行先頭の引用符を文字列継続マーカーとして
+  扱わずquote個数を過大に数えていた。また`01 FILLER REDEFINES`グループを
+  HIR loweringで匿名項目として落としていたため、その子項目がredefined targetと
+  同じ記憶領域を共有せず独立staticになっていた。
+- 根本原因9: `SM208A`の`REP-TEST-8`は、pseudo-text比較でカンマとセミコロンを
+  COBOL separatorとして正規化せず、同じトークン列を別物として扱っていた。
+- 変更: runnerでprogram別copylibをpreprocessし、`XXXXX048`用の別copy library
+  `COPYLIB_ALT`を準備する。
+- 変更: plain `COPY` warning、同一句内no-cascade置換、固定形式継続/コメント行/
+  quote continuation marker、separator正規化をpreprocessorへ追加する。
+- 変更: 匿名`FILLER REDEFINES`グループをHIR上の内部名付きグループとして保持し、
+  codegenで子項目をredefined targetへのcast macroとして生成する。
+- 追加確認: `cargo test -p cobol-runtime --lib`,
+  `cargo test -p cobol-preprocessor --lib`,
+  `cargo test -p cobol-codegen --lib`,
+  `cargo test -p cobol-driver --test e2e_test`,
+  `cargo fmt --check`, `make release`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SM PROGRAM=SM206A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SM PROGRAM=SM207A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SM PROGRAM=SM208A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SM`を実行。
+- NIST確認: `SM206A`, `SM207A`, `SM208A`はPASS。
+  SM全体は`13 total / 13 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
+- 追加対象2: `crates/cobol-ast/src/proc_div.rs`,
+  `crates/cobol-parser/src/proc_div.rs`, `crates/cobol-hir/src/hir.rs`,
+  `crates/cobol-codegen/src/codegen.rs`
+- 根本原因10: `SG103A`/`SG201A`は、SECTION segment numberをparserの
+  warning判定だけに使ってHIRへ渡していなかった。そのため50以上の独立セグメントで
+  ALTER対象GO TOの初期状態が再入時に復元されず、last-used状態として残っていた。
+- 変更: `ProcSection`と`HirParagraph`へ`segment_number`を追加し、
+  50以上のセグメント入口で同一セグメント内のALTER dispatch stateを初期値へ戻す。
+- 追加確認2: `cargo check -p cobol-ast -p cobol-parser -p cobol-hir -p cobol-codegen`,
+  `make release`, `NIST_COMPILE_CACHE=0 make nist-run MODULE=SG PROGRAM=SG103A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SG`を実行。
+- NIST確認2: `SG103A`, `SG201A`はPASS。SG全体は
+  `13 total / 10 pass / 3 fail / 0 CErr / 0 RErr / 76%`。
+  残件は`SG102A`, `SG202A`, `SG203A`。
+- 残件: full NISTはまだ100%ではない。次は残余FAILの多い
+  `SG`/`RL`/`CM`/`OB`/`EX`をIMPL-033内で継続分類する。
 
 ## Backlog一覧
 

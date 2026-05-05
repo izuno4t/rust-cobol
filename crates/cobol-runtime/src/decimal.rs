@@ -588,6 +588,7 @@ fn format_picture(dec: &CobolDecimal, pic: &str) -> String {
     let zero_asterisk_fill =
         display_abs_value == 0 && chars.contains(&'*') && !has_mandatory_integer_digit;
     let zero_asterisk_preserves_currency = zero_asterisk_fill
+        && dec.scale > 0
         && actual_decimal_char.is_some()
         && chars
             .iter()

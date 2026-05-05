@@ -10,16 +10,16 @@ use smol_str::SmolStr;
 use crate::parser::Parser;
 
 impl Parser {
-    fn parse_optional_section_segment_number(&mut self, span: Span) {
+    fn parse_optional_section_segment_number(&mut self, span: Span) -> Option<u32> {
         if !self.check(TokenKind::IntegerLiteral) {
-            return;
+            return None;
         }
 
         let number = self.current_text().parse::<u32>().ok();
         self.advance();
 
         let Some(number) = number else {
-            return;
+            return None;
         };
 
         if self.object_segment_limit.is_some_and(|limit| limit >= 20)
@@ -38,6 +38,7 @@ impl Parser {
 
         self.procedure_segment_numbers.push(number);
         self.last_procedure_segment_number = Some(number);
+        Some(number)
     }
 
     fn check_procedure_name_token(&self) -> bool {
@@ -182,7 +183,7 @@ impl Parser {
             let section_start = self.span();
             let section_name = self.expect_procedure_name()?;
             self.expect(TokenKind::Section)?;
-            self.parse_optional_section_segment_number(section_start);
+            let _ = self.parse_optional_section_segment_number(section_start);
             self.expect(TokenKind::Period)?;
 
             // Parse USE statement
@@ -366,7 +367,8 @@ impl Parser {
                     let section_header_span = self.span();
                     let section_name = self.expect_procedure_name()?;
                     self.advance(); // SECTION
-                    self.parse_optional_section_segment_number(section_header_span);
+                    let segment_number =
+                        self.parse_optional_section_segment_number(section_header_span);
                     self.expect(TokenKind::Period)?;
 
                     let section_start = self.span();
@@ -421,6 +423,7 @@ impl Parser {
 
                     sections.push(ProcSection {
                         name: section_name,
+                        segment_number,
                         paragraphs: section_paragraphs,
                         span: section_start,
                     });

@@ -72,6 +72,7 @@ pub enum UseStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcSection {
     pub name: SmolStr,
+    pub segment_number: Option<u32>,
     pub paragraphs: Vec<Paragraph>,
     pub span: Span,
 }

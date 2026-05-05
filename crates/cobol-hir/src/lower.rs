@@ -76,6 +76,7 @@ struct ParagraphPlan {
     name: SmolStr,
     kind: HirParagraphKind,
     section_id: Option<HirParagraphId>,
+    segment_number: Option<u32>,
     span: Span,
 }
 
@@ -261,6 +262,9 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     // Extract file assignment (ASSIGN TO) mappings.
     let file_assignments = extract_file_assignments(program);
 
+    // Extract SELECT OPTIONAL mappings.
+    let file_optionals = extract_file_optionals(program);
+
     // Extract relative key mappings.
     let file_relative_keys = extract_relative_keys(program);
 
@@ -339,6 +343,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
         interfaces: Vec::new(),
         file_organizations,
         file_assignments,
+        file_optionals,
         file_relative_keys,
         file_status_vars,
         declaratives,
@@ -893,7 +898,18 @@ fn lower_data_item_with_usage(
         return;
     }
 
-    if let Some(name) = &item.name {
+    let hir_name = item.name.clone().or_else(|| {
+        if item.redefines.is_some() && !item.children.is_empty() {
+            Some(SmolStr::from(format!(
+                "FILLER-REDEFINES-{}",
+                item.span.start
+            )))
+        } else {
+            None
+        }
+    });
+
+    if let Some(name) = hir_name {
         let data_type = determine_hir_type_with_usage(item, inherited_usage, inherited_sign);
         let effective_sign = item.sign_clause.as_ref().or(inherited_sign);
         let initial_value = item.value.as_ref().map(lower_value_clause);
@@ -915,7 +931,7 @@ fn lower_data_item_with_usage(
             .unwrap_or_default();
 
         out.push(HirDataItem {
-            name: name.clone(),
+            name,
             data_type,
             picture: item.picture.as_ref().map(|p| p.raw_string.clone()),
             is_numeric_edited: is_numeric_edited_item(item),
@@ -1316,6 +1332,7 @@ fn lower_procedure_division(
                 name: para.name.clone(),
                 kind: HirParagraphKind::Paragraph,
                 section_id: None,
+                segment_number: None,
                 span: para.span,
             }));
         }
@@ -1335,6 +1352,7 @@ fn lower_procedure_division(
             name: section.name.clone(),
             kind: HirParagraphKind::Section,
             section_id: None,
+            segment_number: section.segment_number,
             span: section.span,
         };
         let mut paragraph_plans = Vec::with_capacity(section.paragraphs.len());
@@ -1365,6 +1383,7 @@ fn lower_procedure_division(
                 name: effective_name,
                 kind: HirParagraphKind::Paragraph,
                 section_id: Some(section_id),
+                segment_number: section.segment_number,
                 span: para.span,
             });
         }
@@ -1438,6 +1457,7 @@ fn lower_procedure_division(
                     name: plan.name.clone(),
                     kind: plan.kind,
                     section_id: plan.section_id,
+                    segment_number: plan.segment_number,
                     body: local_stmts.clone(),
                     span: plan.span,
                 });
@@ -1465,6 +1485,7 @@ fn lower_procedure_division(
                 name: plan.entry.name.clone(),
                 kind: plan.entry.kind,
                 section_id: None,
+                segment_number: plan.entry.segment_number,
                 body: Vec::new(),
                 span: plan.entry.span,
             });
@@ -1484,6 +1505,7 @@ fn lower_procedure_division(
                     name: para_plan.name.clone(),
                     kind: para_plan.kind,
                     section_id: para_plan.section_id,
+                    segment_number: para_plan.segment_number,
                     body: local_stmts,
                     span: para_plan.span,
                 });
@@ -3356,6 +3378,20 @@ fn extract_file_assignments(program: &CobolProgram) -> HashMap<SmolStr, SmolStr>
         .collect()
 }
 
+fn extract_file_optionals(program: &CobolProgram) -> std::collections::HashSet<SmolStr> {
+    let Some(env) = &program.environment else {
+        return std::collections::HashSet::new();
+    };
+    let Some(io) = &env.input_output else {
+        return std::collections::HashSet::new();
+    };
+    io.file_controls
+        .iter()
+        .filter(|fc| fc.optional)
+        .map(|fc| fc.file_name.clone())
+        .collect()
+}
+
 fn extract_open_metadata(program: &CobolProgram) -> OpenMetadataMap {
     use cobol_ast::AccessMode;
     let Some(env) = &program.environment else {
@@ -3817,6 +3853,7 @@ fn lower_declaratives(
             name: decl.name.clone(),
             kind: HirParagraphKind::Section,
             section_id: None,
+            segment_number: None,
             span: decl.span,
         };
         transfer_targets.insert(
@@ -3869,6 +3906,7 @@ fn lower_declaratives(
                 name: effective_name,
                 kind: HirParagraphKind::Paragraph,
                 section_id: Some(section_id),
+                segment_number: None,
                 span: para.span,
             });
         }
@@ -3886,6 +3924,7 @@ fn lower_declaratives(
                 name: plan.entry.name.clone(),
                 kind: plan.entry.kind,
                 section_id: None,
+                segment_number: plan.entry.segment_number,
                 body: Vec::new(),
                 span: plan.entry.span,
             });
@@ -3932,6 +3971,7 @@ fn lower_declaratives(
                     name: para_plan.name.clone(),
                     kind: para_plan.kind,
                     section_id: para_plan.section_id,
+                    segment_number: para_plan.segment_number,
                     body: stmts,
                     span: para_plan.span,
                 });

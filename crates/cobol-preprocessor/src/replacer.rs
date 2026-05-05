@@ -14,14 +14,31 @@ use cobol_diagnostics::DiagnosticReporter;
 /// occurrences only.
 pub fn apply_replacing(content: &str, replacings: &[ReplacePair]) -> String {
     let mut result = content.to_string();
+    let placeholders: Vec<String> = (0..replacings.len())
+        .map(|idx| format!("\0COBOL_REPL_{idx}\0"))
+        .collect();
+    let replacement_texts: Vec<String> = replacings
+        .iter()
+        .map(|pair| {
+            if pair.is_pseudo_text {
+                preferred_pseudo_replacement(&pair.new_text)
+            } else {
+                pair.new_text.clone()
+            }
+        })
+        .collect();
 
-    for pair in replacings {
+    for (idx, pair) in replacings.iter().enumerate() {
         if pair.is_pseudo_text {
-            result = replace_pseudo_text(&result, &pair.old_text, &pair.new_text);
+            result = replace_pseudo_text(&result, &pair.old_text, &placeholders[idx]);
         } else {
             // Word replacement: replace whole-word occurrences.
-            result = replace_whole_word(&result, &pair.old_text, &pair.new_text);
+            result = replace_whole_word(&result, &pair.old_text, &placeholders[idx]);
         }
+    }
+
+    for (idx, replacement) in replacement_texts.iter().enumerate() {
+        result = result.replace(&placeholders[idx], replacement);
     }
 
     result
@@ -120,13 +137,13 @@ fn replace_whole_word(text: &str, old: &str, new: &str) -> String {
 }
 
 fn replace_pseudo_text(text: &str, old: &str, new: &str) -> String {
-    let old_norm = normalize_pseudo_text(old);
+    let old_norm = normalize_pseudo_text_for_matching(old);
     if old_norm.is_empty() {
         return text.to_string();
     }
 
     let new_norm = normalize_pseudo_text(new);
-    let old_joined = normalize_pseudo_text_joining_plain_fragments(old);
+    let old_joined = normalize_pseudo_text_joining_plain_fragments_for_matching(old);
     let new_joined = normalize_pseudo_text_joining_plain_fragments(new);
     let token_only = is_single_cobol_token(&old_norm);
     let preferred_replacement = if new_joined != new_norm {
@@ -164,6 +181,16 @@ fn replace_pseudo_text(text: &str, old: &str, new: &str) -> String {
     }
 
     raw
+}
+
+fn preferred_pseudo_replacement(new: &str) -> String {
+    let new_norm = normalize_pseudo_text(new);
+    let new_joined = normalize_pseudo_text_joining_plain_fragments(new);
+    if new_joined != new_norm {
+        new_joined
+    } else {
+        new_norm
+    }
 }
 
 fn find_pseudo_match(text: &str, pattern: &str, token_only: bool) -> Option<(usize, usize)> {
@@ -204,12 +231,12 @@ fn normalize_for_matching_with_mode(
     raw: &str,
     force_space_between_plain_lines: bool,
     suppress_plain_leading_space: bool,
+    canonicalize_separators: bool,
 ) -> NormalizedText {
     let mut text = String::with_capacity(raw.len());
     let mut map = Vec::with_capacity(raw.len());
     let mut pending_space = false;
     let mut offset = 0;
-    let mut previous_line_ended_with_space = false;
 
     for line in raw.split_inclusive('\n') {
         let has_newline = line.ends_with('\n');
@@ -222,31 +249,47 @@ fn normalize_for_matching_with_mode(
         };
         let bytes = visible.as_bytes();
 
-        let (indicator, start_idx) =
+        let (indicator, mut start_idx) =
             if bytes.len() >= 7 && bytes[..6].iter().all(u8::is_ascii_digit) {
                 (bytes[6], 7)
             } else {
                 (b' ', 0)
             };
+        if indicator == b'*' || indicator == b'/' {
+            offset += line.len();
+            if !has_newline {
+                break;
+            }
+            continue;
+        }
+        if indicator == b'-' {
+            let first_non_space = bytes
+                .iter()
+                .copied()
+                .enumerate()
+                .skip(start_idx)
+                .find(|(_, b)| !b.is_ascii_whitespace());
+            if let Some((idx, b'"' | b'\'')) = first_non_space {
+                start_idx = idx + 1;
+            }
+        }
 
         let mut suppress_leading_space = false;
         if indicator == b'-' {
-            pending_space = previous_line_ended_with_space;
-            suppress_leading_space = !previous_line_ended_with_space;
+            pending_space = false;
+            suppress_leading_space = true;
         } else if !text.is_empty() && force_space_between_plain_lines {
             pending_space = true;
         } else if !text.is_empty() && suppress_plain_leading_space {
             suppress_leading_space = true;
         }
 
-        let mut line_ended_with_space = false;
         for (idx, b) in bytes.iter().copied().enumerate().skip(start_idx) {
-            if b == b' ' || b == b'\t' {
+            if b == b' ' || b == b'\t' || (canonicalize_separators && (b == b',' || b == b';')) {
                 if suppress_leading_space {
                     continue;
                 }
                 pending_space = true;
-                line_ended_with_space = true;
                 continue;
             }
 
@@ -256,12 +299,10 @@ fn normalize_for_matching_with_mode(
                 map.push(offset + idx);
             }
             pending_space = false;
-            line_ended_with_space = false;
             text.push(b as char);
             map.push(offset + idx);
         }
 
-        previous_line_ended_with_space = line_ended_with_space;
         offset += line.len();
         if !has_newline {
             break;
@@ -272,15 +313,23 @@ fn normalize_for_matching_with_mode(
 }
 
 fn normalize_for_matching(raw: &str) -> NormalizedText {
-    normalize_for_matching_with_mode(raw, true, false)
+    normalize_for_matching_with_mode(raw, true, false, true)
 }
 
 fn normalize_pseudo_text(raw: &str) -> String {
-    normalize_for_matching_with_mode(raw, false, false).text
+    normalize_for_matching_with_mode(raw, false, false, false).text
+}
+
+fn normalize_pseudo_text_for_matching(raw: &str) -> String {
+    normalize_for_matching_with_mode(raw, false, false, true).text
 }
 
 fn normalize_pseudo_text_joining_plain_fragments(raw: &str) -> String {
-    normalize_for_matching_with_mode(raw, false, true).text
+    normalize_for_matching_with_mode(raw, false, true, false).text
+}
+
+fn normalize_pseudo_text_joining_plain_fragments_for_matching(raw: &str) -> String {
+    normalize_for_matching_with_mode(raw, false, true, true).text
 }
 
 fn is_cobol_word_char(b: u8) -> bool {
@@ -313,6 +362,26 @@ mod tests {
         }];
         let result = apply_replacing(content, &replacings);
         assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_apply_replacing_pseudo_text_does_not_cascade_same_clause_results() {
+        let content = "MOVE 1 TO WRK-DS-09V00-901.";
+        let replacings = vec![
+            ReplacePair {
+                old_text: " 1 ".to_string(),
+                new_text: " 5 ".to_string(),
+                is_pseudo_text: true,
+            },
+            ReplacePair {
+                old_text: " 5 ".to_string(),
+                new_text: " 7 ".to_string(),
+                is_pseudo_text: true,
+            },
+        ];
+
+        let result = apply_replacing(content, &replacings);
+        assert_eq!(result, "MOVE 5 TO WRK-DS-09V00-901.");
     }
 
     #[test]
@@ -451,5 +520,60 @@ mod tests {
             "result: {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_apply_replacing_fixed_continuation_does_not_split_numeric_token() {
+        let content = concat!(
+            "000100     ADD      001                                                 KP0064.2\n",
+            "000200-             005 TO WRK-DS-09V00-901.                            KP0064.2\n",
+        );
+        let replacings = vec![
+            ReplacePair {
+                old_text: "001".to_string(),
+                new_text: " 3 ".to_string(),
+                is_pseudo_text: true,
+            },
+            ReplacePair {
+                old_text: "005".to_string(),
+                new_text: " 7 ".to_string(),
+                is_pseudo_text: true,
+            },
+        ];
+
+        let result = apply_replacing(content, &replacings);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_apply_replacing_pseudo_text_ignores_fixed_comment_lines_in_match() {
+        let content = concat!(
+            "000100     PERFORM FAIL.                                                KP0074.2\n",
+            "000200*    THIS COMMENT SHOULD NOT AFFECT PSEUDO-TEXT MATCHING.         KP0074.2\n",
+            "000300     SUBTRACT 1 FROM ERROR-COUNTER.                               KP0074.2\n",
+        );
+        let replacings = vec![ReplacePair {
+            old_text: "FAIL. SUBTRACT 1 FROM ERROR-COUNTER.".to_string(),
+            new_text: "PASS.".to_string(),
+            is_pseudo_text: true,
+        }];
+
+        let result = apply_replacing(content, &replacings);
+        assert!(result.contains("PERFORM PASS."), "result: {:?}", result);
+        assert!(!result.contains("SUBTRACT"), "result: {:?}", result);
+    }
+
+    #[test]
+    fn test_apply_replacing_pseudo_text_treats_comma_and_semicolon_as_separators() {
+        let content = "     MOVE  , \"FAIL\";      TO  P-OR-F.";
+        let replacings = vec![ReplacePair {
+            old_text: "MOVE;  \"FAIL\"  , TO".to_string(),
+            new_text: "MOVE \"PASS\" TO".to_string(),
+            is_pseudo_text: true,
+        }];
+
+        let result = apply_replacing(content, &replacings);
+
+        assert_eq!(result, "     MOVE \"PASS\" TO  P-OR-F.");
     }
 }

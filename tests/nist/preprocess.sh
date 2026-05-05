@@ -61,7 +61,7 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
         s{(?<![A-Z0-9"])\QXXXXX042\E(?![A-Z0-9"])}{"TERMINAL-0001 "}g;
         s{(?<![A-Z0-9"])\QXXXXX043\E(?![A-Z0-9"])}{"TERMINAL-0002"}g;
         s{(?<![A-Z0-9"])\QXXXXX047\E(?![A-Z0-9"])}{COPYLIB}g;
-        s{(?<![A-Z0-9"])\QXXXXX048\E(?![A-Z0-9"])}{COPYLIB}g;
+        s{(?<![A-Z0-9"])\QXXXXX048\E(?![A-Z0-9"])}{COPYLIB_ALT}g;
         s{(?<![A-Z0-9"])\QXXXXX056\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O56"}g;
         s{(?<![A-Z0-9"])\QXXXXX057\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O57"}g;
         s{(?<![A-Z0-9"])\QXXXXX058\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O58"}g;

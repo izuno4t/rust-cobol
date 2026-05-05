@@ -2858,7 +2858,7 @@ mod tests {
             f.write_all(b"CCCthird ").unwrap();
         }
         let path_bytes = path.to_str().unwrap().as_bytes();
-        let fid = 707u32;
+        let fid = 717u32;
         let rc = unsafe {
             cobol_file_open_indexed(
                 fid,
@@ -2899,7 +2899,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("indexed_delete_cursor.dat");
         let path_bytes = path.to_str().unwrap().as_bytes();
-        let fid = 708u32;
+        let fid = 718u32;
         let rc = unsafe {
             cobol_file_open_indexed(
                 fid,

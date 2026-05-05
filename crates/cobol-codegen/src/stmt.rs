@@ -2435,23 +2435,33 @@ pub(crate) fn emit_statement_with_ctx(
                 let record_var = resolve_file_record(&c_name);
                 let rec_len = find_record_len(&record_var, data_items);
                 // Use ASSIGN TO path if available, otherwise fall back to file name
-                let file_path_str = if entry.assign_to.is_empty() {
-                    entry.file_name.as_str()
-                } else {
+                let inherited_assign = ctx.file_assignment(&c_name);
+                let file_path_str = if !entry.assign_to.is_empty() {
                     entry.assign_to.as_str()
+                } else if let Some(assign) = inherited_assign {
+                    assign
+                } else {
+                    entry.file_name.as_str()
                 };
                 let escaped_name = escape_c_string(file_path_str);
                 let name_len = file_path_str.len();
-                let org_val = if entry.organization == 1
+                let inherited_org = ctx.file_organization(&c_name).unwrap_or(entry.organization);
+                let org_val = if inherited_org == 1
                     && sort_record_needs_conversion(&record_var, data_items)
                 {
                     0
                 } else {
-                    entry.organization
+                    inherited_org
                 };
+                let is_optional = entry.optional || ctx.file_is_optional(&c_name);
                 let access_val = entry.access_mode;
                 out.push_str(&format!("{pad}/* OPEN {mode_comment} {c_name} */\n"));
                 let has_fs = fs_map.contains_key(&c_name);
+                let needs_open_status_block = has_fs
+                    || has_declaratives
+                    || ctx.file_is_variable_record(&c_name)
+                    || has_linage_counter(data_items)
+                    || (org_val == 3 && !entry.alternate_keys.is_empty());
                 let open_call = if org_val == 3 {
                     if let Some(record_key) = &entry.record_key {
                         let record_var = resolve_file_record(&c_name);
@@ -2459,7 +2469,7 @@ pub(crate) fn emit_statement_with_ctx(
                         if let Some((key_offset, key_len)) =
                             find_field_offset_and_size(record_key, &record_var, data_items)
                         {
-                            if entry.optional {
+                            if is_optional {
                                 format!(
                                     "cobol_file_open_indexed_optional(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {access_val}, {mode_val}, {rec_len}, {key_offset}, {key_len}, 1)"
                                 )
@@ -2483,7 +2493,7 @@ pub(crate) fn emit_statement_with_ctx(
                         "cobol_file_open(FILE_ID_{c_name}, (const uint8_t*)\"{escaped_name}\", {name_len}, {org_val}, {access_val}, {mode_val}, {rec_len})"
                     )
                 };
-                if has_fs {
+                if needs_open_status_block {
                     out.push_str(&format!("{pad}{{\n"));
                     out.push_str(&format!("{pad}    uint32_t _fs = {open_call};\n"));
                     out.push_str(&format!(
@@ -4558,6 +4568,8 @@ pub(crate) fn emit_statement_with_ctx(
                         &record_var,
                         data_items,
                         rec_len,
+                        "_sort_buf",
+                        "_sort_count",
                         &format!("{pad}    "),
                     );
                 }
@@ -5135,11 +5147,18 @@ pub(crate) fn emit_statement_with_ctx(
             let rec_len = find_record_len(&record_var, data_items);
             let needs_conv = sort_record_needs_conversion(&record_var, data_items);
             let into_target = into.as_ref().map(|(into_var, into_subs)| {
-                if into_subs.is_empty() {
+                let into_len = find_data_item_size(&sanitize_name(into_var), data_items);
+                let copy_len = if into_len == 0 {
+                    rec_len
+                } else {
+                    rec_len.min(into_len)
+                };
+                let target = if into_subs.is_empty() {
                     sanitize_name(into_var)
                 } else {
                     emit_subscript_access(&HirDataName::simple(into_var.clone()), into_subs)
-                }
+                };
+                (target, copy_len)
             });
             out.push_str(&format!("{pad}/* RETURN {c_name} */\n"));
             out.push_str(&format!("{pad}{{\n"));
@@ -5202,16 +5221,16 @@ pub(crate) fn emit_statement_with_ctx(
                     &format!("{pad}        "),
                 );
                 // If INTO, also copy display bytes to the INTO target
-                if let Some(ref into_t) = into_target {
+                if let Some((ref into_t, copy_len)) = into_target {
                     out.push_str(&format!(
-                        "{pad}        memcpy(&{into_t}, _sort_flat, {rec_len});\n"
+                        "{pad}        memcpy(&{into_t}, _sort_flat, {copy_len});\n"
                     ));
                 }
                 out.push_str(&format!("{pad}    }}\n"));
-            } else if let Some(ref into_t) = into_target {
+            } else if let Some((ref into_t, copy_len)) = into_target {
                 // No conversion but INTO: copy SD record to INTO target
                 out.push_str(&format!(
-                    "{pad}    if (_fs != 10) memcpy(&{into_t}, &{record_var}, {rec_len});\n"
+                    "{pad}    if (_fs != 10) memcpy(&{into_t}, &{record_var}, {copy_len});\n"
                 ));
             }
             out.push_str(&format!("{pad}}}\n"));
@@ -5338,7 +5357,9 @@ pub(crate) fn emit_statement_with_ctx(
                     ));
                     out.push_str(&format!("{pad}        if (_rc != 0) break;\n"));
                     out.push_str(&format!("{pad}        _merge_count++;\n"));
-                    out.push_str(&format!("{pad}        if (_merge_count >= _merge_capacity) {{\n"));
+                    out.push_str(&format!(
+                        "{pad}        if (_merge_count >= _merge_capacity) {{\n"
+                    ));
                     out.push_str(&format!("{pad}            _merge_capacity *= 2;\n"));
                     out.push_str(&format!(
                         "{pad}            _merge_buf = (uint8_t*)realloc(_merge_buf, _merge_capacity * {rec_len});\n"
@@ -5356,6 +5377,8 @@ pub(crate) fn emit_statement_with_ctx(
                         &record_var,
                         data_items,
                         rec_len,
+                        "_merge_buf",
+                        "_merge_count",
                         &format!("{pad}    "),
                     );
                 }
@@ -5392,127 +5415,178 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}    free(_merge_buf);\n"));
                 out.push_str(&format!("{pad}}}\n"));
             } else {
-            let input_count = using.len();
-            out.push_str(&format!("{pad}{{\n"));
-            out.push_str(&format!(
-                "{pad}    uint32_t _merge_inputs[{input_count}];\n"
-            ));
-            for (i, input_file) in using.iter().enumerate() {
-                let c_input = sanitize_name(input_file);
-                let input_record = resolve_file_record(&c_input);
-                let input_org = sort_file_runtime_org(ctx, &c_input, &input_record, data_items);
-                let input_path = ctx.file_assignment(&c_input).unwrap_or(&c_input);
-                let input_path_escaped = escape_c_string(input_path);
-                let input_path_len = input_path.len();
-                out.push_str(&format!("{pad}    /* MERGE USING {c_input} */\n"));
+                let input_count = using.len();
+                out.push_str(&format!("{pad}{{\n"));
                 out.push_str(&format!(
+                    "{pad}    uint32_t _merge_inputs[{input_count}];\n"
+                ));
+                for (i, input_file) in using.iter().enumerate() {
+                    let c_input = sanitize_name(input_file);
+                    let input_record = resolve_file_record(&c_input);
+                    let input_org = sort_file_runtime_org(ctx, &c_input, &input_record, data_items);
+                    let input_path = ctx.file_assignment(&c_input).unwrap_or(&c_input);
+                    let input_path_escaped = escape_c_string(input_path);
+                    let input_path_len = input_path.len();
+                    out.push_str(&format!("{pad}    /* MERGE USING {c_input} */\n"));
+                    out.push_str(&format!(
                     "{pad}    cobol_file_open(FILE_ID_{c_input}, (const uint8_t*)\"{input_path_escaped}\", {input_path_len}, {input_org}, 0, 0, {rec_len});\n"
                 ));
-                if ctx.file_is_variable_record(&c_input) {
+                    if ctx.file_is_variable_record(&c_input) {
+                        out.push_str(&format!(
+                            "{pad}    cobol_file_set_variable(FILE_ID_{c_input});\n"
+                        ));
+                    }
                     out.push_str(&format!(
-                        "{pad}    cobol_file_set_variable(FILE_ID_{c_input});\n"
+                        "{pad}    _merge_inputs[{i}] = FILE_ID_{c_input};\n"
                     ));
                 }
-                out.push_str(&format!(
-                    "{pad}    _merge_inputs[{i}] = FILE_ID_{c_input};\n"
-                ));
-            }
-            out.push_str(&format!("{pad}    SortKey _merge_keys[{key_count}];\n"));
-            if flat_keys.is_empty() {
-                out.push_str(&format!(
+                out.push_str(&format!("{pad}    SortKey _merge_keys[{key_count}];\n"));
+                if flat_keys.is_empty() {
+                    out.push_str(&format!(
                     "{pad}    _merge_keys[0].offset = 0; _merge_keys[0].length = {rec_len}; _merge_keys[0].ascending = 1; _merge_keys[0].key_type = 0;\n"
                 ));
-            } else {
-                let needs_conv = sort_record_needs_conversion(&record_var, data_items);
-                for (i, (field_name, ascending)) in flat_keys.iter().enumerate() {
-                    let asc_val: u8 = if *ascending { 1 } else { 0 };
-                    let mut kt = sort_key_type_for_field(field_name, data_items);
-                    let field_is_decimal = {
-                        let fc = sanitize_name(field_name);
-                        find_original_data_item_by_sanitized_name(&fc, data_items)
-                            .is_some_and(|item| needs_decimal(&item.data_type))
-                    };
-                    let field_is_display_numeric = {
-                        let fc = sanitize_name(field_name);
-                        display_numeric_c_expr_info(&fc, data_items).is_some()
-                    };
-                    let mut key_len_override: Option<u32> = None;
-                    if needs_conv && field_is_decimal && !field_is_display_numeric {
-                        kt = 1;
-                        key_len_override = Some(8);
-                    }
-                    if let Some((offset, size)) =
-                        find_sort_field_offset_and_size(field_name, &record_var, data_items)
-                    {
-                        let sz = key_len_override.unwrap_or(size);
-                        out.push_str(&format!(
+                } else {
+                    let needs_conv = sort_record_needs_conversion(&record_var, data_items);
+                    for (i, (field_name, ascending)) in flat_keys.iter().enumerate() {
+                        let asc_val: u8 = if *ascending { 1 } else { 0 };
+                        let mut kt = sort_key_type_for_field(field_name, data_items);
+                        let field_is_decimal = {
+                            let fc = sanitize_name(field_name);
+                            find_original_data_item_by_sanitized_name(&fc, data_items)
+                                .is_some_and(|item| needs_decimal(&item.data_type))
+                        };
+                        let field_is_display_numeric = {
+                            let fc = sanitize_name(field_name);
+                            display_numeric_c_expr_info(&fc, data_items).is_some()
+                        };
+                        let mut key_len_override: Option<u32> = None;
+                        if needs_conv && field_is_decimal && !field_is_display_numeric {
+                            kt = 1;
+                            key_len_override = Some(8);
+                        }
+                        if let Some((offset, size)) =
+                            find_sort_field_offset_and_size(field_name, &record_var, data_items)
+                        {
+                            let sz = key_len_override.unwrap_or(size);
+                            out.push_str(&format!(
                             "{pad}    _merge_keys[{i}].offset = {offset}; _merge_keys[{i}].length = {sz}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} */\n"
                         ));
-                    } else if let Some((offset, size)) =
-                        find_field_offset_and_size(field_name, &record_var, data_items)
-                    {
-                        let sz = key_len_override.unwrap_or(size);
-                        out.push_str(&format!(
+                        } else if let Some((offset, size)) =
+                            find_field_offset_and_size(field_name, &record_var, data_items)
+                        {
+                            let sz = key_len_override.unwrap_or(size);
+                            out.push_str(&format!(
                             "{pad}    _merge_keys[{i}].offset = {offset}; _merge_keys[{i}].length = {sz}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} */\n"
                         ));
-                    } else {
-                        let field_c = sanitize_name(field_name);
-                        let field_size = key_len_override
-                            .unwrap_or_else(|| find_data_item_size(&field_c, data_items));
-                        out.push_str(&format!(
+                        } else {
+                            let field_c = sanitize_name(field_name);
+                            let field_size = key_len_override
+                                .unwrap_or_else(|| find_data_item_size(&field_c, data_items));
+                            out.push_str(&format!(
                             "{pad}    _merge_keys[{i}].offset = 0; _merge_keys[{i}].length = {field_size}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} (no offset) */\n"
                         ));
+                        }
                     }
                 }
-            }
-            let output_file_id = if let Some(first_giving) = giving.first() {
-                let c_giving = sanitize_name(first_giving);
-                let giving_record = resolve_file_record(&c_giving);
-                let giving_org = sort_file_runtime_org(ctx, &c_giving, &giving_record, data_items);
-                let giving_path = ctx.file_assignment(&c_giving).unwrap_or(&c_giving);
-                let giving_path_escaped = escape_c_string(giving_path);
-                let giving_path_len = giving_path.len();
-                out.push_str(&format!("{pad}    /* MERGE GIVING {c_giving} */\n"));
-                out.push_str(&format!(
+                let output_file_id = if let Some(first_giving) = giving.first() {
+                    let c_giving = sanitize_name(first_giving);
+                    let giving_record = resolve_file_record(&c_giving);
+                    let giving_org =
+                        sort_file_runtime_org(ctx, &c_giving, &giving_record, data_items);
+                    let giving_path = ctx.file_assignment(&c_giving).unwrap_or(&c_giving);
+                    let giving_path_escaped = escape_c_string(giving_path);
+                    let giving_path_len = giving_path.len();
+                    out.push_str(&format!("{pad}    /* MERGE GIVING {c_giving} */\n"));
+                    out.push_str(&format!(
                     "{pad}    cobol_file_open(FILE_ID_{c_giving}, (const uint8_t*)\"{giving_path_escaped}\", {giving_path_len}, {giving_org}, 0, 1, {rec_len});\n"
                 ));
-                if ctx.file_is_variable_record(&c_giving) {
-                    out.push_str(&format!(
-                        "{pad}    cobol_file_set_variable(FILE_ID_{c_giving});\n"
-                    ));
-                }
-                format!("FILE_ID_{c_giving}")
-            } else {
-                format!("FILE_ID_{c_name}")
-            };
-            out.push_str(&format!(
+                    if ctx.file_is_variable_record(&c_giving) {
+                        out.push_str(&format!(
+                            "{pad}    cobol_file_set_variable(FILE_ID_{c_giving});\n"
+                        ));
+                    }
+                    format!("FILE_ID_{c_giving}")
+                } else {
+                    format!("FILE_ID_{c_name}")
+                };
+                out.push_str(&format!(
                 "{pad}    cobol_merge(_merge_inputs, {input_count}, {output_file_id}, _merge_keys, {key_count}, {rec_len});\n"
             ));
-            for input_file in using {
-                let c_input = sanitize_name(input_file);
-                out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_input});\n"));
-            }
-            if let Some(first_giving) = giving.first() {
-                let c_giving = sanitize_name(first_giving);
-                out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_giving});\n"));
-            }
-            if let Some((proc_name, thru)) = output_procedure {
-                let proc_debug_name = escape_c_string(proc_name);
-                if should_emit_debug_events() {
-                    out.push_str(&format!(
-                        "{pad}    _set_debug_event(\"{proc_debug_name}\", \"MERGE OUTPUT\", \"\");\n"
-                    ));
+                for input_file in using {
+                    let c_input = sanitize_name(input_file);
+                    out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_input});\n"));
                 }
-                let c_proc = sanitize_name(proc_name);
-                out.push_str(&format!("{pad}    para_{c_proc}();\n"));
-                if let Some(thru_name) = thru {
-                    let c_thru = sanitize_name(thru_name);
-                    if c_thru != c_proc {
-                        out.push_str(&format!("{pad}    para_{c_thru}();\n"));
+                if let Some(first_giving) = giving.first() {
+                    let c_giving = sanitize_name(first_giving);
+                    out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_giving});\n"));
+                }
+                if let Some(first_giving) = giving.first() {
+                    let c_first = sanitize_name(first_giving);
+                    let first_record = resolve_file_record(&c_first);
+                    let first_org = sort_file_runtime_org(ctx, &c_first, &first_record, data_items);
+                    let first_path = ctx.file_assignment(&c_first).unwrap_or(&c_first);
+                    let first_path_escaped = escape_c_string(first_path);
+                    let first_path_len = first_path.len();
+                    for extra_giving in giving.iter().skip(1) {
+                        let c_extra = sanitize_name(extra_giving);
+                        let extra_record = resolve_file_record(&c_extra);
+                        let extra_org =
+                            sort_file_runtime_org(ctx, &c_extra, &extra_record, data_items);
+                        let extra_path = ctx.file_assignment(&c_extra).unwrap_or(&c_extra);
+                        let extra_path_escaped = escape_c_string(extra_path);
+                        let extra_path_len = extra_path.len();
+                        out.push_str(&format!(
+                            "{pad}    /* MERGE GIVING {c_extra}: duplicate first giving */\n"
+                        ));
+                        out.push_str(&format!(
+                            "{pad}    cobol_file_open(FILE_ID_{c_first}, (const uint8_t*)\"{first_path_escaped}\", {first_path_len}, {first_org}, 0, 0, {rec_len});\n"
+                        ));
+                        if ctx.file_is_variable_record(&c_first) {
+                            out.push_str(&format!(
+                                "{pad}    cobol_file_set_variable(FILE_ID_{c_first});\n"
+                            ));
+                        }
+                        out.push_str(&format!(
+                            "{pad}    cobol_file_open(FILE_ID_{c_extra}, (const uint8_t*)\"{extra_path_escaped}\", {extra_path_len}, {extra_org}, 0, 1, {rec_len});\n"
+                        ));
+                        if ctx.file_is_variable_record(&c_extra) {
+                            out.push_str(&format!(
+                                "{pad}    cobol_file_set_variable(FILE_ID_{c_extra});\n"
+                            ));
+                        }
+                        out.push_str(&format!("{pad}    while (1) {{\n"));
+                        out.push_str(&format!(
+                            "{pad}        uint8_t _merge_copy_rec[{rec_len}];\n"
+                        ));
+                        out.push_str(&format!(
+                            "{pad}        int32_t _copy_rc = cobol_file_read_next(FILE_ID_{c_first}, _merge_copy_rec, {rec_len});\n"
+                        ));
+                        out.push_str(&format!("{pad}        if (_copy_rc != 0) break;\n"));
+                        out.push_str(&format!(
+                            "{pad}        cobol_file_write(FILE_ID_{c_extra}, _merge_copy_rec, {rec_len});\n"
+                        ));
+                        out.push_str(&format!("{pad}    }}\n"));
+                        out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_first});\n"));
+                        out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_extra});\n"));
                     }
                 }
-            }
-            out.push_str(&format!("{pad}}}\n"));
+                if let Some((proc_name, thru)) = output_procedure {
+                    let proc_debug_name = escape_c_string(proc_name);
+                    if should_emit_debug_events() {
+                        out.push_str(&format!(
+                        "{pad}    _set_debug_event(\"{proc_debug_name}\", \"MERGE OUTPUT\", \"\");\n"
+                    ));
+                    }
+                    let c_proc = sanitize_name(proc_name);
+                    out.push_str(&format!("{pad}    para_{c_proc}();\n"));
+                    if let Some(thru_name) = thru {
+                        let c_thru = sanitize_name(thru_name);
+                        if c_thru != c_proc {
+                            out.push_str(&format!("{pad}    para_{c_thru}();\n"));
+                        }
+                    }
+                }
+                out.push_str(&format!("{pad}}}\n"));
             }
         }
         HirStatement::Release {
@@ -5526,6 +5600,10 @@ pub(crate) fn emit_statement_with_ctx(
             } else {
                 c_name.clone()
             };
+            let source_len = from
+                .as_ref()
+                .and_then(|from_expr| alphanumeric_expr_len_c_expr(from_expr, data_items))
+                .unwrap_or_else(|| rec_len.to_string());
             out.push_str(&format!("{pad}/* RELEASE {c_name} */\n"));
             if needs_conv {
                 // Serialize struct to display format before releasing
@@ -5533,8 +5611,15 @@ pub(crate) fn emit_statement_with_ctx(
                 out.push_str(&format!("{pad}    uint8_t _sort_flat[{rec_len}];\n"));
                 // If FROM is specified, first move to the record
                 if from.is_some() {
+                    out.push_str(&format!("{pad}    memset(&{c_name}, ' ', {rec_len});\n"));
                     out.push_str(&format!(
-                        "{pad}    memcpy(&{c_name}, &{source}, {rec_len});\n"
+                        "{pad}    uint32_t _release_len = (uint32_t)({source_len});\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    if (_release_len > {rec_len}) _release_len = {rec_len};\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    memcpy(&{c_name}, &{source}, _release_len);\n"
                     ));
                 }
                 emit_sort_record_serialize(
@@ -5546,6 +5631,25 @@ pub(crate) fn emit_statement_with_ctx(
                 );
                 out.push_str(&format!(
                     "{pad}    cobol_sort_buffer_release(_sort_buf_id, _sort_flat, {rec_len});\n"
+                ));
+                out.push_str(&format!("{pad}}}\n"));
+            } else if from.is_some() {
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!("{pad}    uint8_t _release_flat[{rec_len}];\n"));
+                out.push_str(&format!(
+                    "{pad}    memset(_release_flat, ' ', {rec_len});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    uint32_t _release_len = (uint32_t)({source_len});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    if (_release_len > {rec_len}) _release_len = {rec_len};\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    memcpy(_release_flat, &{source}, _release_len);\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    cobol_sort_buffer_release(_sort_buf_id, _release_flat, {rec_len});\n"
                 ));
                 out.push_str(&format!("{pad}}}\n"));
             } else {
@@ -11648,6 +11752,8 @@ fn emit_sort_buf_display_to_binary(
     record_name: &str,
     data_items: &[HirDataItem],
     rec_len: u32,
+    buf_name: &str,
+    count_name: &str,
     pad: &str,
 ) {
     let c_rec = sanitize_name(record_name);
@@ -11664,10 +11770,10 @@ fn emit_sort_buf_display_to_binary(
         None => return,
     };
     out.push_str(&format!(
-        "{pad}for (uint32_t _si = 0; _si < _sort_count; _si++) {{\n"
+        "{pad}for (uint32_t _si = 0; _si < {count_name}; _si++) {{\n"
     ));
     out.push_str(&format!(
-        "{pad}    uint8_t* _rec = &_sort_buf[_si * {rec_len}];\n"
+        "{pad}    uint8_t* _rec = &{buf_name}[_si * {rec_len}];\n"
     ));
     out.push_str(&format!("{pad}    CobolDecimal _tmp_dec;\n"));
     let mut offset: u32 = 0;

@@ -618,7 +618,24 @@ fn parse_pseudo_text(source: &str, start: usize, fixed_format: bool) -> Option<(
         let line_start = source[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
         let line_end = source[pos..].find('\n').map(|idx| pos + idx).unwrap_or(len);
         let visible_start = if fixed_format {
-            pos.max((line_start + 7).min(line_end))
+            let mut start = pos.max((line_start + 7).min(line_end));
+            if source.as_bytes().get(line_start + 6) == Some(&b'-') {
+                let content_start = (line_start + 7).min(line_end);
+                let first_non_space = source.as_bytes()[content_start..line_end]
+                    .iter()
+                    .position(|b| !b.is_ascii_whitespace())
+                    .map(|idx| content_start + idx);
+                if let Some(first) = first_non_space {
+                    if source
+                        .as_bytes()
+                        .get(first)
+                        .is_some_and(|b| *b == b'"' || *b == b'\'')
+                    {
+                        start = start.max(first + 1);
+                    }
+                }
+            }
+            start
         } else {
             pos
         };
@@ -941,6 +958,11 @@ mod tests {
         assert!(
             directives[0].replacings[0].new_text.starts_with("\"\"\""),
             "replacement text: {:?}",
+            directives[0].replacings[0].new_text
+        );
+        assert!(
+            !directives[0].replacings[0].new_text.contains("\n    \""),
+            "continuation marker quotes should be skipped: {:?}",
             directives[0].replacings[0].new_text
         );
     }

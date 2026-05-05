@@ -117,7 +117,7 @@ pub(crate) fn emit_data_items(
     out.push_str("/* Data items */\n");
     for item in items {
         let c_name = sanitize_name(&item.name);
-        if group_member_names.contains(&c_name) {
+        if group_member_names.contains(&c_name) && item.redefines.is_none() {
             continue; // Already emitted as part of a group struct
         }
         if fd_aliases.contains(&c_name) {
@@ -300,7 +300,7 @@ pub(crate) fn collect_duplicate_member_names(
     for item in items {
         let c_name = sanitize_name(&item.name);
         // Skip sub-groups that are members of other groups
-        if group_member_names.contains(&c_name) {
+        if group_member_names.contains(&c_name) && item.redefines.is_none() {
             continue;
         }
         if let HirType::Group { members, .. } = &item.data_type {
@@ -367,17 +367,21 @@ pub(crate) fn emit_single_data_item(
         match &item.data_type {
             HirType::Alphanumeric { .. } | HirType::National { .. } => {
                 // Array types: cast to pointer (acts as array base for memset/strncpy)
-                out.push_str(&format!(
-                    "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
-                ));
+                if item.name != "FILLER" && item.name != "PIC" {
+                    out.push_str(&format!(
+                        "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                    ));
+                }
             }
             HirType::Group { members, .. } => {
                 // Group REDEFINES: reinterpret as the group's struct type
                 emit_group_typedefs(out, &c_name, members, emitted_typedefs, true);
                 let td = group_typedef_name_for_layout(&c_name, members, true);
-                out.push_str(&format!(
-                    "#define {c_name} (*({td}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
-                ));
+                if item.name != "FILLER" && item.name != "PIC" {
+                    out.push_str(&format!(
+                        "#define {c_name} (*({td}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                    ));
+                }
                 // Emit #define macros for children of this REDEFINES group
                 // Note: REDEFINES group is a struct, not a union, so no .members wrapper
                 emit_group_macros(
@@ -402,14 +406,18 @@ pub(crate) fn emit_single_data_item(
                 if item.occurs.is_some() {
                     // REDEFINES + OCCURS: cast to pointer so it acts as an array base
                     let c_type = c_type_for_redefines_occurs_item(item);
-                    out.push_str(&format!(
-                        "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} OCCURS */\n"
-                    ));
+                    if item.name != "FILLER" && item.name != "PIC" {
+                        out.push_str(&format!(
+                            "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} OCCURS */\n"
+                        ));
+                    }
                 } else {
                     // Scalar types: dereference cast for lvalue semantics
-                    out.push_str(&format!(
-                        "#define {c_name} (*({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
-                    ));
+                    if item.name != "FILLER" && item.name != "PIC" {
+                        out.push_str(&format!(
+                            "#define {c_name} (*({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
+                        ));
+                    }
                 }
             }
         }

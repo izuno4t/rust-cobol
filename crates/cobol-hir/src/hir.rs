@@ -138,6 +138,8 @@ pub struct HirProgram {
     pub file_organizations: std::collections::HashMap<SmolStr, u32>,
     /// File assignment mapping: file_name → ASSIGN TO path/name.
     pub file_assignments: std::collections::HashMap<SmolStr, SmolStr>,
+    /// SELECT OPTIONAL mapping: files declared with OPTIONAL.
+    pub file_optionals: std::collections::HashSet<SmolStr>,
     /// Relative key mapping: file_name → RELATIVE KEY variable name.
     pub file_relative_keys: std::collections::HashMap<SmolStr, SmolStr>,
     /// FILE STATUS variable mapping: file_name → status variable name.
@@ -314,6 +316,7 @@ pub struct HirParagraph {
     pub name: SmolStr,
     pub kind: HirParagraphKind,
     pub section_id: Option<HirParagraphId>,
+    pub segment_number: Option<u32>,
     pub body: Vec<HirStatement>,
     pub span: Span,
 }

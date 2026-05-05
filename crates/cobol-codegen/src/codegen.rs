@@ -1299,6 +1299,13 @@ fn emit_program_paragraph_definitions(
                     sanitize_name(&program.name),
                     section_paras[0].name
                 ));
+                emit_independent_segment_state_reset(
+                    out,
+                    section_paras[0].segment_number,
+                    paragraphs,
+                    ctx,
+                    "    ",
+                );
                 out.push_str("    if (_goto_target) goto _goto_dispatch;\n");
                 for paragraph in section_paras {
                     let paragraph_c_name = sanitize_name(&paragraph.name);
@@ -1409,6 +1416,7 @@ fn emit_isolated_paragraph_definition(
         sanitize_name(program_name),
         paragraph.name
     ));
+    emit_independent_segment_state_reset(out, paragraph.segment_number, paragraphs, ctx, "    ");
     out.push_str("    _goto_target = 0;\n");
     out.push_str(&format!("lbl_{c_name}:;\n"));
     ctx.set_in_body_context(true);
@@ -1508,6 +1516,34 @@ fn emit_alterable_paragraph_state(out: &mut String, ctx: &CodegenContext) {
         ));
     }
     out.push('\n');
+}
+
+fn emit_independent_segment_state_reset(
+    out: &mut String,
+    segment_number: Option<u32>,
+    paragraphs: &[HirParagraph],
+    ctx: &CodegenContext,
+    pad: &str,
+) {
+    if !segment_number.is_some_and(|number| number > 49) {
+        return;
+    }
+
+    for paragraph in paragraphs
+        .iter()
+        .filter(|paragraph| paragraph.segment_number == segment_number)
+    {
+        let Some(info) = ctx.alterable_paragraph(paragraph.id) else {
+            continue;
+        };
+        let Some(default_target_id) = info.default_target.paragraph_id() else {
+            continue;
+        };
+        out.push_str(&format!(
+            "{pad}{} = {};\n",
+            info.dispatch_var, default_target_id.0
+        ));
+    }
 }
 
 fn emit_inline_dispatch_loop(
@@ -1769,6 +1805,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
     let empty_assignments: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_optionals: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_variable_records: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_variable_depending: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
@@ -1780,6 +1817,7 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
         &empty_records,
         &empty_orgs,
         &empty_assignments,
+        &empty_optionals,
         &empty_relative_keys,
         &empty_variable_records,
         &empty_variable_depending,
@@ -1913,6 +1951,7 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
     let empty_records: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_orgs: HashMap<smol_str::SmolStr, u32> = HashMap::new();
     let empty_assignments: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
+    let empty_optionals: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_relative_keys: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
     let empty_variable_records: HashSet<smol_str::SmolStr> = HashSet::new();
     let empty_variable_depending: HashMap<smol_str::SmolStr, smol_str::SmolStr> = HashMap::new();
@@ -1924,6 +1963,7 @@ fn emit_functions(out: &mut String, functions: &[cobol_hir::HirFunction]) {
         &empty_records,
         &empty_orgs,
         &empty_assignments,
+        &empty_optionals,
         &empty_relative_keys,
         &empty_variable_records,
         &empty_variable_depending,
