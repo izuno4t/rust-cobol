@@ -2294,6 +2294,43 @@ TASK-011時点での判断:
 - 完了判断: NCモジュールの残余未分類FAILは0。IMPL-018からIMPL-021のNC核仕様分は
   100%確認済み。IMPL-033全体の完了条件は全391本のNIST gateで継続確認する。
 
+### IMPL-029 実施記録（進行中）
+
+- 対象: `crates/cobol-codegen/src/codegen.rs`,
+  `crates/cobol-codegen/src/compiler.rs`, `crates/cobol-codegen/src/stmt.rs`,
+  `crates/cobol-driver/tests/e2e_test.rs`
+- 根本原因1: Linux CIのe2eは生成Cが`true`/`false`を出力する一方で
+  `<stdbool.h>`をincludeしておらず、NIST以前にCコンパイルで失敗していた。
+- 根本原因2: `SORT ... INPUT PROCEDURE`後に次sectionへ強制転送しており、
+  COBOLのSORT文へ復帰してsort処理を継続する制御とずれていた。
+- 根本原因3: `PERFORM proc THRU proc`実行中に範囲外paragraphへ`GO TO`し、
+  そこから範囲内へ戻るケースをdispatcherが扱えず、SORT input procedure内の
+  動的制御フローが呼出し元へ漏れていた。
+- 根本原因4: SORT用フラットレコード長計算で`SIGN IS SEPARATE`の符号バイトを
+  落としており、ST118Aの`S9 ... SEPARATE`/`SV9 ... SEPARATE`キーと後続フィールドの
+  offset/lengthがCOBOL物理レイアウトからずれていた。
+- 変更: 生成Cヘッダへ`<stdbool.h>`を追加し、SORT input/output procedureは
+  `PERFORM THRU`としてSORT文へ復帰させる。`PERFORM THRU` dispatcherは範囲外段落の
+  呼出し後に`_goto_target`を再dispatchできるようにした。
+- 変更: SORTのファイル上バイト長を`HirType`単体ではなく`HirDataItem`単位で計算し、
+  DISPLAY numericの`SIGN SEPARATE`では`size + 1`を使うようにした。
+- 追加確認: `cargo test -p cobol-codegen test_generate_setjmp_header`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_sort_input_output_procedure_returns_sorted_records -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_sort_input_procedure_sorts_redefined_display_numeric_keys -- --nocapture`,
+  `cargo test -p cobol-driver --test e2e_test
+  test_native_sort_preserves_separate_sign_display_numeric_record_layout -- --nocapture`,
+  `cargo fmt --check`, `make release`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST119A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST118A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST`を実行。
+- NIST確認: `ST118A`は`PASS (009 passed)`、`ST119A`は`PASS (027 passed)`。
+  ST全体は`25 total / 17 pass / 8 fail / 0 CErr / 0 RErr / 68%`。
+- 残件分類: STの残りは`ST127A`, `ST137A`, `ST139A`, `ST140A`, `ST144A`,
+  `ST146A`, `ST147A`, `ST301M`。IMPL-029でSORT残件を継続し、
+  MERGE固有はIMPL-030へ分離する。
+
 ## Backlog一覧
 
 | ID | Status | Summary | DependsOn |

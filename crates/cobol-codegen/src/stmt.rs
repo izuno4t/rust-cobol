@@ -4501,6 +4501,11 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!(
                         "{pad}    cobol_file_open(FILE_ID_{c_using}, (const uint8_t*)\"{using_path_escaped}\", {using_path_len}, {using_org}, 0, 0, {rec_len});\n"
                     ));
+                    if ctx.file_is_variable_record(&c_using) {
+                        out.push_str(&format!(
+                            "{pad}    cobol_file_set_variable(FILE_ID_{c_using});\n"
+                        ));
+                    }
                     out.push_str(&format!("{pad}    while (1) {{\n"));
                     out.push_str(&format!(
                         "{pad}        int32_t _rc = cobol_file_read_next(FILE_ID_{c_using}, (uint8_t*)&_sort_buf[_sort_count * {rec_len}], {rec_len});\n"
@@ -4574,6 +4579,11 @@ pub(crate) fn emit_statement_with_ctx(
                         out.push_str(&format!(
                             "{pad}    cobol_file_open(FILE_ID_{c_giving}, (const uint8_t*)\"{giving_path_escaped}\", {giving_path_len}, {giving_org}, 0, 1, {rec_len});\n"
                         ));
+                        if ctx.file_is_variable_record(&c_giving) {
+                            out.push_str(&format!(
+                                "{pad}    cobol_file_set_variable(FILE_ID_{c_giving});\n"
+                            ));
+                        }
                         out.push_str(&format!(
                             "{pad}    for (uint32_t _si = 0; _si < _sort_count; _si++) {{\n"
                         ));
@@ -4641,13 +4651,6 @@ pub(crate) fn emit_statement_with_ctx(
                         has_declaratives,
                         indent + 1,
                     );
-                    if let Some(next_section_id) =
-                        next_section_after_procedure_id(proc_name, paragraphs)
-                    {
-                        out.push_str(&format!(
-                            "{pad}    if (!_goto_target) {{ _goto_target = {next_section_id}; goto _goto_dispatch; }}\n"
-                        ));
-                    }
                 }
                 out.push_str(&format!(
                     "{pad}    cobol_sort_buffer_sort(_sort_buf_id, _sort_keys, {key_count});\n"
@@ -5234,7 +5237,8 @@ pub(crate) fn emit_statement_with_ctx(
             ..
         } => {
             let c_name = sanitize_name(file_name);
-            let rec_len = find_record_len(&c_name, data_items);
+            let record_var = resolve_file_record(&c_name);
+            let rec_len = find_record_len(&record_var, data_items);
             out.push_str(&format!("{pad}/* MERGE {c_name} */\n"));
             if !using.is_empty() {
                 let using_names: Vec<_> = using.iter().map(|f| f.as_str()).collect();
@@ -5244,7 +5248,150 @@ pub(crate) fn emit_statement_with_ctx(
                 let giving_names: Vec<_> = giving.iter().map(|f| f.as_str()).collect();
                 out.push_str(&format!("{pad}/* GIVING {} */\n", giving_names.join(", ")));
             }
-            let key_count = if keys.is_empty() { 1 } else { keys.len() };
+            let mut flat_keys: Vec<(&str, bool)> = Vec::new();
+            for key in keys {
+                let ascending = matches!(key.order, cobol_hir::HirSortOrder::Ascending);
+                for field in &key.fields {
+                    flat_keys.push((field.as_str(), ascending));
+                }
+            }
+            let key_count = if flat_keys.is_empty() {
+                1
+            } else {
+                flat_keys.len()
+            };
+            if let Some((proc_name, thru)) = output_procedure.as_ref().filter(|_| giving.is_empty())
+            {
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!("{pad}    SortKey _merge_keys[{key_count}];\n"));
+                if flat_keys.is_empty() {
+                    out.push_str(&format!(
+                        "{pad}    _merge_keys[0].offset = 0; _merge_keys[0].length = {rec_len}; _merge_keys[0].ascending = 1; _merge_keys[0].key_type = 0;\n"
+                    ));
+                } else {
+                    let needs_conv = sort_record_needs_conversion(&record_var, data_items);
+                    for (i, (field_name, ascending)) in flat_keys.iter().enumerate() {
+                        let asc_val: u8 = if *ascending { 1 } else { 0 };
+                        let mut kt = sort_key_type_for_field(field_name, data_items);
+                        let field_is_decimal = {
+                            let fc = sanitize_name(field_name);
+                            find_original_data_item_by_sanitized_name(&fc, data_items)
+                                .is_some_and(|item| needs_decimal(&item.data_type))
+                        };
+                        let field_is_display_numeric = {
+                            let fc = sanitize_name(field_name);
+                            display_numeric_c_expr_info(&fc, data_items).is_some()
+                        };
+                        let mut key_len_override: Option<u32> = None;
+                        if needs_conv && field_is_decimal && !field_is_display_numeric {
+                            kt = 1;
+                            key_len_override = Some(8);
+                        }
+                        if let Some((offset, size)) =
+                            find_sort_field_offset_and_size(field_name, &record_var, data_items)
+                        {
+                            let sz = key_len_override.unwrap_or(size);
+                            out.push_str(&format!(
+                                "{pad}    _merge_keys[{i}].offset = {offset}; _merge_keys[{i}].length = {sz}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} */\n"
+                            ));
+                        } else if let Some((offset, size)) =
+                            find_field_offset_and_size(field_name, &record_var, data_items)
+                        {
+                            let sz = key_len_override.unwrap_or(size);
+                            out.push_str(&format!(
+                                "{pad}    _merge_keys[{i}].offset = {offset}; _merge_keys[{i}].length = {sz}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} */\n"
+                            ));
+                        } else {
+                            let field_c = sanitize_name(field_name);
+                            let field_size = key_len_override
+                                .unwrap_or_else(|| find_data_item_size(&field_c, data_items));
+                            out.push_str(&format!(
+                                "{pad}    _merge_keys[{i}].offset = 0; _merge_keys[{i}].length = {field_size}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} (no offset) */\n"
+                            ));
+                        }
+                    }
+                }
+                out.push_str(&format!("{pad}    uint32_t _merge_capacity = 64;\n"));
+                out.push_str(&format!("{pad}    uint32_t _merge_count = 0;\n"));
+                out.push_str(&format!(
+                    "{pad}    uint8_t* _merge_buf = (uint8_t*)malloc(_merge_capacity * {rec_len});\n"
+                ));
+                for input_file in using {
+                    let c_input = sanitize_name(input_file);
+                    let input_record = resolve_file_record(&c_input);
+                    let input_org = sort_file_runtime_org(ctx, &c_input, &input_record, data_items);
+                    let input_path = ctx.file_assignment(&c_input).unwrap_or(&c_input);
+                    let input_path_escaped = escape_c_string(input_path);
+                    let input_path_len = input_path.len();
+                    out.push_str(&format!("{pad}    /* MERGE USING {c_input} */\n"));
+                    out.push_str(&format!(
+                        "{pad}    cobol_file_open(FILE_ID_{c_input}, (const uint8_t*)\"{input_path_escaped}\", {input_path_len}, {input_org}, 0, 0, {rec_len});\n"
+                    ));
+                    if ctx.file_is_variable_record(&c_input) {
+                        out.push_str(&format!(
+                            "{pad}    cobol_file_set_variable(FILE_ID_{c_input});\n"
+                        ));
+                    }
+                    out.push_str(&format!("{pad}    while (1) {{\n"));
+                    out.push_str(&format!(
+                        "{pad}        int32_t _rc = cobol_file_read_next(FILE_ID_{c_input}, (uint8_t*)&_merge_buf[_merge_count * {rec_len}], {rec_len});\n"
+                    ));
+                    out.push_str(&format!("{pad}        if (_rc != 0) break;\n"));
+                    out.push_str(&format!("{pad}        _merge_count++;\n"));
+                    out.push_str(&format!("{pad}        if (_merge_count >= _merge_capacity) {{\n"));
+                    out.push_str(&format!("{pad}            _merge_capacity *= 2;\n"));
+                    out.push_str(&format!(
+                        "{pad}            _merge_buf = (uint8_t*)realloc(_merge_buf, _merge_capacity * {rec_len});\n"
+                    ));
+                    out.push_str(&format!("{pad}        }}\n"));
+                    out.push_str(&format!("{pad}    }}\n"));
+                    out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_input});\n"));
+                }
+                if sort_record_needs_conversion(&record_var, data_items) {
+                    out.push_str(&format!(
+                        "{pad}    /* Convert CobolDecimal fields to binary for merging */\n"
+                    ));
+                    emit_sort_buf_display_to_binary(
+                        out,
+                        &record_var,
+                        data_items,
+                        rec_len,
+                        &format!("{pad}    "),
+                    );
+                }
+                out.push_str(&format!(
+                    "{pad}    cobol_sort(_merge_buf, _merge_count, {rec_len}, _merge_keys, {key_count});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    _sort_buf_id = cobol_sort_buffer_init({rec_len});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}    for (uint32_t _mi = 0; _mi < _merge_count; _mi++) {{\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}        cobol_sort_buffer_release(_sort_buf_id, &_merge_buf[_mi * {rec_len}], {rec_len});\n"
+                ));
+                out.push_str(&format!("{pad}    }}\n"));
+                let proc_debug_name = escape_c_string(proc_name);
+                if should_emit_debug_events() {
+                    out.push_str(&format!(
+                        "{pad}    _set_debug_event(\"{proc_debug_name}\", \"MERGE OUTPUT\", \"\");\n"
+                    ));
+                }
+                emit_sort_procedure_call(
+                    out,
+                    proc_name,
+                    thru.as_deref(),
+                    data_items,
+                    paragraphs,
+                    fs_map,
+                    has_declaratives,
+                    indent + 1,
+                );
+                out.push_str(&format!("{pad}    cobol_sort_buffer_free(_sort_buf_id);\n"));
+                out.push_str(&format!("{pad}    free(_merge_buf);\n"));
+                out.push_str(&format!("{pad}}}\n"));
+            } else {
             let input_count = using.len();
             out.push_str(&format!("{pad}{{\n"));
             out.push_str(&format!(
@@ -5252,28 +5399,88 @@ pub(crate) fn emit_statement_with_ctx(
             ));
             for (i, input_file) in using.iter().enumerate() {
                 let c_input = sanitize_name(input_file);
+                let input_record = resolve_file_record(&c_input);
+                let input_org = sort_file_runtime_org(ctx, &c_input, &input_record, data_items);
+                let input_path = ctx.file_assignment(&c_input).unwrap_or(&c_input);
+                let input_path_escaped = escape_c_string(input_path);
+                let input_path_len = input_path.len();
+                out.push_str(&format!("{pad}    /* MERGE USING {c_input} */\n"));
+                out.push_str(&format!(
+                    "{pad}    cobol_file_open(FILE_ID_{c_input}, (const uint8_t*)\"{input_path_escaped}\", {input_path_len}, {input_org}, 0, 0, {rec_len});\n"
+                ));
+                if ctx.file_is_variable_record(&c_input) {
+                    out.push_str(&format!(
+                        "{pad}    cobol_file_set_variable(FILE_ID_{c_input});\n"
+                    ));
+                }
                 out.push_str(&format!(
                     "{pad}    _merge_inputs[{i}] = FILE_ID_{c_input};\n"
                 ));
             }
-            out.push_str(&format!(
-                "{pad}    struct {{ uint32_t offset; uint32_t length; uint8_t ascending; }} _merge_keys[{key_count}];\n"
-            ));
-            if keys.is_empty() {
+            out.push_str(&format!("{pad}    SortKey _merge_keys[{key_count}];\n"));
+            if flat_keys.is_empty() {
                 out.push_str(&format!(
-                    "{pad}    _merge_keys[0].offset = 0; _merge_keys[0].length = {rec_len}; _merge_keys[0].ascending = 1;\n"
+                    "{pad}    _merge_keys[0].offset = 0; _merge_keys[0].length = {rec_len}; _merge_keys[0].ascending = 1; _merge_keys[0].key_type = 0;\n"
                 ));
             } else {
-                for (i, key) in keys.iter().enumerate() {
-                    let ascending = matches!(key.order, cobol_hir::HirSortOrder::Ascending);
-                    let asc_val: u8 = if ascending { 1 } else { 0 };
-                    out.push_str(&format!(
-                        "{pad}    _merge_keys[{i}].offset = 0; _merge_keys[{i}].length = {rec_len}; _merge_keys[{i}].ascending = {asc_val};\n"
-                    ));
+                let needs_conv = sort_record_needs_conversion(&record_var, data_items);
+                for (i, (field_name, ascending)) in flat_keys.iter().enumerate() {
+                    let asc_val: u8 = if *ascending { 1 } else { 0 };
+                    let mut kt = sort_key_type_for_field(field_name, data_items);
+                    let field_is_decimal = {
+                        let fc = sanitize_name(field_name);
+                        find_original_data_item_by_sanitized_name(&fc, data_items)
+                            .is_some_and(|item| needs_decimal(&item.data_type))
+                    };
+                    let field_is_display_numeric = {
+                        let fc = sanitize_name(field_name);
+                        display_numeric_c_expr_info(&fc, data_items).is_some()
+                    };
+                    let mut key_len_override: Option<u32> = None;
+                    if needs_conv && field_is_decimal && !field_is_display_numeric {
+                        kt = 1;
+                        key_len_override = Some(8);
+                    }
+                    if let Some((offset, size)) =
+                        find_sort_field_offset_and_size(field_name, &record_var, data_items)
+                    {
+                        let sz = key_len_override.unwrap_or(size);
+                        out.push_str(&format!(
+                            "{pad}    _merge_keys[{i}].offset = {offset}; _merge_keys[{i}].length = {sz}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} */\n"
+                        ));
+                    } else if let Some((offset, size)) =
+                        find_field_offset_and_size(field_name, &record_var, data_items)
+                    {
+                        let sz = key_len_override.unwrap_or(size);
+                        out.push_str(&format!(
+                            "{pad}    _merge_keys[{i}].offset = {offset}; _merge_keys[{i}].length = {sz}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} */\n"
+                        ));
+                    } else {
+                        let field_c = sanitize_name(field_name);
+                        let field_size = key_len_override
+                            .unwrap_or_else(|| find_data_item_size(&field_c, data_items));
+                        out.push_str(&format!(
+                            "{pad}    _merge_keys[{i}].offset = 0; _merge_keys[{i}].length = {field_size}; _merge_keys[{i}].ascending = {asc_val}; _merge_keys[{i}].key_type = {kt}; /* {field_name} (no offset) */\n"
+                        ));
+                    }
                 }
             }
             let output_file_id = if let Some(first_giving) = giving.first() {
                 let c_giving = sanitize_name(first_giving);
+                let giving_record = resolve_file_record(&c_giving);
+                let giving_org = sort_file_runtime_org(ctx, &c_giving, &giving_record, data_items);
+                let giving_path = ctx.file_assignment(&c_giving).unwrap_or(&c_giving);
+                let giving_path_escaped = escape_c_string(giving_path);
+                let giving_path_len = giving_path.len();
+                out.push_str(&format!("{pad}    /* MERGE GIVING {c_giving} */\n"));
+                out.push_str(&format!(
+                    "{pad}    cobol_file_open(FILE_ID_{c_giving}, (const uint8_t*)\"{giving_path_escaped}\", {giving_path_len}, {giving_org}, 0, 1, {rec_len});\n"
+                ));
+                if ctx.file_is_variable_record(&c_giving) {
+                    out.push_str(&format!(
+                        "{pad}    cobol_file_set_variable(FILE_ID_{c_giving});\n"
+                    ));
+                }
                 format!("FILE_ID_{c_giving}")
             } else {
                 format!("FILE_ID_{c_name}")
@@ -5281,6 +5488,14 @@ pub(crate) fn emit_statement_with_ctx(
             out.push_str(&format!(
                 "{pad}    cobol_merge(_merge_inputs, {input_count}, {output_file_id}, _merge_keys, {key_count}, {rec_len});\n"
             ));
+            for input_file in using {
+                let c_input = sanitize_name(input_file);
+                out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_input});\n"));
+            }
+            if let Some(first_giving) = giving.first() {
+                let c_giving = sanitize_name(first_giving);
+                out.push_str(&format!("{pad}    cobol_file_close(FILE_ID_{c_giving});\n"));
+            }
             if let Some((proc_name, thru)) = output_procedure {
                 let proc_debug_name = escape_c_string(proc_name);
                 if should_emit_debug_events() {
@@ -5298,6 +5513,7 @@ pub(crate) fn emit_statement_with_ctx(
                 }
             }
             out.push_str(&format!("{pad}}}\n"));
+            }
         }
         HirStatement::Release {
             record_name, from, ..
@@ -8451,27 +8667,23 @@ pub(crate) fn emit_perform(
                             })
                             .collect()
                     });
-                    let dispatch_ids: Vec<(HirParagraphId, usize)> = if reversed {
-                        with_active_context(|ctx| {
-                            paragraphs
-                                .iter()
-                                .flat_map(|paragraph| {
-                                    let mut ids = Vec::new();
-                                    if let Some(id) = ctx.label_id(paragraph.id) {
+                    let dispatch_ids: Vec<(HirParagraphId, usize)> = with_active_context(|ctx| {
+                        paragraphs
+                            .iter()
+                            .flat_map(|paragraph| {
+                                let mut ids = Vec::new();
+                                if let Some(id) = ctx.label_id(paragraph.id) {
+                                    ids.push((paragraph.id, id));
+                                }
+                                if let Some(id) = ctx.body_label_id(paragraph.id) {
+                                    if !ids.iter().any(|(_, existing)| *existing == id) {
                                         ids.push((paragraph.id, id));
                                     }
-                                    if let Some(id) = ctx.body_label_id(paragraph.id) {
-                                        if !ids.iter().any(|(_, existing)| *existing == id) {
-                                            ids.push((paragraph.id, id));
-                                        }
-                                    }
-                                    ids
-                                })
-                                .collect()
-                        })
-                    } else {
-                        thru_ids.clone()
-                    };
+                                }
+                                ids
+                            })
+                            .collect()
+                    });
                     let after_thru_ids: Vec<usize> = if !reversed {
                         paragraphs
                             .get(ei + 1)
@@ -8585,9 +8797,15 @@ pub(crate) fn emit_perform(
                                 out.push_str(&format!(
                                     "{pad}  if (_t == {id}) {{ _goto_target = 0; para_{pn}(); if (_goto_target) goto _pt_disp_{suffix}; _goto_target = 0; goto _pt_end_{suffix}; }}\n"
                                 ));
-                            } else {
+                            } else if thru_ids.iter().any(|(thru_paragraph_id, thru_label_id)| {
+                                thru_paragraph_id == paragraph_id && thru_label_id == id
+                            }) {
                                 out.push_str(&format!(
                                     "{pad}  if (_t == {id}) {{ _goto_target = 0; goto _pt_{suffix}_{pn}; }}\n"
+                                ));
+                            } else {
+                                out.push_str(&format!(
+                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; para_{pn}(); if (_goto_target) goto _pt_disp_{suffix}; _goto_target = 0; goto _pt_end_{suffix}; }}\n"
                                 ));
                             }
                         }
@@ -11279,7 +11497,7 @@ pub(crate) fn emit_string_func_arg(expr: &HirExpr) -> (String, String) {
 }
 
 /// Find a field's offset and size within a record, using file-format byte sizes.
-/// This is like find_field_offset_and_size but uses cobol_file_byte_size for Binary.
+/// This is like find_field_offset_and_size but uses COBOL file storage sizes.
 fn find_sort_field_offset_and_size(
     field_name: &str,
     record_name: &str,
@@ -11305,7 +11523,7 @@ fn find_sort_field_in_group(
     let mut offset = base_offset;
     for item in members {
         let item_c = sanitize_name(&item.name);
-        let item_size = cobol_file_byte_size(&item.data_type);
+        let item_size = cobol_file_byte_size(item);
         if item_c == field_c {
             return Some((offset, item_size));
         }
@@ -11340,11 +11558,9 @@ fn sort_record_needs_conversion(record_name: &str, data_items: &[HirDataItem]) -
         false
     }
     let c_name = sanitize_name(record_name);
-    for item in data_items {
-        if sanitize_name(&item.name) == c_name {
-            if let HirType::Group { members, .. } = &item.data_type {
-                return check_members(members);
-            }
+    if let Some(item) = find_data_item_by_c_name(&c_name, data_items) {
+        if let HirType::Group { members, .. } = &item.data_type {
+            return check_members(members);
         }
     }
     false
@@ -11393,26 +11609,6 @@ fn emit_sort_procedure_call(
     );
 }
 
-fn next_section_after_procedure_id(proc_name: &str, paragraphs: &[HirParagraph]) -> Option<usize> {
-    let c_name = sanitize_name(proc_name);
-    let proc_idx = paragraphs
-        .iter()
-        .position(|paragraph| sanitize_name(&paragraph.name) == c_name)?;
-    let section_idx = paragraphs[..=proc_idx]
-        .iter()
-        .rposition(|paragraph| matches!(paragraph.kind, HirParagraphKind::Section))?;
-    paragraphs
-        .iter()
-        .skip(section_idx + 1)
-        .find(|paragraph| matches!(paragraph.kind, HirParagraphKind::Section))
-        .and_then(|paragraph| {
-            with_active_context(|ctx| {
-                ctx.label_id(paragraph.id)
-                    .or_else(|| ctx.body_label_id(paragraph.id))
-            })
-        })
-}
-
 fn transfer_target_for_paragraph_name(
     name: &str,
     paragraphs: &[HirParagraph],
@@ -11437,12 +11633,9 @@ fn emit_sort_record_deserialize(
     pad: &str,
 ) {
     let c_rec = sanitize_name(record_var);
-    for item in data_items {
-        if sanitize_name(&item.name) == c_rec {
-            if let HirType::Group { members, .. } = &item.data_type {
-                emit_field_deserialize(out, &c_rec, members, flat_var, pad, 0);
-            }
-            return;
+    if let Some(item) = find_data_item_by_c_name(&c_rec, data_items) {
+        if let HirType::Group { members, .. } = &item.data_type {
+            emit_field_deserialize(out, &c_rec, members, flat_var, pad, 0);
         }
     }
 }
@@ -11481,7 +11674,7 @@ fn emit_sort_buf_display_to_binary(
     let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for member in members {
         let _c_name = dedup_member_name(&member.name, &mut name_counts);
-        let size = cobol_file_byte_size(&member.data_type);
+        let size = cobol_file_byte_size(member);
         match &member.data_type {
             HirType::Numeric { decimal_places, .. }
                 if *decimal_places > 0
@@ -11526,10 +11719,11 @@ fn dedup_member_name(
     }
 }
 
-/// Get the COBOL file/record byte size for a data type.
+/// Get the COBOL file/record byte size for a data item.
 /// For Binary (COMP), computes the actual storage byte count from digit count.
-fn cobol_file_byte_size(data_type: &HirType) -> u32 {
-    match data_type {
+/// For DISPLAY numeric with SIGN SEPARATE, includes the separate sign byte.
+fn cobol_file_byte_size(item: &HirDataItem) -> u32 {
+    match &item.data_type {
         HirType::Binary { size } => {
             // COMP: digits → bytes per COBOL standard
             if *size <= 4 {
@@ -11540,7 +11734,7 @@ fn cobol_file_byte_size(data_type: &HirType) -> u32 {
                 8
             }
         }
-        _ => data_item_byte_size(data_type),
+        _ => data_item_storage_size(item),
     }
 }
 
@@ -11559,7 +11753,7 @@ fn emit_field_deserialize(
             continue;
         }
         let c_name = dedup_member_name(&member.name, &mut name_counts);
-        let size = cobol_file_byte_size(&member.data_type);
+        let size = cobol_file_byte_size(member);
         let member_expr = format!("{record_var}.members._m_{c_name}");
         match &member.data_type {
             HirType::Numeric { decimal_places, .. }
@@ -11676,12 +11870,9 @@ fn emit_sort_record_serialize(
     pad: &str,
 ) {
     let c_rec = sanitize_name(record_var);
-    for item in data_items {
-        if sanitize_name(&item.name) == c_rec {
-            if let HirType::Group { members, .. } = &item.data_type {
-                emit_field_serialize(out, &c_rec, members, flat_var, pad, 0);
-            }
-            return;
+    if let Some(item) = find_data_item_by_c_name(&c_rec, data_items) {
+        if let HirType::Group { members, .. } = &item.data_type {
+            emit_field_serialize(out, &c_rec, members, flat_var, pad, 0);
         }
     }
 }
@@ -11701,7 +11892,7 @@ fn emit_field_serialize(
             continue;
         }
         let c_name = dedup_member_name(&member.name, &mut name_counts);
-        let size = cobol_file_byte_size(&member.data_type);
+        let size = cobol_file_byte_size(member);
         let member_expr = format!("{record_var}.members._m_{c_name}");
         match &member.data_type {
             HirType::Numeric { decimal_places, .. }

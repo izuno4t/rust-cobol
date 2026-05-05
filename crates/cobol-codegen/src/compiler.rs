@@ -486,6 +486,10 @@ PROCEDURE DIVISION.
             c_code.contains("#include <setjmp.h>"),
             "Generated C should include setjmp.h"
         );
+        assert!(
+            c_code.contains("#include <stdbool.h>"),
+            "Generated C should include stdbool.h for bool literals"
+        );
     }
 
     #[test]

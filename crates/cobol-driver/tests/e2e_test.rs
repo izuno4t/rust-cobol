@@ -7852,6 +7852,356 @@ PROCEDURE DIVISION.
     );
 }
 
+#[test]
+fn test_native_sort_using_variable_file_giving_variable_file() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SORTVAR.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SORT-FILE ASSIGN TO "/tmp/cobol_sort_var_work.dat".
+    SELECT INPUT-FILE ASSIGN TO "/tmp/cobol_sort_var_in.dat".
+    SELECT OUTPUT-FILE ASSIGN TO "/tmp/cobol_sort_var_out.dat".
+DATA DIVISION.
+FILE SECTION.
+SD SORT-FILE.
+01 SORT-RECORD PIC X(9).
+FD INPUT-FILE
+   RECORD CONTAINS 5 TO 9 CHARACTERS.
+01 INPUT-SHORT PIC X(5).
+01 INPUT-LONG PIC X(9).
+FD OUTPUT-FILE
+   RECORD CONTAINS 5 TO 9 CHARACTERS.
+01 OUTPUT-SHORT PIC X(5).
+01 OUTPUT-RECORD PIC X(9).
+WORKING-STORAGE SECTION.
+01 WS-EOF PIC 9 VALUE 0.
+01 WS-OUT PIC X(9).
+PROCEDURE DIVISION.
+    OPEN OUTPUT INPUT-FILE.
+    MOVE "B2222" TO INPUT-SHORT.
+    WRITE INPUT-SHORT.
+    MOVE "A11111111" TO INPUT-LONG.
+    WRITE INPUT-LONG.
+    CLOSE INPUT-FILE.
+    SORT SORT-FILE
+        ON ASCENDING KEY SORT-RECORD
+        USING INPUT-FILE
+        GIVING OUTPUT-FILE.
+    OPEN INPUT OUTPUT-FILE.
+    PERFORM UNTIL WS-EOF = 1
+        READ OUTPUT-FILE INTO WS-OUT
+            AT END MOVE 1 TO WS-EOF
+            NOT AT END DISPLAY WS-OUT
+        END-READ
+    END-PERFORM.
+    CLOSE OUTPUT-FILE.
+    STOP RUN.
+"#;
+    let _ = std::fs::remove_file("/tmp/cobol_sort_var_in.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_sort_var_out.dat");
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_sort_var_in.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_sort_var_out.dat");
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected sorted variable records:\n{stdout}"
+    );
+    assert_eq!(lines[0], "A11111111");
+    assert!(
+        lines[1].starts_with("B2222"),
+        "short record drifted: {stdout}"
+    );
+}
+
+#[test]
+fn test_native_merge_using_giving_variable_files() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MERGEVAR.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT MERGE-FILE ASSIGN TO "/tmp/cobol_merge_var_work.dat".
+    SELECT INPUT-A ASSIGN TO "/tmp/cobol_merge_var_a.dat".
+    SELECT INPUT-B ASSIGN TO "/tmp/cobol_merge_var_b.dat".
+    SELECT OUTPUT-FILE ASSIGN TO "/tmp/cobol_merge_var_out.dat".
+DATA DIVISION.
+FILE SECTION.
+SD MERGE-FILE.
+01 MERGE-RECORD.
+   05 MERGE-KEY PIC 9(3).
+   05 MERGE-TEXT PIC X(2).
+FD INPUT-A
+   RECORD CONTAINS 5 CHARACTERS.
+01 INPUT-A-RECORD.
+   05 INPUT-A-KEY PIC 9(3).
+   05 INPUT-A-TEXT PIC X(2).
+FD INPUT-B
+   RECORD CONTAINS 5 CHARACTERS.
+01 INPUT-B-RECORD.
+   05 INPUT-B-KEY PIC 9(3).
+   05 INPUT-B-TEXT PIC X(2).
+FD OUTPUT-FILE
+   RECORD CONTAINS 5 CHARACTERS.
+01 OUTPUT-RECORD PIC X(5).
+WORKING-STORAGE SECTION.
+01 WS-EOF PIC 9 VALUE 0.
+PROCEDURE DIVISION.
+    OPEN OUTPUT INPUT-A.
+    MOVE "001A1" TO INPUT-A-RECORD.
+    WRITE INPUT-A-RECORD.
+    MOVE "003A3" TO INPUT-A-RECORD.
+    WRITE INPUT-A-RECORD.
+    CLOSE INPUT-A.
+    OPEN OUTPUT INPUT-B.
+    MOVE "002B2" TO INPUT-B-RECORD.
+    WRITE INPUT-B-RECORD.
+    MOVE "004B4" TO INPUT-B-RECORD.
+    WRITE INPUT-B-RECORD.
+    CLOSE INPUT-B.
+    MERGE MERGE-FILE
+        ON ASCENDING KEY MERGE-KEY
+        USING INPUT-A INPUT-B
+        GIVING OUTPUT-FILE.
+    OPEN INPUT OUTPUT-FILE.
+    PERFORM UNTIL WS-EOF = 1
+        READ OUTPUT-FILE INTO OUTPUT-RECORD
+            AT END MOVE 1 TO WS-EOF
+            NOT AT END DISPLAY OUTPUT-RECORD
+        END-READ
+    END-PERFORM.
+    CLOSE OUTPUT-FILE.
+    STOP RUN.
+"#;
+    let _ = std::fs::remove_file("/tmp/cobol_merge_var_a.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_var_b.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_var_out.dat");
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    let _ = std::fs::remove_file("/tmp/cobol_merge_var_a.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_var_b.dat");
+    let _ = std::fs::remove_file("/tmp/cobol_merge_var_out.dat");
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "001A1\n002B2\n003A3\n004B4\n");
+}
+
+#[test]
+fn test_native_sort_input_output_procedure_returns_sorted_records() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SORTPROC.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SORT-FILE ASSIGN TO "SORTWORK".
+DATA DIVISION.
+FILE SECTION.
+SD SORT-FILE.
+01 S-REC.
+   05 S-KEY PIC 9.
+PROCEDURE DIVISION.
+MAIN.
+    SORT SORT-FILE
+        ON ASCENDING KEY S-KEY
+        INPUT PROCEDURE IS MAKE-INPUT THRU MAKE-END
+        OUTPUT PROCEDURE IS READ-OUTPUT THRU READ-END.
+    STOP RUN.
+MAKE-INPUT.
+    MOVE 3 TO S-KEY.
+    RELEASE S-REC.
+    MOVE 1 TO S-KEY.
+    RELEASE S-REC.
+MAKE-END.
+    EXIT.
+READ-OUTPUT.
+    RETURN SORT-FILE AT END GO TO READ-END.
+    DISPLAY S-KEY.
+    GO TO READ-OUTPUT.
+READ-END.
+    EXIT.
+"#;
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "1\n3\n");
+}
+
+#[test]
+fn test_native_sort_input_procedure_sorts_redefined_display_numeric_keys() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SORTKEYS.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SORT-FILE ASSIGN TO "SORTWORK".
+DATA DIVISION.
+FILE SECTION.
+SD SORT-FILE.
+01 S-REC.
+   05 KEYS-GROUP.
+      10 KEY-1 PIC 9.
+      10 KEY-2 PIC 99.
+      10 KEY-3 PIC 999.
+      10 KEY-4 PIC 9999.
+      10 KEY-5 PIC 9(5).
+   05 RDF-KEYS REDEFINES KEYS-GROUP PIC 9(15).
+PROCEDURE DIVISION.
+MAIN.
+    SORT SORT-FILE
+        ON ASCENDING KEY KEY-1
+        ON DESCENDING KEY KEY-2
+        ON ASCENDING KEY KEY-3
+        DESCENDING KEY-4 KEY-5
+        INPUT PROCEDURE IS MAKE-INPUT THRU MAKE-END
+        OUTPUT PROCEDURE IS READ-OUTPUT THRU READ-END.
+    STOP RUN.
+MAKE-INPUT.
+    MOVE 900009000000000 TO RDF-KEYS.
+    RELEASE S-REC.
+    MOVE 009000000900009 TO RDF-KEYS.
+    RELEASE S-REC.
+    MOVE 900008000000000 TO RDF-KEYS.
+    RELEASE S-REC.
+    MOVE 009000000900008 TO RDF-KEYS.
+    RELEASE S-REC.
+MAKE-END.
+    EXIT.
+READ-OUTPUT.
+    RETURN SORT-FILE AT END GO TO READ-END.
+    IF RDF-KEYS = 009000000900009
+        DISPLAY "LOW9"
+        GO TO READ-OUTPUT
+    END-IF.
+    IF RDF-KEYS = 009000000900008
+        DISPLAY "LOW8"
+        GO TO READ-OUTPUT
+    END-IF.
+    IF RDF-KEYS = 900008000000000
+        DISPLAY "HIGH8"
+        GO TO READ-OUTPUT
+    END-IF.
+    IF RDF-KEYS = 900009000000000
+        DISPLAY "HIGH9"
+        GO TO READ-OUTPUT
+    END-IF.
+    DISPLAY "BAD".
+    GO TO READ-OUTPUT.
+READ-END.
+    EXIT.
+"#;
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "LOW9\nLOW8\nHIGH8\nHIGH9\n");
+}
+
+#[test]
+fn test_native_sort_preserves_separate_sign_display_numeric_record_layout() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SORTSEPSIGN.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SORT-FILE ASSIGN TO "SORTWORK".
+DATA DIVISION.
+FILE SECTION.
+SD SORT-FILE.
+01 S-REC.
+   05 S-KEY-1 PIC S9 SIGN IS LEADING SEPARATE.
+   05 S-KEY-2 PIC SV9 SIGN IS TRAILING SEPARATE.
+   05 S-TAG   PIC X.
+PROCEDURE DIVISION.
+MAIN.
+    SORT SORT-FILE
+        ON ASCENDING KEY S-KEY-1
+        ON ASCENDING KEY S-KEY-2
+        INPUT PROCEDURE IS MAKE-INPUT THRU MAKE-END
+        OUTPUT PROCEDURE IS READ-OUTPUT THRU READ-END.
+    STOP RUN.
+MAKE-INPUT.
+    MOVE 1 TO S-KEY-1.
+    MOVE .6 TO S-KEY-2.
+    MOVE "P" TO S-TAG.
+    RELEASE S-REC.
+    MOVE 1 TO S-KEY-1.
+    MOVE -.6 TO S-KEY-2.
+    MOVE "N" TO S-TAG.
+    RELEASE S-REC.
+MAKE-END.
+    EXIT.
+READ-OUTPUT.
+    RETURN SORT-FILE AT END GO TO READ-END.
+    DISPLAY S-TAG.
+    GO TO READ-OUTPUT.
+READ-END.
+    EXIT.
+"#;
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "N\nP\n");
+}
+
+#[test]
+fn test_native_group_move_from_nested_group_uses_cobol_layout_for_binary_members() {
+    let src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. GMOVEBIN.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC.
+   05 SRC-GROUP.
+      10 SRC-BIN PIC S9(4) COMP.
+      10 SRC-DIS PIC 999.
+      10 SRC-TAG PIC X.
+01 DST.
+   05 DST-BIN PIC S9(4) COMP.
+   05 DST-DIS PIC 999.
+   05 DST-TAG PIC X.
+PROCEDURE DIVISION.
+    MOVE -12 TO SRC-BIN.
+    MOVE 345 TO SRC-DIS.
+    MOVE "Z" TO SRC-TAG.
+    MOVE SRC-GROUP TO DST.
+    IF DST-BIN = -12
+        DISPLAY "BIN"
+    ELSE
+        DISPLAY "BAD-BIN"
+    END-IF.
+    IF DST-DIS = 345
+        DISPLAY "DIS"
+    ELSE
+        DISPLAY "BAD-DIS"
+    END-IF.
+    DISPLAY DST-TAG.
+    STOP RUN.
+"#;
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(
+        code, 0,
+        "native execution failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "BIN\nDIS\nZ\n");
+}
+
 // ---------------------------------------------------------------------------
 // PERFORM THRU across multiple paragraphs (A through C)
 // ---------------------------------------------------------------------------

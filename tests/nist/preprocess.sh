@@ -67,8 +67,8 @@ awk '{ print substr($0, 1, 72) }' "$INPUT" | sed \
         s{(?<![A-Z0-9"])\QXXXXX058\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O58"}g;
         s{(?<![A-Z0-9"])\QXXXXX059\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O59"}g;
         s{(?<![A-Z0-9"])\QXXXXX060\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O60"}g;
-        s{(?<![A-Z0-9"])\QXXXXX063\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/D63"}g;
-        s{(?<![A-Z0-9"])\QXXXXX064\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/D64"}g;
+        s{(?<![A-Z0-9"])\QXXXXX063\E(?![A-Z0-9"])}{" \$\$()*+,-./0123456789;<=>ABCDEFGHIJKLMNOPQRSTUVWXYZ"}g;
+        s{(?<![A-Z0-9"])\QXXXXX064\E(?![A-Z0-9"])}{"ZYXWVUTSRQPONMLKJIHGFEDCBA>=<;9876543210/.-,+*)(\$\$ "}g;
         s{(?<![A-Z0-9"])\QXXXXX065\E(?![A-Z0-9"])}{00000255}g;
         s{(?<![A-Z0-9"])\QXXXXX066\E(?![A-Z0-9"])}{00000128}g;
         s{(?<![A-Z0-9"])\QXXXXX068\E(?![A-Z0-9"])}{"'"${TMPDIR}"'/O68"}g;

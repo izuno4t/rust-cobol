@@ -1725,6 +1725,7 @@ fn emit_header(out: &mut String) {
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
     out.push_str("#include <stdint.h>\n");
+    out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <setjmp.h>\n");
     out.push_str("#include <math.h>\n");
     out.push_str("#include <time.h>\n");
