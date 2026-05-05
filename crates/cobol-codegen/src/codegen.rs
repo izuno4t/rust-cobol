@@ -536,6 +536,7 @@ pub fn generate_c(program: &HirProgram) -> String {
 
         // Shared goto-dispatch state used by main and nested program entry flows.
         out.push_str("static int _goto_target = 0;\n\n");
+        out.push_str("static int _suppress_segment_reset = 0;\n\n");
         emit_alterable_paragraph_state(&mut out, &ctx);
 
         // Main function
@@ -1529,6 +1530,7 @@ fn emit_independent_segment_state_reset(
         return;
     }
 
+    out.push_str(&format!("{pad}if (!_suppress_segment_reset) {{\n"));
     for paragraph in paragraphs
         .iter()
         .filter(|paragraph| paragraph.segment_number == segment_number)
@@ -1540,10 +1542,11 @@ fn emit_independent_segment_state_reset(
             continue;
         };
         out.push_str(&format!(
-            "{pad}{} = {};\n",
+            "{pad}    {} = {};\n",
             info.dispatch_var, default_target_id.0
         ));
     }
+    out.push_str(&format!("{pad}}}\n"));
 }
 
 fn emit_inline_dispatch_loop(

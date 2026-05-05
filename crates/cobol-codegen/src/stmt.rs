@@ -1342,6 +1342,7 @@ pub(crate) fn emit_statement_with_ctx(
                 paragraphs,
                 fs_map,
                 has_declaratives,
+                current_paragraph,
                 indent,
             );
         }
@@ -8372,6 +8373,7 @@ pub(crate) fn emit_perform(
     paragraphs: &[HirParagraph],
     fs_map: &FileStatusMap,
     has_declaratives: bool,
+    current_paragraph: Option<HirParagraphId>,
     indent: usize,
 ) {
     let pad = "    ".repeat(indent);
@@ -8738,6 +8740,7 @@ pub(crate) fn emit_perform(
                     .paragraph_id()
                     .and_then(|target_id| paragraphs.iter().position(|p| p.id == target_id));
                 if let (Some(si), Some(ei)) = (start_idx, end_idx) {
+                    let perform_segment = paragraphs[si].segment_number;
                     let reversed = si > ei;
                     let include_section_headers =
                         matches!(paragraphs[si].kind, HirParagraphKind::Section)
@@ -8852,6 +8855,18 @@ pub(crate) fn emit_perform(
                         // Generate unique label suffix for this PERFORM THRU
                         let pt_id = with_active_context(|ctx| ctx.next_perform_thru_id());
                         let suffix = format!("pt{pt_id}");
+                        let suppress_thru_segment = should_suppress_segment_reset(
+                            paragraphs[si].id,
+                            paragraphs,
+                            current_paragraph,
+                        );
+
+                        if suppress_thru_segment {
+                            out.push_str(&format!("{pad}_suppress_segment_reset = 1;\n"));
+                        }
+                        out.push_str(&format!(
+                            "{pad}int _suppress_segment_resume_{suffix} = 0;\n"
+                        ));
 
                         // Emit each paragraph call with goto dispatch
                         for (idx, paragraph) in thru_paras.iter().enumerate() {
@@ -8864,7 +8879,37 @@ pub(crate) fn emit_perform(
                             };
                             out.push_str(&format!("_pt_{suffix}_{pn}:\n"));
                             emit_optional_debug_event(out, &pad, &debug_name, debug_contents);
+                            out.push_str(&format!(
+                                "{pad}if (_suppress_segment_resume_{suffix}) {{ _suppress_segment_reset = 1; }}\n"
+                            ));
+                            if !suppress_thru_segment {
+                                emit_segment_reset_suppression_start(
+                                    out,
+                                    paragraph.id,
+                                    paragraphs,
+                                    current_paragraph,
+                                    &pad,
+                                );
+                            }
                             out.push_str(&format!("{pad}para_{pn}();\n"));
+                            if !suppress_thru_segment {
+                                emit_segment_reset_suppression_end(
+                                    out,
+                                    paragraph.id,
+                                    paragraphs,
+                                    current_paragraph,
+                                    &pad,
+                                );
+                            }
+                            if suppress_thru_segment {
+                                out.push_str(&format!(
+                                    "{pad}if (_suppress_segment_resume_{suffix}) {{ _suppress_segment_resume_{suffix} = 0; }}\n"
+                                ));
+                            } else {
+                                out.push_str(&format!(
+                                    "{pad}if (_suppress_segment_resume_{suffix}) {{ _suppress_segment_reset = 0; _suppress_segment_resume_{suffix} = 0; }}\n"
+                                ));
+                            }
                             if idx < thru_paras.len() - 1 {
                                 // After each call (except last), check _goto_target
                                 out.push_str(&format!(
@@ -8899,17 +8944,45 @@ pub(crate) fn emit_perform(
                             };
                             if reversed {
                                 out.push_str(&format!(
-                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; para_{pn}(); if (_goto_target) goto _pt_disp_{suffix}; _goto_target = 0; goto _pt_end_{suffix}; }}\n"
+                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; "
+                                ));
+                                emit_perform_segment_dispatch_call(
+                                    out,
+                                    *paragraph_id,
+                                    &pn,
+                                    paragraphs,
+                                    perform_segment,
+                                    current_paragraph,
+                                    &pad,
+                                    &suffix,
+                                    suppress_thru_segment,
+                                );
+                                out.push_str(&format!(
+                                    "_goto_target = 0; goto _pt_end_{suffix}; }}\n"
                                 ));
                             } else if thru_ids.iter().any(|(thru_paragraph_id, thru_label_id)| {
                                 thru_paragraph_id == paragraph_id && thru_label_id == id
                             }) {
                                 out.push_str(&format!(
-                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; goto _pt_{suffix}_{pn}; }}\n"
+                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; _suppress_segment_resume_{suffix} = 1; goto _pt_{suffix}_{pn}; }}\n"
                                 ));
                             } else {
                                 out.push_str(&format!(
-                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; para_{pn}(); if (_goto_target) goto _pt_disp_{suffix}; _goto_target = 0; goto _pt_end_{suffix}; }}\n"
+                                    "{pad}  if (_t == {id}) {{ _goto_target = 0; "
+                                ));
+                                emit_perform_segment_dispatch_call(
+                                    out,
+                                    *paragraph_id,
+                                    &pn,
+                                    paragraphs,
+                                    perform_segment,
+                                    current_paragraph,
+                                    &pad,
+                                    &suffix,
+                                    suppress_thru_segment,
+                                );
+                                out.push_str(&format!(
+                                    "_goto_target = 0; goto _pt_end_{suffix}; }}\n"
                                 ));
                             }
                         }
@@ -8928,9 +9001,15 @@ pub(crate) fn emit_perform(
                             }
                         }
                         // Not in range: propagate
+                        if suppress_thru_segment {
+                            out.push_str(&format!("{pad}  _suppress_segment_reset = 0;\n"));
+                        }
                         out.push_str(&format!("{pad}  goto _goto_dispatch;\n"));
                         out.push_str(&format!("{pad}}}\n"));
                         out.push_str(&format!("_pt_end_{suffix}:;\n"));
+                        if suppress_thru_segment {
+                            out.push_str(&format!("{pad}_suppress_segment_reset = 0;\n"));
+                        }
                     } else {
                         for paragraph in &thru_paras {
                             let pn = sanitize_name(&paragraph.name);
@@ -8941,7 +9020,21 @@ pub(crate) fn emit_perform(
                                 "FALL THROUGH"
                             };
                             emit_optional_debug_event(out, &pad, &debug_name, debug_contents);
+                            emit_segment_reset_suppression_start(
+                                out,
+                                paragraph.id,
+                                paragraphs,
+                                current_paragraph,
+                                &pad,
+                            );
                             out.push_str(&format!("{pad}para_{pn}();\n"));
+                            emit_segment_reset_suppression_end(
+                                out,
+                                paragraph.id,
+                                paragraphs,
+                                current_paragraph,
+                                &pad,
+                            );
                             if need_body_dispatch {
                                 out.push_str(&format!(
                                     "{pad}if (_goto_target) goto _goto_dispatch;\n"
@@ -8955,7 +9048,25 @@ pub(crate) fn emit_perform(
                     // Fallback: just call the named paragraph
                     let debug_name = escape_c_string(target.name());
                     emit_optional_debug_event(out, &pad, &debug_name, "PERFORM LOOP");
+                    if let Some(target_id) = target.paragraph_id() {
+                        emit_segment_reset_suppression_start(
+                            out,
+                            target_id,
+                            paragraphs,
+                            current_paragraph,
+                            &pad,
+                        );
+                    }
                     out.push_str(&format!("{pad}para_{c_name}();\n"));
+                    if let Some(target_id) = target.paragraph_id() {
+                        emit_segment_reset_suppression_end(
+                            out,
+                            target_id,
+                            paragraphs,
+                            current_paragraph,
+                            &pad,
+                        );
+                    }
                     if need_body_dispatch {
                         out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
                     } else if has_local_labels {
@@ -8965,7 +9076,25 @@ pub(crate) fn emit_perform(
             } else {
                 let debug_name = escape_c_string(target.name());
                 emit_optional_debug_event(out, &pad, &debug_name, "PERFORM LOOP");
+                if let Some(target_id) = target.paragraph_id() {
+                    emit_segment_reset_suppression_start(
+                        out,
+                        target_id,
+                        paragraphs,
+                        current_paragraph,
+                        &pad,
+                    );
+                }
                 out.push_str(&format!("{pad}para_{c_name}();\n"));
+                if let Some(target_id) = target.paragraph_id() {
+                    emit_segment_reset_suppression_end(
+                        out,
+                        target_id,
+                        paragraphs,
+                        current_paragraph,
+                        &pad,
+                    );
+                }
                 if need_body_dispatch {
                     out.push_str(&format!("{pad}if (_goto_target) goto _goto_dispatch;\n"));
                 } else if has_local_labels {
@@ -8977,6 +9106,88 @@ pub(crate) fn emit_perform(
             }
         }
     }
+}
+
+fn emit_segment_reset_suppression_start(
+    out: &mut String,
+    target_id: HirParagraphId,
+    paragraphs: &[HirParagraph],
+    current_paragraph: Option<HirParagraphId>,
+    pad: &str,
+) {
+    if should_suppress_segment_reset(target_id, paragraphs, current_paragraph) {
+        out.push_str(&format!("{pad}_suppress_segment_reset = 1;\n"));
+    }
+}
+
+fn emit_segment_reset_suppression_end(
+    out: &mut String,
+    target_id: HirParagraphId,
+    paragraphs: &[HirParagraph],
+    current_paragraph: Option<HirParagraphId>,
+    pad: &str,
+) {
+    if should_suppress_segment_reset(target_id, paragraphs, current_paragraph) {
+        out.push_str(&format!("{pad}_suppress_segment_reset = 0;\n"));
+    }
+}
+
+fn should_suppress_segment_reset(
+    target_id: HirParagraphId,
+    paragraphs: &[HirParagraph],
+    current_paragraph: Option<HirParagraphId>,
+) -> bool {
+    let Some(current_id) = current_paragraph else {
+        return false;
+    };
+    let target_segment = paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == target_id)
+        .and_then(|paragraph| paragraph.segment_number);
+    if !target_segment.is_some_and(|number| number > 49) {
+        return false;
+    }
+    let current_segment = paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == current_id)
+        .and_then(|paragraph| paragraph.segment_number);
+    current_segment == target_segment
+}
+
+fn emit_perform_segment_dispatch_call(
+    out: &mut String,
+    target_id: HirParagraphId,
+    target_c_name: &str,
+    paragraphs: &[HirParagraph],
+    perform_segment: Option<u32>,
+    current_paragraph: Option<HirParagraphId>,
+    _pad: &str,
+    suffix: &str,
+    already_suppressed: bool,
+) {
+    let target_segment = paragraphs
+        .iter()
+        .find(|paragraph| paragraph.id == target_id)
+        .and_then(|paragraph| paragraph.segment_number);
+    let current_segment = current_paragraph.and_then(|current_id| {
+        paragraphs
+            .iter()
+            .find(|paragraph| paragraph.id == current_id)
+            .and_then(|paragraph| paragraph.segment_number)
+    });
+    let suppress = target_segment.is_some_and(|number| number > 49)
+        && (target_segment == perform_segment || target_segment == current_segment);
+    if already_suppressed && !suppress {
+        out.push_str("_suppress_segment_reset = 0; ");
+    }
+    if suppress && !already_suppressed {
+        out.push_str("_suppress_segment_reset = 1; ");
+    }
+    out.push_str(&format!("para_{target_c_name}(); "));
+    if suppress && !already_suppressed {
+        out.push_str("_suppress_segment_reset = 0; ");
+    }
+    out.push_str(&format!("if (_goto_target) goto _pt_disp_{suffix}; "));
 }
 
 fn emit_move_to_alphanumeric_edited(
@@ -11709,6 +11920,7 @@ fn emit_sort_procedure_call(
         paragraphs,
         fs_map,
         has_declaratives,
+        None,
         indent,
     );
 }
