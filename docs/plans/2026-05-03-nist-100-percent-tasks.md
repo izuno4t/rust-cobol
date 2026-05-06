@@ -2513,6 +2513,27 @@ TASK-011時点での判断:
   `Fail/Ready/CErr/RErr == 0`でない場合に失敗する条件を確認した。
 - 完了判断: M6からM10までのタスク一覧ステータスは完了状態に整合した。
 
+### IMPL-033 追加実施記録（runtime異常解消）
+
+- 対象: `crates/cobol-codegen/src/codegen.rs`,
+  `crates/cobol-driver/tests/e2e_test.rs`
+- 背景: `IC106A`と`OBIC1A`はNIST gate上はPASSだったが、
+  実行時に`exit 139`を出し、runnerのverifier overrideでPASS扱いになっていた。
+- 根本原因: `PROCEDURE DIVISION USING`を持つプログラムを単体実行する場合でも、
+  生成Cの`main`経路はLINKAGE項目を参照する。一方、USINGバインディング生成では
+  scalar項目だけ静的退避領域を持ち、group/alphanumeric/national/decimalの
+  参照渡し項目は`NULL`初期化のままだった。そのため`IC106A`のLINKAGE group参照で
+  NULL dereferenceが発生していた。
+- 変更: group/alphanumeric/national/decimalのUSING項目にも単体実行用の
+  静的退避領域を生成し、CALL entry pointでは従来通り実引数ポインタで上書きする。
+- 回帰確認: `test_standalone_program_with_using_group_has_default_linkage_storage`を
+  追加し、単体実行時のUSING group/alphanumeric書き込みが`exit 0`で完了することを
+  固定した。
+- NIST確認: `NIST_COMPILE_CACHE=0 make nist-run MODULE=IC PROGRAM=IC106A`と
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=OB PROGRAM=OBIC1A`を実行し、
+  どちらも`PASS (subprogram standalone produced no report output)`になった。
+  `Segmentation fault`および`judge override for exit 139`は再現しない。
+
 ## Backlog一覧
 
 | ID | Status | Summary | DependsOn |

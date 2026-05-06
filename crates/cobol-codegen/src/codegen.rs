@@ -118,14 +118,23 @@ fn emit_using_param_bindings(out: &mut String, program: &HirProgram) {
         out.push_str(&format!("#undef {c_name}\n"));
         match &param.data_type {
             HirType::Alphanumeric { size } => {
-                out.push_str(&format!("static char* _link_{c_name} = NULL;\n"));
+                out.push_str(&format!(
+                    "static char _link_{c_name}_value[{}];\n",
+                    size + 1
+                ));
+                out.push_str(&format!(
+                    "static char* _link_{c_name} = _link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!(
                     "#define {c_name} (*((char (*)[{len}])_link_{c_name}))\n",
                     len = size + 1
                 ));
             }
             HirType::National { size } => {
-                out.push_str(&format!("static uint16_t* _link_{c_name} = NULL;\n"));
+                out.push_str(&format!("static uint16_t _link_{c_name}_value[{size}];\n"));
+                out.push_str(&format!(
+                    "static uint16_t* _link_{c_name} = _link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!(
                     "#define {c_name} (*((uint16_t (*)[{size}])_link_{c_name}))\n"
                 ));
@@ -138,11 +147,17 @@ fn emit_using_param_bindings(out: &mut String, program: &HirProgram) {
                 out.push_str(&format!(
                     "typedef union {{ {td} members; uint8_t _bytes[sizeof({td})]; }} {binding_ty};\n"
                 ));
-                out.push_str(&format!("static {binding_ty}* _link_{c_name} = NULL;\n"));
+                out.push_str(&format!("static {binding_ty} _link_{c_name}_value;\n"));
+                out.push_str(&format!(
+                    "static {binding_ty}* _link_{c_name} = &_link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::Numeric { decimal_places, .. } if *decimal_places > 0 => {
-                out.push_str(&format!("static CobolDecimal* _link_{c_name} = NULL;\n"));
+                out.push_str(&format!("static CobolDecimal _link_{c_name}_value;\n"));
+                out.push_str(&format!(
+                    "static CobolDecimal* _link_{c_name} = &_link_{c_name}_value;\n"
+                ));
                 out.push_str(&format!("#define {c_name} (*_link_{c_name})\n"));
             }
             HirType::Numeric { .. }

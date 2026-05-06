@@ -9527,6 +9527,32 @@ PROCEDURE DIVISION USING LK-NUM.
 }
 
 #[test]
+fn test_standalone_program_with_using_group_has_default_linkage_storage() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SUBONLY.
+DATA DIVISION.
+LINKAGE SECTION.
+01 LK-GROUP.
+   05 LK-CHAR PIC X.
+01 LK-TEXT PIC X(3).
+PROCEDURE DIVISION USING LK-GROUP LK-TEXT.
+    MOVE 'Z' TO LK-CHAR.
+    MOVE 'ABC' TO LK-TEXT.
+    DISPLAY LK-CHAR.
+    DISPLAY LK-TEXT.
+    EXIT PROGRAM.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "standalone USING program should exit 0: {stderr}");
+    assert!(
+        stdout.contains('Z') && stdout.contains("ABC"),
+        "default linkage storage should be readable and writable, got: {}",
+        stdout.trim()
+    );
+}
+
+#[test]
 fn test_call_on_overflow_routes_to_exception_path_for_missing_program() {
     // cspell:ignore MAINPROG
     let src = "\
