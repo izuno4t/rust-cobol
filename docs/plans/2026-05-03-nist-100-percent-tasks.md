@@ -2545,6 +2545,16 @@ TASK-011時点での判断:
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST115A`はいずれもPASS。
   その後`NIST_COMPILE_CACHE=0 make nist-run`で
   `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を確認した。
+- 追加根本原因2: GitHub Actions run `25412628293`ではCErrが解消した後も
+  `CM101M`, `CM102M`, `CM103M`, `CM104M`, `CM105M`, `CM202M`がFAILした。
+  CI成果物の個別ログでは`CM103M.log`が約258MBまで膨張し、
+  CM系の通信待ち処理が完了前にverifier overrideでFAIL判定されていた。
+  `run_nist.sh`がCMだけ既定で`COBOL_TEST_FAST_TIME_SCALE=100000`を設定しており、
+  GitHub runner負荷下では仮想時刻が粗く飛び、通信状態遷移の判定窓を飛ばしていた。
+- 追加変更2: CM用の既定高速時刻スケールを`100000`から`1000`へ下げた。
+  30秒級のCCVS待ち時間は短縮したまま、CI上の時刻ジャンプを抑える。
+- 追加確認3: ローカルmacOSで`COBOL_TEST_FAST_TIME_SCALE=1000
+  NIST_COMPILE_CACHE=0 make nist-run MODULE=CM`を実行し、CM 9/9 PASSを確認した。
 
 ## Backlog一覧
 
