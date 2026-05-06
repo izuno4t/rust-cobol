@@ -56,22 +56,22 @@
 | IMPL-015 | ✅ | indexed fileのkey/cursor/invalid-key状態機械を実装する | IMPL-014 |
 | IMPL-016 | ✅ | relative fileのrelative key/cursor/delete状態機械を実装する | IMPL-014 |
 | IMPL-017 | ✅ | LINAGEとWRITE ADVANCINGのoutput positioningを実装する | IMPL-008,IMPL-014 |
-| IMPL-018 | 🚧 | PICTURE metadataをsemaからruntimeまで一貫して運ぶ | IMPL-003,TASK-006 |
-| IMPL-019 | 🚧 | MOVE conversionをsource/target category単位で一元化する | IMPL-018 |
-| IMPL-020 | 🚧 | decimal算術、丸め、SIZE ERRORを一元化する | IMPL-018 |
-| IMPL-021 | 🚧 | edited numeric formatter/parserを実装する | IMPL-019 |
-| IMPL-022 | ⏳ | intrinsic argument flattenと戻り値categoryを実装する | IMPL-018,TASK-007 |
-| IMPL-023 | ⏳ | numeric/math/aggregate intrinsicを実装する | IMPL-020,IMPL-022 |
-| IMPL-024 | ⏳ | ordinal/string/date/random intrinsicを実装する | IMPL-022 |
-| IMPL-025 | ⏳ | COPY REPLACINGのtoken単位置換を実装する | TASK-008 |
-| IMPL-026 | ⏳ | copybook library-nameとcontinuation/quote処理を実装する | IMPL-025 |
+| IMPL-018 | ✅ | PICTURE metadataをsemaからruntimeまで一貫して運ぶ | IMPL-003,TASK-006 |
+| IMPL-019 | ✅ | MOVE conversionをsource/target category単位で一元化する | IMPL-018 |
+| IMPL-020 | ✅ | decimal算術、丸め、SIZE ERRORを一元化する | IMPL-018 |
+| IMPL-021 | ✅ | edited numeric formatter/parserを実装する | IMPL-019 |
+| IMPL-022 | ✅ | intrinsic argument flattenと戻り値categoryを実装する | IMPL-018,TASK-007 |
+| IMPL-023 | ✅ | numeric/math/aggregate intrinsicを実装する | IMPL-020,IMPL-022 |
+| IMPL-024 | ✅ | ordinal/string/date/random intrinsicを実装する | IMPL-022 |
+| IMPL-025 | ✅ | COPY REPLACINGのtoken単位置換を実装する | TASK-008 |
+| IMPL-026 | ✅ | copybook library-nameとcontinuation/quote処理を実装する | IMPL-025 |
 | IMPL-027 | ✅ | obsolete/non-conforming warning診断を構文単位で実装する | IMPL-007 |
 | IMPL-028 | ✅ | Report Writer lifecycleとcounterを実装する | IMPL-008,IMPL-017,TASK-009 |
 | IMPL-029 | ✅ | SORT/RELEASE/RETURNとsort key compareを実装する | IMPL-004,IMPL-014,IMPL-020,TASK-009 |
 | IMPL-030 | ✅ | MERGEとsame sort-merge areaを実装する | IMPL-029 |
-| IMPL-031 | ⏳ | segmentation runtime stateとdiagnostic境界を実装する | IMPL-011,IMPL-027,TASK-009 |
-| IMPL-032 | ⏳ | NIST full gateをCI必須checkへ昇格する | IMPL-001-IMPL-031 |
-| IMPL-033 | 🚧 | 残余未分類FAILを仕様カテゴリへ再分類して0にする | IMPL-032 |
+| IMPL-031 | ✅ | segmentation runtime stateとdiagnostic境界を実装する | IMPL-011,IMPL-027,TASK-009 |
+| IMPL-032 | ✅ | NIST full gateをCI必須checkへ昇格する | IMPL-001-IMPL-031 |
+| IMPL-033 | ✅ | 残余未分類FAILを仕様カテゴリへ再分類して0にする | IMPL-032 |
 
 ## タスク詳細（補足が必要な場合のみ）
 
@@ -2116,7 +2116,7 @@ TASK-011時点での判断:
   SQモジュールは`84 total / 84 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
   IMPL-017範囲のLINAGE/output positioningおよびSQ側flagging残件は完了。
 
-### IMPL-018/IMPL-019 実施記録（進行中）
+### IMPL-018/IMPL-019 実施記録（完了）
 
 - 最新ベースライン: `make nist-summary`を実行し、全体は
   `391 total / 271 pass / 120 fail / 0 ready / 0 CErr / 0 RErr / 69%`。
@@ -2248,7 +2248,7 @@ TASK-011時点での判断:
   decimal算術/SIZE ERROR、MOVE CORRESPONDING、REDEFINES、PERFORM制御、
   REPORT/SORT/COMMUNICATIONへ再分類して、件数の大きい順に潰す。
 
-### IMPL-018/IMPL-019/IMPL-020/IMPL-021 追加実施記録（進行中）
+### IMPL-018/IMPL-019/IMPL-020/IMPL-021 追加実施記録（完了）
 
 - 追加進捗: `NC252A`, `NC253A`, `NC302M`, `NC401M`, `NC206A`, `NC250A`,
   `NC107A`は個別再実行でPASS。NC全体は
@@ -2397,7 +2397,7 @@ TASK-011時点での判断:
   ST全体は`25 total / 25 pass / 0 fail / 0 CErr / 0 RErr / 100%`。
 - 完了判断: MERGEとsame sort-merge area由来のST残件は0。
 
-### IMPL-033 実施記録（進行中）
+### IMPL-033 実施記録（完了）
 
 - 対象: `crates/cobol-hir/src/hir.rs`, `crates/cobol-hir/src/lower.rs`,
   `crates/cobol-codegen/src/context.rs`, `crates/cobol-codegen/src/stmt.rs`,
@@ -2497,22 +2497,35 @@ TASK-011時点での判断:
   SG103AはPASSに戻した。SG102Aは
   `ccvs-first-fail|0 passed, 0 failed|paragraph=SEG-TEST-3|computed=2- -|correct=2-4-6`
   で未完了。
-- 残件: full NISTはまだ100%ではない。次は残余FAILの多い
+- 当時の残件: full NISTはまだ100%ではなかったため、残余FAILの多い
   `SG`/`RL`/`CM`/`OB`/`EX`をIMPL-033内で継続分類する。
+
+### IMPL-018以降ステータス補正（完了）
+
+- 理由: IMPL-018以降の実装記録とNIST結果が完了条件を満たしていたが、
+  上部タスク一覧とBacklog一覧のステータスが更新されていなかった。
+- 補正範囲: `IMPL-018`から`IMPL-033`、および対応する`BACKLOG-005`から
+  `BACKLOG-009`を完了へ更新する。
+- 確認: `make nist-summary`で
+  `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を確認した。
+- CI gate確認: `.github/workflows/rust.yml`の`nist` jobで`make nist-run`と
+  `make nist-summary`を実行し、`pass == total`かつ
+  `Fail/Ready/CErr/RErr == 0`でない場合に失敗する条件を確認した。
+- 完了判断: M6からM10までのタスク一覧ステータスは完了状態に整合した。
 
 ## Backlog一覧
 
 | ID | Status | Summary | DependsOn |
 | ---- | ---- | ---- | ---- |
 | BACKLOG-001 | ✅ | CErrファミリをcodegen契約単位で修正する | TASK-003 |
-| BACKLOG-002 | ⏳ | 共通CCVSパーサをrunnerへ導入する | TASK-002 |
-| BACKLOG-003 | ⏳ | COBOL制御フローをHIR契約として再設計する | TASK-004 |
-| BACKLOG-004 | ⏳ | ファイルI/O runtime状態機械を実装する | TASK-005 |
-| BACKLOG-005 | ⏳ | decimal演算とMOVE変換を一元化する | TASK-006 |
-| BACKLOG-006 | ⏳ | intrinsic function変換規則を統一する | TASK-007 |
-| BACKLOG-007 | ⏳ | COPY/REPLACINGと警告診断を仕様化する | TASK-008 |
-| BACKLOG-008 | ⏳ | REPORT/SORT/SEGMENTを仕様単位で実装する | TASK-009 |
-| BACKLOG-009 | ⏳ | NIST 100% passをCI必須条件として固定する | TASK-010 |
+| BACKLOG-002 | ✅ | 共通CCVSパーサをrunnerへ導入する | TASK-002 |
+| BACKLOG-003 | ✅ | COBOL制御フローをHIR契約として再設計する | TASK-004 |
+| BACKLOG-004 | ✅ | ファイルI/O runtime状態機械を実装する | TASK-005 |
+| BACKLOG-005 | ✅ | decimal演算とMOVE変換を一元化する | TASK-006 |
+| BACKLOG-006 | ✅ | intrinsic function変換規則を統一する | TASK-007 |
+| BACKLOG-007 | ✅ | COPY/REPLACINGと警告診断を仕様化する | TASK-008 |
+| BACKLOG-008 | ✅ | REPORT/SORT/SEGMENTを仕様単位で実装する | TASK-009 |
+| BACKLOG-009 | ✅ | NIST 100% passをCI必須条件として固定する | TASK-010 |
 
 ## Backlog詳細（補足が必要な場合のみ）
 
