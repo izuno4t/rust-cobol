@@ -2533,6 +2533,18 @@ TASK-011時点での判断:
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=OB PROGRAM=OBIC1A`を実行し、
   どちらも`PASS (subprogram standalone produced no report output)`になった。
   `Segmentation fault`および`judge override for exit 139`は再現しない。
+- 追加根本原因: `IC237A`, `SM201A`, `ST115A`のCErrは、nested/contained
+  program用の名前空間マクロが先に`#define`されたあと、同名のREDEFINES項目の
+  overlayマクロ生成が`#ifndef`で上書きを避けていたため、未宣言の
+  `PROGRAM__ITEM`へ展開されていた。
+- 追加変更: contained programの名前空間マクロ生成で、REDEFINES/RENAMESのような
+  実体を持たない項目を事前defineしないようにした。REDEFINES側のunqualified
+  macro guardは維持し、同一スコープ内の重複alias保護を残す。
+- 追加確認2: `NIST_COMPILE_CACHE=0 make nist-run MODULE=IC PROGRAM=IC237A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=SM PROGRAM=SM201A`,
+  `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST115A`はいずれもPASS。
+  その後`NIST_COMPILE_CACHE=0 make nist-run`で
+  `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を確認した。
 
 ## Backlog一覧
 

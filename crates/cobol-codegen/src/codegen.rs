@@ -1497,6 +1497,9 @@ fn collect_top_level_data_item_c_names(program: &HirProgram) -> Vec<String> {
         if item.is_external {
             continue;
         }
+        if item.redefines.is_some() || item.renames.is_some() {
+            continue;
+        }
         let c_name = sanitize_name(&item.name);
         if group_member_names.contains(&c_name) {
             continue;
