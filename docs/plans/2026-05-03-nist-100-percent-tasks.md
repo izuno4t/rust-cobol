@@ -2545,29 +2545,37 @@ TASK-011時点での判断:
   `NIST_COMPILE_CACHE=0 make nist-run MODULE=ST PROGRAM=ST115A`はいずれもPASS。
   その後`NIST_COMPILE_CACHE=0 make nist-run`で
   `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を確認した。
-- 追加根本原因2: GitHub Actions run `25412628293`ではCErrが解消した後も
-  `CM101M`, `CM102M`, `CM103M`, `CM104M`, `CM105M`, `CM202M`がFAILした。
-  CI成果物の個別ログでは`CM103M.log`が約258MBまで膨張し、
-  CM系の通信待ち処理が完了前にverifier overrideでFAIL判定されていた。
-  `run_nist.sh`がCMだけ既定で`COBOL_TEST_FAST_TIME_SCALE=100000`を設定しており、
-  GitHub runner負荷下では仮想時刻が粗く飛び、通信状態遷移の判定窓を飛ばしていた。
-- 追加変更2: CM用の既定高速時刻スケールを`100000`から`1000`へ下げた。
-  30秒級のCCVS待ち時間は短縮したまま、CI上の時刻ジャンプを抑える。
-- 追加確認3: ローカルmacOSで`COBOL_TEST_FAST_TIME_SCALE=1000
-  NIST_COMPILE_CACHE=0 make nist-run MODULE=CM`を実行し、CM 9/9 PASSを確認した。
-  Linux x86コンテナでも`NIST_COMPILE_CACHE=0 make nist-run MODULE=CM`で
-  CM 9/9 PASSを確認した。さらに新規`NIST_ENV_ROOT=/tmp/rust-cobol-nist-mac`で
-  `NIST_COMPILE_CACHE=0 make nist-run`を実行し、
-  `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を確認した。
-- 追加確認4: GitHub Actions run `25417334178`では`1000`でも同じCM 6 FAILが
-  再発した。CI成果物上の失敗内容は`25412628293`と同じで、CM103Mは約247MBの
-  message logを出して終了していた。CMの時刻依存テストに高速時刻を使うこと自体が
-  GitHub runnerでは不安定だったため、CMの既定スケールを`1`へ戻す。
-  ローカルmacOSで`COBOL_TEST_FAST_TIME_SCALE=1 NIST_ENV_ROOT=/tmp/rust-cobol-nist-mac
-  NIST_COMPILE_CACHE=0 make nist-run MODULE=CM`を実行し、CM 9/9 PASSを確認した。
-  さらに同じ既定値で`NIST_ENV_ROOT=/tmp/rust-cobol-nist-mac NIST_COMPILE_CACHE=0
-  make nist-run`を実行し、
-  `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を確認した。
+- 追加根本原因2: GitHub Actions run `25412628293`と`25417334178`では
+  CErr解消後も`CM101M`, `CM102M`, `CM103M`, `CM104M`, `CM105M`,
+  `CM202M`がFAILした。CI成果物の`CM102M`/`CM202M`ログでは、通信fixtureが
+  読まれていれば`20`/`30`/`40`/`21`になるべきstatusが`00`になり、
+  receive queueも空になっていた。これは時間待ちの問題ではなく、生成Cのリンク先
+  runtimeが通信fixture設定を持たない状態で動いていることを示す。
+- 追加根本原因3: NIST runnerは`target/release/cobol-driver`だけを
+  `$NIST_ENV_ROOT/toolchain/cobol-driver`へsnapshotし、`libcobol_runtime.a`を
+  snapshotしていなかった。そのためsnapshotされたdriverは隣接runtimeを見つけられず、
+  `target/debug`から`target/release`へfallbackしていた。GitHub Actionsの
+  `target` cacheに古いdebug runtimeが残ると、CM通信fixture対応済みのrelease
+  runtimeではなく古いruntimeへリンクされる。
+- 追加変更2: compiler snapshot時に同じtoolchainディレクトリへ
+  `libcobol_runtime.a`も同期し、driverが必ず隣接runtimeへリンクするようにした。
+  さらにNIST compile cache keyへsnapshot runtime hashを含め、runtime更新後に
+  古いNIST実行バイナリを再利用しないようにした。
+- 追加変更3: `cobol-codegen`側のruntime archive解決も、hash付きarchiveの
+  `read_dir`順依存をやめ、直下`libcobol_runtime.a`を優先し、fallback時はmtime最新の
+  hash付きarchiveを選ぶようにした。
+- 追加確認3: `NIST_ENV_ROOT=/tmp/rust-cobol-nist-snapshot make nist-run
+  MODULE=CM PROGRAM=CM102M`と`... PROGRAM=CM202M`で、CI上の失敗箇所が
+  正しい通信statusになりPASSすることを確認した。compile metaに
+  `compiler:bin:...|runtime:...`が記録されることも確認した。
+- 追加確認4: `NIST_ENV_ROOT=/tmp/rust-cobol-nist-snapshot NIST_COMPILE_CACHE=0
+  make nist-run MODULE=CM`でCM 9/9 PASSを確認した。
+- 追加確認5: 同じ環境で`NIST_ENV_ROOT=/tmp/rust-cobol-nist-snapshot
+  NIST_COMPILE_CACHE=0 make nist-run`を実行し、
+  `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を
+  確認した。`make clean test lint`も成功した。
+- 追加確認6: `cargo test -p cobol-codegen test_resolve_runtime_archive --lib`を
+  追加実行し、runtime archive選択の直下優先とmtime最新fallbackを固定した。
 
 ## Backlog一覧
 

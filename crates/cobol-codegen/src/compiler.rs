@@ -7,19 +7,29 @@ fn resolve_runtime_archive_path(
             return direct.canonicalize().ok().or(Some(direct));
         }
 
+        let mut newest: Option<std::path::PathBuf> = None;
         for search_dir in [dir.to_path_buf(), dir.join("deps")] {
-            let entries = std::fs::read_dir(&search_dir).ok()?;
+            let entries = match std::fs::read_dir(&search_dir) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                     continue;
                 };
                 if name.starts_with("libcobol_runtime") && name.ends_with(".a") {
-                    return path.canonicalize().ok().or(Some(path));
+                    let is_newer = newest
+                        .as_ref()
+                        .map(|current| archive_is_newer(&path, current))
+                        .unwrap_or(true);
+                    if is_newer {
+                        newest = Some(path);
+                    }
                 }
             }
         }
-        None
+        newest.map(|path| path.canonicalize().ok().unwrap_or(path))
     }
 
     let mut candidates = vec![runtime_lib_path.to_path_buf()];
@@ -62,6 +72,23 @@ fn resolve_runtime_archive_path(
             e
         )
     })
+}
+
+fn archive_is_newer(candidate: &std::path::Path, current: &std::path::Path) -> bool {
+    let candidate_modified = candidate
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let current_modified = current
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    match (candidate_modified, current_modified) {
+        (Some(candidate_modified), Some(current_modified)) => candidate_modified > current_modified,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => candidate.file_name() > current.file_name(),
+    }
 }
 
 pub fn compile_c_to_executable(
@@ -138,6 +165,37 @@ mod tests {
         let program = parser.parse_program().unwrap();
         let hir = lower_to_hir(&program);
         generate_c(&hir)
+    }
+
+    #[test]
+    fn test_resolve_runtime_archive_prefers_direct_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = dir.path().join("deps");
+        std::fs::create_dir(&deps).unwrap();
+        let direct = dir.path().join("libcobol_runtime.a");
+        let hashed = deps.join("libcobol_runtime-old.a");
+        std::fs::write(&direct, b"direct").unwrap();
+        std::fs::write(&hashed, b"hashed").unwrap();
+
+        let resolved = super::resolve_runtime_archive_path(dir.path()).unwrap();
+
+        assert_eq!(resolved, direct.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_runtime_archive_uses_newest_hashed_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = dir.path().join("deps");
+        std::fs::create_dir(&deps).unwrap();
+        let old_archive = deps.join("libcobol_runtime-old.a");
+        let new_archive = deps.join("libcobol_runtime-new.a");
+        std::fs::write(&old_archive, b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&new_archive, b"new").unwrap();
+
+        let resolved = super::resolve_runtime_archive_path(dir.path()).unwrap();
+
+        assert_eq!(resolved, new_archive.canonicalize().unwrap());
     }
 
     #[test]

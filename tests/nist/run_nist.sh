@@ -150,6 +150,7 @@ snapshot_compiler_if_needed() {
                 cp "$COBOLC" "$snapshot"
                 chmod +x "$snapshot"
             fi
+            snapshot_runtime_archive_for_compiler "$COBOLC"
             SNAPSHOT_COBOLC="$snapshot"
         fi
     else
@@ -159,6 +160,45 @@ snapshot_compiler_if_needed() {
     COBOLC="$SNAPSHOT_COBOLC"
     export COBOLC
     printf '%s\n' "$SNAPSHOT_COBOLC"
+}
+
+find_runtime_archive_for_compiler() {
+    local compiler="$1"
+    local compiler_dir
+    compiler_dir="$(cd "$(dirname "$compiler")" && pwd)"
+
+    if [ -f "$compiler_dir/libcobol_runtime.a" ]; then
+        printf '%s\n' "$compiler_dir/libcobol_runtime.a"
+        return 0
+    fi
+
+    if [ -d "$compiler_dir/deps" ]; then
+        local newest=""
+        local file
+        while IFS= read -r file; do
+            if [ -z "$newest" ] || [ "$file" -nt "$newest" ]; then
+                newest="$file"
+            fi
+        done < <(find "$compiler_dir/deps" -maxdepth 1 -type f -name 'libcobol_runtime-*.a' -print)
+        [ -n "$newest" ] || return 1
+        printf '%s\n' "$newest"
+        return 0
+    fi
+
+    return 1
+}
+
+snapshot_runtime_archive_for_compiler() {
+    local compiler="$1"
+    local runtime_archive snapshot_archive
+    runtime_archive="$(find_runtime_archive_for_compiler "$compiler" || true)"
+    [ -n "$runtime_archive" ] || return 0
+
+    snapshot_archive="$NIST_TOOLCHAIN_ROOT/libcobol_runtime.a"
+    if [ ! -f "$snapshot_archive" ] || \
+        [ "$(sha256_of_file "$runtime_archive")" != "$(sha256_of_file "$snapshot_archive")" ]; then
+        cp "$runtime_archive" "$snapshot_archive"
+    fi
 }
 
 inspect_reason_for_program() {
@@ -219,9 +259,17 @@ compute_compiler_signature() {
     if [ -x "$COBOLC" ] && [ "${COBOLC#* }" = "$COBOLC" ]; then
         local compiler_hash runtime_hash deps_dir runtime_inputs=""
         compiler_hash="$(sha256_of_file "$COBOLC")"
+        if [ -f "$(dirname "$COBOLC")/libcobol_runtime.a" ]; then
+            runtime_inputs="$(
+                printf '%s  %s\n' \
+                    "$(sha256_of_file "$(dirname "$COBOLC")/libcobol_runtime.a")" \
+                    "libcobol_runtime.a"
+            )"
+        fi
         deps_dir="$(dirname "$COBOLC")/deps"
         if [ -d "$deps_dir" ]; then
-            runtime_inputs="$(
+            local deps_runtime_inputs
+            deps_runtime_inputs="$(
                 find "$deps_dir" -maxdepth 1 -type f \
                     \( -name 'libcobol_runtime-*.a' -o -name 'libcobol_runtime-*.rlib' -o -name 'libcobol_runtime-*.dylib' -o -name 'libcobol_runtime-*.so' \) \
                     | LC_ALL=C sort | while IFS= read -r file; do
@@ -231,6 +279,9 @@ compute_compiler_signature() {
                         printf '%s  %s\n' "$file_hash" "$(basename "$file")"
                     done
             )"
+            if [ -n "$deps_runtime_inputs" ]; then
+                runtime_inputs="$(printf '%s\n%s\n' "$runtime_inputs" "$deps_runtime_inputs" | grep -v '^$')"
+            fi
         fi
         if [ -n "$runtime_inputs" ]; then
             runtime_hash="$(printf '%s\n' "$runtime_inputs" | sha256_of_stdin)"
@@ -917,7 +968,7 @@ execute_program_binary() {
             unset COBOL_TRACE_PARAGRAPHS_FILE || true
         fi
         if [ "$module" = "CM" ]; then
-            export COBOL_TEST_FAST_TIME_SCALE="${COBOL_TEST_FAST_TIME_SCALE:-1}"
+            export COBOL_TEST_FAST_TIME_SCALE="${COBOL_TEST_FAST_TIME_SCALE:-1000}"
         else
             unset COBOL_TEST_FAST_TIME_SCALE || true
         fi
