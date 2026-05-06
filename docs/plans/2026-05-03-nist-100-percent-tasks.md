@@ -2555,6 +2555,19 @@ TASK-011時点での判断:
   30秒級のCCVS待ち時間は短縮したまま、CI上の時刻ジャンプを抑える。
 - 追加確認3: ローカルmacOSで`COBOL_TEST_FAST_TIME_SCALE=1000
   NIST_COMPILE_CACHE=0 make nist-run MODULE=CM`を実行し、CM 9/9 PASSを確認した。
+  Linux x86コンテナでも`NIST_COMPILE_CACHE=0 make nist-run MODULE=CM`で
+  CM 9/9 PASSを確認した。さらに新規`NIST_ENV_ROOT=/tmp/rust-cobol-nist-mac`で
+  `NIST_COMPILE_CACHE=0 make nist-run`を実行し、
+  `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を確認した。
+- 追加確認4: GitHub Actions run `25417334178`では`1000`でも同じCM 6 FAILが
+  再発した。CI成果物上の失敗内容は`25412628293`と同じで、CM103Mは約247MBの
+  message logを出して終了していた。CMの時刻依存テストに高速時刻を使うこと自体が
+  GitHub runnerでは不安定だったため、CMの既定スケールを`1`へ戻す。
+  ローカルmacOSで`COBOL_TEST_FAST_TIME_SCALE=1 NIST_ENV_ROOT=/tmp/rust-cobol-nist-mac
+  NIST_COMPILE_CACHE=0 make nist-run MODULE=CM`を実行し、CM 9/9 PASSを確認した。
+  さらに同じ既定値で`NIST_ENV_ROOT=/tmp/rust-cobol-nist-mac NIST_COMPILE_CACHE=0
+  make nist-run`を実行し、
+  `391 total / 391 pass / 0 fail / 0 ready / 0 CErr / 0 RErr / 100%`を確認した。
 
 ## Backlog一覧
 

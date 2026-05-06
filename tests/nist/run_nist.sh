@@ -917,7 +917,7 @@ execute_program_binary() {
             unset COBOL_TRACE_PARAGRAPHS_FILE || true
         fi
         if [ "$module" = "CM" ]; then
-            export COBOL_TEST_FAST_TIME_SCALE="${COBOL_TEST_FAST_TIME_SCALE:-1000}"
+            export COBOL_TEST_FAST_TIME_SCALE="${COBOL_TEST_FAST_TIME_SCALE:-1}"
         else
             unset COBOL_TEST_FAST_TIME_SCALE || true
         fi
