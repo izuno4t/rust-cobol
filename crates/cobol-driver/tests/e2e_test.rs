@@ -1341,8 +1341,17 @@ PROCEDURE DIVISION.
 ";
 
     let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    let c_code = generate_c(&parse_and_lower(src));
 
     assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        c_code.contains("#ifndef COMPLETE_FORMAT\n#define COMPLETE_FORMAT"),
+        "duplicate REDEFINES aliases should be guarded in generated C:\n{c_code}"
+    );
+    assert!(
+        !stderr.contains("macro redefined"),
+        "group REDEFINES should not emit duplicate C macro definitions, stderr={stderr}"
+    );
     assert!(
         stdout.contains(" <1,1"),
         "currency PICTURE length should preserve the redefined table byte layout, stdout={stdout:?}, stderr={stderr:?}"
@@ -7344,6 +7353,16 @@ PROCEDURE DIVISION.
     END-IF.
     STOP RUN.
 ";
+    let c_code = generate_c(&parse_and_lower(src));
+    assert!(
+        !c_code.contains("cobol_decimal_to_display(&MULTIPLY_DATA__MULT1"),
+        "group-stored DISPLAY numeric must not be passed directly to CobolDecimal API:\n{c_code}"
+    );
+    assert!(
+        c_code.contains("CobolDecimal _display_dec"),
+        "group-stored DISPLAY numeric should be converted through a decimal temporary:\n{c_code}"
+    );
+
     let (stdout, _, code) = compile_and_run_no_sema(src);
     assert_eq!(code, 0);
     assert!(

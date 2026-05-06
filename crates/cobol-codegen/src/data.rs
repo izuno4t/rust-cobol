@@ -368,9 +368,8 @@ pub(crate) fn emit_single_data_item(
             HirType::Alphanumeric { .. } | HirType::National { .. } => {
                 // Array types: cast to pointer (acts as array base for memset/strncpy)
                 if item.name != "FILLER" && item.name != "PIC" {
-                    out.push_str(&format!(
-                        "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
-                    ));
+                    let alias_expr = format!("(({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */");
+                    emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                 }
             }
             HirType::Group { members, .. } => {
@@ -378,9 +377,8 @@ pub(crate) fn emit_single_data_item(
                 emit_group_typedefs(out, &c_name, members, emitted_typedefs, true);
                 let td = group_typedef_name_for_layout(&c_name, members, true);
                 if item.name != "FILLER" && item.name != "PIC" {
-                    out.push_str(&format!(
-                        "#define {c_name} (*({td}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
-                    ));
+                    let alias_expr = format!("(*({td}*)&{c_redef}) /* REDEFINES {c_redef} */");
+                    emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                 }
                 // Emit #define macros for children of this REDEFINES group
                 // Note: REDEFINES group is a struct, not a union, so no .members wrapper
@@ -407,16 +405,16 @@ pub(crate) fn emit_single_data_item(
                     // REDEFINES + OCCURS: cast to pointer so it acts as an array base
                     let c_type = c_type_for_redefines_occurs_item(item);
                     if item.name != "FILLER" && item.name != "PIC" {
-                        out.push_str(&format!(
-                            "#define {c_name} (({c_type}*)&{c_redef}) /* REDEFINES {c_redef} OCCURS */\n"
-                        ));
+                        let alias_expr =
+                            format!("(({c_type}*)&{c_redef}) /* REDEFINES {c_redef} OCCURS */");
+                        emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                     }
                 } else {
                     // Scalar types: dereference cast for lvalue semantics
                     if item.name != "FILLER" && item.name != "PIC" {
-                        out.push_str(&format!(
-                            "#define {c_name} (*({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */\n"
-                        ));
+                        let alias_expr =
+                            format!("(*({c_type}*)&{c_redef}) /* REDEFINES {c_redef} */");
+                        emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                     }
                 }
             }
@@ -717,6 +715,12 @@ fn emit_fully_qualified_macro(
     out.push_str(&format!("#define {chain}__{c_name} {expr}\n"));
 }
 
+fn emit_unqualified_macro_guarded(out: &mut String, c_name: &str, expr: &str) {
+    out.push_str(&format!(
+        "#ifndef {c_name}\n#define {c_name} {expr}\n#endif\n"
+    ));
+}
+
 /// Emit #define macros for all elementary members in a group.
 pub(crate) fn emit_group_macros(
     out: &mut String,
@@ -881,7 +885,7 @@ pub(crate) fn emit_group_redefines(
                     let alias_expr =
                         format!("(({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */");
                     if emit_aliases && !duplicate_names.contains(&c_name) {
-                        out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                        emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                     }
                     emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                 }
@@ -894,7 +898,7 @@ pub(crate) fn emit_group_redefines(
                     let alias_expr =
                         format!("(*({td}*)&{qualified_target}) /* REDEFINES {c_redef} */");
                     if emit_aliases && !duplicate_names.contains(&c_name) {
-                        out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                        emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                     }
                     emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                     let mut child_qualifiers = qualifier_names.to_vec();
@@ -928,7 +932,7 @@ pub(crate) fn emit_group_redefines(
                             "(*(({c_type} (*)[{storage_size}])&{qualified_target})) /* REDEFINES {c_redef} */"
                         );
                         if emit_aliases && !duplicate_names.contains(&c_name) {
-                            out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                            emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                         }
                         emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                     } else if member.occurs.is_some() {
@@ -938,14 +942,14 @@ pub(crate) fn emit_group_redefines(
                             "(({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} OCCURS */"
                         );
                         if emit_aliases && !duplicate_names.contains(&c_name) {
-                            out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                            emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                         }
                         emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                     } else {
                         let alias_expr =
                             format!("(*({c_type}*)&{qualified_target}) /* REDEFINES {c_redef} */");
                         if emit_aliases && !duplicate_names.contains(&c_name) {
-                            out.push_str(&format!("#define {c_name} {alias_expr}\n"));
+                            emit_unqualified_macro_guarded(out, &c_name, &alias_expr);
                         }
                         emit_fully_qualified_macro(out, qualifier_names, &c_name, &alias_expr);
                     }

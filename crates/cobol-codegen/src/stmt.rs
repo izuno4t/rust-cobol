@@ -6836,6 +6836,33 @@ fn emit_fallthrough_debug_event(out: &mut String, pad: &str, name: &str, content
     ));
 }
 
+fn emit_display_numeric_storage(
+    out: &mut String,
+    c_expr: &str,
+    item: Option<&HirDataItem>,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    let Some((size, scale, is_signed)) = display_numeric_c_expr_metadata(c_expr, data_items) else {
+        return;
+    };
+    let c_ptr = display_numeric_const_ptr(c_expr);
+    if scale == 0 {
+        out.push_str(&format!(
+            "{pad}cobol_display_int(cobol_display_to_int64({c_ptr}, {size}));\n"
+        ));
+        return;
+    }
+    let pic_str = item
+        .map(|i| generate_pic_string(&i.data_type))
+        .unwrap_or_else(|| "9".repeat(size as usize));
+    let pic_len = pic_str.len();
+    let signed = if is_signed { "true" } else { "false" };
+    out.push_str(&format!(
+        "{pad}{{ CobolDecimal _display_dec; cobol_decimal_from_int(cobol_display_to_int64({c_ptr}, {size}), {scale}, &_display_dec); _display_dec.size = {size}; _display_dec.scale = {scale}; _display_dec.is_signed = {signed}; char _dbuf[64]; uint32_t _dlen = cobol_decimal_to_display(&_display_dec, (uint8_t*)_dbuf, 64, (const uint8_t*)\"{pic_str}\", {pic_len}); cobol_display_string((const uint8_t*)_dbuf, _dlen); }}\n"
+    ));
+}
+
 pub(crate) fn emit_display_operand(
     out: &mut String,
     expr: &HirExpr,
@@ -6851,7 +6878,9 @@ pub(crate) fn emit_display_operand(
             let is_group = item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
             let is_decimal = item.is_some_and(|i| needs_decimal(&i.data_type));
 
-            if is_decimal {
+            if display_numeric_c_expr_metadata(&c_expr, data_items).is_some() {
+                emit_display_numeric_storage(out, &c_expr, item, data_items, pad);
+            } else if is_decimal {
                 let pic_str = item
                     .map(|i| generate_pic_string(&i.data_type))
                     .unwrap_or_else(|| "9".to_string());
@@ -6886,14 +6915,6 @@ pub(crate) fn emit_display_operand(
                     .unwrap_or(1);
                 out.push_str(&format!(
                     "{pad}cobol_display_national((const uint16_t*){c_expr}, {size});\n"
-                ));
-            } else if let Some(disp_size) =
-                grp_display_size(&data_name_to_c_name(&data_ref.name), data_items)
-            {
-                let c_name_ptr = display_numeric_const_ptr(&c_expr);
-                out.push_str(&format!(
-                    "{pad}cobol_display_int(cobol_display_to_int64(\
-                     {c_name_ptr}, {disp_size}));\n"
                 ));
             } else {
                 let e = emit_int_compatible_expr(expr, data_items);
@@ -6965,7 +6986,9 @@ pub(crate) fn emit_display_operand(
                 item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
             let is_group = item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
             let is_decimal = item.is_some_and(|i| needs_decimal(&i.data_type));
-            if is_decimal {
+            if display_numeric_c_expr_metadata(&c_name, data_items).is_some() {
+                emit_display_numeric_storage(out, &c_name, item, data_items, pad);
+            } else if is_decimal {
                 // Display decimal using cobol_decimal_to_display
                 let pic_str = item
                     .map(|i| generate_pic_string(&i.data_type))
@@ -7002,12 +7025,6 @@ pub(crate) fn emit_display_operand(
                     .unwrap_or(1);
                 out.push_str(&format!(
                     "{pad}cobol_display_national((const uint16_t*){c_name}, {size});\n"
-                ));
-            } else if let Some(disp_size) = grp_display_size(&c_name, data_items) {
-                let c_name_ptr = display_numeric_const_ptr(&c_name);
-                out.push_str(&format!(
-                    "{pad}cobol_display_int(cobol_display_to_int64(\
-                     {c_name_ptr}, {disp_size}));\n"
                 ));
             } else {
                 let e = emit_int_compatible_expr(expr, data_items);
@@ -7172,6 +7189,8 @@ pub(crate) fn emit_display_operand(
                 out.push_str(&format!(
                     "{pad}cobol_display_string((const uint8_t*){c_access}, {size});\n"
                 ));
+            } else if display_numeric_c_expr_metadata(&c_access, data_items).is_some() {
+                emit_display_numeric_storage(out, &c_access, item, data_items, pad);
             } else if is_decimal {
                 let pic_str = item
                     .map(|i| generate_pic_string(&i.data_type))
@@ -7181,16 +7200,7 @@ pub(crate) fn emit_display_operand(
                     "{pad}{{ char _dbuf[64]; uint32_t _dlen = cobol_decimal_to_display(&{c_access}, (uint8_t*)_dbuf, 64, (const uint8_t*)\"{pic_str}\", {pic_len}); cobol_display_string((const uint8_t*)_dbuf, _dlen); }}\n"
                 ));
             } else {
-                let c_var = data_name_to_c_name(variable);
-                if let Some(disp_size) = grp_display_size(&c_var, data_items) {
-                    let c_access_ptr = display_numeric_const_ptr(&c_access);
-                    out.push_str(&format!(
-                        "{pad}cobol_display_int(cobol_display_to_int64(\
-                         {c_access_ptr}, {disp_size}));\n"
-                    ));
-                } else {
-                    out.push_str(&format!("{pad}cobol_display_int({c_access});\n"));
-                }
+                out.push_str(&format!("{pad}cobol_display_int({c_access});\n"));
             }
         }
     }
