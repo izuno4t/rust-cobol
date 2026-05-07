@@ -1,6 +1,6 @@
 # 製品レベルまでの残課題一覧
 
-更新日: 2026-03-27
+更新日: 2026-05-07
 
 過去の大半の項目は実装済みになったため、この文書は「まだ残っている課題」だけに整理した。
 JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBACK` など、以前の大きな欠落はここから外している。
@@ -11,19 +11,17 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
 - `中` - 一部実装済みだが、E2E 検証や機能範囲が不足している
 - `低` - 実用上の優先度は低いが、標準対応としては未完了
 
-## 高
+## 中
 
-### 1. Report Writer はまだスタブ
+### 1. Report Writer の帳票レイアウト対応は限定的
 
 - 状況:
-  `INITIATE` / `GENERATE` / `TERMINATE` は codegen されるが、
-  `crates/cobol-codegen/src/stmt.rs` ではコメント出力ベースのスタブ
-- 影響:
-  `REPORT SECTION` を使う本格的なレポート帳票処理はまだ実行できない
+  `INITIATE` / `GENERATE` / `TERMINATE` は codegen され、
+  `PAGE-COUNTER` / `LINE-COUNTER` の更新と `GENERATE` 対象行の出力を実行する
+- 制約:
+  `REPORT SECTION` の `SOURCE` / `COLUMN` / `LINE` などを使う本格的な帳票レイアウトはまだ限定的
 - 必要な対応:
-  `REPORT SECTION` の専用 HIR/runtime 設計と実処理の実装
-
-## 中
+  レポートグループの内容整形、桁位置制御、ページングを E2E で拡充する
 
 ### 2. VALIDATE の広い制約検証は限定的
 
@@ -59,9 +57,10 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
 - 対象:
   `CLASS-ID`、`METHOD-ID`、`INTERFACE-ID`、`INVOKE`、`FUNCTION-ID`、`TYPEDEF`
 - 状況:
-  IR や codegen 側の実装は入っているが、機能ごとのネイティブ実行保証はまだ薄い
+  `INVOKE` の runtime dispatch と null object 経路は実行テストされているが、
+  クラス/メソッド構文全体のネイティブ実行保証はまだ薄い
 - 影響:
-  パースや C 生成は通っても、実運用レベルの信頼性はまだ十分に示せていない
+  パースや C 生成は通っても、OOP プログラム全体の信頼性はまだ十分に示せていない
 - 必要な対応:
   小さな codegen テストではなく、実行まで含む E2E サンプルを揃える
 

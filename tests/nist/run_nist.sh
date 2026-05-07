@@ -1585,7 +1585,13 @@ run_all_modules() {
     while IFS= read -r module; do
         modules+=("$module")
     done < <(list_modules)
-    run_pipeline "$NIST_JOBS" "${modules[@]}"
+    snapshot_compiler_if_needed >/dev/null
+    echo "=== NIST CCVS 85 — module-by-module run ==="
+    for module in "${modules[@]}"; do
+        echo ""
+        echo "=== Module: $module ==="
+        run_pipeline 1 "$module"
+    done
 }
 
 run_compile_pipeline() {
@@ -1631,7 +1637,7 @@ run_module() {
         echo "Module $module: no programs found in $mod_dir"
         return
     }
-    run_pipeline "$NIST_JOBS" "$module"
+    run_pipeline 1 "$module"
 }
 
 show_summary() {

@@ -69,90 +69,33 @@ jobs:
           ci-logs/build
         if-no-files-found: warn
 
-  nist:
+  nist-module:
     runs-on: ubuntu-latest
     needs: build
-    if: ${{ false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - CM
+          - DB
+          - EX
+          - IC
+          - IF
+          - IX
+          - NC
+          - OB
+          - RL
+          - RW
+          - SG
+          - SM
+          - SQ
+          - ST
 
     steps:
     - uses: actions/checkout@v6
 
     - name: Prepare log directories
-      run: mkdir -p "${CI_LOG_ROOT}/nist"
-
-    - name: Cache cargo registry and build
-      uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
-
-    - name: Build release
-      shell: bash
-      run: |
-        set -euo pipefail
-        cargo build --release 2>&1 | tee "${CI_LOG_ROOT}/nist/cargo-build-release.log"
-
-    - name: Extract NIST test suite
-      shell: bash
-      run: |
-        set -euo pipefail
-        tar -xzf tests/nist/newcob.val.tar.gz -C tests/nist/ 2>&1 | tee "${CI_LOG_ROOT}/nist/extract-nist.log"
-
-    - name: Prepare NIST programs
-      shell: bash
-      run: |
-        set -euo pipefail
-        make nist-prepare 2>&1 | tee "${CI_LOG_ROOT}/nist/make-nist-prepare.log"
-
-    - name: Run NIST CCVS 85
-      shell: bash
-      run: |
-        set -euo pipefail
-        make nist-run 2>&1 | tee "${CI_LOG_ROOT}/nist/make-nist-run.log"
-
-    - name: Verify 100% pass rate
-      shell: bash
-      run: |
-        set -euo pipefail
-        summary=$(make nist-summary 2>&1)
-        echo "$summary"
-        printf '%s\n' "$summary" | tee "${CI_LOG_ROOT}/nist/make-nist-summary.log"
-        total_line=$(echo "$summary" | grep '^TOTAL')
-        total=$(echo "$total_line" | awk '{print $2}')
-        pass=$(echo "$total_line" | awk '{print $3}')
-        fail=$(echo "$total_line" | awk '{print $4}')
-        ready=$(echo "$total_line" | awk '{print $5}')
-        cerr=$(echo "$total_line" | awk '{print $6}')
-        rerr=$(echo "$total_line" | awk '{print $7}')
-        if [ "$pass" -ne "$total" ] || [ "$fail" -ne 0 ] || [ "$ready" -ne 0 ] || [ "$cerr" -ne 0 ] || [ "$rerr" -ne 0 ]; then
-          echo "::error::NIST CCVS 85 regression: $pass/$total PASS, $fail FAIL, $ready Ready, $cerr CErr, $rerr RErr"
-          exit 1
-        fi
-
-    - name: Upload Linux NIST logs and results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: linux-nist-logs-and-results
-        path: |
-          ci-logs/nist
-          .nist/results
-        if-no-files-found: warn
-
-  nist-cm:
-    runs-on: ubuntu-latest
-    needs: build
-
-    steps:
-    - uses: actions/checkout@v6
-
-    - name: Prepare log directories
-      run: mkdir -p "${CI_LOG_ROOT}/nist-cm"
+      run: mkdir -p "${CI_LOG_ROOT}/nist-${{ matrix.module }}"
 
     - name: Cache cargo registry and build
       uses: actions/cache@v5
@@ -168,64 +111,51 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        cargo build --release 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/cargo-build-release.log"
+        cargo build --release 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/cargo-build-release.log"
 
     - name: Extract NIST test suite
       shell: bash
       run: |
         set -euo pipefail
-        tar -xzf tests/nist/newcob.val.tar.gz -C tests/nist/ 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/extract-nist.log"
+        tar -xzf tests/nist/newcob.val.tar.gz -C tests/nist/ 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/extract-nist.log"
 
     - name: Prepare NIST programs
       shell: bash
       run: |
         set -euo pipefail
-        make nist-prepare 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/make-nist-prepare.log"
+        make nist-prepare 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/make-nist-prepare.log"
 
-    - name: Diagnose NIST CCVS 85 CM102M communication fixture
+    - name: Run NIST CCVS 85 module
       shell: bash
       run: |
         set -euo pipefail
-        make nist-run MODULE=CM PROGRAM=CM102M NIST_JOBS=1 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/diagnose-cm102m-prepare.log"
-        (
-          cd /tmp/nc85/CM/CM102M
-          COBOL_COMM_DEBUG=1 \
-          COBOL_COMM_SCRIPT="${GITHUB_WORKSPACE}/tests/nist/fixtures/comm/CM102M.comm" \
-          timeout -k 5s 20s "${GITHUB_WORKSPACE}/.nist/work/run/CM/CM102M/nist_CM102M"
-        ) > "${CI_LOG_ROOT}/nist-cm/diagnose-cm102m-direct.log" 2>&1 || true
-        sed -n '1,200p' "${CI_LOG_ROOT}/nist-cm/diagnose-cm102m-direct.log"
+        make nist-run MODULE=${{ matrix.module }} NIST_JOBS=1 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/make-nist-run.log"
 
-    - name: Run NIST CCVS 85 CM module
-      shell: bash
-      run: |
-        set -euo pipefail
-        make nist-run MODULE=CM 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/make-nist-run-cm.log"
-
-    - name: Verify NIST CCVS 85 CM pass rate
+    - name: Verify NIST CCVS 85 module pass rate
       shell: bash
       run: |
         set -euo pipefail
         summary=$(make nist-summary 2>&1)
         echo "$summary"
-        printf '%s\n' "$summary" | tee "${CI_LOG_ROOT}/nist-cm/make-nist-summary.log"
-        cm_line=$(echo "$summary" | grep '^CM')
-        total=$(echo "$cm_line" | awk '{print $2}')
-        pass=$(echo "$cm_line" | awk '{print $3}')
-        fail=$(echo "$cm_line" | awk '{print $4}')
-        ready=$(echo "$cm_line" | awk '{print $5}')
-        cerr=$(echo "$cm_line" | awk '{print $6}')
-        rerr=$(echo "$cm_line" | awk '{print $7}')
+        printf '%s\n' "$summary" | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/make-nist-summary.log"
+        module_line=$(echo "$summary" | grep '^${{ matrix.module }}')
+        total=$(echo "$module_line" | awk '{print $2}')
+        pass=$(echo "$module_line" | awk '{print $3}')
+        fail=$(echo "$module_line" | awk '{print $4}')
+        ready=$(echo "$module_line" | awk '{print $5}')
+        cerr=$(echo "$module_line" | awk '{print $6}')
+        rerr=$(echo "$module_line" | awk '{print $7}')
         if [ "$pass" -ne "$total" ] || [ "$fail" -ne 0 ] || [ "$ready" -ne 0 ] || [ "$cerr" -ne 0 ] || [ "$rerr" -ne 0 ]; then
-          echo "::error::NIST CCVS 85 CM regression: $pass/$total PASS, $fail FAIL, $ready Ready, $cerr CErr, $rerr RErr"
+          echo "::error::NIST CCVS 85 ${{ matrix.module }} regression: $pass/$total PASS, $fail FAIL, $ready Ready, $cerr CErr, $rerr RErr"
           exit 1
         fi
 
-    - name: Upload Linux NIST CM logs and results
+    - name: Upload Linux NIST module logs and results
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: linux-nist-cm-logs-and-results
+        name: linux-nist-${{ matrix.module }}-logs-and-results
         path: |
-          ci-logs/nist-cm
-          .nist/results/CM
+          ci-logs/nist-${{ matrix.module }}
+          .nist/results/${{ matrix.module }}
         if-no-files-found: warn

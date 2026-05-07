@@ -2018,8 +2018,9 @@ fn emit_classes(out: &mut String, classes: &[cobol_hir::HirClass]) {
         // Emit constructor (NEW)
         out.push_str(&format!("{c_name}* {c_name}_new(void) {{\n"));
         out.push_str(&format!(
-            "    {c_name}* obj = ({c_name}*)malloc(sizeof({c_name}));\n"
+            "    {c_name}* obj = ({c_name}*)calloc(1, sizeof({c_name}));\n"
         ));
+        out.push_str("    if (!obj) return NULL;\n");
         out.push_str(&format!("    obj->_vtable = &{c_name}_vtable_instance;\n"));
         out.push_str("    return obj;\n");
         out.push_str("}\n\n");

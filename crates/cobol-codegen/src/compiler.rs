@@ -498,7 +498,7 @@ PROCEDURE DIVISION.
 ";
         let c_code = parse_lower_generate(src);
         assert!(
-            c_code.contains("cobol_invoke"),
+            c_code.contains("cobol_invoke((void*)MY_OBJ"),
             "Generated C should contain cobol_invoke call: {c_code}"
         );
         assert!(
@@ -640,6 +640,10 @@ PROCEDURE DIVISION.
         assert!(
             c_code.contains("MY_CLASS_new"),
             "Should generate constructor"
+        );
+        assert!(
+            c_code.contains("calloc(1, sizeof(MY_CLASS))"),
+            "Should zero-initialize class instances"
         );
         assert!(
             c_code.contains("MY_CLASS_DO_WORK"),

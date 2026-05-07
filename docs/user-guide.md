@@ -156,6 +156,7 @@ The project is moving quickly, so this is intentionally high-level.
 - `SCREEN SECTION`
 - `SORT ... INPUT PROCEDURE` / `OUTPUT PROCEDURE`
 - Object-oriented syntax such as `CLASS-ID`, `METHOD-ID`, and `INTERFACE-ID`
+  - `INVOKE` reaches runtime dispatch and null-object handling in native tests
 - `FUNCTION-ID` and `TYPEDEF`
 - `COMMUNICATION SECTION`
 
@@ -164,7 +165,8 @@ The project is moving quickly, so this is intentionally high-level.
 - `VALIDATE` performs basic generated PICTURE-derived validation for numeric
   storage, but broader COBOL 2014 validation constraints are still limited
 - Report writer statements such as `INITIATE`, `GENERATE`, and `TERMINATE`
-  are parsed/code-generated as placeholders rather than full runtime behavior
+  update report counters and let `GENERATE` emit the generated report group
+  line; full report layout formatting is still limited
 
 See [docs/cobol-standards.md](./cobol-standards.md) for a standards-oriented
 view and [docs/production-gaps.md](./production-gaps.md) for the remaining

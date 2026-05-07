@@ -3,9 +3,9 @@
 ## Overview
 
 `rust-cobol` is best understood as a COBOL-85-first compiler with selected
-later-standard features layered on top. Support is not currently enforced by a
-strict command-line standards mode, so this document describes practical
-implementation status rather than a parser gate.
+later-standard features layered on top. The CLI exposes a standards mode for
+known later-standard constructs, while this document describes practical
+implementation status rather than complete clause-by-clause conformance.
 
 Status meanings used below:
 
@@ -44,8 +44,8 @@ Status meanings used below:
 | --- | --- | --- |
 | `SORT` / `MERGE` basic flow | Partial | Core support exists |
 | `SORT ... INPUT PROCEDURE` / `OUTPUT PROCEDURE` | Partial | Not yet documented as production-complete |
-| Report writer statements | Experimental | `INITIATE`, `GENERATE`, `TERMINATE` currently emit placeholders rather than full report runtime behavior |
-| `REPORT SECTION` | Experimental | Parsed/lowered structure is not yet a full report writer implementation |
+| Report writer statements | Partial | `INITIATE`, `GENERATE`, and `TERMINATE` update report counters; `GENERATE` emits the generated report group line |
+| `REPORT SECTION` | Partial | Parsed/lowered with basic report lifecycle behavior; full layout formatting remains limited |
 
 ### Legacy and niche modules
 
@@ -63,7 +63,7 @@ Status meanings used below:
 | Free-format source | Implemented | Also exposed directly by the CLI |
 | Intrinsic functions | Partial | Many are implemented, but coverage is not yet exhaustive |
 | National data (`PIC N`) | Implemented | Includes codegen/runtime support |
-| Object-oriented syntax (`CLASS-ID`, `METHOD-ID`, `INVOKE`) | Partial | Front-end/codegen support exists, but end-to-end coverage is still limited |
+| Object-oriented syntax (`CLASS-ID`, `METHOD-ID`, `INVOKE`) | Partial | `INVOKE` reaches runtime dispatch and null-object handling in native tests; class syntax coverage remains limited |
 | `INTERFACE-ID` | Partial | Present in the IR model, not yet documented as complete |
 | `FUNCTION-ID` | Partial | Lowering/codegen support exists; more native execution coverage is needed |
 | XML (`XML GENERATE` / `XML PARSE`) | Implemented | Parser, lowering, codegen, and runtime support exist |
@@ -96,7 +96,7 @@ Status meanings used below:
 
 ## Notes
 
-- This document reflects the current repository state as of 2026-03-27
+- This document reflects the current repository state as of 2026-05-07
 - For practical limitations that still block production use, see
   [docs/production-gaps.md](./production-gaps.md)
 - For everyday usage and CLI examples, see [docs/user-guide.md](./user-guide.md)

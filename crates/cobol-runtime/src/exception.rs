@@ -228,6 +228,7 @@ pub unsafe extern "C" fn cobol_invoke(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
 
     #[test]
     fn test_exception_code_from_name() {
@@ -247,6 +248,53 @@ mod tests {
             ExceptionCode::from_name("UNKNOWN"),
             ExceptionCode::EcUserException
         );
+    }
+
+    unsafe extern "C" fn test_dispatch(
+        _obj: *mut std::ffi::c_void,
+        method: *const c_char,
+        args: *mut i64,
+        argc: i32,
+    ) -> i64 {
+        let method = unsafe { std::ffi::CStr::from_ptr(method) }
+            .to_string_lossy()
+            .into_owned();
+        if method == "ADD" && argc == 2 {
+            let args = unsafe { std::slice::from_raw_parts(args, argc as usize) };
+            return args[0] + args[1];
+        }
+        -1
+    }
+
+    #[repr(C)]
+    struct TestVtable {
+        dispatch: unsafe extern "C" fn(*mut std::ffi::c_void, *const c_char, *mut i64, i32) -> i64,
+    }
+
+    #[repr(C)]
+    struct TestObject {
+        vtable: *const TestVtable,
+    }
+
+    #[test]
+    fn test_cobol_invoke_dispatches_vtable_method() {
+        let vtable = TestVtable {
+            dispatch: test_dispatch,
+        };
+        let mut object = TestObject { vtable: &vtable };
+        let method = CString::new("ADD").unwrap();
+        let mut args = [20, 22];
+
+        let result = unsafe {
+            cobol_invoke(
+                (&mut object as *mut TestObject).cast(),
+                method.as_ptr(),
+                args.as_mut_ptr(),
+                args.len() as i32,
+            )
+        };
+
+        assert_eq!(result, 42);
     }
 
     #[test]

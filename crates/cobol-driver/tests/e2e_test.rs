@@ -2791,7 +2791,7 @@ PROCEDURE DIVISION.
 
     assert_eq!(code, 0, "stderr: {stderr}");
     let lines: Vec<_> = stdout.lines().map(str::trim).collect();
-    assert_eq!(lines, vec!["2", "1"]);
+    assert_eq!(lines, vec!["DETAIL_LINE", "DETAIL_LINE", "2", "1"]);
 }
 
 #[test]
@@ -2816,7 +2816,7 @@ PROCEDURE DIVISION.
 
     assert_eq!(code, 0, "stderr: {stderr}");
     let lines: Vec<_> = stdout.lines().map(str::trim).collect();
-    assert_eq!(lines, vec!["0", "6"]);
+    assert_eq!(lines, vec!["0", "DETAIL_LINE", "6"]);
 }
 
 #[test]
@@ -2844,7 +2844,38 @@ PROCEDURE DIVISION.
 
     assert_eq!(code, 0, "stderr: {stderr}");
     let lines: Vec<_> = stdout.lines().map(str::trim).collect();
-    assert_eq!(lines, vec!["2", "2"]);
+    assert_eq!(
+        lines,
+        vec!["DETAIL_LINE", "DETAIL_LINE", "DETAIL_LINE", "2", "2"]
+    );
+}
+
+#[test]
+fn test_native_invoke_null_object_returns_zero_without_crashing() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INVOKE-NULL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 MY-OBJ USAGE POINTER.
+01 MY-RESULT PIC 9(5).
+PROCEDURE DIVISION.
+    INVOKE MY-OBJ \"DO-SOMETHING\" RETURNING MY-RESULT.
+    DISPLAY MY-RESULT.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(
+        code, 0,
+        "INVOKE on a null object should return normally: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stderr.contains("COBOL INVOKE: null object reference"),
+        "runtime should report the null object path: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout.trim(), "0");
 }
 
 #[test]
@@ -9366,6 +9397,10 @@ PROCEDURE DIVISION.
     let c_code = compile_to_c(src);
     assert!(c_code.contains("INITIATE"), "should have INITIATE comment");
     assert!(c_code.contains("GENERATE"), "should have GENERATE comment");
+    assert!(
+        c_code.contains("printf(\"DETAIL_LINE\\n\")"),
+        "GENERATE should emit a visible report line, got:\n{c_code}"
+    );
     assert!(
         c_code.contains("TERMINATE"),
         "should have TERMINATE comment"

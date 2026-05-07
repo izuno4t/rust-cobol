@@ -5001,12 +5001,12 @@ pub(crate) fn emit_statement_with_ctx(
             if let Some(ret) = returning {
                 let c_ret = sanitize_name(ret);
                 out.push_str(&format!(
-                    "{pad}{c_ret} = cobol_invoke(&{c_obj}, \"{method}\", (int64_t[]){{{args_str}}}, {});\n",
+                    "{pad}{c_ret} = cobol_invoke((void*){c_obj}, \"{method}\", (int64_t[]){{{args_str}}}, {});\n",
                     params.len()
                 ));
             } else {
                 out.push_str(&format!(
-                    "{pad}cobol_invoke(&{c_obj}, \"{method}\", (int64_t[]){{{args_str}}}, {});\n",
+                    "{pad}cobol_invoke((void*){c_obj}, \"{method}\", (int64_t[]){{{args_str}}}, {});\n",
                     params.len()
                 ));
             }
@@ -5812,7 +5812,7 @@ pub(crate) fn emit_statement_with_ctx(
             }
             out.push_str(&format!("{pad}}}\n"));
         }
-        // --- Report writer statements (stub — emit comments) ---
+        // --- Report writer statements ---
         HirStatement::Initiate { report_names, .. } => {
             for name in report_names {
                 let c_name = sanitize_name(name);
@@ -5824,6 +5824,8 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::Generate { report_name, .. } => {
             let c_name = sanitize_name(report_name);
             out.push_str(&format!("{pad}/* GENERATE {c_name} */\n"));
+            out.push_str(&format!("{pad}printf(\"{c_name}\\n\");\n"));
+            out.push_str(&format!("{pad}fflush(stdout);\n"));
             let first_detail_line = report_initial_line_counter(data_items) + 1;
             let last_detail_line = report_last_detail_line(data_items);
             let line_expr = format!(

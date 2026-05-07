@@ -39,14 +39,18 @@ make nist-prepare
 make nist-compile
 make nist-compile-errors
 make nist-run
-make nist-run NIST_JOBS=4
 make nist-run MODULE=NC
 make nist-run MODULE=NC PROGRAM=NC101A
 make nist-summary
 ```
 
-The same `make nist-prepare`, `make nist-compile`, and `make nist-run` flow is intended for
-both local execution and CI jobs.
+The same `make nist-prepare`, `make nist-compile`, and `make nist-run`
+flow is intended for both local execution and CI jobs.
+
+`make nist-run` executes each NIST module as its own sequential run and
+prints the full cross-module summary after all modules finish. A module
+run uses one active process at a time so programs from the same module
+do not execute in parallel.
 
 `make nist-compile` runs only the compile phase and then collects the
 module summaries. This is the primary gate for detecting NIST
@@ -56,9 +60,9 @@ module summaries. This is the primary gate for detecting NIST
 root-cause-like compiler message classes. Use it after `make nist-compile`
 to decide which failures should become shared Rust regression tests.
 
-`NIST_JOBS` is optional and controls the global parallelism for all
-three phases: compile, execute, and collect. Each program runs in its
-own isolated work directory.
+`NIST_JOBS` is still used by compile-only and audit-oriented workflows.
+The primary `make nist-run` path intentionally ignores parallelism for
+module runs so local behavior matches CI module jobs.
 
 Compilation is cached by default per program. If the preprocessed source,
 compiler binary, and `COPYLIB` inputs are unchanged, `run_nist.sh` reuses
