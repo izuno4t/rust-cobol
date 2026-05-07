@@ -182,6 +182,12 @@ jobs:
         set -euo pipefail
         make nist-prepare 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/make-nist-prepare.log"
 
+    - name: Diagnose NIST CCVS 85 CM102M communication fixture
+      shell: bash
+      run: |
+        set -euo pipefail
+        COBOL_COMM_DEBUG=1 make nist-run MODULE=CM PROGRAM=CM102M NIST_JOBS=1 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/diagnose-cm102m-comm.log"
+
     - name: Run NIST CCVS 85 CM module
       shell: bash
       run: |
