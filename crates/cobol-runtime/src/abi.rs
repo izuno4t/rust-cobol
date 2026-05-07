@@ -300,6 +300,9 @@ pub fn emit_c_declarations(out: &mut String) {
     out.push_str("/* COBOL 2014+ runtime declarations */\n");
     out.push_str("extern void cobol_validate(const char* target_name);\n");
     out.push_str(
+        "extern uint32_t cobol_validate_item(const char* target_name, const void* value_ptr, uint32_t value_len, uint32_t value_kind, const uint8_t* picture_ptr, uint32_t picture_len);\n",
+    );
+    out.push_str(
         "extern uint32_t cobol_json_generate(const void* fields, uint32_t field_count, uint8_t* output, uint32_t output_len);\n",
     );
     out.push_str(

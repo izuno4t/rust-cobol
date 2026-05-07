@@ -260,10 +260,12 @@ fn json_escape_string(out: &mut String, s: &str) {
     }
 }
 
-/// Validate a data item (stub for COBOL 2014 VALIDATE statement).
+use crate::decimal::CobolDecimal;
+
+/// Validate a data item by name only.
 ///
-/// Currently a no-op stub. A full implementation would check
-/// PICTURE/VALUE constraints.
+/// This legacy entry point is kept for older generated code. New code should
+/// call `cobol_validate_item`, which receives the actual storage and metadata.
 ///
 /// # Safety
 /// `target_name` must be a valid, null-terminated C string pointer, or null.
@@ -272,8 +274,201 @@ pub unsafe extern "C" fn cobol_validate(target_name: *const std::os::raw::c_char
     if target_name.is_null() {
         return;
     }
-    // Stub: validation always succeeds for now
     let _name = std::ffi::CStr::from_ptr(target_name);
+}
+
+/// Validate a data item against its generated PICTURE-derived storage contract.
+///
+/// Returns 0 when the value is valid, or a non-zero status when invalid:
+/// 1 = invalid argument, 2 = numeric content mismatch, 3 = numeric range/scale.
+///
+/// `value_kind`:
+/// - 0 = byte/alphanumeric/group storage: currently always valid when present.
+/// - 1 = display numeric bytes.
+/// - 2 = binary integer.
+/// - 3 = CobolDecimal.
+///
+/// # Safety
+/// Pointers must be valid for the corresponding lengths. `target_name` and
+/// `picture_ptr` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_validate_item(
+    target_name: *const std::os::raw::c_char,
+    value_ptr: *const std::ffi::c_void,
+    value_len: u32,
+    value_kind: u32,
+    picture_ptr: *const u8,
+    picture_len: u32,
+) -> u32 {
+    if !target_name.is_null() {
+        let _ = std::ffi::CStr::from_ptr(target_name);
+    }
+    if value_ptr.is_null() {
+        return 1;
+    }
+
+    let picture = if picture_ptr.is_null() || picture_len == 0 {
+        String::new()
+    } else {
+        let bytes = std::slice::from_raw_parts(picture_ptr, picture_len as usize);
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    let metadata = ValidationPicture::parse(&picture);
+
+    match value_kind {
+        0 => 0,
+        1 => {
+            let bytes = std::slice::from_raw_parts(value_ptr.cast::<u8>(), value_len as usize);
+            validate_display_numeric(bytes, metadata)
+        }
+        2 => {
+            if value_len < std::mem::size_of::<i64>() as u32 {
+                return 1;
+            }
+            let value = *(value_ptr.cast::<i64>());
+            validate_integral_numeric(value, metadata)
+        }
+        3 => {
+            if value_len < std::mem::size_of::<CobolDecimal>() as u32 {
+                return 1;
+            }
+            let value = *(value_ptr.cast::<CobolDecimal>());
+            validate_decimal_numeric(value, metadata)
+        }
+        _ => 1,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ValidationPicture {
+    digits: u32,
+    scale: u32,
+    signed: bool,
+}
+
+impl ValidationPicture {
+    fn parse(picture: &str) -> Self {
+        let mut result = Self::default();
+        let chars: Vec<char> = picture.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let ch = chars[i].to_ascii_uppercase();
+            match ch {
+                'S' => {
+                    result.signed = true;
+                    i += 1;
+                }
+                'V' | '.' => {
+                    i += 1;
+                }
+                '9' | 'Z' | '*' => {
+                    let repeat = parse_picture_repeat(&chars, i + 1).unwrap_or(1);
+                    result.digits = result.digits.saturating_add(repeat);
+                    if has_decimal_marker_before(&chars, i) {
+                        result.scale = result.scale.saturating_add(repeat);
+                    }
+                    i = skip_picture_repeat(&chars, i + 1);
+                }
+                _ => i += 1,
+            }
+        }
+        result
+    }
+}
+
+fn parse_picture_repeat(chars: &[char], start: usize) -> Option<u32> {
+    if chars.get(start) != Some(&'(') {
+        return None;
+    }
+    let mut value = 0u32;
+    let mut saw_digit = false;
+    let mut i = start + 1;
+    while let Some(ch) = chars.get(i) {
+        if *ch == ')' {
+            return saw_digit.then_some(value);
+        }
+        if let Some(digit) = ch.to_digit(10) {
+            saw_digit = true;
+            value = value.saturating_mul(10).saturating_add(digit);
+        } else {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+fn skip_picture_repeat(chars: &[char], start: usize) -> usize {
+    if chars.get(start) != Some(&'(') {
+        return start;
+    }
+    chars[start + 1..]
+        .iter()
+        .position(|ch| *ch == ')')
+        .map_or(start, |offset| start + offset + 2)
+}
+
+fn has_decimal_marker_before(chars: &[char], index: usize) -> bool {
+    chars[..index].iter().any(|ch| matches!(ch, 'V' | '.'))
+}
+
+fn validate_display_numeric(bytes: &[u8], metadata: ValidationPicture) -> u32 {
+    let mut digits = 0u32;
+    let mut sign_count = 0u32;
+    for &byte in bytes {
+        match byte {
+            b'0'..=b'9' => digits += 1,
+            b' ' => {}
+            b'+' | b'-' if metadata.signed => sign_count += 1,
+            _ => return 2,
+        }
+    }
+    if sign_count > 1 {
+        return 2;
+    }
+    if metadata.digits > 0 && digits > metadata.digits {
+        return 3;
+    }
+    0
+}
+
+fn validate_integral_numeric(value: i64, metadata: ValidationPicture) -> u32 {
+    if !metadata.signed && value < 0 {
+        return 3;
+    }
+    if metadata.digits == 0 {
+        return 0;
+    }
+    let limit = pow10_u128(metadata.digits);
+    if (value as i128).unsigned_abs() >= limit {
+        return 3;
+    }
+    0
+}
+
+fn validate_decimal_numeric(value: CobolDecimal, metadata: ValidationPicture) -> u32 {
+    if !metadata.signed && value.value < 0 {
+        return 3;
+    }
+    if metadata.scale > 0 && value.scale > metadata.scale as i32 {
+        return 3;
+    }
+    if metadata.digits == 0 {
+        return 0;
+    }
+    let limit = pow10_u128(metadata.digits);
+    if (value.value as i128).unsigned_abs() >= limit {
+        return 3;
+    }
+    0
+}
+
+fn pow10_u128(exp: u32) -> u128 {
+    let mut value = 1u128;
+    for _ in 0..exp.min(38) {
+        value = value.saturating_mul(10);
+    }
+    value
 }
 
 #[cfg(test)]
@@ -453,5 +648,54 @@ mod tests {
             cobol_validate(name.as_ptr());
         }
         // Should not panic
+    }
+
+    #[test]
+    fn test_validate_display_numeric_rejects_alpha() {
+        let name = std::ffi::CString::new("WS-NUM").unwrap();
+        let picture = b"9(3)";
+        let value = b"12A";
+        let status = unsafe {
+            cobol_validate_item(
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len() as u32,
+                1,
+                picture.as_ptr(),
+                picture.len() as u32,
+            )
+        };
+        assert_eq!(status, 2);
+    }
+
+    #[test]
+    fn test_validate_integer_checks_unsigned_picture_range() {
+        let name = std::ffi::CString::new("WS-NUM").unwrap();
+        let picture = b"9(3)";
+        let value = 999i64;
+        let status = unsafe {
+            cobol_validate_item(
+                name.as_ptr(),
+                (&value as *const i64).cast(),
+                std::mem::size_of::<i64>() as u32,
+                2,
+                picture.as_ptr(),
+                picture.len() as u32,
+            )
+        };
+        assert_eq!(status, 0);
+
+        let value = 1000i64;
+        let status = unsafe {
+            cobol_validate_item(
+                name.as_ptr(),
+                (&value as *const i64).cast(),
+                std::mem::size_of::<i64>() as u32,
+                2,
+                picture.as_ptr(),
+                picture.len() as u32,
+            )
+        };
+        assert_eq!(status, 3);
     }
 }

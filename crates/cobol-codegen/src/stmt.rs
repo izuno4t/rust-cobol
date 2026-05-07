@@ -5053,10 +5053,7 @@ pub(crate) fn emit_statement_with_ctx(
         }
         // --- COBOL 2014+ statements ---
         HirStatement::Validate { target, .. } => {
-            let c_target = sanitize_name(target);
-            out.push_str(&format!(
-                "{pad}cobol_validate(\"{c_target}\"); /* VALIDATE */\n"
-            ));
+            emit_validate_statement(out, target, data_items, &pad);
         }
         HirStatement::JsonGenerate { source, target, .. } => {
             let c_source = sanitize_name(source);
@@ -11798,6 +11795,96 @@ pub(crate) fn emit_on_exception(
         }
         out.push_str(&format!("{pad}}}\n"));
     }
+}
+
+fn emit_validate_statement(out: &mut String, target: &str, data_items: &[HirDataItem], pad: &str) {
+    let c_target = sanitize_name(target);
+    let Some(item) = find_data_item_by_c_name(&c_target, data_items)
+        .or_else(|| find_data_item(&c_target, data_items))
+    else {
+        out.push_str(&format!(
+            "{pad}cobol_validate(\"{c_target}\"); /* VALIDATE */\n"
+        ));
+        return;
+    };
+
+    let picture = item.picture.as_deref().unwrap_or("");
+    let escaped_pic = escape_c_string(picture);
+    let pic_len = picture.len();
+    let target_name = escape_c_string(target);
+    let (ptr_expr, len_expr, kind) = validate_storage_args(&c_target, item, data_items);
+    out.push_str(&format!(
+        "{pad}if (cobol_validate_item(\"{target_name}\", {ptr_expr}, {len_expr}, {kind}, (const uint8_t*)\"{escaped_pic}\", {pic_len}) != 0) {{ cobol_raise(\"EC-DATA-INCOMPATIBLE\"); }} /* VALIDATE */\n"
+    ));
+}
+
+fn validate_storage_args(
+    c_target: &str,
+    item: &HirDataItem,
+    data_items: &[HirDataItem],
+) -> (String, String, u32) {
+    match &item.data_type {
+        HirType::Alphanumeric { size } => (format!("(const void*){c_target}"), size.to_string(), 0),
+        HirType::National { size } => (
+            format!("(const void*){c_target}"),
+            format!("{}", size * 2),
+            0,
+        ),
+        HirType::Group { .. } => (
+            format!("(const void*){c_target}._bytes"),
+            format!("sizeof({c_target}._bytes)"),
+            0,
+        ),
+        _ if item.is_numeric_edited || validate_numeric_uses_display_storage(item, data_items) => (
+            format!("(const void*){c_target}"),
+            find_data_item_size(c_target, data_items).to_string(),
+            1,
+        ),
+        HirType::Numeric { decimal_places, .. } | HirType::Comp3 { decimal_places, .. }
+            if *decimal_places > 0 =>
+        {
+            (
+                format!("(const void*)&{c_target}"),
+                format!("sizeof({c_target})"),
+                3,
+            )
+        }
+        HirType::Numeric { .. }
+        | HirType::Comp3 { .. }
+        | HirType::Binary { .. }
+        | HirType::Index => (
+            format!("(const void*)&{c_target}"),
+            format!("sizeof({c_target})"),
+            2,
+        ),
+        HirType::Boolean | HirType::FloatShort | HirType::FloatLong | HirType::FloatExtended => (
+            format!("(const void*)&{c_target}"),
+            format!("sizeof({c_target})"),
+            0,
+        ),
+        HirType::Pointer => (
+            format!("(const void*)&{c_target}"),
+            format!("sizeof({c_target})"),
+            0,
+        ),
+    }
+}
+
+fn validate_numeric_uses_display_storage(item: &HirDataItem, data_items: &[HirDataItem]) -> bool {
+    if !matches!(item.data_type, HirType::Numeric { .. }) {
+        return false;
+    }
+    item.sign.is_some_and(|sign| sign.separate)
+        || data_items.iter().any(|other| {
+            other
+                .redefines
+                .as_ref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(&item.name))
+                && matches!(
+                    other.data_type,
+                    HirType::Alphanumeric { .. } | HirType::Group { .. }
+                )
+        })
 }
 
 /// Emit an expression as a numeric C value, auto-converting CobolDecimal

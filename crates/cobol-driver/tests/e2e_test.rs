@@ -6851,6 +6851,51 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_validate_valid_numeric_runs() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VALOK.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NUM PIC 9(5) VALUE 12345.
+PROCEDURE DIVISION.
+    VALIDATE WS-NUM.
+    DISPLAY \"OK\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_validate_rejects_invalid_display_numeric_storage() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VALBAD.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NUM PIC 9(3) VALUE 123.
+01 WS-RAW REDEFINES WS-NUM PIC X(3).
+PROCEDURE DIVISION.
+    MOVE \"12A\" TO WS-RAW.
+    VALIDATE WS-NUM.
+    DISPLAY \"UNREACHED\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_ne!(code, 0, "VALIDATE should reject invalid storage");
+    assert!(
+        stderr.contains("EC-DATA-INCOMPATIBLE") || stderr.contains("COBOL EXCEPTION"),
+        "stderr should report validation exception, got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("UNREACHED"),
+        "execution should not continue after failed VALIDATE"
+    );
+}
+
+#[test]
 fn test_xml_generate_parse() {
     let src = "\
 IDENTIFICATION DIVISION.

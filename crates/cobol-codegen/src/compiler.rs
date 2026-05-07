@@ -887,8 +887,12 @@ PROCEDURE DIVISION.
 
         let c_code = generate_c(&hir);
         assert!(
-            c_code.contains("cobol_validate"),
-            "VALIDATE should generate cobol_validate call"
+            c_code.contains("cobol_validate_item"),
+            "VALIDATE should generate metadata-aware cobol_validate_item call"
+        );
+        assert!(
+            c_code.contains("EC-DATA-INCOMPATIBLE"),
+            "failed VALIDATE should raise EC-DATA-INCOMPATIBLE"
         );
     }
 

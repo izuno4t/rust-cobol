@@ -74,7 +74,7 @@ Status meanings used below:
 | --- | --- | --- |
 | JSON (`JSON GENERATE` / `JSON PARSE`) | Implemented | Parser, lowering, codegen, and runtime support exist |
 | `TYPEDEF` | Partial | Code generation is present, but usage coverage is still limited |
-| `VALIDATE` | Experimental | Lowers and generates runtime calls, but the runtime implementation is still a no-op |
+| `VALIDATE` | Partial | Performs generated PICTURE-derived storage validation for basic numeric cases; broader constraint coverage remains limited |
 | `ALLOCATE` / `FREE` | Partial | Codegen support exists; not yet treated as fully production-ready |
 
 ## COBOL 2023

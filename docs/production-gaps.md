@@ -13,17 +13,7 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
 
 ## 高
 
-### 1. VALIDATE 文はランタイムが no-op
-
-- 状況:
-  `VALIDATE` 自体は parser / HIR / codegen まで通るが、
-  `crates/cobol-runtime/src/json.rs` の `cobol_validate` は no-op 実装
-- 影響:
-  `VALIDATE` を使っても実際の検証処理は行われない
-- 必要な対応:
-  `PICTURE`、`VALUE`、必要なら使用文脈に応じた制約チェックの実装
-
-### 2. Report Writer はまだスタブ
+### 1. Report Writer はまだスタブ
 
 - 状況:
   `INITIATE` / `GENERATE` / `TERMINATE` は codegen されるが、
@@ -34,6 +24,15 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
   `REPORT SECTION` の専用 HIR/runtime 設計と実処理の実装
 
 ## 中
+
+### 2. VALIDATE の広い制約検証は限定的
+
+- 状況:
+  `VALIDATE` は PICTURE 由来の基本的な numeric storage validation を実行する
+- 制約:
+  `VALUE` / 条件名 / 文脈依存の検証など、COBOL 2014 の広い検証規則はまだ限定的
+- 必要な対応:
+  追加のデータ制約を HIR/runtime に渡し、E2E テストで互換性を確認する
 
 ### 3. SCREEN SECTION は基本表示中心
 
