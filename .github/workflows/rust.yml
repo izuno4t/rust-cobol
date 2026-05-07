@@ -109,6 +109,12 @@ jobs:
         set -euo pipefail
         make nist-prepare 2>&1 | tee "${CI_LOG_ROOT}/nist/make-nist-prepare.log"
 
+    - name: Run NIST CCVS 85 CM module
+      shell: bash
+      run: |
+        set -euo pipefail
+        make nist-run MODULE=CM 2>&1 | tee "${CI_LOG_ROOT}/nist/make-nist-run-cm.log"
+
     - name: Run NIST CCVS 85
       shell: bash
       run: |
