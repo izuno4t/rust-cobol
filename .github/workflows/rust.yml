@@ -109,12 +109,6 @@ jobs:
         set -euo pipefail
         make nist-prepare 2>&1 | tee "${CI_LOG_ROOT}/nist/make-nist-prepare.log"
 
-    - name: Run NIST CCVS 85 CM module
-      shell: bash
-      run: |
-        set -euo pipefail
-        make nist-run MODULE=CM 2>&1 | tee "${CI_LOG_ROOT}/nist/make-nist-run-cm.log"
-
     - name: Run NIST CCVS 85
       shell: bash
       run: |
@@ -148,4 +142,59 @@ jobs:
         path: |
           ci-logs/nist
           .nist/results
+        if-no-files-found: warn
+
+  nist-cm:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Prepare log directories
+      run: mkdir -p "${CI_LOG_ROOT}/nist-cm"
+
+    - name: Cache cargo registry and build
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build release
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo build --release 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/cargo-build-release.log"
+
+    - name: Extract NIST test suite
+      shell: bash
+      run: |
+        set -euo pipefail
+        tar -xzf tests/nist/newcob.val.tar.gz -C tests/nist/ 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/extract-nist.log"
+
+    - name: Prepare NIST programs
+      shell: bash
+      run: |
+        set -euo pipefail
+        make nist-prepare 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/make-nist-prepare.log"
+
+    - name: Run NIST CCVS 85 CM module
+      shell: bash
+      run: |
+        set -euo pipefail
+        make nist-run MODULE=CM 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/make-nist-run-cm.log"
+
+    - name: Upload Linux NIST CM logs and results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-nist-cm-logs-and-results
+        path: |
+          ci-logs/nist-cm
+          .nist/results/CM
         if-no-files-found: warn
