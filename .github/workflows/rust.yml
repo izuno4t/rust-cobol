@@ -186,7 +186,14 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        COBOL_COMM_DEBUG=1 make nist-run MODULE=CM PROGRAM=CM102M NIST_JOBS=1 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/diagnose-cm102m-comm.log"
+        make nist-run MODULE=CM PROGRAM=CM102M NIST_JOBS=1 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/diagnose-cm102m-prepare.log"
+        (
+          cd /tmp/nc85/CM/CM102M
+          COBOL_COMM_DEBUG=1 \
+          COBOL_COMM_SCRIPT="${GITHUB_WORKSPACE}/tests/nist/fixtures/comm/CM102M.comm" \
+          timeout -k 5s 20s "${GITHUB_WORKSPACE}/.nist/work/run/CM/CM102M/nist_CM102M"
+        ) > "${CI_LOG_ROOT}/nist-cm/diagnose-cm102m-direct.log" 2>&1 || true
+        sed -n '1,200p' "${CI_LOG_ROOT}/nist-cm/diagnose-cm102m-direct.log"
 
     - name: Run NIST CCVS 85 CM module
       shell: bash
