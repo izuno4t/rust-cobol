@@ -1,4 +1,24 @@
-# NIST CM CI 失敗原因と修正方針
+# NIST CM CI 失敗原因と解消記録
+
+## 現在の状態
+
+解消済み。
+
+2026-05-07 時点のローカル release build で、CM の直接対象とモジュール全体が
+PASS することを確認した。
+
+```text
+make nist-run MODULE=CM PROGRAM=CM102M NIST_JOBS=1
+  CM102M: PASS
+
+make nist-run MODULE=CM PROGRAM=CM202M NIST_JOBS=1
+  CM202M: PASS
+
+make nist-run MODULE=CM NIST_JOBS=1
+  CM: Total 9, Pass 9, Fail 0, Ready 0, CErr 0, RErr 0, Rate 100%
+```
+
+この文書は、失敗時の原因分析と解消確認を残す記録として扱う。
 
 ## 背景
 
@@ -154,35 +174,48 @@ QUEUE SERIES 系の通信入力が進まず、テスト本体が完走できて�
 - SEND された message の route/enqueue
 - RECEIVE selector と queue name の照合
 
-## 修正方針
+## 解消方針
 
-CI 閾値を下げるのではなく、明示的な FAIL が出ている `CM102M` と `CM202M` から
-修正する。
+CI 閾値を下げるのではなく、明示的な FAIL が出ていた `CM102M` と `CM202M` から
+修正する方針を採った。
 
 `CM101M`、`CM103M`、`CM104M`、`CM105M` は、通信基盤の不整合により完走または
-判定ができていない副作用である可能性が高い。先にこれらへ個別の判定器調整を入れると、
-根本原因を隠すおそれがある。
+判定ができていない副作用である可能性が高かった。先にこれらへ個別の判定器調整を
+入れると、根本原因を隠すおそれがあった。
 
-## 実装順序
+## 実施結果
 
-1. `CM102M` の生成 C または debug 出力で、`cobol_comm_disable`、
-   `cobol_comm_enable`、`cobol_comm_send` に渡る引数を確認する。
-2. parser と HIR lowering のテストを追加し、`FOR OUTPUT` CD の
-   `DESTINATION COUNT`、`TEXT LENGTH`、`STATUS KEY`、`ERROR KEY`、
-   `SYMBOLIC DESTINATION` が HIR に残ることを固定する。
-3. codegen または runtime のテストを追加し、`CM102M` 相当の異常系が
-   `20/1`、`40/0`、`30/0` を返すことを固定する。
-4. `CM202M` 用に destination table 2件と error key 2件の layout を固定する
-   テストを追加する。
-5. `DEST-COUNT = 3` で `30`、2件目の宛先不正で `20` と `ERR-KEY(2)=1` が返る
-   ことを runtime/codegen テストで固定する。
-6. terminal `ENABLE` / `DISABLE` の key/source 検証を確認し、不正 password が
-   `40`、不正 source が `21` になるようにする。
-7. `CM-OUTQUE-1` から `CM-INQUE-1` への route/enqueue と `RECEIVE` selector を
-   確認し、`QUEUE TESTED EMPTY` を解消する。
-8. `CM102M` と `CM202M` が改善した後、残り4件のログを再評価する。
+- `CM102M` は PASS しており、通信異常系ステータスの不一致は再現しない。
+- `CM202M` は PASS しており、`QUEUE TESTED EMPTY` と destination table/error key
+  系の不一致は再現しない。
+- `CM101M`、`CM103M`、`CM104M`、`CM105M` も CM 全体実行で PASS している。
+- `crates/cobol-driver/tests/e2e_test.rs` には、`DESTINATION TABLE OCCURS 2` と
+  `ERROR KEY OCCURS 2` の full area length を codegen が渡すことを固定する
+  E2E がある。
+- `crates/cobol-runtime/src/communication.rs` には、destination count、invalid
+  destination、source/key 検証、route/enqueue、receive selector の runtime
+  処理がある。
 
-## 検証順序
+## 実施済みチェックリスト
+
+- [x] `CM102M` の生成 C または debug 出力で、`cobol_comm_disable`、
+  `cobol_comm_enable`、`cobol_comm_send` に渡る引数を確認する
+- [x] parser と HIR lowering で、`FOR OUTPUT` CD の `DESTINATION COUNT`、
+  `TEXT LENGTH`、`STATUS KEY`、`ERROR KEY`、`SYMBOLIC DESTINATION` が保持される
+  ことを固定する
+- [x] codegen または runtime のテストで、`CM102M` 相当の異常系が `20/1`、
+  `40/0`、`30/0` を返すことを固定する
+- [x] `CM202M` 用に destination table 2件と error key 2件の layout を固定する
+  テストを追加する
+- [x] `DEST-COUNT = 3` で `30`、2件目の宛先不正で `20` と `ERR-KEY(2)=1` が返る
+  ことを runtime/codegen テストで固定する
+- [x] terminal `ENABLE` / `DISABLE` の key/source 検証を確認し、不正 password が
+  `40`、不正 source が `21` になるようにする
+- [x] `CM-OUTQUE-1` から `CM-INQUE-1` への route/enqueue と `RECEIVE` selector を
+  確認し、`QUEUE TESTED EMPTY` を解消する
+- [x] `CM102M` と `CM202M` の改善後、残り4件のログを再評価する
+
+## 検証順序と結果
 
 直接対象を狭く確認してから、CM 全体に広げる。
 
@@ -193,6 +226,16 @@ make nist-run MODULE=CM PROGRAM=CM202M
 make nist-run MODULE=CM
 make nist-summary
 ```
+
+今回の確認結果は次の通り。
+
+| コマンド | 結果 |
+| --- | --- |
+| `make nist-prepare` | PASS |
+| `make nist-run MODULE=CM PROGRAM=CM102M NIST_JOBS=1` | `CM102M: PASS` |
+| `make nist-run MODULE=CM PROGRAM=CM202M NIST_JOBS=1` | `CM202M: PASS` |
+| `make nist-run MODULE=CM NIST_JOBS=1` | `9/9 PASS` |
+| `make nist-summary` | `CM 9/9 PASS` |
 
 実装修正後は、リポジトリ規約に従って最終的に次も実行する。
 
