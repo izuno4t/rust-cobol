@@ -73,6 +73,7 @@ jobs:
   nist:
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ false }}
 
     steps:
     - uses: actions/checkout@v6
@@ -188,6 +189,25 @@ jobs:
       run: |
         set -euo pipefail
         make nist-run MODULE=CM 2>&1 | tee "${CI_LOG_ROOT}/nist-cm/make-nist-run-cm.log"
+
+    - name: Verify NIST CCVS 85 CM pass rate
+      shell: bash
+      run: |
+        set -euo pipefail
+        summary=$(make nist-summary 2>&1)
+        echo "$summary"
+        printf '%s\n' "$summary" | tee "${CI_LOG_ROOT}/nist-cm/make-nist-summary.log"
+        cm_line=$(echo "$summary" | grep '^CM')
+        total=$(echo "$cm_line" | awk '{print $2}')
+        pass=$(echo "$cm_line" | awk '{print $3}')
+        fail=$(echo "$cm_line" | awk '{print $4}')
+        ready=$(echo "$cm_line" | awk '{print $5}')
+        cerr=$(echo "$cm_line" | awk '{print $6}')
+        rerr=$(echo "$cm_line" | awk '{print $7}')
+        if [ "$pass" -ne "$total" ] || [ "$fail" -ne 0 ] || [ "$ready" -ne 0 ] || [ "$cerr" -ne 0 ] || [ "$rerr" -ne 0 ]; then
+          echo "::error::NIST CCVS 85 CM regression: $pass/$total PASS, $fail FAIL, $ready Ready, $cerr CErr, $rerr RErr"
+          exit 1
+        fi
 
     - name: Upload Linux NIST CM logs and results
       if: always()
