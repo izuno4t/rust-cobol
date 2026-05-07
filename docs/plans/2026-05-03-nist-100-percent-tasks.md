@@ -2511,6 +2511,9 @@ TASK-011時点での判断:
 - CI gate確認: `.github/workflows/rust.yml`の`nist` jobで`make nist-run`と
   `make nist-summary`を実行し、`pass == total`かつ
   `Fail/Ready/CErr/RErr == 0`でない場合に失敗する条件を確認した。
+- 注意: この節は当時の実装記録であり、現在のCIがNIST 100%であることを
+  恒久的に保証するものではない。現在状態を報告する場合は、GitHub Actionsの
+  最新Linux jobログとartifactを確認する。
 - 完了判断: M6からM10までのタスク一覧ステータスは完了状態に整合した。
 
 ### IMPL-033 追加実施記録（runtime異常解消）
@@ -2576,6 +2579,8 @@ TASK-011時点での判断:
   確認した。`make clean test lint`も成功した。
 - 追加確認6: `cargo test -p cobol-codegen test_resolve_runtime_archive --lib`を
   追加実行し、runtime archive選択の直下優先とmtime最新fallbackを固定した。
+- 注意: 追加確認5も同じく時点記録であり、現在のCI成功や今後のNIST gate通過を
+  断定する根拠にはしない。現在状態は最新のActions runをsource of truthにする。
 
 ## Backlog一覧
 

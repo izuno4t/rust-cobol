@@ -67,8 +67,10 @@ goback
 libbook
 libcobol
 libcobolrt
+microbenchmarks
 mybook
 mylib
+myprogram
 numval
 procs
 qname

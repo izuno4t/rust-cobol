@@ -81,8 +81,8 @@ Status meanings used below:
 
 | Feature area | Status | Notes |
 | --- | --- | --- |
-| Internal standard enum and parser surface | Partial | The code base contains a `Cobol2023` internal mode |
-| Dedicated 2023 conformance mode | Experimental | The CLI does not currently expose a strict `--standard` switch |
+| Internal standard enum and parser surface | Implemented | The code base contains `Cobol85`, `Cobol2002`, `Cobol2014`, and `Cobol2023` modes |
+| Dedicated conformance mode | Partial | The CLI exposes `--standard`; semantic checks reject known later-standard features in older modes |
 | 2023-only feature coverage | Experimental | Current support mainly builds on earlier implemented features |
 
 ## GnuCOBOL-style and practical extensions

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser as ClapParser;
 use cobol_ast::CobolProgram;
 use cobol_codegen::{compile_c_to_executable, generate_c};
-use cobol_common::{FileId, SourceFormat};
+use cobol_common::{CobolStandard, FileId, SourceFormat};
 use cobol_diagnostics::{render_diagnostics_to_stderr, WarningLevel};
 use cobol_hir::lower_to_hir;
 use cobol_lexer::Lexer;
@@ -30,6 +30,10 @@ struct Cli {
     /// Source format (fixed, free, variable)
     #[arg(long, default_value = "free")]
     source_format: String,
+
+    /// COBOL standard mode (cobol85, cobol2002, cobol2014, cobol2023)
+    #[arg(long, default_value = "cobol2023")]
+    standard: String,
 
     /// Emit tokens (debug)
     #[arg(long)]
@@ -105,6 +109,18 @@ fn run() -> Result<(), i32> {
         "variable" => SourceFormat::Variable,
         other => {
             eprintln!("error: unknown source format '{}'", other);
+            return Err(1);
+        }
+    };
+
+    let standard = match parse_standard(&cli.standard) {
+        Some(standard) => standard,
+        None => {
+            eprintln!(
+                "error: unknown COBOL standard '{}' (use: {})",
+                cli.standard,
+                CobolStandard::cli_values()
+            );
             return Err(1);
         }
     };
@@ -216,7 +232,8 @@ fn run() -> Result<(), i32> {
             eprintln!("[TIMING] Parsing: {:?}", t_parse.elapsed());
         }
         let t_sema = std::time::Instant::now();
-        let mut analyzer = SemanticAnalyzer::with_warning_level(warning_level);
+        let mut analyzer =
+            SemanticAnalyzer::with_warning_level_and_standard(warning_level, standard);
         let result = analyzer.analyze(&program);
         let diagnostics = analyzer.take_diagnostics();
 
@@ -342,6 +359,10 @@ fn ensure_executable_extension(path: PathBuf) -> PathBuf {
     } else {
         path
     }
+}
+
+fn parse_standard(value: &str) -> Option<CobolStandard> {
+    CobolStandard::parse_cli(value)
 }
 
 /// Locate the directory containing the COBOL runtime static library.
@@ -502,5 +523,13 @@ mod tests {
     fn test_output_exe_path_preserves_extension() {
         let p = output_exe_path("hello.cob", &Some("my_program.bin".to_string()));
         assert_eq!(p, PathBuf::from("my_program.bin"));
+    }
+
+    #[test]
+    fn test_parse_standard_cli_values() {
+        assert_eq!(parse_standard("cobol85"), Some(CobolStandard::Cobol85));
+        assert_eq!(parse_standard("COBOL-2014"), Some(CobolStandard::Cobol2014));
+        assert_eq!(parse_standard("2023"), Some(CobolStandard::Cobol2023));
+        assert_eq!(parse_standard("latest"), None);
     }
 }

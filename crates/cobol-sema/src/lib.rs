@@ -20,17 +20,24 @@ pub use symbol_table::{CobolType, Scope, ScopeKind, Symbol, SymbolKind, SymbolTa
 mod tests {
     use super::*;
     use cobol_ast::PictureCategory;
-    use cobol_common::{FileId, SourceFormat, Span};
+    use cobol_common::{CobolStandard, FileId, SourceFormat, Span};
     use cobol_lexer::Lexer;
     use cobol_parser::Parser;
 
     /// Helper: lex + parse + analyze a COBOL source string.
     fn analyze(source: &str) -> (AnalysisResult, cobol_diagnostics::DiagnosticReporter) {
+        analyze_with_standard(source, CobolStandard::default())
+    }
+
+    fn analyze_with_standard(
+        source: &str,
+        standard: CobolStandard,
+    ) -> (AnalysisResult, cobol_diagnostics::DiagnosticReporter) {
         let mut lexer = Lexer::new(source, FileId(0), SourceFormat::Free);
         let tokens = lexer.lex_all();
         let mut parser = Parser::new(tokens, FileId(0));
         let program = parser.parse_program().unwrap();
-        let mut analyzer = SemanticAnalyzer::new();
+        let mut analyzer = SemanticAnalyzer::with_standard(standard);
         let result = analyzer.analyze(&program);
         let diagnostics = analyzer.take_diagnostics();
         (result, diagnostics)
@@ -174,5 +181,66 @@ PROCEDURE DIVISION.
         assert!(result.symbol_table.lookup(&"STATUS-KEY".into()).is_some());
         assert!(result.symbol_table.lookup(&"END-KEY".into()).is_some());
         assert!(result.symbol_table.lookup(&"MSG-COUNT".into()).is_some());
+    }
+
+    #[test]
+    fn test_cobol85_rejects_validate_statement() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STD-VALIDATE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NUM PIC 9(3).
+PROCEDURE DIVISION.
+    VALIDATE WS-NUM.
+    STOP RUN.
+";
+        let (result, diag) = analyze_with_standard(src, CobolStandard::Cobol85);
+        assert!(result.has_errors);
+        assert!(
+            diag.diagnostics()
+                .iter()
+                .any(|d| d.code == "COBC-E090" && d.message.contains("VALIDATE")),
+            "{:?}",
+            diag.diagnostics()
+        );
+    }
+
+    #[test]
+    fn test_cobol2014_accepts_validate_statement() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STD-VALIDATE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NUM PIC 9(3).
+PROCEDURE DIVISION.
+    VALIDATE WS-NUM.
+    STOP RUN.
+";
+        let (result, diag) = analyze_with_standard(src, CobolStandard::Cobol2014);
+        assert!(!result.has_errors, "{:?}", diag.diagnostics());
+    }
+
+    #[test]
+    fn test_cobol85_rejects_local_storage_section() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STD-LOCAL.
+DATA DIVISION.
+LOCAL-STORAGE SECTION.
+01 WS-NUM PIC 9(3).
+PROCEDURE DIVISION.
+    STOP RUN.
+";
+        let (result, diag) = analyze_with_standard(src, CobolStandard::Cobol85);
+        assert!(result.has_errors);
+        assert!(
+            diag.diagnostics()
+                .iter()
+                .any(|d| d.code == "COBC-E090" && d.message.contains("LOCAL-STORAGE")),
+            "{:?}",
+            diag.diagnostics()
+        );
     }
 }

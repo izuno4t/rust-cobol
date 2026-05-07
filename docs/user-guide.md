@@ -192,6 +192,20 @@ You can also enable timing output with:
 COBOL_DEBUG_TIMING=1 cobolc app.cob -o app
 ```
 
+## Standard mode
+
+Use `--standard` to select the accepted COBOL standard surface:
+
+```bash
+cobolc app.cob --standard cobol85
+cobolc app.cob --standard cobol2002
+cobolc app.cob --standard cobol2014
+cobolc app.cob --standard cobol2023
+```
+
+The default is `cobol2023`. Older modes reject known later-standard constructs
+such as `LOCAL-STORAGE SECTION` in `cobol85` and `VALIDATE` before `cobol2014`.
+
 ## Build and test commands
 
 Use the repository `Makefile` for common workflows.
@@ -224,8 +238,7 @@ Platform-specific runtime validation notes:
 
 ## Current limitations
 
-- The CLI does not currently expose a `--standard` switch even though the code
-  base contains internal COBOL standard enums
-- Advanced later-standard features are not enforced by a strict standards mode
+- Standard mode enforcement covers known later-standard constructs, but it is
+  not yet a complete clause-by-clause standards validator
 - Some advanced features are covered at parse/codegen level but still need more
   native end-to-end execution coverage

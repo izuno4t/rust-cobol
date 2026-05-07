@@ -129,8 +129,15 @@ The compiler is organized as a Cargo workspace with 12 crates:
 - **COBOL 2002** - OOP, user-defined functions, exceptions,
   LOCAL-STORAGE
 - **COBOL 2014** - FLOAT-BINARY/DECIMAL/EXTENDED, TYPEDEF,
-  VALIDATE
+  VALIDATE (partial runtime validation)
 - **COBOL 2023** - UTF-8, JSON, XML, threading extensions
+
+This list describes standards areas represented in the compiler, not a claim
+that every feature in each standard is production-complete. See
+[docs/cobol-standards.md](docs/cobol-standards.md) and
+[docs/production-gaps.md](docs/production-gaps.md) for feature-level status.
+Use `--standard cobol85`, `--standard cobol2002`, `--standard cobol2014`, or
+`--standard cobol2023` to select a standard mode.
 
 ## License
 
