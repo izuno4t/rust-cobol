@@ -6038,9 +6038,15 @@ fn emit_report_field(
         .map(|item| data_item_byte_size(&item.data_type))
         .unwrap_or_else(|| find_data_item_size(&c_name, data_items));
     let is_alpha = item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
+    let is_group = item.is_some_and(|i| matches!(i.data_type, HirType::Group { .. }));
     if is_alpha {
         out.push_str(&format!(
             "{pad}cobol_display_string((const uint8_t*){c_name}, {width});\n"
+        ));
+    } else if is_group {
+        let ptr = c_ptr_expr(&c_name, data_items);
+        out.push_str(&format!(
+            "{pad}cobol_display_string((const uint8_t*){ptr}, {width});\n"
         ));
     } else if display_numeric_c_expr_metadata(&c_name, data_items).is_some() {
         emit_display_numeric_storage(out, &c_name, item, data_items, pad);

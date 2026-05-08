@@ -1,10 +1,10 @@
-name: Rust
+name: CI
 
 on:
   push:
     branches: [ "main" ]
     paths:
-      - ".github/workflows/rust.yml"
+      - ".github/workflows/ci.yml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "Makefile"
@@ -15,7 +15,7 @@ on:
   pull_request:
     branches: [ "main" ]
     paths:
-      - ".github/workflows/rust.yml"
+      - ".github/workflows/ci.yml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "Makefile"
@@ -30,6 +30,7 @@ env:
 
 jobs:
   build:
+    name: Build, Test, Validate
     runs-on: ubuntu-latest
 
     steps:
@@ -48,17 +49,30 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
 
+    - name: Install validation tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm install -g cspell 2>&1 | tee "${CI_LOG_ROOT}/build/npm-install-cspell.log"
+
     - name: Build
       shell: bash
       run: |
         set -euo pipefail
-        cargo build --release --verbose 2>&1 | tee "${CI_LOG_ROOT}/build/cargo-build.log"
+        make release 2>&1 | tee "${CI_LOG_ROOT}/build/make-release.log"
 
     - name: Run tests
       shell: bash
       run: |
         set -euo pipefail
-        cargo test --verbose 2>&1 | tee "${CI_LOG_ROOT}/build/cargo-test.log"
+        make test 2>&1 | tee "${CI_LOG_ROOT}/build/make-test.log"
+
+    - name: Validate
+      shell: bash
+      run: |
+        set -euo pipefail
+        make check 2>&1 | tee "${CI_LOG_ROOT}/build/make-check.log"
+        make lint 2>&1 | tee "${CI_LOG_ROOT}/build/make-lint.log"
 
     - name: Upload Linux build logs
       if: always()
@@ -69,7 +83,58 @@ jobs:
           ci-logs/build
         if-no-files-found: warn
 
-  nist-module:
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Prepare log directories
+      run: mkdir -p "${CI_LOG_ROOT}/coverage"
+
+    - name: Cache cargo registry and build
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-coverage-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-coverage-cargo-
+          ${{ runner.os }}-cargo-
+
+    - name: Install cargo-llvm-cov
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo install cargo-llvm-cov --locked 2>&1 | tee "${CI_LOG_ROOT}/coverage/cargo-install-llvm-cov.log"
+
+    - name: Generate coverage
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info 2>&1 | tee "${CI_LOG_ROOT}/coverage/cargo-llvm-cov.log"
+
+    - name: Upload coverage report
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: linux-coverage-report
+        path: lcov.info
+        if-no-files-found: warn
+
+    - name: Upload coverage logs
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: linux-coverage-logs
+        path: ci-logs/coverage
+        if-no-files-found: warn
+
+  nist:
+    name: NIST CCVS 85 (${{ matrix.module }})
     runs-on: ubuntu-latest
     needs: build
     strategy:

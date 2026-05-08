@@ -602,6 +602,38 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_generate_report_group_source_displays_group_bytes() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RW-GROUP-SOURCE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-LINE.
+   05 FILLER PIC X(5) VALUE \"NAME:\".
+   05 WS-NAME PIC X(5) VALUE \"ALICE\".
+REPORT SECTION.
+RD RPT.
+01 DETAIL-LINE TYPE DETAIL.
+   05 LINE 1 COLUMN 1 PIC X(10) SOURCE WS-LINE.
+PROCEDURE DIVISION.
+    INITIATE RPT.
+    GENERATE DETAIL-LINE.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(
+        code, 0,
+        "native report generation failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(
+        stdout, "NAME:ALICE\n",
+        "report SOURCE group should display contiguous group bytes"
+    );
+}
+
+#[test]
 fn test_native_generate_report_nested_multi_line_group() {
     let src = "\
 IDENTIFICATION DIVISION.
