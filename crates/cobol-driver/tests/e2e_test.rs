@@ -77,6 +77,39 @@ fn compact_c_code(c_code: &str) -> String {
     c_code.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn empty_hir_program(name: &str) -> cobol_hir::HirProgram {
+    cobol_hir::HirProgram {
+        name: name.into(),
+        data_items: Vec::new(),
+        communication_descriptions: Vec::new(),
+        paragraphs: Vec::new(),
+        body: Vec::new(),
+        classes: Vec::new(),
+        functions: Vec::new(),
+        typedefs: Vec::new(),
+        interfaces: Vec::new(),
+        using_params: Vec::new(),
+        file_organizations: std::collections::HashMap::new(),
+        file_assignments: std::collections::HashMap::new(),
+        file_optionals: std::collections::HashSet::new(),
+        file_relative_keys: std::collections::HashMap::new(),
+        file_access_modes: std::collections::HashMap::new(),
+        file_status_vars: Vec::new(),
+        declaratives: Vec::new(),
+        file_records: std::collections::HashMap::new(),
+        fd_record_aliases: std::collections::HashMap::new(),
+        variable_record_files: std::collections::HashSet::new(),
+        variable_record_depending: std::collections::HashMap::new(),
+        variable_record_bounds: std::collections::HashMap::new(),
+        same_record_areas: Vec::new(),
+        decimal_point_is_comma: false,
+        special_class_conditions: std::collections::HashMap::new(),
+        program_collating_sequence: None,
+        nested_programs: Vec::new(),
+        span: Span::dummy(),
+    }
+}
+
 fn assert_display_numeric_update(c_code: &str, c_name: &str, op: &str) {
     assert!(c_code.contains("cobol_store_numeric_display"));
     assert!(c_code.contains("cobol_display_to_int64"));
@@ -1088,6 +1121,28 @@ fn compile_and_run(source: &str) -> (String, String, i32) {
     // Find the runtime library path
     let runtime_lib_path = find_test_runtime_lib();
 
+    cobol_codegen::compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
+        .expect("C compilation should succeed");
+
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("execute compiled binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(-1);
+
+    (stdout, stderr, code)
+}
+
+fn compile_c_and_run(c_code: &str) -> (String, String, i32) {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let c_path = tmp.path().join("test.c");
+    let exe_path = temp_exe_path(tmp.path(), "test_exe");
+
+    std::fs::write(&c_path, c_code).expect("write C file");
+
+    let runtime_lib_path = find_test_runtime_lib();
     cobol_codegen::compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
         .expect("C compilation should succeed");
 
@@ -2949,6 +3004,107 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_generated_class_method_dispatch_runs() {
+    let mut hir = empty_hir_program("CLASS-NATIVE");
+    hir.classes.push(cobol_hir::HirClass {
+        name: "MY-CLASS".into(),
+        parent: None,
+        factory_methods: Vec::new(),
+        instance_methods: vec![cobol_hir::HirMethod {
+            name: "PING".into(),
+            params: Vec::new(),
+            returning: None,
+            data_items: Vec::new(),
+            body: vec![HirStatement::Display {
+                operands: vec![cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::String(
+                    "CLASS-PING".into(),
+                ))],
+                no_advancing: false,
+                span: Span::dummy(),
+            }],
+            span: Span::dummy(),
+        }],
+        factory_data: Vec::new(),
+        instance_data: Vec::new(),
+        span: Span::dummy(),
+    });
+
+    let generated = generate_c(&hir);
+    let harness = format!(
+        "#define main cobol_generated_main\n{generated}\n#undef main\n\
+         int main(void) {{ MY_CLASS* obj = MY_CLASS_new(); \
+         cobol_invoke((void*)obj, \"PING\", (int64_t[]){{0}}, 0); return 0; }}\n"
+    );
+
+    let (stdout, stderr, code) = compile_c_and_run(&harness);
+
+    assert_eq!(
+        code, 0,
+        "generated class harness failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "CLASS-PING\n");
+}
+
+#[test]
+fn test_native_generated_function_typedef_and_interface_compile_and_run() {
+    let mut hir = empty_hir_program("LATER-NATIVE");
+    hir.functions.push(cobol_hir::HirFunction {
+        name: "HELLO-FUNC".into(),
+        params: Vec::new(),
+        returning: HirType::Numeric {
+            size: 1,
+            decimal_places: 0,
+            is_signed: false,
+        },
+        data_items: Vec::new(),
+        body: vec![HirStatement::Display {
+            operands: vec![cobol_hir::HirExpr::Literal(cobol_hir::HirLiteral::String(
+                "FUNC-RUN".into(),
+            ))],
+            no_advancing: false,
+            span: Span::dummy(),
+        }],
+        span: Span::dummy(),
+    });
+    hir.typedefs.push(cobol_hir::HirTypedef {
+        name: "MONEY-TYPE".into(),
+        base_type: HirType::Numeric {
+            size: 9,
+            decimal_places: 2,
+            is_signed: true,
+        },
+        span: Span::dummy(),
+    });
+    hir.interfaces.push(cobol_hir::HirInterface {
+        name: "I-RUNNABLE".into(),
+        methods: vec![cobol_hir::HirMethod {
+            name: "RUN".into(),
+            params: Vec::new(),
+            returning: None,
+            data_items: Vec::new(),
+            body: Vec::new(),
+            span: Span::dummy(),
+        }],
+        span: Span::dummy(),
+    });
+
+    let generated = generate_c(&hir);
+    let harness = format!(
+        "#define main cobol_generated_main\n{generated}\n#undef main\n\
+         int main(void) {{ I_RUNNABLE_vtable iface = {{0}}; MONEY_TYPE amount = 0; \
+         (void)iface; (void)amount; cobol_func_hello_func(); return 0; }}\n"
+    );
+
+    let (stdout, stderr, code) = compile_c_and_run(&harness);
+
+    assert_eq!(
+        code, 0,
+        "generated function/type/interface harness failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout, "FUNC-RUN\n");
+}
+
+#[test]
 fn test_native_group_move_to_redefined_base_uses_logical_target_size() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3945,6 +4101,146 @@ MAIN-PARA.
     assert!(
         stdout.contains("WRITE-DECL\nDONE\n"),
         "WRITE without OPEN should dispatch USE AFTER EXCEPTION, got stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_declarative_runs_on_rewrite_without_open() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let output_path = tmp.path().join("rewrite-output.dat");
+    let output_path = output_path.to_string_lossy();
+    let src = format!(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DECL-REWRITE.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT OUT-FILE ASSIGN TO "{output_path}".
+DATA DIVISION.
+FILE SECTION.
+FD OUT-FILE.
+01 OUT-REC PIC X(3).
+PROCEDURE DIVISION.
+DECLARATIVES.
+ERR-SEC SECTION.
+    USE AFTER STANDARD EXCEPTION PROCEDURE ON OUT-FILE.
+ERR-PARA.
+    DISPLAY "REWRITE-DECL".
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    MOVE "ABC" TO OUT-REC.
+    REWRITE OUT-REC.
+    DISPLAY "DONE".
+    STOP RUN.
+"#
+    );
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(&src);
+    assert_eq!(
+        code, 0,
+        "program failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("REWRITE-DECL\nDONE\n"),
+        "REWRITE without OPEN should dispatch USE AFTER EXCEPTION, got stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_declarative_runs_on_delete_without_open() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let output_path = tmp.path().join("delete-output.dat");
+    let output_path = output_path.to_string_lossy();
+    let src = format!(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DECL-DELETE.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT OUT-FILE ASSIGN TO "{output_path}"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS OUT-KEY.
+DATA DIVISION.
+FILE SECTION.
+FD OUT-FILE.
+01 OUT-REC.
+   05 OUT-KEY PIC X(3).
+PROCEDURE DIVISION.
+DECLARATIVES.
+ERR-SEC SECTION.
+    USE AFTER STANDARD EXCEPTION PROCEDURE ON OUT-FILE.
+ERR-PARA.
+    DISPLAY "DELETE-DECL".
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    MOVE "ABC" TO OUT-KEY.
+    DELETE OUT-FILE.
+    DISPLAY "DONE".
+    STOP RUN.
+"#
+    );
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(&src);
+    assert_eq!(
+        code, 0,
+        "program failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("DELETE-DECL\nDONE\n"),
+        "DELETE without OPEN should dispatch USE AFTER EXCEPTION, got stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_declarative_runs_on_start_without_open() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let output_path = tmp.path().join("start-output.dat");
+    let output_path = output_path.to_string_lossy();
+    let src = format!(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DECL-START.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT OUT-FILE ASSIGN TO "{output_path}"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS OUT-KEY.
+DATA DIVISION.
+FILE SECTION.
+FD OUT-FILE.
+01 OUT-REC.
+   05 OUT-KEY PIC X(3).
+PROCEDURE DIVISION.
+DECLARATIVES.
+ERR-SEC SECTION.
+    USE AFTER STANDARD EXCEPTION PROCEDURE ON OUT-FILE.
+ERR-PARA.
+    DISPLAY "START-DECL".
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    MOVE "ABC" TO OUT-KEY.
+    START OUT-FILE KEY IS EQUAL TO OUT-KEY.
+    DISPLAY "DONE".
+    STOP RUN.
+"#
+    );
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(&src);
+    assert_eq!(
+        code, 0,
+        "program failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("START-DECL\nDONE\n"),
+        "START without OPEN should dispatch USE AFTER EXCEPTION, got stdout={stdout:?}, stderr={stderr:?}"
     );
 }
 

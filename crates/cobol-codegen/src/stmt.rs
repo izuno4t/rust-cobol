@@ -3201,7 +3201,8 @@ pub(crate) fn emit_statement_with_ctx(
             );
             let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
             let has_fs = fs_map.contains_key(&c_file);
-            if needs_rc || has_fs {
+            let dispatch_declarative = has_declaratives && invalid_key.is_empty();
+            if needs_rc || has_fs || dispatch_declarative {
                 out.push_str(&format!("{pad}{{\n"));
                 if let Some(boundary_error) = &boundary_error {
                     out.push_str(&format!(
@@ -3218,7 +3219,17 @@ pub(crate) fn emit_statement_with_ctx(
                         &c_file,
                         "_fs",
                         fs_map,
-                        has_declaratives,
+                        dispatch_declarative,
+                        &format!("FILE_MODE_{c_file}"),
+                        &format!("{pad}    "),
+                    );
+                } else if dispatch_declarative {
+                    emit_file_status_update(
+                        out,
+                        &c_file,
+                        "_fs",
+                        fs_map,
+                        true,
                         &format!("FILE_MODE_{c_file}"),
                         &format!("{pad}    "),
                     );
@@ -3292,7 +3303,8 @@ pub(crate) fn emit_statement_with_ctx(
             };
             let has_fs = fs_map.contains_key(&c_name);
             let needs_rc = !invalid_key.is_empty() || !not_invalid_key.is_empty();
-            if has_fs || needs_rc {
+            let dispatch_declarative = has_declaratives && invalid_key.is_empty();
+            if has_fs || needs_rc || dispatch_declarative {
                 out.push_str(&format!("{pad}{{\n"));
                 out.push_str(&format!("{pad}    uint32_t _fs = {delete_call};\n"));
                 if has_fs {
@@ -3301,7 +3313,17 @@ pub(crate) fn emit_statement_with_ctx(
                         &c_name,
                         "_fs",
                         fs_map,
-                        has_declaratives,
+                        dispatch_declarative,
+                        &format!("FILE_MODE_{c_name}"),
+                        &format!("{pad}    "),
+                    );
+                } else if dispatch_declarative {
+                    emit_file_status_update(
+                        out,
+                        &c_name,
+                        "_fs",
+                        fs_map,
+                        true,
                         &format!("FILE_MODE_{c_name}"),
                         &format!("{pad}    "),
                     );
@@ -5242,7 +5264,20 @@ pub(crate) fn emit_statement_with_ctx(
                     out.push_str(&format!("{pad}    }}\n"));
                 }
             } else {
-                out.push_str(&format!("{pad}    {start_call};\n"));
+                if has_declaratives {
+                    out.push_str(&format!("{pad}    uint32_t _src = {start_call};\n"));
+                    emit_file_status_update(
+                        out,
+                        &c_name,
+                        "_src",
+                        fs_map,
+                        true,
+                        &format!("FILE_MODE_{c_name}"),
+                        &format!("{pad}    "),
+                    );
+                } else {
+                    out.push_str(&format!("{pad}    {start_call};\n"));
+                }
                 emit_debug_spaces_event(out, &format!("{pad}    "), file_name.as_str());
             }
             out.push_str(&format!("{pad}}}\n"));
@@ -12058,11 +12093,11 @@ fn emit_validate_item_recursive(
     let escaped_pic = escape_c_string(picture);
     let pic_len = picture.len();
     let escaped_target_name = escape_c_string(target_name);
-    let (ptr_expr, len_expr, kind) = validate_storage_args(&c_target, item, data_items);
+    let (ptr_expr, len_expr, kind) = validate_storage_args(c_target, item, data_items);
     out.push_str(&format!(
         "{pad}if (cobol_validate_item(\"{escaped_target_name}\", {ptr_expr}, {len_expr}, {kind}, (const uint8_t*)\"{escaped_pic}\", {pic_len}) != 0) {{ cobol_raise(\"EC-DATA-INCOMPATIBLE\"); }} /* VALIDATE */\n"
     ));
-    emit_validate_value_constraints(out, &c_target, item, data_items, pad);
+    emit_validate_value_constraints(out, c_target, item, data_items, pad);
 
     if let HirType::Group { members, .. } = &item.data_type {
         for member in members {

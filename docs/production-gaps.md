@@ -25,9 +25,9 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
 ### 2. VALIDATE の標準詳細条件
 
 - 未対応:
-  COBOL 2014 の文脈依存検証、複合グループ制約、より広いカテゴリ検証
+  COBOL 2014 の文脈依存検証、より広いカテゴリ検証
 - 必要な対応:
-  グループ単位の検証規則と標準上の詳細な適用条件を E2E で拡充する
+  標準上の詳細な適用条件を E2E で拡充する
 
 ### 3. SCREEN SECTION のフォーム編集互換性
 
@@ -36,26 +36,7 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
 - 必要な対応:
   端末固有の入力制御を切り出し、フォーム編集操作を E2E で拡充する
 
-### 4. DECLARATIVES / USE AFTER EXCEPTION の操作別網羅
-
-- 未対応:
-  `READ` / `REWRITE` / `DELETE` / `START` の操作別例外条件と分類
-- 必要な対応:
-  ファイル操作ごとの例外発火条件と、明示的な `INVALID KEY` / `AT END` 句との優先関係を E2E で拡充する
-
-### 5. OOP / later-standard advanced features の E2E カバレッジ不足
-
-- 対象:
-  `CLASS-ID`、`METHOD-ID`、`INTERFACE-ID`、`INVOKE`、`FUNCTION-ID`、`TYPEDEF`
-- 状況:
-  `INVOKE` の runtime dispatch と null object 経路は実行テストされているが、
-  クラス/メソッド構文全体のネイティブ実行保証はまだ薄い
-- 影響:
-  パースや C 生成は通っても、OOP プログラム全体の信頼性はまだ十分に示せていない
-- 必要な対応:
-  小さな codegen テストではなく、実行まで含む E2E サンプルを揃える
-
-### 6. COMMUNICATION SECTION は production-ready ではない
+### 4. COMMUNICATION SECTION は production-ready ではない
 
 - 状況:
   parser / AST / runtime の土台はあるが、通常利用での検証実績はまだ限定的
