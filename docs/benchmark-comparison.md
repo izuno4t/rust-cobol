@@ -67,7 +67,8 @@ GnuCOBOL 4.0 が C の 1.2 倍まで改善したのが最大の競合。IBM Ente
 
 ## ローカル N-Queens ベンチマーク
 
-`benchmarks/nqueens.cob` を `n=1..13` で実行し、`hyperfine --warmup 1 --runs 3` で比較しました。
+`tests/benchmark/nqueens/nqueens.cob` を `n=1..13` で実行し、
+`hyperfine --warmup 1 --runs 3` で比較しました。
 
 | 実行系 | 平均実行時間 | 最小 | 最大 | 相対比 |
 | --- | ---: | ---: | ---: | ---: |
@@ -85,7 +86,7 @@ GnuCOBOL 4.0 が C の 1.2 倍まで改善したのが最大の競合。IBM Ente
 
 ## ローカル マイクロベンチマーク
 
-`tests/benchmark/run_bench.sh --compare gnucobol` を使い、算術・文字列操作・ファイル I/O を比較しました。
+`tests/benchmark/micro/run.sh --compare gnucobol` を使い、算術・文字列操作・ファイル I/O を比較しました。
 
 | ベンチマーク | rust-cobol 実行時間 | GnuCOBOL 実行時間 | 傾向 |
 | --- | ---: | ---: | --- |
@@ -110,6 +111,6 @@ GnuCOBOL 4.0 が C の 1.2 倍まで改善したのが最大の競合。IBM Ente
 ## 実行コマンド
 
 ```bash
-bash benchmarks/run_benchmark.sh
-bash tests/benchmark/run_bench.sh --compare gnucobol
+bash tests/benchmark/nqueens/run.sh
+bash tests/benchmark/micro/run.sh --compare gnucobol
 ```

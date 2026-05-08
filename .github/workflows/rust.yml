@@ -62,7 +62,7 @@ jobs:
 
     - name: Upload Linux build logs
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: linux-build-logs
         path: |
@@ -153,7 +153,7 @@ jobs:
 
     - name: Upload Linux NIST module logs and results
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: linux-nist-${{ matrix.module }}-logs-and-results
         path: |

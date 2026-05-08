@@ -58,7 +58,7 @@ docker run --rm \
   -v "$PWD:/workspace" \
   -e CARGO_TARGET_DIR=/workspace/target/runtime-x86-linux-amd64 \
   rust-cobol-runtime-x86 \
-  bash -lc "bash benchmarks/run_benchmark.sh && bash tests/benchmark/run_bench.sh --compare gnucobol"
+  bash -lc "bash tests/benchmark/nqueens/run.sh && bash tests/benchmark/micro/run.sh --compare gnucobol"
 ```
 
 ## Notes

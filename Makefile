@@ -172,7 +172,7 @@ runtime-x86-bench:
 		$(EMPTY_PROXY_RUN_ARGS) \
 		-e CARGO_TARGET_DIR=$(RUNTIME_X86_TARGET) \
 		$(RUNTIME_X86_IMAGE) \
-		bash -lc "bash benchmarks/run_benchmark.sh && bash tests/benchmark/run_bench.sh --compare gnucobol"
+		bash -lc "bash tests/benchmark/nqueens/run.sh && bash tests/benchmark/micro/run.sh --compare gnucobol"
 
 ## ヘルプ
 help:

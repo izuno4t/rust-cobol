@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# run_bench.sh — Performance benchmark suite for rust-cobol
+# micro/run.sh — Small fixed-format microbenchmarks for rust-cobol
 #
 # Usage:
-#   ./run_bench.sh                    # Run all benchmarks
-#   ./run_bench.sh arithmetic         # Run specific benchmark
-#   ./run_bench.sh --compare gnucobol # Compare with GnuCOBOL
+#   tests/benchmark/micro/run.sh                    # Run all benchmarks
+#   tests/benchmark/micro/run.sh arithmetic         # Run specific benchmark
+#   tests/benchmark/micro/run.sh --compare gnucobol # Compare with GnuCOBOL
+# cspell:words microbenchmarks GNUCOBC cobc rustcobol
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 GNUCOBC="${GNUCOBC:-cobc}"
 OUT_DIR="${BENCH_OUT_DIR:-$REPO_ROOT/target/benchmarks/micro}"
