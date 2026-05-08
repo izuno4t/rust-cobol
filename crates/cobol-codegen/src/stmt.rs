@@ -3819,6 +3819,16 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::Accept { target, source, .. } => {
             let c_target = emit_expr(target);
             let target_name = expr_data_name(target);
+            if matches!(source, HirAcceptSource::Console) {
+                if let Some(item) = target_name
+                    .and_then(|name| find_data_item_by_name(name, data_items))
+                    .filter(|item| item.screen_info.is_some())
+                {
+                    out.push_str(&format!("{pad}/* ACCEPT SCREEN {c_target} */\n"));
+                    emit_screen_accept(out, item, data_items, &pad);
+                    return;
+                }
+            }
             let target_label = target_name
                 .map(|name| name.as_str().to_string())
                 .unwrap_or_else(|| c_target.clone());
@@ -7242,8 +7252,9 @@ pub(crate) fn emit_screen_display(
             "{pad}cobol_display_string((const uint8_t*)\"{escaped}\", {len});\n"
         ));
     }
-    // Display the SOURCE field if present
-    if let Some(ref source) = si.source {
+    // Display the SOURCE/USING field if present. USING is both an input and
+    // output binding, so DISPLAY treats it as the visible field value.
+    if let Some(source) = si.source.as_ref().or(si.using_field.as_ref()) {
         let c_name = sanitize_name(source);
         let item = find_data_item(source, data_items);
         let is_alpha = item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
@@ -7270,6 +7281,64 @@ pub(crate) fn emit_screen_display(
     // Reset attributes if we turned any on
     if si.highlight || si.reverse_video {
         out.push_str(&format!("{pad}cobol_screen_reset_attrs();\n"));
+    }
+}
+
+fn emit_screen_accept(out: &mut String, item: &HirDataItem, data_items: &[HirDataItem], pad: &str) {
+    if let Some(si) = item.screen_info.as_ref() {
+        emit_screen_display(out, si, data_items, pad);
+        if let Some(using) = si.using_field.as_ref() {
+            emit_screen_accept_field(out, si, using, data_items, pad);
+        }
+    }
+
+    if let HirType::Group { members, .. } = &item.data_type {
+        for member in members {
+            emit_screen_accept(out, member, data_items, pad);
+        }
+    }
+}
+
+fn emit_screen_accept_field(
+    out: &mut String,
+    si: &cobol_hir::HirScreenInfo,
+    using: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    if si.line.is_some() || si.column.is_some() {
+        let line = si.line.unwrap_or(1) as i32;
+        let col = si.column.unwrap_or(1) as i32;
+        out.push_str(&format!("{pad}cobol_screen_position({line}, {col});\n"));
+    }
+
+    let c_name = sanitize_name(using);
+    let item = find_data_item(using, data_items);
+    let size = item
+        .map(|item| data_item_byte_size(&item.data_type))
+        .unwrap_or_else(|| find_data_item_size(&c_name, data_items));
+
+    if display_numeric_c_expr_metadata(&c_name, data_items).is_some()
+        || item.is_some_and(|item| matches!(item.data_type, HirType::Alphanumeric { .. }))
+    {
+        let ptr = c_ptr_expr(&c_name, data_items);
+        out.push_str(&format!(
+            "{pad}cobol_screen_accept((uint8_t*){ptr}, {size});\n"
+        ));
+    } else {
+        out.push_str(&format!("{pad}{{ uint8_t _screen_buf[64];\n"));
+        out.push_str(&format!(
+            "{pad}    uint32_t _screen_len = cobol_screen_accept(_screen_buf, 63);\n"
+        ));
+        out.push_str(&format!("{pad}    _screen_buf[_screen_len] = 0;\n"));
+        emit_store_int(
+            out,
+            &c_name,
+            "cobol_display_to_int64((const uint8_t*)_screen_buf, _screen_len)",
+            data_items,
+            &format!("{pad}    "),
+        );
+        out.push_str(&format!("{pad}}}\n"));
     }
 }
 

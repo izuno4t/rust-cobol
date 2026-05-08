@@ -9507,6 +9507,68 @@ PROCEDURE DIVISION.
     );
 }
 
+#[test]
+fn test_screen_section_accept_using_codegen() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SCRACPT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(5) VALUE SPACES.
+SCREEN SECTION.
+01 ENTRY-SCREEN.
+   05 LINE 1 COLUMN 1 VALUE \"NAME:\".
+   05 LINE 1 COLUMN 7 USING WS-NAME.
+PROCEDURE DIVISION.
+    ACCEPT ENTRY-SCREEN.
+    STOP RUN.
+";
+    let hir = parse_and_lower(src);
+    let c_code = generate_c(&hir);
+    assert!(
+        c_code.contains("cobol_screen_accept"),
+        "screen ACCEPT should read USING field, got:\n{}",
+        c_code
+    );
+    assert!(
+        c_code.contains("cobol_screen_position(1, 7)"),
+        "screen ACCEPT should position cursor at USING field, got:\n{}",
+        c_code
+    );
+}
+
+#[test]
+fn test_native_screen_section_accept_using_reads_stdin() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SCRACPTN.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(5) VALUE SPACES.
+SCREEN SECTION.
+01 ENTRY-SCREEN.
+   05 LINE 1 COLUMN 1 VALUE \"NAME:\".
+   05 LINE 1 COLUMN 7 USING WS-NAME.
+PROCEDURE DIVISION.
+    ACCEPT ENTRY-SCREEN.
+    DISPLAY WS-NAME.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema_with_stdin(src, "ALICE\n");
+    assert_eq!(
+        code, 0,
+        "native screen ACCEPT failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("NAME:"),
+        "screen prompt should be displayed, got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("ALICE"),
+        "USING field should receive stdin, got: {stdout:?}"
+    );
+}
+
 // ===========================================================================
 // Phase 6 edge case tests (production-gaps.md section 4)
 // ===========================================================================

@@ -63,3 +63,36 @@ pub extern "C" fn cobol_screen_reset_attrs() {
     print!("\x1b[0m");
     let _ = io::stdout().flush();
 }
+
+/// Read one terminal input line into a fixed-width SCREEN SECTION field.
+///
+/// The destination is space-filled before the input bytes are copied so COBOL
+/// fixed-length display storage keeps the usual padding semantics.
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of `len` bytes. The pointer may not alias
+/// immutable memory while this function fills and copies into the destination.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_screen_accept(dst: *mut u8, len: u32) -> u32 {
+    if dst.is_null() || len == 0 {
+        return 0;
+    }
+
+    let _ = io::stdout().flush();
+
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        std::ptr::write_bytes(dst, b' ', len as usize);
+        return 0;
+    }
+
+    let trimmed = input.trim_end_matches(['\r', '\n']);
+    let bytes = trimmed.as_bytes();
+    let copy_len = bytes.len().min(len as usize);
+
+    std::ptr::write_bytes(dst, b' ', len as usize);
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, copy_len);
+
+    copy_len as u32
+}

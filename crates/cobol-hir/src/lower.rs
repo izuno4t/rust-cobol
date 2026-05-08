@@ -1000,38 +1000,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             .as_ref()
             .map(|r| (r.from.name.clone(), r.thru.as_ref().map(|t| t.name.clone())));
 
-        let has_screen_attrs = item.line_clause.is_some()
-            || item.column_clause.is_some()
-            || item.blank_screen
-            || item.blank_line
-            || item.highlight
-            || item.reverse_video
-            || item.source_field.is_some()
-            || item.using_field.is_some();
-
-        let screen_info = if has_screen_attrs || !item.children.is_empty() {
-            // Extract VALUE as string for screen display purposes.
-            let value_str = item.value.as_ref().and_then(|v| match &v.value {
-                Literal::String(s) => Some(SmolStr::from(s.as_str())),
-                _ => None,
-            });
-            let pic_str = item.picture.as_ref().map(|p| p.raw_string.clone());
-
-            Some(HirScreenInfo {
-                line: item.line_clause,
-                column: item.column_clause,
-                blank_screen: item.blank_screen,
-                blank_line: item.blank_line,
-                highlight: item.highlight,
-                reverse_video: item.reverse_video,
-                source: item.source_field.as_ref().map(|q| q.name.clone()),
-                using_field: item.using_field.as_ref().map(|q| q.name.clone()),
-                value: value_str,
-                picture: pic_str,
-            })
-        } else {
-            None
-        };
+        let screen_info = screen_info_for_item(item, true);
 
         out.push(HirDataItem {
             name: name.clone(),
@@ -1057,6 +1026,40 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
     for child in &item.children {
         lower_screen_data_item(child, out);
     }
+}
+
+fn screen_info_for_item(item: &DataItem, include_children: bool) -> Option<HirScreenInfo> {
+    let has_screen_attrs = item.line_clause.is_some()
+        || item.column_clause.is_some()
+        || item.blank_screen
+        || item.blank_line
+        || item.highlight
+        || item.reverse_video
+        || item.source_field.is_some()
+        || item.using_field.is_some();
+
+    if !has_screen_attrs && (!include_children || item.children.is_empty()) {
+        return None;
+    }
+
+    let value_str = item.value.as_ref().and_then(|v| match &v.value {
+        Literal::String(s) => Some(SmolStr::from(s.as_str())),
+        _ => None,
+    });
+    let pic_str = item.picture.as_ref().map(|p| p.raw_string.clone());
+
+    Some(HirScreenInfo {
+        line: item.line_clause,
+        column: item.column_clause,
+        blank_screen: item.blank_screen,
+        blank_line: item.blank_line,
+        highlight: item.highlight,
+        reverse_video: item.reverse_video,
+        source: item.source_field.as_ref().map(|q| q.name.clone()),
+        using_field: item.using_field.as_ref().map(|q| q.name.clone()),
+        value: value_str,
+        picture: pic_str,
+    })
 }
 
 fn determine_hir_type(item: &DataItem) -> HirType {
@@ -1115,7 +1118,7 @@ fn determine_hir_type_with_usage(
                 indexed_by: indexed_by_child,
                 redefines: child.redefines.clone(),
                 renames,
-                screen_info: None,
+                screen_info: screen_info_for_item(child, false),
                 justified: child.justified,
                 span: child.span,
             });
