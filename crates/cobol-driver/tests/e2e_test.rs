@@ -244,6 +244,19 @@ fn compile_and_run_no_sema_with_env(source: &str, envs: &[(&str, &str)]) -> (Str
 }
 
 fn find_test_runtime_lib() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(profile_dir) = exe.parent().and_then(|deps| deps.parent()) {
+            if has_runtime_archive(profile_dir) {
+                return profile_dir.to_path_buf();
+            }
+        }
+    }
+    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+        let debug_dir = PathBuf::from(target_dir).join("debug");
+        if has_runtime_archive(&debug_dir) {
+            return debug_dir;
+        }
+    }
     // Check common locations relative to the test working directory
     let candidates = [
         PathBuf::from("target/debug"),
@@ -251,7 +264,7 @@ fn find_test_runtime_lib() -> PathBuf {
         PathBuf::from("../../../target/debug"),
     ];
     for dir in &candidates {
-        if dir.join("libcobol_runtime.a").exists() {
+        if has_runtime_archive(dir) {
             return dir.clone();
         }
     }
@@ -262,11 +275,29 @@ fn find_test_runtime_lib() -> PathBuf {
             .and_then(|p| p.parent())
             .map(|p| p.join("target/debug"))
             .unwrap_or_default();
-        if workspace_root.join("libcobol_runtime.a").exists() {
+        if has_runtime_archive(&workspace_root) {
             return workspace_root;
         }
     }
     PathBuf::from("target/debug")
+}
+
+fn has_runtime_archive(dir: &std::path::Path) -> bool {
+    if dir.join("libcobol_runtime.a").exists() {
+        return true;
+    }
+    let deps_dir = dir.join("deps");
+    let Ok(entries) = std::fs::read_dir(deps_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.extension().is_some_and(|ext| ext == "a")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("libcobol_runtime"))
+    })
 }
 
 fn temp_exe_path(dir: &std::path::Path, stem: &str) -> PathBuf {
