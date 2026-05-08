@@ -51,32 +51,55 @@ By default this extracts `tests/nist/assets/newcob.val.tar.gz` into
 
 ```bash
 make nist-prepare
-make nist-compile
-make nist-compile-errors
-make nist-run
-make nist-run MODULE=NC
-make nist-run MODULE=NC PROGRAM=NC101A
-make nist-summary
+make nist
+make nist MODULE=NC
+make nist MODULE=NC PROGRAM=NC101A
+make nist-compile MODULE=NC
+make nist-audit MODULE=NC PROGRAM=NC101A
+make nist-compare MODULE=NC PROGRAM=NC101A
 ```
 
-The same `make nist-prepare`, `make nist-compile`, and `make nist-run`
-flow is intended for both local execution and CI jobs.
+Individual or scoped commands:
 
-`make nist-run` executes each NIST module as its own sequential run and
+| Command | Purpose |
+| --- | --- |
+| `make nist [MODULE=NC] [PROGRAM=NC101A]` | Compiles, executes, verifies, and summarizes selected programs |
+| `make nist-compile [MODULE=NC] [PROGRAM=NC101A]` | Runs only the compile phase for selected programs |
+| `make nist-audit [MODULE=NC] [PROGRAM=NC101A]` | Emits HIR and C artifacts for selected programs under `target/nist/audit` |
+| `make nist-compare [MODULE=NC] [PROGRAM=NC101A]` | Compares audit output for selected COBOL and generated C symbols |
+
+Whole-environment setup:
+
+| Command | Purpose |
+| --- | --- |
+| `make nist-prepare` | Extracts the checked-in CCVS archive into `target/nist/programs` |
+
+Latest-result inspection is intentionally kept as direct script usage:
+
+```bash
+NIST_ENV_ROOT=target/nist bash tests/nist/bin/run.sh --summary
+python3 tests/nist/bin/classify-compile-errors.py target/nist
+```
+
+The same `make nist-prepare`, `make nist-compile`, and `make nist` flow is
+intended for both local execution and CI jobs.
+
+`make nist` executes each NIST module as its own sequential run and
 prints the full cross-module summary after all modules finish. A module
 run uses one active process at a time so programs from the same module
 do not execute in parallel.
 
-`make nist-compile` runs only the compile phase and then collects the
-module summaries. This is the primary gate for detecting NIST
-`COMPILE_ERROR` regressions before the full execution phase.
+`make nist-compile` runs only the compile phase and then
+collects the module summaries. This is the primary gate for detecting
+NIST `COMPILE_ERROR` regressions before the full execution phase.
 
-`make nist-compile-errors` groups the current `COMPILE_ERROR` programs by
-root-cause-like compiler message classes. Use it after `make nist-compile`
-to decide which failures should become shared Rust regression tests.
+`python3 tests/nist/bin/classify-compile-errors.py target/nist` groups the
+current `COMPILE_ERROR` programs by root-cause-like compiler message classes.
+Use it after `make nist-compile` to decide which failures should become shared
+Rust regression tests.
 
 `NIST_JOBS` is still used by compile-only and audit-oriented workflows.
-The primary `make nist-run` path intentionally ignores parallelism for
+The primary `make nist` path intentionally ignores parallelism for
 module runs so local behavior matches CI module jobs.
 
 Compilation is cached by default per program. If the preprocessed source,

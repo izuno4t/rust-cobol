@@ -217,18 +217,35 @@ make build
 make release
 make test
 make lint
-make check
-make audit
-make verify
 make example
+make benchmark
 ```
 
 For standards-compliance work, see the NIST helpers:
 
 ```bash
 make nist-prepare
-make nist-run MODULE=NC
-make nist-summary
+make nist MODULE=NC
+make nist-compile MODULE=NC
+```
+
+NIST commands:
+
+Use `MODULE` and `PROGRAM` with the scoped commands only.
+
+| Command | Purpose |
+| --- | --- |
+| `make nist [MODULE=NC] [PROGRAM=NC101A]` | Scoped compile, execute, judge, and summarize |
+| `make nist-compile [MODULE=NC] [PROGRAM=NC101A]` | Scoped compile-only check |
+| `make nist-audit [MODULE=NC] [PROGRAM=NC101A]` | Scoped generated-code audit |
+| `make nist-compare [MODULE=NC] [PROGRAM=NC101A]` | Scoped audit symbol comparison |
+| `make nist-prepare` | Whole-environment setup |
+
+Use the NIST scripts directly for latest-result inspection:
+
+```bash
+NIST_ENV_ROOT=target/nist bash tests/nist/bin/run.sh --summary
+python3 tests/nist/bin/classify-compile-errors.py target/nist
 ```
 
 Platform-specific runtime validation notes:

@@ -98,11 +98,45 @@ cobolc myprogram.cob -o myprogram --source-format free
 | `make release` | Release build (default) |
 | `make test` | Run the full workspace test suite |
 | `make lint` | Run clippy, rustfmt check, and cspell |
-| `make fmt` | Apply rustfmt |
-| `make check` | Type-check without codegen |
-| `make audit` | Run the standard non-NIST audit (`check` + `lint`) |
-| `make verify` | Run `clean`, `audit`, and `test` as the standard post-change verification |
+| `make clean` | Remove build artifacts |
+| `make nist` | Run NIST CCVS 85; pass `MODULE` or `PROGRAM` to narrow scope |
+| `make benchmark` | Run the bundled local benchmarks |
 | `make install` | Install cobolc to ~/.cargo/bin |
+
+NIST commands:
+
+Use `MODULE` and `PROGRAM` only with commands that actually run or inspect a
+selected module/program.
+
+| Command | Description |
+| --- | --- |
+| `make nist [MODULE=NC] [PROGRAM=NC101A]` | Individual or scoped run: compile, execute, judge, and summarize |
+| `make nist-compile [MODULE=NC] [PROGRAM=NC101A]` | Individual or scoped compile-only check |
+| `make nist-audit [MODULE=NC] [PROGRAM=NC101A]` | Individual or scoped generated-code audit |
+| `make nist-compare [MODULE=NC] [PROGRAM=NC101A]` | Individual or scoped symbol comparison after audit |
+
+Whole-environment setup:
+
+| Command | Description |
+| --- | --- |
+| `make nist-prepare` | Extract CCVS inputs into `target/nist/programs`; do not pass `MODULE` or `PROGRAM` |
+
+NIST result inspection is not exposed as Make targets. Use the underlying
+scripts directly when needed:
+
+```bash
+NIST_ENV_ROOT=target/nist bash tests/nist/bin/run.sh --summary
+python3 tests/nist/bin/classify-compile-errors.py target/nist
+```
+
+x86 runtime actions:
+
+| Command | Description |
+| --- | --- |
+| `make runtime-x86 RUNTIME_X86_ACTION=build` | Build the x86_64 Linux Docker image |
+| `make runtime-x86 RUNTIME_X86_ACTION=shell` | Open a shell inside the x86_64 Linux container |
+| `make runtime-x86 MODULE=NC` | Run NIST inside the x86_64 Linux container |
+| `make runtime-x86 RUNTIME_X86_ACTION=bench` | Run benchmarks inside the x86_64 Linux container |
 
 ## Crate Structure
 

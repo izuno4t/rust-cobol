@@ -48,7 +48,7 @@ docker run --rm \
   -v "$PWD:/workspace" \
   -e CARGO_TARGET_DIR=/workspace/target/runtime-x86-linux-amd64 \
   rust-cobol-runtime-x86 \
-  bash -lc "make nist-prepare && make nist-run MODULE=NC && make nist-summary"
+  bash -lc "make nist-prepare && make nist MODULE=NC && NIST_ENV_ROOT=target/nist bash tests/nist/bin/run.sh --summary"
 ```
 
 ## Typical benchmark commands

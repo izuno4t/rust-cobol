@@ -130,15 +130,15 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        make nist-run MODULE=${{ matrix.module }} NIST_JOBS=1 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/make-nist-run.log"
+        make nist MODULE=${{ matrix.module }} NIST_JOBS=1 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/make-nist.log"
 
     - name: Verify NIST CCVS 85 module pass rate
       shell: bash
       run: |
         set -euo pipefail
-        summary=$(make nist-summary 2>&1)
+        summary=$(NIST_ENV_ROOT=target/nist bash tests/nist/bin/run.sh --summary 2>&1)
         echo "$summary"
-        printf '%s\n' "$summary" | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/make-nist-summary.log"
+        printf '%s\n' "$summary" | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/nist-summary.log"
         module_line=$(echo "$summary" | grep '^${{ matrix.module }}')
         total=$(echo "$module_line" | awk '{print $2}')
         pass=$(echo "$module_line" | awk '{print $3}')
