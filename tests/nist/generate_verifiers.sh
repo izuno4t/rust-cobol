@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PROGRAMS_DIR="${1:-$REPO_ROOT/.nist/programs}"
+PROGRAMS_DIR="${1:-$REPO_ROOT/target/nist/programs}"
 VERIFIERS_DIR="$SCRIPT_DIR/verifiers"
 VERIFIER_OVERRIDES_DIR="$VERIFIERS_DIR/overrides"
 

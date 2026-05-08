@@ -8,7 +8,7 @@ NIST_COBOLC ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR)/release/cobol-driver
 
 .PHONY: all build release test lint fmt check audit verify clean install uninstall example nist-prepare nist-compile nist-compile-errors nist-run nist-summary nist-audit-codegen nist-compare-codegen runtime-x86-build runtime-x86-shell runtime-x86-nist runtime-x86-bench help
 
-NIST_ENV_ROOT ?= $(CURDIR)/.nist
+NIST_ENV_ROOT ?= $(CURDIR)/target/nist
 NIST_JOBS ?= 5
 NIST_SOURCE_VAL ?=
 RUNTIME_X86_IMAGE := rust-cobol-runtime-x86
@@ -189,7 +189,7 @@ help:
 	@echo "  make install     - cobolc を ~/.cargo/bin にインストール"
 	@echo "  make uninstall   - cobolc をアンインストール"
 	@echo "  make example     - examples/hello.cob をコンパイル・実行"
-	@echo "  make nist-prepare - NIST 資材を .nist/programs に展開"
+	@echo "  make nist-prepare - NIST 資材を target/nist/programs に展開"
 	@echo "  make nist-compile - NIST compile phase のみ実行"
 	@echo "  make nist-compile-errors - NIST compile error を性質別に分類"
 	@echo "  make nist-run     - NIST CCVS 85 をモジュールごとに順次実行し、最後に全体サマリー表示"

@@ -3,7 +3,7 @@
 This directory provides the primary NIST CCVS 85 execution environment
 for `rust-cobol`.
 
-It keeps generated COBOL sources and test results under `.nist`,
+It keeps generated COBOL sources and test results under `target/nist`,
 not in this directory.
 
 ## Goal
@@ -30,7 +30,7 @@ make nist-prepare
 ```
 
 By default this reads `tests/nist/newcob.val` and extracts programs into
-`.nist/programs`.
+`target/nist/programs`.
 
 ## Usage
 
@@ -85,6 +85,6 @@ a more specific machine-readable cause.
 
 ## Output Location
 
-- extracted programs: `.nist/programs`
-- run results: `.nist/results`
-- compare results: `.nist/results-compare`
+- extracted programs: `target/nist/programs`
+- run results: `target/nist/results`
+- compare results: `target/nist/results-compare`

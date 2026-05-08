@@ -1,0 +1,10 @@
+enable CM-INQUE-1
+enable CM-OUTQUE-1
+config CM-INQUE-1 queue INQUEUE
+config CM-INQUE-1 key 0001
+config CM-INQUE-1 source TERMINAL-0001
+config CM-INQUE-1 source TERMINAL-0002
+config CM-OUTQUE-1 dest OUTQUEUE
+config CM-OUTQUE-1 dest OUTQUEUE-2
+config CM-OUTQUE-1 key 0001
+link CM-OUTQUE-1 CM-INQUE-1

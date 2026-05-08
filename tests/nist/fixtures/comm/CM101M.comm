@@ -1,0 +1,7 @@
+enable CM-INQUE-1
+config CM-INQUE-1 queue INQUEUE
+config CM-INQUE-1 sub1 BLANK
+config CM-INQUE-1 sub2 BLANK
+config CM-INQUE-1 sub3 BLANK
+config CM-INQUE-1 key 0001
+message CM-INQUE-1 KILL

@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/.nist}"
+ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 RESULTS_DIR="$ENV_ROOT/results-compare"
 COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"

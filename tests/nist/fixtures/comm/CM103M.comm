@@ -1,0 +1,4 @@
+enable CM-INQUE-1
+enable CM-OUTQUE-1
+link CM-OUTQUE-1 CM-INQUE-1
+message CM-INQUE-1 KILL

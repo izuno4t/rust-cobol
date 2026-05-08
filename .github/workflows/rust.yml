@@ -117,13 +117,14 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        tar -xzf tests/nist/newcob.val.tar.gz -C tests/nist/ 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/extract-nist.log"
+        mkdir -p target/nist/source
+        tar -xzf tests/nist/newcob.val.tar.gz -C target/nist/source/ 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/extract-nist.log"
 
     - name: Prepare NIST programs
       shell: bash
       run: |
         set -euo pipefail
-        make nist-prepare 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/make-nist-prepare.log"
+        make nist-prepare NIST_SOURCE_VAL=target/nist/source/newcob.val 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/make-nist-prepare.log"
 
     - name: Run NIST CCVS 85 module
       shell: bash
@@ -157,5 +158,5 @@ jobs:
         name: linux-nist-${{ matrix.module }}-logs-and-results
         path: |
           ci-logs/nist-${{ matrix.module }}
-          .nist/results/${{ matrix.module }}
+          target/nist/results/${{ matrix.module }}
         if-no-files-found: warn

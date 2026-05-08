@@ -2,10 +2,10 @@
 
 ## 現在の状態
 
-解消済み。
+GitHub Actions 上では未解消。
 
-2026-05-07 時点のローカル release build で、CM の直接対象とモジュール全体が
-PASS することを確認した。
+2026-05-07 時点のローカル現行ワークツリーでは、Linux x86_64 コンテナ内の
+release build で CM の直接対象とモジュール全体が PASS することを確認した。
 
 ```text
 make nist-run MODULE=CM PROGRAM=CM102M NIST_JOBS=1
@@ -18,18 +18,26 @@ make nist-run MODULE=CM NIST_JOBS=1
   CM: Total 9, Pass 9, Fail 0, Ready 0, CErr 0, RErr 0, Rate 100%
 ```
 
-この文書は、失敗時の原因分析と解消確認を残す記録として扱う。
+一方で、GitHub Actions run
+<https://github.com/izuno4t/rust-cobol/actions/runs/25498348522/job/74824357745>
+は commit `87421961fd629e141d3943abc99dde23ca1cecd7` を checkout しており、
+この commit では CM 用通信 fixture が存在しないため、`COBOL_COMM_SCRIPT` が
+実行時に有効にならず CM が 3/9 PASS のまま失敗している。
+
+この文書は、失敗時の原因分析、ローカル解消確認、CI 未反映原因を残す記録として
+扱う。
 
 ## 背景
 
 GitHub Actions run
-<https://github.com/izuno4t/rust-cobol/actions/runs/25495909892> で
-`nist-cm` ジョブが失敗した。
+<https://github.com/izuno4t/rust-cobol/actions/runs/25495909892> と
+<https://github.com/izuno4t/rust-cobol/actions/runs/25498348522/job/74824357745>
+で `nist-cm` ジョブまたは `nist-module (CM)` ジョブが失敗した。
 
 対象 run の `Rust` workflow は `build` ジョブには成功している。失敗箇所は
 `nist-cm` ジョブの `Verify NIST CCVS 85 CM pass rate` ステップである。
 
-## 直接原因
+## CI 上の直接原因
 
 `make nist-run MODULE=CM` 相当の実行結果が、CM モジュール 9件中 3件 PASS、
 6件 FAIL だった。
@@ -40,6 +48,15 @@ CM: Total 9, Pass 3, Fail 6, Ready 0, CErr 0, RErr 0, Rate 33%
 
 CI の検証ステップは CM モジュールの全件 PASS を要求しているため、この結果で
 ジョブが失敗した。
+
+さらに、run `25498348522` の artifact と対象 commit を確認した結果、
+CI では `tests/nist/fixtures/comm/CM102M.comm` と
+`tests/nist/fixtures/comm/CM202M.comm` が checkout された commit に存在しない。
+`tests/nist/run_nist.sh` は通信 fixture ファイルが存在する場合だけ
+`COBOL_COMM_SCRIPT` を export し、存在しない場合は unset する。
+
+したがって CI では、CM の通信キュー、destination、key、route/enqueue を
+シミュレートする fixture が実行時に効いていない。
 
 ## 失敗したプログラム
 
@@ -159,8 +176,8 @@ QUEUE SERIES 系の通信入力が進まず、テスト本体が完走できて�
 
 ## 根本原因の仮説
 
-中心的な原因は、`COMMUNICATION SECTION` サポートが NIST CM 全体を満たす段階に
-達していないことである。
+当初の中心的な仮説は、`COMMUNICATION SECTION` サポートが NIST CM 全体を満たす
+段階に達していないことだった。
 
 特に次の要素が不足または不整合を起こしている可能性が高い。
 
@@ -183,12 +200,22 @@ CI 閾値を下げるのではなく、明示的な FAIL が出ていた `CM102M
 判定ができていない副作用である可能性が高かった。先にこれらへ個別の判定器調整を
 入れると、根本原因を隠すおそれがあった。
 
+最新の CI 失敗については、実装そのものではなく、CI が checkout した commit に
+通信 fixture ファイルが含まれていないことが直接原因である。必要な解消は、CM 用の
+fixture ファイルを CI 対象 commit に含めることであり、CI の pass rate 条件を緩める
+ことではない。
+
 ## 実施結果
 
-- `CM102M` は PASS しており、通信異常系ステータスの不一致は再現しない。
-- `CM202M` は PASS しており、`QUEUE TESTED EMPTY` と destination table/error key
-  系の不一致は再現しない。
-- `CM101M`、`CM103M`、`CM104M`、`CM105M` も CM 全体実行で PASS している。
+- ローカル現行ワークツリーでは `CM102M` は PASS しており、通信異常系ステータスの
+  不一致は再現しない。
+- ローカル現行ワークツリーでは `CM202M` は PASS しており、`QUEUE TESTED EMPTY` と
+  destination table/error key 系の不一致は再現しない。
+- ローカル現行ワークツリーでは `CM101M`、`CM103M`、`CM104M`、`CM105M` も CM 全体
+  実行で PASS している。
+- GitHub Actions の対象 commit `87421961fd629e141d3943abc99dde23ca1cecd7` では、
+  `tests/nist/fixtures/comm/CM102M.comm` と
+  `tests/nist/fixtures/comm/CM202M.comm` が存在しないため、同じ結果にならない。
 - `crates/cobol-driver/tests/e2e_test.rs` には、`DESTINATION TABLE OCCURS 2` と
   `ERROR KEY OCCURS 2` の full area length を codegen が渡すことを固定する
   E2E がある。

@@ -1,0 +1,5 @@
+enable CM-INQUE-1
+enable CM-INQUE-2
+enable CM-OUTQUE-1
+enable CM-OUTQUE-2
+message CM-INQUE-1 KILL
