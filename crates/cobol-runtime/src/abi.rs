@@ -365,6 +365,9 @@ pub fn emit_c_declarations(out: &mut String) {
     out.push_str("extern void cobol_screen_reverse_off(void);\n");
     out.push_str("extern void cobol_screen_reset_attrs(void);\n");
     out.push_str("extern uint32_t cobol_screen_accept(uint8_t* dst, uint32_t len);\n");
+    out.push_str(
+        "extern uint32_t cobol_screen_accept_pic(uint8_t* dst, uint32_t len, const uint8_t* pic_ptr, uint32_t pic_len);\n",
+    );
     out.push_str("/* NATIONAL (PIC N) runtime declarations */\n");
     out.push_str(
         "extern uint32_t cobol_func_national_of(const uint8_t* src, uint32_t src_len, uint16_t* dst, uint32_t dst_len);\n",

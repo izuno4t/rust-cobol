@@ -7516,18 +7516,32 @@ fn emit_screen_accept_field(
     let size = item
         .map(|item| data_item_byte_size(&item.data_type))
         .unwrap_or_else(|| find_data_item_size(&c_name, data_items));
+    let picture = si
+        .picture
+        .as_deref()
+        .or_else(|| item.and_then(|item| item.picture.as_deref()));
+    let accept_call = |dst: &str, len: String| -> String {
+        if let Some(picture) = picture {
+            let escaped = escape_c_string(picture);
+            format!(
+                "cobol_screen_accept_pic((uint8_t*){dst}, {len}, (const uint8_t*)\"{escaped}\", {})",
+                picture.len()
+            )
+        } else {
+            format!("cobol_screen_accept((uint8_t*){dst}, {len})")
+        }
+    };
 
     if display_numeric_c_expr_metadata(&c_name, data_items).is_some()
         || item.is_some_and(|item| matches!(item.data_type, HirType::Alphanumeric { .. }))
     {
         let ptr = c_ptr_expr(&c_name, data_items);
-        out.push_str(&format!(
-            "{pad}cobol_screen_accept((uint8_t*){ptr}, {size});\n"
-        ));
+        out.push_str(&format!("{pad}{};\n", accept_call(&ptr, size.to_string())));
     } else {
         out.push_str(&format!("{pad}{{ uint8_t _screen_buf[64];\n"));
         out.push_str(&format!(
-            "{pad}    uint32_t _screen_len = cobol_screen_accept(_screen_buf, 63);\n"
+            "{pad}    uint32_t _screen_len = {};\n",
+            accept_call("_screen_buf", "63".to_string())
         ));
         out.push_str(&format!("{pad}    _screen_buf[_screen_len] = 0;\n"));
         emit_store_int(

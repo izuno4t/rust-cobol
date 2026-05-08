@@ -96,3 +96,54 @@ pub unsafe extern "C" fn cobol_screen_accept(dst: *mut u8, len: u32) -> u32 {
 
     copy_len as u32
 }
+
+/// Read one terminal input line with a PICTURE-derived input mask.
+///
+/// `PIC 9` fields accept only ASCII digits and ignore other characters before
+/// copying into the fixed-width destination. Other pictures use the normal
+/// fixed-width line input behavior.
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of `len` bytes. `pic_ptr` must be null or
+/// valid for reads of `pic_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cobol_screen_accept_pic(
+    dst: *mut u8,
+    len: u32,
+    pic_ptr: *const u8,
+    pic_len: u32,
+) -> u32 {
+    if dst.is_null() || len == 0 {
+        return 0;
+    }
+    if pic_ptr.is_null() || pic_len == 0 {
+        return cobol_screen_accept(dst, len);
+    }
+
+    let picture = std::slice::from_raw_parts(pic_ptr, pic_len as usize);
+    let numeric_mask = picture.iter().any(|byte| byte.eq_ignore_ascii_case(&b'9'));
+    if !numeric_mask {
+        return cobol_screen_accept(dst, len);
+    }
+
+    let _ = io::stdout().flush();
+
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        std::ptr::write_bytes(dst, b' ', len as usize);
+        return 0;
+    }
+
+    std::ptr::write_bytes(dst, b' ', len as usize);
+    let mut copied = 0usize;
+    for byte in input.bytes().filter(u8::is_ascii_digit) {
+        if copied >= len as usize {
+            break;
+        }
+        *dst.add(copied) = byte;
+        copied += 1;
+    }
+
+    copied as u32
+}

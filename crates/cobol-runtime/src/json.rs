@@ -283,7 +283,7 @@ pub unsafe extern "C" fn cobol_validate(target_name: *const std::os::raw::c_char
 /// 1 = invalid argument, 2 = numeric content mismatch, 3 = numeric range/scale.
 ///
 /// `value_kind`:
-/// - 0 = byte/alphanumeric/group storage: currently always valid when present.
+/// - 0 = byte/alphanumeric/group storage.
 /// - 1 = display numeric bytes.
 /// - 2 = binary integer.
 /// - 3 = CobolDecimal.
@@ -316,7 +316,10 @@ pub unsafe extern "C" fn cobol_validate_item(
     let metadata = ValidationPicture::parse(&picture);
 
     match value_kind {
-        0 => 0,
+        0 => {
+            let bytes = std::slice::from_raw_parts(value_ptr.cast::<u8>(), value_len as usize);
+            validate_byte_storage(bytes, metadata)
+        }
         1 => {
             let bytes = std::slice::from_raw_parts(value_ptr.cast::<u8>(), value_len as usize);
             validate_display_numeric(bytes, metadata)
@@ -344,6 +347,7 @@ struct ValidationPicture {
     digits: u32,
     scale: u32,
     signed: bool,
+    alphabetic: bool,
 }
 
 impl ValidationPicture {
@@ -367,6 +371,10 @@ impl ValidationPicture {
                     if has_decimal_marker_before(&chars, i) {
                         result.scale = result.scale.saturating_add(repeat);
                     }
+                    i = skip_picture_repeat(&chars, i + 1);
+                }
+                'A' => {
+                    result.alphabetic = true;
                     i = skip_picture_repeat(&chars, i + 1);
                 }
                 _ => i += 1,
@@ -428,6 +436,18 @@ fn validate_display_numeric(bytes: &[u8], metadata: ValidationPicture) -> u32 {
     }
     if metadata.digits > 0 && digits > metadata.digits {
         return 3;
+    }
+    0
+}
+
+fn validate_byte_storage(bytes: &[u8], metadata: ValidationPicture) -> u32 {
+    if !metadata.alphabetic {
+        return 0;
+    }
+    for &byte in bytes {
+        if !(byte == b' ' || byte.is_ascii_alphabetic()) {
+            return 2;
+        }
     }
     0
 }
