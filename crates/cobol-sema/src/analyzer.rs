@@ -4,6 +4,7 @@
 // and type checking for a parsed COBOL program.
 
 use cobol_ast::data_div::{DataDivision, DataItem, Usage};
+use cobol_ast::expr::QualifiedName;
 use cobol_ast::proc_div::{ParamMode, ProcedureDivision};
 use cobol_ast::statement::Statement;
 use cobol_ast::CobolProgram;
@@ -11,7 +12,7 @@ use cobol_common::CobolStandard;
 use cobol_diagnostics::{Diagnostic, DiagnosticReporter, WarningLevel};
 
 use crate::name_resolver::NameResolver;
-use crate::symbol_table::SymbolTable;
+use crate::symbol_table::{Symbol, SymbolKind, SymbolTable};
 use crate::type_checker::TypeChecker;
 
 /// The result of semantic analysis.
@@ -20,6 +21,19 @@ pub struct AnalysisResult {
     pub has_errors: bool,
     /// The populated symbol table.
     pub symbol_table: SymbolTable,
+}
+
+impl AnalysisResult {
+    /// Resolves a COBOL data reference through the semantic symbol table.
+    ///
+    /// This is the post-sema entry point intended for later compiler stages:
+    /// they should ask the semantic result for name resolution instead of
+    /// duplicating qualified lookup rules over the raw AST.
+    pub fn resolve_data_reference(&self, reference: &QualifiedName) -> Option<&Symbol> {
+        self.symbol_table
+            .lookup_qualified(&reference.name, &reference.qualifiers)
+            .filter(|symbol| matches!(symbol.kind, SymbolKind::DataItem { .. }))
+    }
 }
 
 /// Top-level semantic analyzer that drives all analysis passes.

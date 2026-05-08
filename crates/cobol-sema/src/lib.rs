@@ -19,10 +19,11 @@ pub use symbol_table::{CobolType, Scope, ScopeKind, Symbol, SymbolKind, SymbolTa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cobol_ast::PictureCategory;
+    use cobol_ast::{expr::QualifiedName, PictureCategory};
     use cobol_common::{CobolStandard, FileId, SourceFormat, Span};
     use cobol_lexer::Lexer;
     use cobol_parser::Parser;
+    use smol_str::SmolStr;
 
     /// Helper: lex + parse + analyze a COBOL source string.
     fn analyze(source: &str) -> (AnalysisResult, cobol_diagnostics::DiagnosticReporter) {
@@ -125,6 +126,44 @@ PROCEDURE DIVISION.
         let sym = result.symbol_table.lookup(&"MY-PROG".into());
         assert!(sym.is_some());
         assert!(matches!(sym.unwrap().kind, SymbolKind::Program));
+    }
+
+    #[test]
+    fn test_analysis_result_resolves_qualified_data_reference() {
+        let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. QUAL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  REC.
+    05 FIELD PIC X.
+PROCEDURE DIVISION.
+    DISPLAY FIELD OF REC.
+    STOP RUN.
+";
+        let (result, diag) = analyze(src);
+        assert!(!result.has_errors, "{:?}", diag.diagnostics());
+
+        let reference = QualifiedName {
+            name: SmolStr::new("FIELD"),
+            qualifiers: vec![SmolStr::new("REC")],
+            subscripts: Vec::new(),
+            ref_mod: None,
+            span: Span::dummy(),
+        };
+
+        let resolved = result
+            .resolve_data_reference(&reference)
+            .expect("qualified data reference should resolve through semantic analysis");
+
+        assert_eq!(resolved.name.as_str(), "FIELD");
+        assert!(matches!(
+            resolved.kind,
+            SymbolKind::DataItem {
+                level: 5,
+                is_group: false
+            }
+        ));
     }
 
     #[test]

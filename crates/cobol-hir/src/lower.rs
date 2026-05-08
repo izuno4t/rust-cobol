@@ -100,15 +100,19 @@ type OpenMetadataMap = HashMap<SmolStr, OpenMetadata>;
 type ReadMetadata = (u32, u32, Option<SmolStr>, Option<SmolStr>);
 type ReadMetadataMap = HashMap<SmolStr, ReadMetadata>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirLoweringError {
     SemanticErrors,
+    UnresolvedDataReference(SmolStr),
 }
 
 impl fmt::Display for HirLoweringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SemanticErrors => write!(f, "semantic analysis failed before HIR lowering"),
+            Self::UnresolvedDataReference(name) => {
+                write!(f, "unresolved data reference before HIR lowering: {name}")
+            }
         }
     }
 }
@@ -143,7 +147,128 @@ pub fn lower_analyzed_to_hir(
     if analysis.has_errors {
         return Err(HirLoweringError::SemanticErrors);
     }
+    verify_analyzed_data_references(program, analysis)?;
     Ok(lower_to_hir(program))
+}
+
+fn verify_analyzed_data_references(
+    program: &CobolProgram,
+    analysis: &AnalysisResult,
+) -> Result<(), HirLoweringError> {
+    if let Some(procedure) = &program.procedure {
+        verify_procedure_data_references(procedure, analysis)?;
+    }
+    for nested in &program.nested_programs {
+        verify_analyzed_data_references(nested, analysis)?;
+    }
+    Ok(())
+}
+
+fn verify_procedure_data_references(
+    procedure: &ProcedureDivision,
+    analysis: &AnalysisResult,
+) -> Result<(), HirLoweringError> {
+    for declarative in &procedure.declaratives {
+        for paragraph in &declarative.paragraphs {
+            verify_paragraph_data_references(paragraph, analysis)?;
+        }
+    }
+    for section in &procedure.sections {
+        for paragraph in &section.paragraphs {
+            verify_paragraph_data_references(paragraph, analysis)?;
+        }
+    }
+    for paragraph in &procedure.paragraphs {
+        verify_paragraph_data_references(paragraph, analysis)?;
+    }
+    Ok(())
+}
+
+fn verify_paragraph_data_references(
+    paragraph: &Paragraph,
+    analysis: &AnalysisResult,
+) -> Result<(), HirLoweringError> {
+    for sentence in &paragraph.sentences {
+        verify_statements_data_references(&sentence.statements, analysis)?;
+    }
+    Ok(())
+}
+
+fn verify_statements_data_references(
+    statements: &[Statement],
+    analysis: &AnalysisResult,
+) -> Result<(), HirLoweringError> {
+    for statement in statements {
+        verify_statement_data_references(statement, analysis)?;
+    }
+    Ok(())
+}
+
+fn verify_statement_data_references(
+    statement: &Statement,
+    analysis: &AnalysisResult,
+) -> Result<(), HirLoweringError> {
+    match statement {
+        Statement::Display(display) => {
+            for operand in &display.operands {
+                verify_expr_data_references(operand, analysis)?;
+            }
+        }
+        Statement::Move(mv) => {
+            verify_expr_data_references(&mv.from, analysis)?;
+            for target in &mv.to {
+                verify_expr_data_references(target, analysis)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn verify_expr_data_references(
+    expr: &Expr,
+    analysis: &AnalysisResult,
+) -> Result<(), HirLoweringError> {
+    match expr {
+        Expr::Identifier(qname) => verify_data_reference(qname, analysis),
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                verify_expr_data_references(arg, analysis)?;
+            }
+            Ok(())
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            verify_expr_data_references(left, analysis)?;
+            verify_expr_data_references(right, analysis)
+        }
+        Expr::UnaryOp { operand, .. } | Expr::Paren { inner: operand, .. } => {
+            verify_expr_data_references(operand, analysis)
+        }
+        Expr::ReferenceModification {
+            variable,
+            start,
+            length,
+            ..
+        } => {
+            verify_data_reference(variable, analysis)?;
+            verify_expr_data_references(start, analysis)?;
+            if let Some(length) = length {
+                verify_expr_data_references(length, analysis)?;
+            }
+            Ok(())
+        }
+        Expr::Literal(_) => Ok(()),
+    }
+}
+
+fn verify_data_reference(
+    qname: &QualifiedName,
+    analysis: &AnalysisResult,
+) -> Result<(), HirLoweringError> {
+    analysis
+        .resolve_data_reference(qname)
+        .map(|_| ())
+        .ok_or_else(|| HirLoweringError::UnresolvedDataReference(qname.name.clone()))
 }
 
 /// Lowers a COBOL AST program directly into the HIR.
@@ -4599,6 +4724,31 @@ PROCEDURE DIVISION.
         assert_eq!(
             err.to_string(),
             "semantic analysis failed before HIR lowering"
+        );
+    }
+
+    #[test]
+    fn test_lower_analyzed_to_hir_rejects_missing_resolved_data_reference() {
+        let program = parse_program(
+            "IDENTIFICATION DIVISION.
+PROGRAM-ID. BAD-ANALYSIS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  WS-NAME PIC X.
+PROCEDURE DIVISION.
+    DISPLAY WS-NAME.
+    STOP RUN.",
+        );
+        let analysis = cobol_sema::AnalysisResult {
+            has_errors: false,
+            symbol_table: cobol_sema::SymbolTable::new(),
+        };
+
+        let err = lower_analyzed_to_hir(&program, &analysis).expect_err("lowering should fail");
+
+        assert_eq!(
+            err.to_string(),
+            "unresolved data reference before HIR lowering: WS-NAME"
         );
     }
 

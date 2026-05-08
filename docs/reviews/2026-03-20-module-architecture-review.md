@@ -18,12 +18,13 @@ codegen / runtime / driver` という責務分離は理解しやすい。
    typed HIR にはまだ到達していない
 2. `cobol-hir` が IR 定義と lowering 実装を同時に抱えている
 
-2026-05-08 時点で、公開パイプライン説明のずれと `codegen` /
-外部ツールチェーン実行責務の混在は改善済みである。
-また、driver の通常経路は `lower_analyzed_to_hir` を使い、
+2026-05-08 時点で、driver の通常経路は `lower_analyzed_to_hir` を使い、
 semantic analysis の成功を HIR lowering の明示的な前提にした。
 さらに `cobol-hir::lower` は非公開 module とし、lowering API は
 crate root からの re-export に限定した。
+また `AnalysisResult::resolve_data_reference` を追加し、
+`lower_analyzed_to_hir` は一部の procedure 内データ参照を
+semantic analysis の symbol table で検証するようになった。
 
 ---
 
@@ -61,7 +62,8 @@ HIR の正規データモデルとして使い切っているわけではない�
 - `WRITE/REWRITE` の対象解決
 - `OCCURS` 次元に基づく添字解釈の補正
 
-今回の改善で、`sema` 成功を後段入力の前提にする足場は入った。
+今回の改善で、`sema` 成功と一部の解決済みデータ参照を
+後段入力の前提にする足場は入った。
 しかし `typed HIR` またはそれに準ずる後段入力へ昇格させない限り、
 意味解析と lowering の責務境界はまだ崩れやすい。
 
@@ -69,50 +71,9 @@ HIR の正規データモデルとして使い切っているわけではない�
 
 - 中長期的には `sema -> typed HIR` の流れに寄せる
 - 少なくとも「後段が信頼すべき正規情報」を AST ではなく `sema` の成果物に寄せる
-- `AnalysisResult` に後段が参照できる解決済み情報を段階的に追加する
+- `AnalysisResult` に後段が参照できる解決済み情報をさらに段階的に追加する
 
-### 2. パイプライン説明が実装とずれていた
-
-**状態:** 解消済み
-
-README の主経路は現在、実装どおり次の流れを明記している。
-
-```text
-Source → Preprocessor → Lexer → Parser → Sema → HIR → C codegen → C toolchain → native binary
-```
-
-また `cobol-mir` は「現在の主パイプラインでは未使用の placeholder」として
-明記されている。
-
-このため、本指摘は現時点では未解決課題ではない。
-
-**対応済み:**
-
-- README と設計文書に `Preprocessor` を正式フェーズとして明記する
-- `MIR` は「将来用で現状未使用」と明記する
-- 現状の責務境界を説明し、将来構想と現在実装を混同させない
-
-### 3. `codegen` とツールチェーン実行責務が分離し切れていなかった
-
-**状態:** 解消済み
-
-`cobol-codegen` は現在、`HIR -> C 文字列生成` に公開 API を絞っている。
-C コンパイラ起動、runtime static library 解決、リンク戦略は
-`cobol-driver::toolchain` に移した。
-
-このため、バックエンド責務は次のように分かれている。
-
-- `cobol-codegen`: C ソース生成
-- `cobol-driver::toolchain`: C コンパイラ起動、runtime library 解決、リンク
-
-本指摘は、現時点では未解決課題ではない。
-
-**対応済み:**
-
-- `codegen` を「IR -> C 文字列生成」に寄せる
-- 外部コンパイラ起動とリンク戦略は `driver` か別の `toolchain` 層へ寄せる
-
-### 4. `cobol-hir` が IR 定義と lowering 実装を同じ crate に持っている
+### 2. `cobol-hir` が IR 定義と lowering 実装を同じ crate に持っている
 
 **重要度:** 中
 
@@ -133,7 +94,7 @@ crate root の `lower_analyzed_to_hir` / `lower_to_hir` だけを使う形にし
 
 ## 優先順位
 
-1. `sema` の成果物を後段の正規入力へ接続する設計を検討する
+1. `sema` の成果物を後段の正規入力へ接続する範囲を広げる
 2. `HIR` 定義と lowering 実装を crate 分割する判断基準を決める
 3. lowering が意味解析の代替責務をさらに抱えないよう、境界テストを追加する
 
@@ -142,7 +103,7 @@ crate root の `lower_analyzed_to_hir` / `lower_to_hir` だけを使う形にし
 ## 当面のアクション
 
 - `typed HIR` 導入の可否、または `AnalysisResult` の追加拡張方針を設計する
-- `lower_to_hir` が必要とする sema 成果物を洗い出す
+- `lower_to_hir` が必要とする sema 成果物を洗い出し、`AnalysisResult` 経由へ寄せる
 - `cobol-hir` を将来 `hir-ir` / `hir-lower` 相当に分ける判断基準を定義する
 
 ---
