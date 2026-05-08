@@ -20,20 +20,31 @@ executable.
 
 ## Runtime Characteristics and Benchmarks
 
-`rust-cobol` showed a clear throughput advantage on the included
-`N-Queens` benchmark:
-`704.5 ms` mean runtime versus `20.806 s` for `GnuCOBOL`
-(`hyperfine`, 3 runs), or about `29.5x` faster.
+On the bundled benchmark suite, `rust-cobol` produces native binaries that run
+faster than GnuCOBOL on the tested Linux x86_64 workloads.
 
-The smaller microbenchmarks in `tests/benchmark` were much closer:
-arithmetic was about `1.32x` slower than `GnuCOBOL`, string
-operations about `1.12x` slower, and file I/O about `1.09x`
-faster. In practice, the current runtime looks strongest on
-CPU-bound loop-heavy workloads while remaining broadly competitive
-on simpler tasks.
+Latest comparison run:
 
-Measurement environment: macOS 26.3.1 on Apple Silicon, Apple clang
-17.0.0, cargo 1.93.1.
+```bash
+make runtime-x86 RUNTIME_X86_ACTION=bench
+```
+
+Runtime results:
+
+| Benchmark | rust-cobol | GnuCOBOL | Result |
+| --- | ---: | ---: | ---: |
+| N-Queens (`n=1..13`) | 3.354s | 37.494s | 11.18x faster |
+| Arithmetic test | 0.112s | 0.403s | 3.60x faster |
+| String operations test | 0.108s | 0.130s | 1.20x faster |
+| File I/O test | 0.120s | 0.343s | 2.86x faster |
+
+Compilation is currently slower than GnuCOBOL in this benchmark environment,
+especially after a clean build. The same run measured `rust-cobol` compilation
+at 109.077s for N-Queens and 2.228-50.430s for the microbenchmarks, compared
+with 0.547-1.089s for GnuCOBOL.
+
+Measurement environment: Docker Linux x86_64 runtime on an Apple Silicon host,
+using the repository's `runtime-x86` benchmark environment.
 
 ## Requirements
 
