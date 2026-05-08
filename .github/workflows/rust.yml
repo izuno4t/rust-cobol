@@ -118,7 +118,7 @@ jobs:
       run: |
         set -euo pipefail
         mkdir -p target/nist/source
-        tar -xzf tests/nist/newcob.val.tar.gz -C target/nist/source/ 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/extract-nist.log"
+        tar -xzf tests/nist/assets/newcob.val.tar.gz -C target/nist/source/ 2>&1 | tee "${CI_LOG_ROOT}/nist-${{ matrix.module }}/extract-nist.log"
 
     - name: Prepare NIST programs
       shell: bash

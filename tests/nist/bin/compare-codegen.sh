@@ -3,7 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+NIST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$NIST_ROOT/../.." && pwd)"
 ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 AUDIT_RESULTS_DIR="$ENV_ROOT/audit/codegen"

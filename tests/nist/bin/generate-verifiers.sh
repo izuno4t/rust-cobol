@@ -2,9 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+NIST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$NIST_ROOT/../.." && pwd)"
 PROGRAMS_DIR="${1:-$REPO_ROOT/target/nist/programs}"
-VERIFIERS_DIR="$SCRIPT_DIR/verifiers"
+VERIFIERS_DIR="$NIST_ROOT/verifiers"
 VERIFIER_OVERRIDES_DIR="$VERIFIERS_DIR/overrides"
 
 mkdir -p "$VERIFIERS_DIR"

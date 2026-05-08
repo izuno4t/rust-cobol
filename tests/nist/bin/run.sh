@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# run_nist.sh — Run NIST CCVS 85 with GnuCOBOL-style judgment rules.
+# run.sh — Run NIST CCVS 85 with GnuCOBOL-style judgment rules.
+# cspell:words libcobol rlib ALTL ALTLB KLMNO OBNC
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+NIST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$NIST_ROOT/../.." && pwd)"
 ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 RESULTS_DIR="$ENV_ROOT/results"
 COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
-PREPROCESS="$SCRIPT_DIR/preprocess.sh"
-COMM_FIXTURES_DIR="$SCRIPT_DIR/fixtures/comm"
-VERIFIERS_DIR="$SCRIPT_DIR/verifiers"
+PREPROCESS="$NIST_ROOT/lib/preprocess-placeholders.sh"
+COMM_FIXTURES_DIR="$NIST_ROOT/fixtures/comm"
+VERIFIERS_DIR="$NIST_ROOT/verifiers"
 VERIFIER_OVERRIDES_DIR="$VERIFIERS_DIR/overrides"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 NIST_WORK_ROOT="$ENV_ROOT/work/run"
@@ -1167,7 +1169,7 @@ run_program() {
             return
         fi
         echo "PASS" > "$status_file"
-        printf '%s\n' "EXEC85 is the CCVS population executive; tests/nist/extract.pl replaces it during preparation." > "$log"
+        printf '%s\n' "EXEC85 is the CCVS population executive; tests/nist/lib/extract-programs.pl replaces it during preparation." > "$log"
         echo "  $program: PASS (population executive replaced by extractor)"
         return
     fi
@@ -1676,7 +1678,7 @@ EOF
 
 if [ ! -d "$PROGRAMS_DIR" ]; then
     echo "Programs not prepared: $PROGRAMS_DIR" >&2
-    echo "Run tests/nist/prepare.sh first." >&2
+    echo "Run tests/nist/bin/prepare.sh first." >&2
     exit 1
 fi
 

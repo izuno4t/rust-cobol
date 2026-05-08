@@ -86,7 +86,7 @@ example: release
 
 ## NIST CCVS 85 テスト準備
 nist-prepare:
-	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/prepare.sh $(NIST_SOURCE_VAL)
+	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/bin/prepare.sh $(NIST_SOURCE_VAL)
 
 ## NIST CCVS 85 テスト実行
 nist-run:
@@ -98,7 +98,7 @@ nist-run:
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
 	NIST_JOBS="$(NIST_JOBS)" \
 	COBOLC="$(NIST_COBOLC)" \
-	bash tests/nist/run_nist.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
+	bash tests/nist/bin/run.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
 ## NIST CCVS 85 compile phase のみ実行
 nist-compile:
@@ -110,15 +110,15 @@ nist-compile:
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
 	NIST_JOBS="$(NIST_JOBS)" \
 	COBOLC="$(NIST_COBOLC)" \
-	bash tests/nist/run_nist.sh --compile $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
+	bash tests/nist/bin/run.sh --compile $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
 ## NIST 結果サマリー
 nist-summary:
-	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/run_nist.sh --summary
+	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" bash tests/nist/bin/run.sh --summary
 
 ## NIST compile error の性質別分類
 nist-compile-errors:
-	@python3 tests/nist/classify_compile_errors.py "$(NIST_ENV_ROOT)"
+	@python3 tests/nist/bin/classify-compile-errors.py "$(NIST_ENV_ROOT)"
 
 ## NIST 全件の HIR/C 生成監査
 nist-audit-codegen:
@@ -130,7 +130,7 @@ nist-audit-codegen:
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
 	NIST_JOBS="$(NIST_JOBS)" \
 	COBOLC="$(NIST_COBOLC)" \
-	bash tests/nist/audit_codegen.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
+	bash tests/nist/bin/audit-codegen.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
 ## NIST 全件の COBOL/C 構造比較
 nist-compare-codegen:
@@ -140,7 +140,7 @@ nist-compare-codegen:
 		  exit 1 )
 	NIST_ENV_ROOT="$(NIST_ENV_ROOT)" \
 	NIST_JOBS="$(NIST_JOBS)" \
-	bash tests/nist/compare_codegen.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
+	bash tests/nist/bin/compare-codegen.sh $(if $(PROGRAM),$(MODULE) $(PROGRAM),$(or $(MODULE),--all))
 
 ## x86 ランタイム検証環境のビルド
 runtime-x86-build:

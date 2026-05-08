@@ -14,16 +14,28 @@ This environment applies GnuCOBOL-style CCVS judgment rules to
 `rust-cobol`. The primary decision source is the CCVS report summary:
 summary counts first, report layout second.
 
-## Files
+## Directory Layout
 
-- `extract.pl` — extracts the NIST programs from `newcob.val`
-- `prepare.sh` — extracts a dedicated `programs/` tree under `target/`
-- `preprocess.sh` — applies the NIST placeholder replacements with an
-  isolated temporary root
-- `run_nist.sh` — compiles, runs, and classifies programs with
+- `assets/` — checked-in upstream NIST input archive
+- `bin/` — command-line entry points for preparation, execution, and
+  audits
+- `fixtures/` — runtime fixtures used by specific CCVS programs
+- `lib/` — helper scripts used by the command-line entry points
+- `verifiers/` — program-specific result verifiers and shared verifier
+  helpers
+
+## Key Commands
+
+- `bin/prepare.sh` — extracts a dedicated `programs/` tree under
+  `target/`
+- `bin/run.sh` — compiles, runs, and classifies programs with
   GnuCOBOL-style CCVS judgment rules
-- `run_compare.sh` — optional audit tool for direct comparison with
-  GnuCOBOL
+- `bin/compare-gnucobol.sh` — optional audit tool for direct comparison
+  with GnuCOBOL
+- `bin/audit-codegen.sh` — dumps HIR/C artifacts for generated-code
+  inspection
+- `bin/compare-codegen.sh` — compares COBOL symbols and generated C
+  symbols from audit output
 
 ## Setup
 
@@ -31,7 +43,7 @@ summary counts first, report layout second.
 make nist-prepare
 ```
 
-By default this extracts `tests/nist/newcob.val.tar.gz` into
+By default this extracts `tests/nist/assets/newcob.val.tar.gz` into
 `target/nist/source/newcob.val`, then extracts programs into
 `target/nist/programs`.
 
@@ -68,10 +80,10 @@ The primary `make nist-run` path intentionally ignores parallelism for
 module runs so local behavior matches CI module jobs.
 
 Compilation is cached by default per program. If the preprocessed source,
-compiler binary, and `COPYLIB` inputs are unchanged, `run_nist.sh` reuses
+compiler binary, and `COPYLIB` inputs are unchanged, `bin/run.sh` reuses
 the existing executable. Set `NIST_COMPILE_CACHE=0` to force recompiling.
 The preprocessed COBOL source and fixture scan results are also reused
-when the source file and `preprocess.sh` are unchanged.
+when the source file and `lib/preprocess-placeholders.sh` are unchanged.
 
 ## Result Model
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env perl
-# extract.pl — Extract individual COBOL test programs from newcob.val
+# extract-programs.pl — Extract individual COBOL test programs from newcob.val
+# cspell:words newcob ALTL CLBRY copylibs subprg SUBPRG
 #
 # Replaces EXEC85 (which is itself a COBOL program).
 # Reads newcob.val and splits it into individual .cob files by module.
 #
-# Usage: perl extract.pl [newcob.val] [output-dir]
+# Usage: perl tests/nist/lib/extract-programs.pl [newcob.val] [output-dir]
 #
 # Output structure:
 #   output-dir/NC/NC101A.cob

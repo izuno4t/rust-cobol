@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
+# cspell:words newcob
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+NIST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$NIST_ROOT/../.." && pwd)"
 ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 SOURCE_ROOT="$ENV_ROOT/source"
-DEFAULT_SOURCE_ARCHIVE="$REPO_ROOT/tests/nist/newcob.val.tar.gz"
+DEFAULT_SOURCE_ARCHIVE="$NIST_ROOT/assets/newcob.val.tar.gz"
 SOURCE_VAL="${1:-$SOURCE_ROOT/newcob.val}"
-EXTRACTOR="$REPO_ROOT/tests/nist/extract.pl"
+EXTRACTOR="$NIST_ROOT/lib/extract-programs.pl"
 TMP_PROGRAMS_DIR=""
 BACKUP_PROGRAMS_DIR=""
 

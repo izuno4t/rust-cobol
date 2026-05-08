@@ -20,7 +20,7 @@ uncompress newcob.val.Z
 ### 2. テストプログラムの抽出
 
 ```bash
-perl extract.pl newcob.val programs/
+perl tests/nist/lib/extract-programs.pl newcob.val programs/
 ```
 
 抽出結果:
@@ -45,16 +45,16 @@ programs/
 
 ```bash
 # 単一モジュール実行
-./run_nist.sh NC
+tests/nist/bin/run.sh NC
 
 # 単一プログラム実行
-./run_nist.sh NC NC101A
+tests/nist/bin/run.sh NC NC101A
 
 # 全モジュール実行
-./run_nist.sh --all
+tests/nist/bin/run.sh --all
 
 # 結果サマリー表示
-./run_nist.sh --summary
+tests/nist/bin/run.sh --summary
 ```
 
 各実行の終了時に、モジュール別の失敗一覧や単一プログラムの結果要約も標準出力へ表示される。
@@ -102,7 +102,7 @@ The extracted suite is organized by the original CCVS 85 module groups.
 
 ## Result Classification
 
-`run_nist.sh` uses conservative result classes.
+`tests/nist/bin/run.sh` uses conservative result classes.
 Successful process exit alone is never treated as `PASS`.
 
 - `PASS`: Output contains `PASS` markers or a valid CCVS success footer.
@@ -119,7 +119,7 @@ unknown over false positive.
 
 ## INSPECT Reason Codes
 
-When a program ends as `INSPECT`, `run_nist.sh` writes a `*.reason`
+When a program ends as `INSPECT`, `tests/nist/bin/run.sh` writes a `*.reason`
 file and prints the reason in the summary.
 
 - `manual-report`: The source contains CCVS inspection/report patterns
@@ -142,9 +142,9 @@ Many NIST programs do not report only through stdout.
 The current harness checks both:
 
 - stdout captured in `results/<MODULE>/<PROGRAM>.log`
-- `/tmp/nist/P`, which is the common CCVS print file used by generated programs
+- `/tmp/nc85`, which is the common CCVS print file used by generated programs
 
-Before each run, `run_nist.sh` removes stale `/tmp/nist/P`
+Before each run, `tests/nist/bin/run.sh` removes stale `/tmp/nc85`
 to avoid cross-test contamination.
 
 ## GnuCOBOL-Style Environment

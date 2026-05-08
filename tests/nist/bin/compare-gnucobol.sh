@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# run_compare.sh — Compare rust-cobol NIST output with GnuCOBOL output.
+# compare-gnucobol.sh — Compare rust-cobol NIST output with GnuCOBOL output.
+# cspell:words cobc gsub GNUCE GNURE GNUTO
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+NIST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$NIST_ROOT/../.." && pwd)"
 ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 RESULTS_DIR="$ENV_ROOT/results-compare"
 COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
-PREPROCESS="$SCRIPT_DIR/preprocess.sh"
+PREPROCESS="$NIST_ROOT/lib/preprocess-placeholders.sh"
 RUST_COBOLC="${RUST_COBOLC:-cargo run --release --package cobol-driver --}"
 GNU_COBOLC="${GNU_COBOLC:-cobc}"
 RUST_WORKDIR="$ENV_ROOT/work/compare-rust"
@@ -24,7 +26,7 @@ mkdir -p "$RESULTS_DIR" "$RUST_WORKDIR" "$GNU_WORKDIR" "$RUST_TMPDIR" "$GNU_TMPD
 require_programs() {
     if [ ! -d "$PROGRAMS_DIR" ]; then
         echo "Programs not prepared: $PROGRAMS_DIR" >&2
-        echo "Run tests/nist/prepare.sh first." >&2
+        echo "Run tests/nist/bin/prepare.sh first." >&2
         exit 1
     fi
 }

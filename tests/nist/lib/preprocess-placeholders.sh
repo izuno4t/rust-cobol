@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# preprocess.sh — Replace XXXXX placeholders in NIST test programs
+# preprocess-placeholders.sh — Replace XXXXX placeholders in NIST test programs
+# cspell:words GGGGHXXXXX ALTKEY QXXXXX INQUEUE OUTQUEUE ZYXWVUTSRQPONMLKJIHGFEDCBA OBNC
 
 set -euo pipefail
 

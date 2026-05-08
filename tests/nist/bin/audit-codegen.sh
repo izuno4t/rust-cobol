@@ -3,12 +3,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+NIST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$NIST_ROOT/../.." && pwd)"
 ENV_ROOT="${NIST_ENV_ROOT:-$REPO_ROOT/target/nist}"
 PROGRAMS_DIR="$ENV_ROOT/programs"
 RESULTS_DIR="$ENV_ROOT/audit/codegen"
 COPYLIB_DIR="$PROGRAMS_DIR/COPYLIB"
-PREPROCESS="$SCRIPT_DIR/preprocess.sh"
+PREPROCESS="$NIST_ROOT/lib/preprocess-placeholders.sh"
 COBOLC="${COBOLC:-$REPO_ROOT/target/release/cobol-driver}"
 NIST_JOBS="${NIST_JOBS:-3}"
 TMP_ROOT="$ENV_ROOT/work/audit-codegen"
