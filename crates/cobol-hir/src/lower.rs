@@ -8,6 +8,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    fmt,
 };
 
 use cobol_ast::{
@@ -27,6 +28,7 @@ use cobol_ast::{
     CobolProgram, DataDivision, DataItem, Expr, FileDescription, Literal, Statement, Usage,
 };
 use cobol_common::Span;
+use cobol_sema::AnalysisResult;
 use smol_str::SmolStr;
 
 use crate::hir::{
@@ -98,6 +100,21 @@ type OpenMetadataMap = HashMap<SmolStr, OpenMetadata>;
 type ReadMetadata = (u32, u32, Option<SmolStr>, Option<SmolStr>);
 type ReadMetadataMap = HashMap<SmolStr, ReadMetadata>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirLoweringError {
+    SemanticErrors,
+}
+
+impl fmt::Display for HirLoweringError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SemanticErrors => write!(f, "semantic analysis failed before HIR lowering"),
+        }
+    }
+}
+
+impl std::error::Error for HirLoweringError {}
+
 fn key_data_name(q: &QualifiedName) -> SmolStr {
     q.qualifiers
         .first()
@@ -114,7 +131,26 @@ fn source_computer_has_debugging_mode(program: &CobolProgram) -> bool {
         .is_some_and(|source| source.to_ascii_uppercase().contains("WITH DEBUGGING MODE"))
 }
 
-/// Lowers a COBOL AST program into the HIR.
+/// Lowers a semantically analyzed COBOL AST program into the HIR.
+///
+/// This is the normal compiler pipeline entry point. It makes semantic
+/// analysis an explicit precondition for HIR lowering, so later stages do not
+/// silently treat a raw AST as the canonical post-sema program model.
+pub fn lower_analyzed_to_hir(
+    program: &CobolProgram,
+    analysis: &AnalysisResult,
+) -> Result<HirProgram, HirLoweringError> {
+    if analysis.has_errors {
+        return Err(HirLoweringError::SemanticErrors);
+    }
+    Ok(lower_to_hir(program))
+}
+
+/// Lowers a COBOL AST program directly into the HIR.
+///
+/// This low-level entry point is kept for parser/lowering tests and for
+/// isolated development of constructs that are not yet covered by semantic
+/// analysis. The driver pipeline should use `lower_analyzed_to_hir`.
 pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let name = program.identification.program_id.clone();
 
@@ -4519,6 +4555,13 @@ mod tests {
         lower_to_hir(&program)
     }
 
+    fn parse_program(source: &str) -> cobol_ast::CobolProgram {
+        let mut lexer = Lexer::new(source, FileId(0), SourceFormat::Free);
+        let tokens = lexer.lex_all();
+        let mut parser = Parser::new(tokens, FileId(0));
+        parser.parse_program().unwrap()
+    }
+
     #[test]
     fn test_lower_hello_world() {
         let src = "\
@@ -4536,6 +4579,27 @@ PROCEDURE DIVISION.
         assert!(matches!(hir.body[0], HirStatement::Display { .. }));
         // Second statement should be STOP RUN
         assert!(matches!(hir.body[1], HirStatement::StopRun { .. }));
+    }
+
+    #[test]
+    fn test_lower_analyzed_to_hir_rejects_semantic_errors() {
+        let program = parse_program(
+            "IDENTIFICATION DIVISION.
+PROGRAM-ID. BAD.
+PROCEDURE DIVISION.
+    STOP RUN.",
+        );
+        let analysis = cobol_sema::AnalysisResult {
+            has_errors: true,
+            symbol_table: cobol_sema::SymbolTable::new(),
+        };
+
+        let err = lower_analyzed_to_hir(&program, &analysis).expect_err("lowering should fail");
+
+        assert_eq!(
+            err.to_string(),
+            "semantic analysis failed before HIR lowering"
+        );
     }
 
     #[test]

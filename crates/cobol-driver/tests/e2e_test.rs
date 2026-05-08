@@ -6,7 +6,7 @@ use cobol_ast::CobolProgram;
 use cobol_codegen::generate_c;
 use cobol_common::{FileId, SourceFormat, Span};
 use cobol_driver::toolchain::compile_c_to_executable;
-use cobol_hir::lower_to_hir;
+use cobol_hir::{lower_analyzed_to_hir, lower_to_hir};
 use cobol_hir::{HirDeclarative, HirDeclarativeUse, HirStatement, HirType};
 use cobol_lexer::Lexer;
 use cobol_parser::Parser;
@@ -41,7 +41,26 @@ fn compile_to_hir(source: &str) -> cobol_hir::HirProgram {
         "semantic analysis should not produce errors"
     );
 
-    lower_to_hir(&program)
+    lower_analyzed_to_hir(&program, &result).expect("HIR lowering should succeed")
+}
+
+#[test]
+fn analyzed_hir_lowering_rejects_semantic_errors() {
+    let source = "IDENTIFICATION DIVISION.
+PROGRAM-ID. BAD.
+PROCEDURE DIVISION.
+    DISPLAY UNKNOWN-NAME.
+    STOP RUN.
+";
+    let mut lexer = Lexer::new(source, FileId(0), SourceFormat::Free);
+    let tokens = lexer.lex_all();
+    let mut parser = Parser::new(tokens, FileId(0));
+    let program = parser.parse_program().expect("parsing should succeed");
+    let mut analyzer = SemanticAnalyzer::new();
+    let result = analyzer.analyze(&program);
+
+    assert!(result.has_errors, "source should fail semantic analysis");
+    assert!(lower_analyzed_to_hir(&program, &result).is_err());
 }
 
 /// Helper: parse and lower without semantic analysis.

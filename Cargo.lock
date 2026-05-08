@@ -284,6 +284,7 @@ dependencies = [
  "cobol-common",
  "cobol-lexer",
  "cobol-parser",
+ "cobol-sema",
  "smol_str",
 ]
 

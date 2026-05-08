@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 cobol-common.workspace = true
 cobol-ast.workspace = true
+cobol-sema.workspace = true
 smol_str.workspace = true
 
 [dev-dependencies]

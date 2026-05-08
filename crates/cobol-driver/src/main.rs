@@ -10,7 +10,7 @@ use cobol_ast::CobolProgram;
 use cobol_codegen::generate_c;
 use cobol_common::{CobolStandard, FileId, SourceFormat};
 use cobol_diagnostics::{render_diagnostics_to_stderr, WarningLevel};
-use cobol_hir::lower_to_hir;
+use cobol_hir::lower_analyzed_to_hir;
 use cobol_lexer::Lexer;
 use cobol_parser::Parser;
 use cobol_preprocessor::{preprocess, PreprocessorConfig};
@@ -254,7 +254,13 @@ fn run() -> Result<(), i32> {
             eprintln!("[TIMING] Sema + diagnostics: {:?}", t_sema.elapsed());
         }
         let t_hir = std::time::Instant::now();
-        let hir = lower_to_hir(&program);
+        let hir = match lower_analyzed_to_hir(&program, &result) {
+            Ok(hir) => hir,
+            Err(e) => {
+                eprintln!("error: HIR lowering failed for '{}': {}", file_path, e);
+                return Err(1);
+            }
+        };
         if debug_timing {
             eprintln!("[TIMING] HIR lowering: {:?}", t_hir.elapsed());
         }
