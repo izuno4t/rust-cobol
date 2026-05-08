@@ -150,6 +150,62 @@ MAIN-PARA.
 }
 
 #[test]
+fn test_native_use_for_debugging_registers_pass_semantic_pipeline() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-SEMA.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST WITH DEBUGGING MODE.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SECTION SECTION.
+    USE FOR DEBUGGING ON MAIN-SECTION.
+DBG-PARA.
+    DISPLAY DEBUG-LINE.
+    DISPLAY DEBUG-NAME.
+    DISPLAY DEBUG-CONTENTS.
+END DECLARATIVES.
+MAIN-SECTION SECTION.
+MAIN-PARA.
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert!(
+        stdout.lines().any(|line| line.trim() == "MAIN-SECTION"),
+        "stdout should include DEBUG-NAME, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_use_for_debugging_without_source_debugging_mode_passes_semantic_pipeline() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-DEBUG-OFF-SEMA.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. TEST.
+PROCEDURE DIVISION.
+DECLARATIVES.
+DBG-SECTION SECTION.
+    USE FOR DEBUGGING ON MAIN-SECTION.
+DBG-PARA.
+    DISPLAY DEBUG-LINE.
+    DISPLAY DEBUG-NAME.
+    DISPLAY DEBUG-CONTENTS.
+END DECLARATIVES.
+MAIN-SECTION SECTION.
+MAIN-PARA.
+    DISPLAY \"MAIN\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run(src);
+    assert_eq!(code, 0, "stderr:\n{stderr}");
+    assert_eq!(stdout.trim(), "MAIN");
+}
+
+#[test]
 fn test_native_use_for_debugging_perform_sets_debug_context() {
     let src = "\
 IDENTIFICATION DIVISION.

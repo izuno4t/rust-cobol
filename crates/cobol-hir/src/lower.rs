@@ -135,6 +135,33 @@ fn source_computer_has_debugging_mode(program: &CobolProgram) -> bool {
         .is_some_and(|source| source.to_ascii_uppercase().contains("WITH DEBUGGING MODE"))
 }
 
+fn procedure_has_debugging_use(procedure: &ProcedureDivision) -> bool {
+    procedure
+        .declaratives
+        .iter()
+        .any(|decl| matches!(decl.use_statement, UseStatement::ForDebugging { .. }))
+}
+
+fn program_has_debug_special_registers(program: &CobolProgram) -> bool {
+    source_computer_has_debugging_mode(program)
+        && program
+            .procedure
+            .as_ref()
+            .is_some_and(procedure_has_debugging_use)
+}
+
+fn is_debug_special_register(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "DEBUG-LINE"
+            | "DEBUG-NAME"
+            | "DEBUG-CONTENTS"
+            | "DEBUG-SUB-1"
+            | "DEBUG-SUB-2"
+            | "DEBUG-SUB-3"
+    )
+}
+
 /// Lowers a semantically analyzed COBOL AST program into the HIR.
 ///
 /// This is the normal compiler pipeline entry point. It makes semantic
@@ -155,8 +182,9 @@ fn verify_analyzed_data_references(
     program: &CobolProgram,
     analysis: &AnalysisResult,
 ) -> Result<(), HirLoweringError> {
+    let allow_debug_special_registers = program_has_debug_special_registers(program);
     if let Some(procedure) = &program.procedure {
-        verify_procedure_data_references(procedure, analysis)?;
+        verify_procedure_data_references(procedure, analysis, allow_debug_special_registers)?;
     }
     for nested in &program.nested_programs {
         verify_analyzed_data_references(nested, analysis)?;
@@ -167,19 +195,25 @@ fn verify_analyzed_data_references(
 fn verify_procedure_data_references(
     procedure: &ProcedureDivision,
     analysis: &AnalysisResult,
+    allow_debug_special_registers: bool,
 ) -> Result<(), HirLoweringError> {
     for declarative in &procedure.declaratives {
+        if matches!(declarative.use_statement, UseStatement::ForDebugging { .. })
+            && !allow_debug_special_registers
+        {
+            continue;
+        }
         for paragraph in &declarative.paragraphs {
-            verify_paragraph_data_references(paragraph, analysis)?;
+            verify_paragraph_data_references(paragraph, analysis, allow_debug_special_registers)?;
         }
     }
     for section in &procedure.sections {
         for paragraph in &section.paragraphs {
-            verify_paragraph_data_references(paragraph, analysis)?;
+            verify_paragraph_data_references(paragraph, analysis, allow_debug_special_registers)?;
         }
     }
     for paragraph in &procedure.paragraphs {
-        verify_paragraph_data_references(paragraph, analysis)?;
+        verify_paragraph_data_references(paragraph, analysis, allow_debug_special_registers)?;
     }
     Ok(())
 }
@@ -187,9 +221,14 @@ fn verify_procedure_data_references(
 fn verify_paragraph_data_references(
     paragraph: &Paragraph,
     analysis: &AnalysisResult,
+    allow_debug_special_registers: bool,
 ) -> Result<(), HirLoweringError> {
     for sentence in &paragraph.sentences {
-        verify_statements_data_references(&sentence.statements, analysis)?;
+        verify_statements_data_references(
+            &sentence.statements,
+            analysis,
+            allow_debug_special_registers,
+        )?;
     }
     Ok(())
 }
@@ -197,9 +236,10 @@ fn verify_paragraph_data_references(
 fn verify_statements_data_references(
     statements: &[Statement],
     analysis: &AnalysisResult,
+    allow_debug_special_registers: bool,
 ) -> Result<(), HirLoweringError> {
     for statement in statements {
-        verify_statement_data_references(statement, analysis)?;
+        verify_statement_data_references(statement, analysis, allow_debug_special_registers)?;
     }
     Ok(())
 }
@@ -207,17 +247,18 @@ fn verify_statements_data_references(
 fn verify_statement_data_references(
     statement: &Statement,
     analysis: &AnalysisResult,
+    allow_debug_special_registers: bool,
 ) -> Result<(), HirLoweringError> {
     match statement {
         Statement::Display(display) => {
             for operand in &display.operands {
-                verify_expr_data_references(operand, analysis)?;
+                verify_expr_data_references(operand, analysis, allow_debug_special_registers)?;
             }
         }
         Statement::Move(mv) => {
-            verify_expr_data_references(&mv.from, analysis)?;
+            verify_expr_data_references(&mv.from, analysis, allow_debug_special_registers)?;
             for target in &mv.to {
-                verify_expr_data_references(target, analysis)?;
+                verify_expr_data_references(target, analysis, allow_debug_special_registers)?;
             }
         }
         _ => {}
@@ -228,21 +269,24 @@ fn verify_statement_data_references(
 fn verify_expr_data_references(
     expr: &Expr,
     analysis: &AnalysisResult,
+    allow_debug_special_registers: bool,
 ) -> Result<(), HirLoweringError> {
     match expr {
-        Expr::Identifier(qname) => verify_data_reference(qname, analysis),
+        Expr::Identifier(qname) => {
+            verify_data_reference(qname, analysis, allow_debug_special_registers)
+        }
         Expr::FunctionCall { args, .. } => {
             for arg in args {
-                verify_expr_data_references(arg, analysis)?;
+                verify_expr_data_references(arg, analysis, allow_debug_special_registers)?;
             }
             Ok(())
         }
         Expr::BinaryOp { left, right, .. } => {
-            verify_expr_data_references(left, analysis)?;
-            verify_expr_data_references(right, analysis)
+            verify_expr_data_references(left, analysis, allow_debug_special_registers)?;
+            verify_expr_data_references(right, analysis, allow_debug_special_registers)
         }
         Expr::UnaryOp { operand, .. } | Expr::Paren { inner: operand, .. } => {
-            verify_expr_data_references(operand, analysis)
+            verify_expr_data_references(operand, analysis, allow_debug_special_registers)
         }
         Expr::ReferenceModification {
             variable,
@@ -250,10 +294,10 @@ fn verify_expr_data_references(
             length,
             ..
         } => {
-            verify_data_reference(variable, analysis)?;
-            verify_expr_data_references(start, analysis)?;
+            verify_data_reference(variable, analysis, allow_debug_special_registers)?;
+            verify_expr_data_references(start, analysis, allow_debug_special_registers)?;
             if let Some(length) = length {
-                verify_expr_data_references(length, analysis)?;
+                verify_expr_data_references(length, analysis, allow_debug_special_registers)?;
             }
             Ok(())
         }
@@ -264,7 +308,11 @@ fn verify_expr_data_references(
 fn verify_data_reference(
     qname: &QualifiedName,
     analysis: &AnalysisResult,
+    allow_debug_special_registers: bool,
 ) -> Result<(), HirLoweringError> {
+    if allow_debug_special_registers && is_debug_special_register(qname.name.as_str()) {
+        return Ok(());
+    }
     analysis
         .resolve_data_reference(qname)
         .map(|_| ())
@@ -378,10 +426,7 @@ pub fn lower_to_hir(program: &CobolProgram) -> HirProgram {
     let debugging_mode_enabled = source_computer_has_debugging_mode(program);
 
     if let Some(proc) = &program.procedure {
-        let has_debugging_use = proc
-            .declaratives
-            .iter()
-            .any(|decl| matches!(decl.use_statement, UseStatement::ForDebugging { .. }));
+        let has_debugging_use = procedure_has_debugging_use(proc);
         if debugging_mode_enabled && has_debugging_use {
             for name in [
                 "DEBUG-LINE",
