@@ -5834,8 +5834,10 @@ pub(crate) fn emit_statement_with_ctx(
         HirStatement::Generate { report_name, .. } => {
             let c_name = sanitize_name(report_name);
             out.push_str(&format!("{pad}/* GENERATE {c_name} */\n"));
-            out.push_str(&format!("{pad}printf(\"{c_name}\\n\");\n"));
-            out.push_str(&format!("{pad}fflush(stdout);\n"));
+            if !emit_report_generate_line(out, report_name, data_items, &pad) {
+                out.push_str(&format!("{pad}printf(\"{c_name}\\n\");\n"));
+                out.push_str(&format!("{pad}fflush(stdout);\n"));
+            }
             let first_detail_line = report_initial_line_counter(data_items) + 1;
             let last_detail_line = report_last_detail_line(data_items);
             let line_expr = format!(
@@ -5854,6 +5856,108 @@ pub(crate) fn emit_statement_with_ctx(
             }
         }
     }
+}
+
+fn emit_report_generate_line(
+    out: &mut String,
+    report_name: &str,
+    data_items: &[HirDataItem],
+    pad: &str,
+) -> bool {
+    let Some(item) = find_data_item(report_name, data_items) else {
+        return false;
+    };
+    let HirType::Group { members, .. } = &item.data_type else {
+        return false;
+    };
+
+    let mut fields: Vec<&HirDataItem> = members
+        .iter()
+        .filter(|member| {
+            member.screen_info.as_ref().is_some_and(|si| {
+                si.value.is_some() || si.source.is_some() || si.using_field.is_some()
+            })
+        })
+        .collect();
+    if fields.is_empty() {
+        return false;
+    }
+
+    fields.sort_by_key(|field| {
+        let si = field.screen_info.as_ref().expect("screen_info checked");
+        (si.line.unwrap_or(1), si.column.unwrap_or(1))
+    });
+
+    let mut current_line = 1_u32;
+    let mut current_col = 1_u32;
+    for field in fields {
+        let si = field.screen_info.as_ref().expect("screen_info checked");
+        let line = si.line.unwrap_or(1);
+        let column = si.column.unwrap_or(current_col);
+        while current_line < line {
+            out.push_str(&format!("{pad}cobol_display_newline();\n"));
+            current_line += 1;
+            current_col = 1;
+        }
+        if column > current_col {
+            emit_report_spaces(out, column - current_col, pad);
+            current_col = column;
+        }
+        let width = emit_report_field(out, si, data_items, pad);
+        current_col = current_col.saturating_add(width.max(1));
+    }
+    out.push_str(&format!("{pad}cobol_display_newline();\n"));
+    true
+}
+
+fn emit_report_spaces(out: &mut String, count: u32, pad: &str) {
+    if count == 0 {
+        return;
+    }
+    out.push_str(&format!(
+        "{pad}for (uint32_t _rw_i = 0; _rw_i < {count}; _rw_i++) {{ cobol_display_space(); }}\n"
+    ));
+}
+
+fn emit_report_field(
+    out: &mut String,
+    si: &cobol_hir::HirScreenInfo,
+    data_items: &[HirDataItem],
+    pad: &str,
+) -> u32 {
+    if let Some(value) = si.value.as_ref() {
+        let escaped = escape_c_string(value);
+        let len = value.len() as u32;
+        out.push_str(&format!(
+            "{pad}cobol_display_string((const uint8_t*)\"{escaped}\", {len});\n"
+        ));
+        return len;
+    }
+
+    let Some(source) = si.source.as_ref().or(si.using_field.as_ref()) else {
+        return 0;
+    };
+    let c_name = sanitize_name(source);
+    let item = find_data_item(source, data_items);
+    let width = item
+        .map(|item| data_item_byte_size(&item.data_type))
+        .unwrap_or_else(|| find_data_item_size(&c_name, data_items));
+    let is_alpha = item.is_some_and(|i| matches!(i.data_type, HirType::Alphanumeric { .. }));
+    if is_alpha {
+        out.push_str(&format!(
+            "{pad}cobol_display_string((const uint8_t*){c_name}, {width});\n"
+        ));
+    } else if display_numeric_c_expr_metadata(&c_name, data_items).is_some() {
+        emit_display_numeric_storage(out, &c_name, item, data_items, pad);
+    } else if let Some(disp_size) = grp_display_size(&c_name, data_items) {
+        let c_name_ptr = display_numeric_const_ptr(&c_name);
+        out.push_str(&format!(
+            "{pad}cobol_display_int(cobol_display_to_int64({c_name_ptr}, {disp_size}));\n"
+        ));
+    } else {
+        out.push_str(&format!("{pad}cobol_display_int({c_name});\n"));
+    }
+    width
 }
 
 fn emit_search_varying_sync(

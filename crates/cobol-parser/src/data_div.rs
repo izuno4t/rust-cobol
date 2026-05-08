@@ -92,7 +92,7 @@ impl Parser {
                 self.advance();
                 self.expect(TokenKind::Section)?;
                 self.expect(TokenKind::Period)?;
-                report = vec![DataItem {
+                report = self.parse_report_section_items(DataItem {
                     level: 1,
                     name: Some(smol_str::SmolStr::new(format!(
                         "RW-DUMMY-MARKER-FD-{}-LD-{last_detail}",
@@ -120,8 +120,7 @@ impl Parser {
                     using_field: None,
                     children: Vec::new(),
                     span: rpt_span,
-                }];
-                self.skip_section_content();
+                })?;
             } else {
                 self.advance();
             }
@@ -139,6 +138,37 @@ impl Parser {
             report,
             span: start_span.merge(&end_span),
         })
+    }
+
+    fn parse_report_section_items(&mut self, marker: DataItem) -> Result<Vec<DataItem>, ()> {
+        let mut report_items = vec![marker];
+
+        while !self.at_eof() && !self.at_division_header() && !self.at_data_section_header() {
+            if self.current().text.eq_ignore_ascii_case("RD") {
+                self.skip_report_description_entry();
+                continue;
+            }
+            if self.at_data_item_start() {
+                let mut items = self.parse_data_items()?;
+                report_items.append(&mut items);
+                continue;
+            }
+            self.advance();
+        }
+
+        Ok(report_items)
+    }
+
+    fn skip_report_description_entry(&mut self) {
+        while !self.at_eof() {
+            if self.at_division_header() || self.at_data_section_header() {
+                break;
+            }
+            if self.at_data_item_start() {
+                break;
+            }
+            self.advance();
+        }
     }
 
     fn parse_file_section(&mut self) -> Result<Vec<FileDescription>, ()> {
@@ -1295,15 +1325,6 @@ impl Parser {
         }
 
         result
-    }
-
-    fn skip_section_content(&mut self) {
-        while !self.at_eof() {
-            if self.at_division_header() || self.at_data_section_header() {
-                break;
-            }
-            self.advance();
-        }
     }
 
     fn scan_report_first_detail(&self) -> Option<u32> {

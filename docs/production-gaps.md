@@ -17,11 +17,13 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
 
 - 状況:
   `INITIATE` / `GENERATE` / `TERMINATE` は codegen され、
-  `PAGE-COUNTER` / `LINE-COUNTER` の更新と `GENERATE` 対象行の出力を実行する
+  `PAGE-COUNTER` / `LINE-COUNTER` の更新と `GENERATE` 対象行の出力を実行する。
+  `DETAIL` report group の `VALUE` / `SOURCE` / `COLUMN` / `LINE` は基本的な整形出力に対応している
 - 制約:
-  `REPORT SECTION` の `SOURCE` / `COLUMN` / `LINE` などを使う本格的な帳票レイアウトはまだ限定的
+  `REPORT SECTION` の本格的な帳票機能としては、複数行グループ、集団項目の複雑な整形、
+  制御脚書き/頭書き、ページ遷移時の詳細な出力制御がまだ限定的
 - 必要な対応:
-  レポートグループの内容整形、桁位置制御、ページングを E2E で拡充する
+  report group 種別ごとの出力規則とページングを E2E で拡充する
 
 ### 2. VALIDATE の広い制約検証は限定的
 

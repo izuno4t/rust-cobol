@@ -2851,6 +2851,40 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_generate_report_detail_source_and_column() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RW-SOURCE-COLUMN.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(5) VALUE \"ALICE\".
+01 WS-AMOUNT PIC 9(3) VALUE 123.
+REPORT SECTION.
+RD RPT.
+01 DETAIL-LINE TYPE DETAIL.
+   05 LINE 1 COLUMN 1 VALUE \"NAME:\".
+   05 LINE 1 COLUMN 7 SOURCE WS-NAME.
+   05 LINE 1 COLUMN 15 VALUE \"AMT:\".
+   05 LINE 1 COLUMN 20 SOURCE WS-AMOUNT.
+PROCEDURE DIVISION.
+    INITIATE RPT.
+    GENERATE DETAIL-LINE.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(
+        code, 0,
+        "native report generation failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("NAME: ALICE   AMT: 123"),
+        "report detail should honor SOURCE and COLUMN clauses, got: {stdout:?}"
+    );
+}
+
+#[test]
 fn test_native_invoke_null_object_returns_zero_without_crashing() {
     let src = "\
 IDENTIFICATION DIVISION.
