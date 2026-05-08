@@ -1,10 +1,11 @@
 // End-to-end integration tests for the COBOL compiler pipeline.
 //
-// Tests the full flow: Source -> Lex -> Parse -> Sema -> HIR -> Codegen
+// Tests the full flow: Source -> Preprocess -> Lex -> Parse -> Sema -> HIR -> Codegen
 
 use cobol_ast::CobolProgram;
 use cobol_codegen::generate_c;
 use cobol_common::{FileId, SourceFormat, Span};
+use cobol_driver::toolchain::compile_c_to_executable;
 use cobol_hir::lower_to_hir;
 use cobol_hir::{HirDeclarative, HirDeclarativeUse, HirStatement, HirType};
 use cobol_lexer::Lexer;
@@ -135,7 +136,7 @@ fn compile_and_run(source: &str) -> (String, String, i32) {
     // Find the runtime library path
     let runtime_lib_path = find_test_runtime_lib();
 
-    cobol_codegen::compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
+    compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
         .expect("C compilation should succeed");
 
     let output = Command::new(&exe_path)
@@ -157,7 +158,7 @@ fn compile_c_and_run(c_code: &str) -> (String, String, i32) {
     std::fs::write(&c_path, c_code).expect("write C file");
 
     let runtime_lib_path = find_test_runtime_lib();
-    cobol_codegen::compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
+    compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
         .expect("C compilation should succeed");
 
     let output = Command::new(&exe_path)
@@ -191,7 +192,7 @@ fn compile_and_run_no_sema_with_stdin(source: &str, stdin: &str) -> (String, Str
 
     let runtime_lib_path = find_test_runtime_lib();
 
-    cobol_codegen::compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
+    compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
         .expect("C compilation should succeed");
 
     let mut child = Command::new(&exe_path)
@@ -227,7 +228,7 @@ fn compile_and_run_no_sema_with_env(source: &str, envs: &[(&str, &str)]) -> (Str
 
     let runtime_lib_path = find_test_runtime_lib();
 
-    cobol_codegen::compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
+    compile_c_to_executable(&c_path, &exe_path, &runtime_lib_path)
         .expect("C compilation should succeed");
 
     let mut command = Command::new(&exe_path);

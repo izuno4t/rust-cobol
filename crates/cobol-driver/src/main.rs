@@ -1,13 +1,13 @@
 // COBOL Compiler - CLI driver
 //
 // Orchestrates the full compilation pipeline:
-//   Source -> Lexer -> Parser -> Sema -> HIR -> C codegen -> Executable
+//   Source -> Preprocessor -> Lexer -> Parser -> Sema -> HIR -> C codegen -> C toolchain -> Executable
 
 use std::path::{Path, PathBuf};
 
 use clap::Parser as ClapParser;
 use cobol_ast::CobolProgram;
-use cobol_codegen::{compile_c_to_executable, generate_c};
+use cobol_codegen::generate_c;
 use cobol_common::{CobolStandard, FileId, SourceFormat};
 use cobol_diagnostics::{render_diagnostics_to_stderr, WarningLevel};
 use cobol_hir::lower_to_hir;
@@ -15,6 +15,8 @@ use cobol_lexer::Lexer;
 use cobol_parser::Parser;
 use cobol_preprocessor::{preprocess, PreprocessorConfig};
 use cobol_sema::SemanticAnalyzer;
+
+use cobol_driver::toolchain::compile_c_to_executable;
 
 #[derive(ClapParser)]
 #[command(name = "cobolc", about = "COBOL Compiler")]

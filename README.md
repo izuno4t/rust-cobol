@@ -9,13 +9,14 @@ via C code generation.
 ## Overview
 
 ```text
-Source → Lexer → Parser → Sema → HIR → C codegen → clang → native binary
+Source → Preprocessor → Lexer → Parser → Sema → HIR → C codegen → C toolchain → native binary
 ```
 
 The compiler reads COBOL source files in Fixed or Free format,
-parses them into an AST, performs semantic analysis (name
-resolution, type checking, PICTURE analysis), lowers to HIR,
-generates C code, and invokes clang/gcc to produce a native
+expands COPY/REPLACE preprocessing, parses them into an AST,
+performs semantic analysis (name resolution, type checking,
+PICTURE analysis), lowers to HIR, generates C code, and invokes
+clang/gcc through the driver toolchain layer to produce a native
 executable.
 
 ## Runtime Characteristics and Benchmarks
@@ -163,10 +164,10 @@ The compiler is organized as a Cargo workspace with 12 crates:
 | `cobol-parser` | Recursive-descent parser |
 | `cobol-sema` | Name resolution, type checking, PICTURE |
 | `cobol-hir` | Desugared intermediate representation |
-| `cobol-mir` | Mid-level IR (placeholder) |
-| `cobol-codegen` | C emission and clang/gcc invocation |
+| `cobol-mir` | Mid-level IR placeholder; currently unused by the main pipeline |
+| `cobol-codegen` | HIR-to-C source emission |
 | `cobol-runtime` | Staticlib: BCD, file I/O, string ops |
-| `cobol-driver` | CLI (`cobolc`) for the full pipeline |
+| `cobol-driver` | CLI (`cobolc`) and C toolchain orchestration for the full pipeline |
 
 ## Supported Standards
 

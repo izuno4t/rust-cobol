@@ -1,11 +1,11 @@
 // COBOL Code Generation - C output backend
 //
 // Translates HIR into C source code that calls the COBOL runtime library.
-// The generated C code is then compiled with clang/cc and linked against
-// the runtime's static library to produce a native executable.
+// Toolchain execution and runtime linking are orchestrated by cobol-driver.
 
-#[path = "compiler.rs"]
-mod compiler;
+#[cfg(test)]
+#[path = "codegen_tests.rs"]
+mod codegen_tests;
 #[path = "context.rs"]
 mod context;
 #[path = "data.rs"]
@@ -25,7 +25,6 @@ use cobol_hir::{
     HirProgram, HirStartRelation, HirStatement, HirTransferTarget, HirType, HirUnaryOp,
 };
 
-pub use self::compiler::compile_c_to_executable;
 pub(crate) use self::context::*;
 pub(crate) use self::data::*;
 pub(crate) use self::expr::*;
