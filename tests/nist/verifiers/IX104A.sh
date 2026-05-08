@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX104A
-# Source: .nist/programs/IX/IX104A.cob
+# Source: target/nist/programs/IX/IX104A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: OPEN: 00 EXP.    

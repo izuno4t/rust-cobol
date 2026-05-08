@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF103A
-# Source: .nist/programs/IF/IF103A.cob
+# Source: target/nist/programs/IF/IF103A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 23
 # Expected Feature: ASIN Function

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC217A
-# Source: .nist/programs/NC/NC217A.cob
+# Source: target/nist/programs/NC/NC217A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 33
 # Expected Feature: LIT DEL BY SIZE

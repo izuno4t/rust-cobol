@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SM205A
-# Source: .nist/programs/SM/SM205A.cob
+# Source: target/nist/programs/SM/SM205A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 10
 # Expected Feature: COPY SD REPLACING

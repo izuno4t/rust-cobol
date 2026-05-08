@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF130A
-# Source: .nist/programs/IF/IF130A.cob
+# Source: target/nist/programs/IF/IF130A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 21
 # Expected Feature: PRESENT-VALUE Function

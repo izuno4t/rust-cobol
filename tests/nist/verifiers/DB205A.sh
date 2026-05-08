@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB205A
-# Source: .nist/programs/DB/DB205A.cob
+# Source: target/nist/programs/DB/DB205A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 25
 # Expected Feature: DISABLE CD-NAME

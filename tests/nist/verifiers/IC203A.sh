@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC203A
-# Source: .nist/programs/IC/IC203A.cob
+# Source: target/nist/programs/IC/IC203A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

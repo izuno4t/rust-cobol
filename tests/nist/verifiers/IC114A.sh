@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC114A
-# Source: .nist/programs/IC/IC114A.cob
+# Source: target/nist/programs/IC/IC114A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

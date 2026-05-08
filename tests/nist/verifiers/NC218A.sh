@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC218A
-# Source: .nist/programs/NC/NC218A.cob
+# Source: target/nist/programs/NC/NC218A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 32
 # Expected Feature: PIC X 

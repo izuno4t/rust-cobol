@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST131A
-# Source: .nist/programs/ST/ST131A.cob
+# Source: target/nist/programs/ST/ST131A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 18
 # Expected Feature: SORT, INPUT PROC

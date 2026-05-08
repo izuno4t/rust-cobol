@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX213A
-# Source: .nist/programs/IX/IX213A.cob
+# Source: target/nist/programs/IX/IX213A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 21
 # Expected Feature: WRITE INVALID KEY

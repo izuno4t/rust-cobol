@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC115A
-# Source: .nist/programs/NC/NC115A.cob
+# Source: target/nist/programs/NC/NC115A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 20
 # Expected Feature: TALLY FOR CHARACTERS

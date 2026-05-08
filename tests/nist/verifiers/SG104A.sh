@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG104A
-# Source: .nist/programs/SG/SG104A.cob
+# Source: target/nist/programs/SG/SG104A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 18
 # Expected Feature: SORT - 8 ASC. KEYS

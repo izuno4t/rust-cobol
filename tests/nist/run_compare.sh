@@ -14,8 +14,8 @@ RUST_COBOLC="${RUST_COBOLC:-cargo run --release --package cobol-driver --}"
 GNU_COBOLC="${GNU_COBOLC:-cobc}"
 RUST_WORKDIR="$ENV_ROOT/work/compare-rust"
 GNU_WORKDIR="$ENV_ROOT/work/compare-gnu"
-RUST_TMPDIR="/tmp/nist/rust"
-GNU_TMPDIR="/tmp/nist/gnu"
+RUST_TMPDIR="${NIST_COMPARE_RUST_TMPDIR:-/tmp/nist/rust}"
+GNU_TMPDIR="${NIST_COMPARE_GNU_TMPDIR:-/tmp/nist/gnu}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-60}"
 ALL_MODULES=(NC SM IC SQ IF IX RL ST RW DB SG OB)
 

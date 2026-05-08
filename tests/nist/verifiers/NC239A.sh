@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC239A
-# Source: .nist/programs/NC/NC239A.cob
+# Source: target/nist/programs/NC/NC239A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: LEVEL 1 INT INDEXING

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ224A
-# Source: .nist/programs/SQ/SQ224A.cob
+# Source: target/nist/programs/SQ/SQ224A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: CREATE FILE SQ-VS7

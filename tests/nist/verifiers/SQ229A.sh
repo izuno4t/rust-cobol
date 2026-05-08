@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ229A
-# Source: .nist/programs/SQ/SQ229A.cob
+# Source: target/nist/programs/SQ/SQ229A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: READ OF EXTEND FILE

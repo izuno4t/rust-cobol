@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF140A
-# Source: .nist/programs/IF/IF140A.cob
+# Source: target/nist/programs/IF/IF140A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: UPPER-CASE Function

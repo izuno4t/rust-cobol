@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF132A
-# Source: .nist/programs/IF/IF132A.cob
+# Source: target/nist/programs/IF/IF132A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 15
 # Expected Feature: RANGE Function

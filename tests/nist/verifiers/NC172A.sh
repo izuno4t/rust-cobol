@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC172A
-# Source: .nist/programs/NC/NC172A.cob
+# Source: target/nist/programs/NC/NC172A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 66
 # Expected Feature: DIVIDE INTO GIVING

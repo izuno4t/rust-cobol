@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: CM102M
-# Source: .nist/programs/CM/CM102M.cob
+# Source: target/nist/programs/CM/CM102M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: MCS STATUS WORD

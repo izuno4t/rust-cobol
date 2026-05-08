@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC223A
-# Source: .nist/programs/NC/NC223A.cob
+# Source: target/nist/programs/NC/NC223A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 94
 # Expected Feature: INITIALIZE STATEMENT

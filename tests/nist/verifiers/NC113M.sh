@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC113M
-# Source: .nist/programs/NC/NC113M.cob
+# Source: target/nist/programs/NC/NC113M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 15
 # Expected Feature: MARGIN TESTING

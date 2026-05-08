@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG101A
-# Source: .nist/programs/SG/SG101A.cob
+# Source: target/nist/programs/SG/SG101A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 151
 # Expected Feature: SEGMENTATION

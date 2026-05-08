@@ -15,7 +15,7 @@ VERIFIERS_DIR="$SCRIPT_DIR/verifiers"
 VERIFIER_OVERRIDES_DIR="$VERIFIERS_DIR/overrides"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 NIST_WORK_ROOT="$ENV_ROOT/work/run"
-NIST_TMP_ROOT="/tmp/nc85"
+NIST_TMP_ROOT="${NIST_TMP_ROOT:-/tmp/nc85}"
 NIST_TOOLCHAIN_ROOT="$ENV_ROOT/toolchain"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-60}"
 NIST_JOBS="${NIST_JOBS:-5}"
@@ -319,9 +319,10 @@ compute_copylib_signature() {
 
 compute_preprocess_signature() {
     local src="$1"
-    printf 'source:%s\npreprocess:%s\n' \
+    printf 'source:%s\npreprocess:%s\ntmp-root:%s\n' \
         "$(sha256_of_file "$src")" \
-        "$(sha256_of_file "$PREPROCESS")"
+        "$(sha256_of_file "$PREPROCESS")" \
+        "$NIST_TMP_ROOT"
 }
 
 prepare_program_copylib() {

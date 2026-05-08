@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: CM104M
-# Source: .nist/programs/CM/CM104M.cob
+# Source: target/nist/programs/CM/CM104M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

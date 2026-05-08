@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC136A
-# Source: .nist/programs/NC/NC136A.cob
+# Source: target/nist/programs/NC/NC136A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: LEVEL 1 TBL SUBSCRPT

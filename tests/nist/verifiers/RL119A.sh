@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL119A
-# Source: .nist/programs/RL/RL119A.cob
+# Source: target/nist/programs/RL/RL119A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Purpose: VALIDATION FOR:-

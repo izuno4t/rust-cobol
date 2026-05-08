@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: CM202M
-# Source: .nist/programs/CM/CM202M.cob
+# Source: target/nist/programs/CM/CM202M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: RCV MSG/SHORT AREA

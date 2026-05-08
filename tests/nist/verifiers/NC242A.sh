@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC242A
-# Source: .nist/programs/NC/NC242A.cob
+# Source: target/nist/programs/NC/NC242A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: LEVEL 1 TBL SUBSCRPT

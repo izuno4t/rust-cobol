@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF115A
-# Source: .nist/programs/IF/IF115A.cob
+# Source: target/nist/programs/IF/IF115A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: LENGTH Function

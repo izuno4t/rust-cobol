@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC106A
-# Source: .nist/programs/NC/NC106A.cob
+# Source: target/nist/programs/NC/NC106A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 139
 # Expected Feature: SUBTRACT

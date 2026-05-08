@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC237A
-# Source: .nist/programs/IC/IC237A.cob
+# Source: target/nist/programs/IC/IC237A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Purpose: VALIDATION FOR:-

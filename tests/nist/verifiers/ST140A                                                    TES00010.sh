@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST140A                                                    TES00010
-# Source: .nist/programs/ST/ST140A                                                    TES00010.cob
+# Source: target/nist/programs/ST/ST140A                                                    TES00010.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 12
 # Expected Feature: ERROR ON OUTPUT DECL.

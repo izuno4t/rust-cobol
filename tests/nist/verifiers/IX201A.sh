@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX201A
-# Source: .nist/programs/IX/IX201A.cob
+# Source: target/nist/programs/IX/IX201A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 2
 # Expected Feature: WRITE       IX-FS1

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC107A
-# Source: .nist/programs/NC/NC107A.cob
+# Source: target/nist/programs/NC/NC107A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 70
 # Expected Feature: COBOL REMARKS PARA

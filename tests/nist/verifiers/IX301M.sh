@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX301M
-# Source: .nist/programs/IX/IX301M.cob
+# Source: target/nist/programs/IX/IX301M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

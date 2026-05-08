@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL211A
-# Source: .nist/programs/RL/RL211A.cob
+# Source: target/nist/programs/RL/RL211A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: FILE CREATE RL-VS1

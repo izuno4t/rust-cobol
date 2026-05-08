@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF126A
-# Source: .nist/programs/IF/IF126A.cob
+# Source: target/nist/programs/IF/IF126A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 30
 # Expected Feature: NUMVAL-C Function

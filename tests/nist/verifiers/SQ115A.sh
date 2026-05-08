@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ115A
-# Source: .nist/programs/SQ/SQ115A.cob
+# Source: target/nist/programs/SQ/SQ115A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: CREATE SQ-FS5 550R

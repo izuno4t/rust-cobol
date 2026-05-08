@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST104A
-# Source: .nist/programs/ST/ST104A.cob
+# Source: target/nist/programs/ST/ST104A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: TAPE BEING BUILT

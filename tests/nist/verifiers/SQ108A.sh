@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ108A
-# Source: .nist/programs/SQ/SQ108A.cob
+# Source: target/nist/programs/SQ/SQ108A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: CREATE FILE SQ-FS8

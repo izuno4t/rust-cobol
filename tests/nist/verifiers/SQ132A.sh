@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ132A
-# Source: .nist/programs/SQ/SQ132A.cob
+# Source: target/nist/programs/SQ/SQ132A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: CLOSED UNOPENED FILE

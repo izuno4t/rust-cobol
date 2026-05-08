@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF104A
-# Source: .nist/programs/IF/IF104A.cob
+# Source: target/nist/programs/IF/IF104A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 27
 # Expected Feature: ATAN Function

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG103A
-# Source: .nist/programs/SG/SG103A.cob
+# Source: target/nist/programs/SG/SG103A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: INITIAL STATE

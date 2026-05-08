@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG204A
-# Source: .nist/programs/SG/SG204A.cob
+# Source: target/nist/programs/SG/SG204A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 18
 # Expected Feature: SORT, INPUT PROC

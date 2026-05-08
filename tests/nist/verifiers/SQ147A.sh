@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ147A
-# Source: .nist/programs/SQ/SQ147A.cob
+# Source: target/nist/programs/SQ/SQ147A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: READ CLOSED FILE

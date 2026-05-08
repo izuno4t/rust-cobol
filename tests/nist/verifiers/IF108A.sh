@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF108A
-# Source: .nist/programs/IF/IF108A.cob
+# Source: target/nist/programs/IF/IF108A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 10
 # Expected Feature: DATE-OF-INTEGER

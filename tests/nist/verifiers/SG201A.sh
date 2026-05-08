@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG201A
-# Source: .nist/programs/SG/SG201A.cob
+# Source: target/nist/programs/SG/SG201A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 79
 # Expected Feature: SEGMENT-LIMIT

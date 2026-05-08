@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SM206A
-# Source: .nist/programs/SM/SM206A.cob
+# Source: target/nist/programs/SM/SM206A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: PSEUDO-TEXT/IDENTIFR

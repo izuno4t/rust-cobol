@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ209M
-# Source: .nist/programs/SQ/SQ209M.cob
+# Source: target/nist/programs/SQ/SQ209M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 3
 # Expected Feature: SPACE BTWN LOG PAGES

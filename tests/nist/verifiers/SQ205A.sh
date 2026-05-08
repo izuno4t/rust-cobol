@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ205A
-# Source: .nist/programs/SQ/SQ205A.cob
+# Source: target/nist/programs/SQ/SQ205A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 3
 # Expected Feature: CREATE FILE SQ-FS1,2

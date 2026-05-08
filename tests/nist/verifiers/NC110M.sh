@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC110M
-# Source: .nist/programs/NC/NC110M.cob
+# Source: target/nist/programs/NC/NC110M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

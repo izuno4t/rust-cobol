@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF116A
-# Source: .nist/programs/IF/IF116A.cob
+# Source: target/nist/programs/IF/IF116A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 25
 # Expected Feature: LOG Function

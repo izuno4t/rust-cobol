@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF135A
-# Source: .nist/programs/IF/IF135A.cob
+# Source: target/nist/programs/IF/IF135A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 32
 # Expected Feature: SIN Function

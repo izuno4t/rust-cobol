@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL115A
-# Source: .nist/programs/RL/RL115A.cob
+# Source: target/nist/programs/RL/RL115A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 2
 # Expected Feature: USE/FILE STATUS

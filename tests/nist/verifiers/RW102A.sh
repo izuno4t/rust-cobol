@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RW102A
-# Source: .nist/programs/RW/RW102A.cob
+# Source: target/nist/programs/RW/RW102A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 3
 # Expected Feature: INITIATE REPORT

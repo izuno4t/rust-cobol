@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST133A
-# Source: .nist/programs/ST/ST133A.cob
+# Source: target/nist/programs/ST/ST133A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 21
 # Expected Feature: FIRST SORT DONE

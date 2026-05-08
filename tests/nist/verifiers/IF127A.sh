@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF127A
-# Source: .nist/programs/IF/IF127A.cob
+# Source: target/nist/programs/IF/IF127A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: ORD Function

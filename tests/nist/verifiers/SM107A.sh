@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SM107A
-# Source: .nist/programs/SM/SM107A.cob
+# Source: target/nist/programs/SM/SM107A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

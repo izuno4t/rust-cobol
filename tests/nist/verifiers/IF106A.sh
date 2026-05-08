@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF106A
-# Source: .nist/programs/IF/IF106A.cob
+# Source: target/nist/programs/IF/IF106A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 30
 # Expected Feature: COS Function

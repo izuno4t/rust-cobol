@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC104A
-# Source: .nist/programs/NC/NC104A.cob
+# Source: target/nist/programs/NC/NC104A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 142
 # Expected Feature: MOVE NUMERIC INTEGER

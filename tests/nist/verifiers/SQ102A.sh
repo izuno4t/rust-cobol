@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ102A
-# Source: .nist/programs/SQ/SQ102A.cob
+# Source: target/nist/programs/SQ/SQ102A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: CREATE 750 RECORD FILE

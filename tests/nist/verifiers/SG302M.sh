@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG302M
-# Source: .nist/programs/SG/SG302M.cob
+# Source: target/nist/programs/SG/SG302M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

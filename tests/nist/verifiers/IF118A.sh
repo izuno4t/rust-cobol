@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF118A
-# Source: .nist/programs/IF/IF118A.cob
+# Source: target/nist/programs/IF/IF118A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: LOWER-CASE Function

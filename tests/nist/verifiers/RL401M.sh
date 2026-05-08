@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL401M
-# Source: .nist/programs/RL/RL401M.cob
+# Source: target/nist/programs/RL/RL401M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

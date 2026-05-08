@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC245A
-# Source: .nist/programs/NC/NC245A.cob
+# Source: target/nist/programs/NC/NC245A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 5
 # Expected Feature: SEMICLN AS SEPARATOR

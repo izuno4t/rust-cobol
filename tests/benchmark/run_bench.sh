@@ -9,8 +9,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COBOLC="${COBOLC:-cargo run --release --package cobol-driver --}"
 GNUCOBC="${GNUCOBC:-cobc}"
+OUT_DIR="${BENCH_OUT_DIR:-$REPO_ROOT/target/benchmarks/micro}"
 
 BENCHMARKS=(arithmetic string_ops fileio)
 
@@ -18,12 +20,14 @@ run_benchmark() {
     local name="$1"
     local compiler="$2"
     local src="$SCRIPT_DIR/${name}.cob"
-    local bin="/tmp/bench_${name}_${compiler}"
+    local bin="$OUT_DIR/bench_${name}_${compiler}"
 
     if [ ! -f "$src" ]; then
         echo "  $name: SKIP (source not found)"
         return
     fi
+
+    mkdir -p "$OUT_DIR"
 
     # Compile
     local compile_start compile_end compile_time
@@ -52,7 +56,7 @@ run_benchmark() {
     local run_start run_end run_time
     run_start=$(perl -MTime::HiRes=time -e 'print time')
 
-    if timeout 60 "$bin" > /dev/null 2>&1; then
+    if (cd "$OUT_DIR" && timeout 60 "$bin" > /dev/null 2>&1); then
         run_end=$(perl -MTime::HiRes=time -e 'print time')
         run_time=$(perl -e "printf '%.3f', $run_end - $run_start")
         printf "  %-15s %-12s compile: %7ss  run: %7ss\n" \

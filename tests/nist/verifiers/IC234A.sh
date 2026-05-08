@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC234A
-# Source: .nist/programs/IC/IC234A.cob
+# Source: target/nist/programs/IC/IC234A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: USE GLOBAL INPUT

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC232A
-# Source: .nist/programs/NC/NC232A.cob
+# Source: target/nist/programs/NC/NC232A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 17
 # Expected Feature: SEARCH VARYING LEV 1

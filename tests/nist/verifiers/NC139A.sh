@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC139A
-# Source: .nist/programs/NC/NC139A.cob
+# Source: target/nist/programs/NC/NC139A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 6
 # Expected Feature: INDEXES AND LITERALS

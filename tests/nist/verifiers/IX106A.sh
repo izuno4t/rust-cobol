@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX106A
-# Source: .nist/programs/IX/IX106A.cob
+# Source: target/nist/programs/IX/IX106A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 19
 # Expected Feature: WRITE RL-FR1   

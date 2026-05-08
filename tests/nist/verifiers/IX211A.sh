@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX211A
-# Source: .nist/programs/IX/IX211A.cob
+# Source: target/nist/programs/IX/IX211A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: CREATE-FILE-FD1

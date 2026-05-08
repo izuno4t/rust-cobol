@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SM207A
-# Source: .nist/programs/SM/SM207A.cob
+# Source: target/nist/programs/SM/SM207A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 2
 # Expected Feature: QUALIFIED LIBRY NAME

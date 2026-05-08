@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC141A
-# Source: .nist/programs/NC/NC141A.cob
+# Source: target/nist/programs/NC/NC141A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: SET ... TO

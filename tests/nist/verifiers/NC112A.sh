@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC112A
-# Source: .nist/programs/NC/NC112A.cob
+# Source: target/nist/programs/NC/NC112A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 32
 # Expected Feature: ADD LIMITS TESTS

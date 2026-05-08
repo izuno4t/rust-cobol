@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC252A
-# Source: .nist/programs/NC/NC252A.cob
+# Source: target/nist/programs/NC/NC252A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 80
 # Expected Feature: REDEFINES 

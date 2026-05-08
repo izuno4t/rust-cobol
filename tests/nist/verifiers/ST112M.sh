@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST112M
-# Source: .nist/programs/ST/ST112M.cob
+# Source: target/nist/programs/ST/ST112M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

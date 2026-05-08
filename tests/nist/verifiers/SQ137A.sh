@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ137A
-# Source: .nist/programs/SQ/SQ137A.cob
+# Source: target/nist/programs/SQ/SQ137A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: READ AFTER EOF READ

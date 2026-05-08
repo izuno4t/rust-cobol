@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC105A
-# Source: .nist/programs/NC/NC105A.cob
+# Source: target/nist/programs/NC/NC105A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 132
 # Expected Feature: MOVE LITERAL        

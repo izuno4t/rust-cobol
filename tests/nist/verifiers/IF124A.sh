@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF124A
-# Source: .nist/programs/IF/IF124A.cob
+# Source: target/nist/programs/IF/IF124A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 21
 # Expected Feature: MOD Function

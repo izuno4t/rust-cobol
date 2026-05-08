@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF110A
-# Source: .nist/programs/IF/IF110A.cob
+# Source: target/nist/programs/IF/IF110A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: FACTORIAL Function

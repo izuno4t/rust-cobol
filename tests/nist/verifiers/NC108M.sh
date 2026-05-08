@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC108M
-# Source: .nist/programs/NC/NC108M.cob
+# Source: target/nist/programs/NC/NC108M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 16
 # Expected Feature: COMPLETE DATA FORMAT

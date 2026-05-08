@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF134A
-# Source: .nist/programs/IF/IF134A.cob
+# Source: target/nist/programs/IF/IF134A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: REVERSE Function

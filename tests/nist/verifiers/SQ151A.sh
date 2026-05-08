@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ151A
-# Source: .nist/programs/SQ/SQ151A.cob
+# Source: target/nist/programs/SQ/SQ151A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: WRITE CLOSED FILE

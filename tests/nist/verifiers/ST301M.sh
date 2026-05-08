@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST301M
-# Source: .nist/programs/ST/ST301M.cob
+# Source: target/nist/programs/ST/ST301M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF105A
-# Source: .nist/programs/IF/IF105A.cob
+# Source: target/nist/programs/IF/IF105A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: CHAR Function

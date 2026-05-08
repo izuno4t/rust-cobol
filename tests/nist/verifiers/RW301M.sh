@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RW301M
-# Source: .nist/programs/RW/RW301M.cob
+# Source: target/nist/programs/RW/RW301M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

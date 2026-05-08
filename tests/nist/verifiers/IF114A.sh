@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF114A
-# Source: .nist/programs/IF/IF114A.cob
+# Source: target/nist/programs/IF/IF114A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 23
 # Expected Feature: INTEGER-PART Function

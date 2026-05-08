@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST109A
-# Source: .nist/programs/ST/ST109A.cob
+# Source: target/nist/programs/ST/ST109A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

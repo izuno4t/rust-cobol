@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ226A
-# Source: .nist/programs/SQ/SQ226A.cob
+# Source: target/nist/programs/SQ/SQ226A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: OPEN EXTEND OPEN FILE

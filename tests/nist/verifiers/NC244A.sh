@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC244A
-# Source: .nist/programs/NC/NC244A.cob
+# Source: target/nist/programs/NC/NC244A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: RELATIVE INDEXING   

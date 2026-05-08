@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC138A
-# Source: .nist/programs/NC/NC138A.cob
+# Source: target/nist/programs/NC/NC138A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: LEFT PAREN SEPARATOR

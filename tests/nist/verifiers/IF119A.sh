@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF119A
-# Source: .nist/programs/IF/IF119A.cob
+# Source: target/nist/programs/IF/IF119A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 23
 # Expected Feature: MAX Function

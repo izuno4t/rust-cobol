@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST139A
-# Source: .nist/programs/ST/ST139A.cob
+# Source: target/nist/programs/ST/ST139A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 11
 # Expected Feature: ERROR ON OUTPUT DECL.

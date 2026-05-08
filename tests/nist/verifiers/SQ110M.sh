@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ110M
-# Source: .nist/programs/SQ/SQ110M.cob
+# Source: target/nist/programs/SQ/SQ110M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: CREATE FILE SQ-FS3

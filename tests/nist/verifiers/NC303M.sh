@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC303M
-# Source: .nist/programs/NC/NC303M.cob
+# Source: target/nist/programs/NC/NC303M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

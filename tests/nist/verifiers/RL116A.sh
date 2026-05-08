@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL116A
-# Source: .nist/programs/RL/RL116A.cob
+# Source: target/nist/programs/RL/RL116A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 3
 # Purpose: VALIDATION FOR:-

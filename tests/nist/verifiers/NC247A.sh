@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC247A
-# Source: .nist/programs/NC/NC247A.cob
+# Source: target/nist/programs/NC/NC247A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 22
 # Expected Feature: OCCURS DEPENDING ON

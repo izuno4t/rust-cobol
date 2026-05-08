@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC251A
-# Source: .nist/programs/NC/NC251A.cob
+# Source: target/nist/programs/NC/NC251A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 67
 # Purpose: VALIDATION FOR:-

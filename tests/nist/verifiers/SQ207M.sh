@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ207M
-# Source: .nist/programs/SQ/SQ207M.cob
+# Source: target/nist/programs/SQ/SQ207M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: WRT FRM BFR ADV MNC

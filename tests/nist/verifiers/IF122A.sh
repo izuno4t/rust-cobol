@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF122A
-# Source: .nist/programs/IF/IF122A.cob
+# Source: target/nist/programs/IF/IF122A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 17
 # Expected Feature: MIDRANGE Function

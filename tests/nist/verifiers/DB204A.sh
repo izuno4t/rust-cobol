@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB204A
-# Source: .nist/programs/DB/DB204A.cob
+# Source: target/nist/programs/DB/DB204A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: MERGE OUTPUT PROC

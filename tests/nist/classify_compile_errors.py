@@ -25,7 +25,7 @@ def classify(log_text: str) -> str:
 
 
 def main() -> int:
-    env_root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".nist")
+    env_root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("target/nist")
     results_root = env_root / "results"
     if not results_root.exists():
         print(f"Results not found: {results_root}", file=sys.stderr)

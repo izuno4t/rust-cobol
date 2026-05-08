@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL107A
-# Source: .nist/programs/RL/RL107A.cob
+# Source: target/nist/programs/RL/RL107A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 27
 # Expected Feature: OPEN OUTPUT RL-FR7

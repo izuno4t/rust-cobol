@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL108A
-# Source: .nist/programs/RL/RL108A.cob
+# Source: target/nist/programs/RL/RL108A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 2
 # Expected Feature: FILE CREATE RL-FS1

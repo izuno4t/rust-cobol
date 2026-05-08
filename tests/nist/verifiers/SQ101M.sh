@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ101M
-# Source: .nist/programs/SQ/SQ101M.cob
+# Source: target/nist/programs/SQ/SQ101M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 58
 # Expected Feature: WRT BEFORE ADV INT LINES

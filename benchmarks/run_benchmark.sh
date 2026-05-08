@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BENCH_SRC="$SCRIPT_DIR/nqueens.cob"
-OUT_DIR="$SCRIPT_DIR/out"
+OUT_DIR="$REPO_ROOT/target/benchmarks/nqueens"
 mkdir -p "$OUT_DIR"
 
 echo "=== N-Queens Benchmark ==="

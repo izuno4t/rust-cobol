@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC235A
-# Source: .nist/programs/IC/IC235A.cob
+# Source: target/nist/programs/IC/IC235A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: MULTIPLE EXIT PROGRM

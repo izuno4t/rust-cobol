@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC226A
-# Source: .nist/programs/IC/IC226A.cob
+# Source: target/nist/programs/IC/IC226A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: EXTERNAL CLAUSE

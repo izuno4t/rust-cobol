@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ123A
-# Source: .nist/programs/SQ/SQ123A.cob
+# Source: target/nist/programs/SQ/SQ123A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: CLOSE AFTER CLOSE REEL

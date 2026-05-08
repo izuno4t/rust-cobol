@@ -4,7 +4,9 @@ This directory provides the primary NIST CCVS 85 execution environment
 for `rust-cobol`.
 
 It keeps generated COBOL sources and test results under `target/nist`,
-not in this directory.
+not in this directory. Runtime files from `XXXXX`/`XXXX*` NIST
+placeholders use short paths under `/tmp` so fixed-format COBOL source
+lines are not truncated.
 
 ## Goal
 
@@ -29,7 +31,8 @@ summary counts first, report layout second.
 make nist-prepare
 ```
 
-By default this reads `tests/nist/newcob.val` and extracts programs into
+By default this extracts `tests/nist/newcob.val.tar.gz` into
+`target/nist/source/newcob.val`, then extracts programs into
 `target/nist/programs`.
 
 ## Usage
@@ -86,5 +89,7 @@ a more specific machine-readable cause.
 ## Output Location
 
 - extracted programs: `target/nist/programs`
+- extracted source archive contents: `target/nist/source`
+- runtime temporary files: `/tmp/nc85`, `/tmp/nist`, or `/tmp/na`
 - run results: `target/nist/results`
 - compare results: `target/nist/results-compare`

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC103A
-# Source: .nist/programs/NC/NC103A.cob
+# Source: target/nist/programs/NC/NC103A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 102
 # Expected Feature: COMPARE--EQUAL

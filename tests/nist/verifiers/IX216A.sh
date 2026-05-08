@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX216A
-# Source: .nist/programs/IX/IX216A.cob
+# Source: target/nist/programs/IX/IX216A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 16
 # Expected Feature: OPEN EXTEND: EXP: 05

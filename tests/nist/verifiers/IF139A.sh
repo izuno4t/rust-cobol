@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF139A
-# Source: .nist/programs/IF/IF139A.cob
+# Source: target/nist/programs/IF/IF139A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 30
 # Expected Feature: TAN Function

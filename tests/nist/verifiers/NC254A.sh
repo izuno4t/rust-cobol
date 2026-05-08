@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC254A
-# Source: .nist/programs/NC/NC254A.cob
+# Source: target/nist/programs/NC/NC254A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: SWITCH-STATUS

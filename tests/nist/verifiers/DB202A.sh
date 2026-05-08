@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB202A
-# Source: .nist/programs/DB/DB202A.cob
+# Source: target/nist/programs/DB/DB202A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 41
 # Expected Feature: DEBUG OPEN FILENAME

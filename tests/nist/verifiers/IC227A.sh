@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC227A
-# Source: .nist/programs/IC/IC227A.cob
+# Source: target/nist/programs/IC/IC227A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: EXTERNAL FILE RECORD

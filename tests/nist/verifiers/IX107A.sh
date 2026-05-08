@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX107A
-# Source: .nist/programs/IX/IX107A.cob
+# Source: target/nist/programs/IX/IX107A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: WRITE  SEQUENTIAL

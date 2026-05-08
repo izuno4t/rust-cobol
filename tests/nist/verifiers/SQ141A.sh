@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ141A
-# Source: .nist/programs/SQ/SQ141A.cob
+# Source: target/nist/programs/SQ/SQ141A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 3
 # Purpose: VALIDATION FOR:-

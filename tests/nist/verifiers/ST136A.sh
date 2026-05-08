@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST136A
-# Source: .nist/programs/ST/ST136A.cob
+# Source: target/nist/programs/ST/ST136A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 6
 # Expected Feature: RELEASE FROM

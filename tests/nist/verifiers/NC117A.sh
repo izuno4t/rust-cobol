@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC117A
-# Source: .nist/programs/NC/NC117A.cob
+# Source: target/nist/programs/NC/NC117A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 40
 # Expected Feature: DIVIDE INTO

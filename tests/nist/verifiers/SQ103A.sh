@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ103A
-# Source: .nist/programs/SQ/SQ103A.cob
+# Source: target/nist/programs/SQ/SQ103A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 12
 # Expected Feature: OPEN OUTPUT, TAPE FILE

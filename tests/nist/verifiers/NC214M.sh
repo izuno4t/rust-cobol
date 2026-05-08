@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC214M
-# Source: .nist/programs/NC/NC214M.cob
+# Source: target/nist/programs/NC/NC214M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: ACCEPT DATE

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX108A
-# Source: .nist/programs/IX/IX108A.cob
+# Source: target/nist/programs/IX/IX108A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 32
 # Expected Feature: WRITE NOT INVALID END-

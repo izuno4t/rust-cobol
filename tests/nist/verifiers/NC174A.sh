@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC174A
-# Source: .nist/programs/NC/NC174A.cob
+# Source: target/nist/programs/NC/NC174A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 77
 # Expected Feature: SWITCH-STATUS

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF137A
-# Source: .nist/programs/IF/IF137A.cob
+# Source: target/nist/programs/IF/IF137A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 17
 # Expected Feature: STANDARD-DEVIATION

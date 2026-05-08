@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX302M
-# Source: .nist/programs/IX/IX302M.cob
+# Source: target/nist/programs/IX/IX302M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

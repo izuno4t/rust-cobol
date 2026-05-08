@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: RL105A
-# Source: .nist/programs/RL/RL105A.cob
+# Source: target/nist/programs/RL/RL105A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: READ/WRITE INVAL KEY

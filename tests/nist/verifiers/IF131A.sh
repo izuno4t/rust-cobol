@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF131A
-# Source: .nist/programs/IF/IF131A.cob
+# Source: target/nist/programs/IF/IF131A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: RANDOM Function

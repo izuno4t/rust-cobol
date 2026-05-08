@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC246A
-# Source: .nist/programs/NC/NC246A.cob
+# Source: target/nist/programs/NC/NC246A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: STORE TABLE VALUES

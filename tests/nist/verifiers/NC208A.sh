@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC208A
-# Source: .nist/programs/NC/NC208A.cob
+# Source: target/nist/programs/NC/NC208A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 25
 # Expected Feature: DATA-NAME QUAL      

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ144A
-# Source: .nist/programs/SQ/SQ144A.cob
+# Source: target/nist/programs/SQ/SQ144A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 9
 # Expected Feature: REWRITE AFTER FAILED RD

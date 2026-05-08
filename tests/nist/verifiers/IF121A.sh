@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF121A
-# Source: .nist/programs/IF/IF121A.cob
+# Source: target/nist/programs/IF/IF121A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 17
 # Expected Feature: MEDIAN Function

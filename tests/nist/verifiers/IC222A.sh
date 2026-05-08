@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC222A
-# Source: .nist/programs/IC/IC222A.cob
+# Source: target/nist/programs/IC/IC222A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: AVAILABLE ON 

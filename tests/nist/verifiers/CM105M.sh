@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: CM105M
-# Source: .nist/programs/CM/CM105M.cob
+# Source: target/nist/programs/CM/CM105M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 11
 # Expected Feature: QUEUE SERIES PPPP

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC233A
-# Source: .nist/programs/NC/NC233A.cob
+# Source: target/nist/programs/NC/NC233A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: SEARCH ALL-FIRST LEV

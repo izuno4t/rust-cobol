@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST134A
-# Source: .nist/programs/ST/ST134A.cob
+# Source: target/nist/programs/ST/ST134A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 5
 # Expected Feature: SORT, SAME REC AREA

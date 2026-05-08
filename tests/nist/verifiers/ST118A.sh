@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST118A
-# Source: .nist/programs/ST/ST118A.cob
+# Source: target/nist/programs/ST/ST118A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 18
 # Expected Feature: SORT - 8 ASC. KEYS

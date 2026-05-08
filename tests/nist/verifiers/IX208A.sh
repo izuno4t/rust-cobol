@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX208A
-# Source: .nist/programs/IX/IX208A.cob
+# Source: target/nist/programs/IX/IX208A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 57
 # Expected Feature: CREATE FILE IX-FD1

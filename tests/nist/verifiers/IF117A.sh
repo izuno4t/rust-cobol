@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF117A
-# Source: .nist/programs/IF/IF117A.cob
+# Source: target/nist/programs/IF/IF117A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 32
 # Expected Feature: LOG10 Function

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC202A
-# Source: .nist/programs/NC/NC202A.cob
+# Source: target/nist/programs/NC/NC202A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 82
 # Expected Feature: ADD CORRESPONDING 

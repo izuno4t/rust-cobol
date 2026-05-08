@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX105A
-# Source: .nist/programs/IX/IX105A.cob
+# Source: target/nist/programs/IX/IX105A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: WRITE SHORT & LONG 

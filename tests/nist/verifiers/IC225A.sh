@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC225A
-# Source: .nist/programs/IC/IC225A.cob
+# Source: target/nist/programs/IC/IC225A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 41
 # Expected Feature: LEV 2 CALL STATEMENT

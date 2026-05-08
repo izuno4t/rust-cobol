@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC135A
-# Source: .nist/programs/NC/NC135A.cob
+# Source: target/nist/programs/NC/NC135A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: INDEXING

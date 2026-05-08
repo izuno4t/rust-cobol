@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF138A
-# Source: .nist/programs/IF/IF138A.cob
+# Source: target/nist/programs/IF/IF138A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 16
 # Expected Feature: SUM Function

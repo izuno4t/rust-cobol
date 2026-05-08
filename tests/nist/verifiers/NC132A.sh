@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC132A
-# Source: .nist/programs/NC/NC132A.cob
+# Source: target/nist/programs/NC/NC132A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 25
 # Expected Feature: SUBSCRIPTING

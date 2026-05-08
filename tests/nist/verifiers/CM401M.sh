@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: CM401M
-# Source: .nist/programs/CM/CM401M.cob
+# Source: target/nist/programs/CM/CM401M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

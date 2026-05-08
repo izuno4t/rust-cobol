@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC211A
-# Source: .nist/programs/NC/NC211A.cob
+# Source: target/nist/programs/NC/NC211A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 51
 # Expected Feature: COMPOUND CONDITIONS

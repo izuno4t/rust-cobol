@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC237A
-# Source: .nist/programs/NC/NC237A.cob
+# Source: target/nist/programs/NC/NC237A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: PERFORM VARYING

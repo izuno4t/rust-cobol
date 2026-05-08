@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF128A
-# Source: .nist/programs/IF/IF128A.cob
+# Source: target/nist/programs/IF/IF128A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 16
 # Expected Feature: ORD-MAX Function

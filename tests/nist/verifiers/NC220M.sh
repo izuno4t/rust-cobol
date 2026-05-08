@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC220M
-# Source: .nist/programs/NC/NC220M.cob
+# Source: target/nist/programs/NC/NC220M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 19
 # Expected Feature: DISPLAY UPON

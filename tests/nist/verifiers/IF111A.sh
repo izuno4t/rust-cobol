@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF111A
-# Source: .nist/programs/IF/IF111A.cob
+# Source: target/nist/programs/IF/IF111A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 23
 # Expected Feature: INTEGER Function

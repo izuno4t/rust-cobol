@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC170A
-# Source: .nist/programs/NC/NC170A.cob
+# Source: target/nist/programs/NC/NC170A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 68
 # Expected Feature: MULTIPLY BY GIVING

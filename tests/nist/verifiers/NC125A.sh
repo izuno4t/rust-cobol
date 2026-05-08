@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC125A
-# Source: .nist/programs/NC/NC125A.cob
+# Source: target/nist/programs/NC/NC125A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: l EDIT MOVE

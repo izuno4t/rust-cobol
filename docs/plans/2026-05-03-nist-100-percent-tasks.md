@@ -178,7 +178,7 @@ CErrファミリ別ベースライン:
 実行条件:
 
 - 実行日: 2026-05-03
-- 対象: `.nist/results/**/*.reason`
+- 対象: `target/nist/results/**/*.reason`
 - 参照実装: `tests/nist/run_nist.sh`, `tests/nist/verifiers/lib.sh`
 - 前提: TASK-001のベースラインで `Ready` は 0
 
@@ -250,9 +250,9 @@ TASK-002時点での判断:
 実行条件:
 
 - 実行日: 2026-05-03
-- 対象: `.nist/results/**/*.compile.log`
+- 対象: `target/nist/results/**/*.compile.log`
 - 参照コマンド: `make nist-compile-errors`
-- 参照生成C: `.nist/work/run/**/nist_preproc_*.c`
+- 参照生成C: `target/nist/work/run/**/nist_preproc_*.c`
 - 判定前提: CErrはC compilerで停止したprogram単位で数える
 
 CErr program別の一次分類:
@@ -329,8 +329,8 @@ TASK-003時点での判断:
 実行条件:
 
 - 実行日: 2026-05-03
-- 対象: `.nist/results/**/*.reason`, `.nist/results/**/*.log`
-- 参照ソース: `.nist/programs/**/**/*.cob`
+- 対象: `target/nist/results/**/*.reason`, `target/nist/results/**/*.log`
+- 参照ソース: `target/nist/programs/**/**/*.cob`
 - 前提: TASK-002のreason分類から制御移譲に関係する候補を抽出する
 
 制御フロー仕様カテゴリ:
@@ -406,9 +406,9 @@ TASK-004時点での判断:
 実行条件:
 
 - 実行日: 2026-05-03
-- 対象: `.nist/results/{IX,RL,SQ,ST,OB,RW}/**/*.reason`,
-  `.nist/results/{IX,RL,SQ,ST,OB,RW}/**/*.log`
-- 参照ソース: `.nist/programs/{IX,RL,SQ,ST,OB,RW}/**/*.cob`
+- 対象: `target/nist/results/{IX,RL,SQ,ST,OB,RW}/**/*.reason`,
+  `target/nist/results/{IX,RL,SQ,ST,OB,RW}/**/*.log`
+- 参照ソース: `target/nist/programs/{IX,RL,SQ,ST,OB,RW}/**/*.cob`
 - 前提: TASK-002のreason分類から、ファイル組織、access mode、
   file status、cursor、例外句に関係する候補を抽出する
 
@@ -507,9 +507,9 @@ TASK-005時点での判断:
 実行条件:
 
 - 実行日: 2026-05-03
-- 対象: `.nist/results/{NC,IC,CM,IF}/**/*.reason`,
-  `.nist/results/{NC,IC,CM,IF}/**/*.compile.log`
-- 参照ソース: `.nist/programs/{NC,IC,CM,IF}/**/*.cob`
+- 対象: `target/nist/results/{NC,IC,CM,IF}/**/*.reason`,
+  `target/nist/results/{NC,IC,CM,IF}/**/*.compile.log`
+- 参照ソース: `target/nist/programs/{NC,IC,CM,IF}/**/*.cob`
 - 前提: TASK-002のreason分類から、MOVE、算術、PICTURE、数値条件、
   CALL/通信statusの数値表現、intrinsic境界に関係する候補を抽出する
 
@@ -623,8 +623,8 @@ TASK-006時点での判断:
 実行条件:
 
 - 実行日: 2026-05-03
-- 対象: `.nist/results/IF/**/*.reason`, `.nist/results/IF/**/*.log`
-- 参照ソース: `.nist/programs/IF/**/*.cob`
+- 対象: `target/nist/results/IF/**/*.reason`, `target/nist/results/IF/**/*.log`
+- 参照ソース: `target/nist/programs/IF/**/*.cob`
 - 前提: TASK-006の数値表現契約を使うが、関数固有規則はTASK-007で扱う
 
 intrinsic仕様カテゴリ:
@@ -729,9 +729,9 @@ TASK-007時点での判断:
 実行条件:
 
 - 実行日: 2026-05-03
-- 対象: `.nist/results/{SM,SG,SQ,RL,NC,IX}/**/*.reason`,
-  `.nist/results/{SM,SG,SQ,RL,NC,IX}/**/*.compile.log`
-- 参照ソース: `.nist/programs/{SM,SG,SQ,RL,NC,IX}/**/*.cob`
+- 対象: `target/nist/results/{SM,SG,SQ,RL,NC,IX}/**/*.reason`,
+  `target/nist/results/{SM,SG,SQ,RL,NC,IX}/**/*.compile.log`
+- 参照ソース: `target/nist/programs/{SM,SG,SQ,RL,NC,IX}/**/*.cob`
 - 前提: TASK-002の`warning-flags-missing`とSM系COPY失敗を主対象にする
 
 source manipulation / 診断仕様カテゴリ:
@@ -830,9 +830,9 @@ TASK-008時点での判断:
 実行条件:
 
 - 実行日: 2026-05-03
-- 対象: `.nist/results/{RW,ST,SG,SM,CM}/**/*.reason`,
-  `.nist/results/{RW,ST,SG,SM,CM}/**/*.compile.log`
-- 参照ソース: `.nist/programs/{RW,ST,SG,SM,CM}/**/*.cob`
+- 対象: `target/nist/results/{RW,ST,SG,SM,CM}/**/*.reason`,
+  `target/nist/results/{RW,ST,SG,SM,CM}/**/*.compile.log`
+- 参照ソース: `target/nist/programs/{RW,ST,SG,SM,CM}/**/*.cob`
 - 前提: TASK-005で共通ファイルI/O境界を先に切り出したため、
   TASK-009ではREPORT/SORT/SEGMENT固有仕様と出力捕捉だけを扱う
 

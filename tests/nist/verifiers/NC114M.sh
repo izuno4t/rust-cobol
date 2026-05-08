@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC114M
-# Source: .nist/programs/NC/NC114M.cob
+# Source: target/nist/programs/NC/NC114M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 6
 # Expected Feature: B AS EDIT CHARACTER

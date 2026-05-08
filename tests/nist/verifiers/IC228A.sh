@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IC228A
-# Source: .nist/programs/IC/IC228A.cob
+# Source: target/nist/programs/IC/IC228A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: GLOBAL CLAUSE

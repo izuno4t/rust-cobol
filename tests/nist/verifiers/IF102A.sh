@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF102A
-# Source: .nist/programs/IF/IF102A.cob
+# Source: target/nist/programs/IF/IF102A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 13
 # Expected Feature: ANNUITY Function

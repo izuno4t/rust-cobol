@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ111A
-# Source: .nist/programs/SQ/SQ111A.cob
+# Source: target/nist/programs/SQ/SQ111A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 2
 # Expected Feature: WRITE  FILE SQ-FS1

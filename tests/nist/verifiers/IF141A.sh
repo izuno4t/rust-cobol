@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF141A
-# Source: .nist/programs/IF/IF141A.cob
+# Source: target/nist/programs/IF/IF141A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 16
 # Expected Feature: VARIANCE Function

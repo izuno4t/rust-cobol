@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC126A
-# Source: .nist/programs/NC/NC126A.cob
+# Source: target/nist/programs/NC/NC126A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 145
 # Expected Feature: SPACE MOVED TO GRP

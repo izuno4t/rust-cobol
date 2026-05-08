@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: OBIC1A
-# Source: .nist/programs/OB/OBIC1A.cob
+# Source: target/nist/programs/OB/OBIC1A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

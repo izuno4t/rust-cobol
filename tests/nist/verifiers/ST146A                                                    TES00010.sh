@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST146A                                                    TES00010
-# Source: .nist/programs/ST/ST146A                                                    TES00010.cob
+# Source: target/nist/programs/ST/ST146A                                                    TES00010.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: OCCURS DEPENDING ON

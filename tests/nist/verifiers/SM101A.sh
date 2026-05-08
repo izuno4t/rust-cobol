@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SM101A
-# Source: .nist/programs/SM/SM101A.cob
+# Source: target/nist/programs/SM/SM101A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: COPY ---

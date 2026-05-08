@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IX207A
-# Source: .nist/programs/IX/IX207A.cob
+# Source: target/nist/programs/IX/IX207A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 8
 # Expected Feature: WRITE

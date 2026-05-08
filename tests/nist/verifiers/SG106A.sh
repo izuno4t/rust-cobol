@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SG106A
-# Source: .nist/programs/SG/SG106A.cob
+# Source: target/nist/programs/SG/SG106A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 18
 # Expected Feature: SORT - 8 ASC. KEYS

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB301M
-# Source: .nist/programs/DB/DB301M.cob
+# Source: target/nist/programs/DB/DB301M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 

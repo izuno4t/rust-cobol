@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: IF136A
-# Source: .nist/programs/IF/IF136A.cob
+# Source: target/nist/programs/IF/IF136A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 26
 # Expected Feature: SQRT Function

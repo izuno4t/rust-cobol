@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC231A
-# Source: .nist/programs/NC/NC231A.cob
+# Source: target/nist/programs/NC/NC231A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 26
 # Expected Feature: SEARCH VARYING LEV 1

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: EXEC85
-# Source: .nist/programs/EX/EXEC85.cob
+# Source: target/nist/programs/EX/EXEC85.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 0
 # Purpose: VALIDATION FOR:-

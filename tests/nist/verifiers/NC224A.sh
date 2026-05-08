@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC224A
-# Source: .nist/programs/NC/NC224A.cob
+# Source: target/nist/programs/NC/NC224A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: REFERENCE MODIFICATION

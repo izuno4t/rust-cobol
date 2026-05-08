@@ -4,7 +4,7 @@
        INPUT-OUTPUT SECTION.
        FILE-CONTROL.
            SELECT BENCH-FILE ASSIGN TO
-               "/tmp/bench_fileio.dat"
+               "bench_fileio.dat"
                ORGANIZATION IS SEQUENTIAL
                FILE STATUS IS WS-STATUS.
        DATA DIVISION.

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: SQ215A
-# Source: .nist/programs/SQ/SQ215A.cob
+# Source: target/nist/programs/SQ/SQ215A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 4
 # Expected Feature: OPEN OUTPUT - NEW FILE

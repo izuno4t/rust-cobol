@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: DB103M
-# Source: .nist/programs/DB/DB103M.cob
+# Source: target/nist/programs/DB/DB103M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 14
 # Expected Feature: DEBUG ON PROC-NAME

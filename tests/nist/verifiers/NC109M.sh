@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC109M
-# Source: .nist/programs/NC/NC109M.cob
+# Source: target/nist/programs/NC/NC109M.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 42
 # Expected Feature: ACCEPT

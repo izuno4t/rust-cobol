@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: OBSQ1A
-# Source: .nist/programs/OB/OBSQ1A.cob
+# Source: target/nist/programs/OB/OBSQ1A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 7
 # Expected Feature: CREATE FILE SQ-FS1

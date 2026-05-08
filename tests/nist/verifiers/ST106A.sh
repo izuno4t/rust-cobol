@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: ST106A
-# Source: .nist/programs/ST/ST106A.cob
+# Source: target/nist/programs/ST/ST106A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 1
 # Expected Feature: CREATE A FILE

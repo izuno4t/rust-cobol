@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Program: NC176A
-# Source: .nist/programs/NC/NC176A.cob
+# Source: target/nist/programs/NC/NC176A.cob
 # Verifier: verifier_standard_ccvs
 # Expected Cases: 132
 # Expected Feature: ADD
