@@ -3,7 +3,9 @@
 更新日: 2026-05-08
 
 過去の大半の項目は実装済みになったため、この文書は「まだ残っている課題」だけに整理した。
-JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBACK` など、以前の大きな欠落はここから外している。
+JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBACK`、
+基本的な Report Writer、`VALIDATE`、`SCREEN SECTION`、`DECLARATIVES` など、
+以前の大きな欠落はここから外している。
 
 ## 判定基準
 
@@ -13,48 +15,33 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
 
 ## 中
 
-### 1. Report Writer の帳票レイアウト対応は限定的
+### 1. Report Writer の高度な帳票制御
 
-- 状況:
-  `INITIATE` / `GENERATE` / `TERMINATE` は codegen され、
-  `PAGE-COUNTER` / `LINE-COUNTER` の更新と `GENERATE` 対象行の出力を実行する。
-  `DETAIL` report group の `VALUE` / `SOURCE` / `COLUMN` / `LINE` は基本的な整形出力に対応している
-- 制約:
-  `REPORT SECTION` の本格的な帳票機能としては、複数行グループ、集団項目の複雑な整形、
-  制御脚書き/頭書き、ページ遷移時の詳細な出力制御がまだ限定的
+- 未対応:
+  制御脚書き/頭書き、ページ遷移時の詳細な出力制御
 - 必要な対応:
-  report group 種別ごとの出力規則とページングを E2E で拡充する
+  report group 種別ごとのページング規則を E2E で拡充する
 
-### 2. VALIDATE の広い制約検証は限定的
+### 2. VALIDATE の標準詳細条件
 
-- 状況:
-  `VALIDATE` は PICTURE 由来の基本的な numeric storage validation を実行する
-- 制約:
-  `VALUE` / 条件名 / 文脈依存の検証など、COBOL 2014 の広い検証規則はまだ限定的
+- 未対応:
+  COBOL 2014 の文脈依存検証、複合グループ制約、より広いカテゴリ検証
 - 必要な対応:
-  追加のデータ制約を HIR/runtime に渡し、E2E テストで互換性を確認する
+  グループ単位の検証規則と標準上の詳細な適用条件を E2E で拡充する
 
-### 3. SCREEN SECTION の端末編集互換性は限定的
+### 3. SCREEN SECTION のフォーム編集互換性
 
-- 状況:
-  `SCREEN SECTION` 用の parser / HIR / codegen / runtime は存在し、
-  ANSI エスケープによる位置決め・反転・ハイライト・画面クリアは実装済み。
-  `ACCEPT screen-name` は `USING` フィールドへの標準入力取り込みまで実行できる
-- 制約:
-  フル機能の画面フォーム処理としては未完成で、端末上でのインライン編集、
-  入力マスク、ファンクションキー、カーソル移動などの互換性はまだ限定的
+- 未対応:
+  端末上でのインライン編集、入力マスク、ファンクションキー、カーソル移動
 - 必要な対応:
   端末固有の入力制御を切り出し、フォーム編集操作を E2E で拡充する
 
-### 4. DECLARATIVES / USE AFTER EXCEPTION の実運用検証不足
+### 4. DECLARATIVES / USE AFTER EXCEPTION の操作別網羅
 
-- 状況:
-  parser では `DECLARATIVES` を解釈でき、HIR lowering と codegen 側にも
-  ディスパッチ処理がある
-- 制約:
-  実ファイル I/O エラーを起点にしたネイティブ E2E 検証はまだ薄い
+- 未対応:
+  `READ` / `REWRITE` / `DELETE` / `START` の操作別例外条件と分類
 - 必要な対応:
-  `OPEN` / `READ` / `WRITE` 失敗時に宣言節が正しく発火する統合テストを追加
+  ファイル操作ごとの例外発火条件と、明示的な `INVALID KEY` / `AT END` 句との優先関係を E2E で拡充する
 
 ### 5. OOP / later-standard advanced features の E2E カバレッジ不足
 
@@ -68,17 +55,7 @@ JSON/XML 文、`RENAMES`、日付関数、数学関数、`PERFORM THRU`、`GOBAC
 - 必要な対応:
   小さな codegen テストではなく、実行まで含む E2E サンプルを揃える
 
-### 6. SORT ... INPUT PROCEDURE / OUTPUT PROCEDURE の実運用保証不足
-
-- 状況:
-  基本の `SORT` / `MERGE` 支援はあるが、手続き型ソートはまだ部分対応扱い
-- 影響:
-  `RELEASE` / `RETURN` を使う古典的なソート処理で、互換性に不安が残る
-- 必要な対応:
-  `INPUT PROCEDURE` / `OUTPUT PROCEDURE` を使う E2E テストの拡充と、
-  必要ならランタイム連携の補強
-
-### 7. COMMUNICATION SECTION は production-ready ではない
+### 6. COMMUNICATION SECTION は production-ready ではない
 
 - 状況:
   parser / AST / runtime の土台はあるが、通常利用での検証実績はまだ限定的

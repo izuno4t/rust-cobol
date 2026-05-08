@@ -2885,6 +2885,42 @@ PROCEDURE DIVISION.
 }
 
 #[test]
+fn test_native_generate_report_nested_multi_line_group() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RW-NESTED-LINES.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME PIC X(5) VALUE \"ALICE\".
+01 WS-AMOUNT PIC 9(3) VALUE 123.
+REPORT SECTION.
+RD RPT.
+01 DETAIL-LINE TYPE DETAIL.
+   05 FILLER LINE 1.
+      10 FILLER COLUMN 1 VALUE \"NAME:\".
+      10 FILLER COLUMN 7 SOURCE WS-NAME.
+   05 FILLER LINE 2.
+      10 FILLER COLUMN 1 VALUE \"AMT:\".
+      10 FILLER COLUMN 7 SOURCE WS-AMOUNT.
+PROCEDURE DIVISION.
+    INITIATE RPT.
+    GENERATE DETAIL-LINE.
+    STOP RUN.
+";
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+
+    assert_eq!(
+        code, 0,
+        "native report generation failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(
+        stdout, "NAME: ALICE\nAMT:  123\n",
+        "nested report group should inherit parent LINE and honor child COLUMN/SOURCE clauses"
+    );
+}
+
+#[test]
 fn test_native_invoke_null_object_returns_zero_without_crashing() {
     let src = "\
 IDENTIFICATION DIVISION.
@@ -3825,6 +3861,93 @@ END PROGRAM OUTER.
     );
 }
 
+#[test]
+fn test_native_declarative_runs_on_missing_input_open() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let missing_path = tmp.path().join("missing-input.dat");
+    let missing_path = missing_path.to_string_lossy();
+    let src = format!(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DECL-OPEN.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IN-FILE ASSIGN TO "{missing_path}".
+DATA DIVISION.
+FILE SECTION.
+FD IN-FILE.
+01 IN-REC PIC X.
+PROCEDURE DIVISION.
+DECLARATIVES.
+ERR-SEC SECTION.
+    USE AFTER STANDARD EXCEPTION PROCEDURE ON IN-FILE.
+ERR-PARA.
+    DISPLAY "OPEN-DECL".
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    OPEN INPUT IN-FILE.
+    DISPLAY "DONE".
+    STOP RUN.
+"#
+    );
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(&src);
+    assert_eq!(
+        code, 0,
+        "program failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("OPEN-DECL\nDONE\n"),
+        "missing input OPEN should dispatch USE AFTER EXCEPTION, got stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn test_native_declarative_runs_on_write_without_open() {
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let output_path = tmp.path().join("not-open-output.dat");
+    let output_path = output_path.to_string_lossy();
+    let src = format!(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DECL-WRITE.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT OUT-FILE ASSIGN TO "{output_path}".
+DATA DIVISION.
+FILE SECTION.
+FD OUT-FILE.
+01 OUT-REC PIC X(3).
+PROCEDURE DIVISION.
+DECLARATIVES.
+ERR-SEC SECTION.
+    USE AFTER STANDARD EXCEPTION PROCEDURE ON OUT-FILE.
+ERR-PARA.
+    DISPLAY "WRITE-DECL".
+END DECLARATIVES.
+MAIN-SEC SECTION.
+MAIN-PARA.
+    MOVE "ABC" TO OUT-REC.
+    WRITE OUT-REC.
+    DISPLAY "DONE".
+    STOP RUN.
+"#
+    );
+
+    let (stdout, stderr, code) = compile_and_run_no_sema(&src);
+    assert_eq!(
+        code, 0,
+        "program failed: stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("WRITE-DECL\nDONE\n"),
+        "WRITE without OPEN should dispatch USE AFTER EXCEPTION, got stdout={stdout:?}, stderr={stderr:?}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Phase C-2: CORRESPONDING (CORR) matching
 // -----------------------------------------------------------------------
@@ -3854,6 +3977,7 @@ fn test_c2_move_corresponding() {
                             scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
+                            validation_values: Vec::new(),
                             occurs: None,
                             occurs_depending_on: None,
                             indexed_by: Vec::new(),
@@ -3873,6 +3997,7 @@ fn test_c2_move_corresponding() {
                             scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
+                            validation_values: Vec::new(),
                             occurs: None,
                             occurs_depending_on: None,
                             indexed_by: Vec::new(),
@@ -3892,6 +4017,7 @@ fn test_c2_move_corresponding() {
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
+                validation_values: Vec::new(),
                 occurs: None,
                 occurs_depending_on: None,
                 indexed_by: Vec::new(),
@@ -3919,6 +4045,7 @@ fn test_c2_move_corresponding() {
                             scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
+                            validation_values: Vec::new(),
                             occurs: None,
                             occurs_depending_on: None,
                             indexed_by: Vec::new(),
@@ -3938,6 +4065,7 @@ fn test_c2_move_corresponding() {
                             scale_adjustment: 0,
                             is_external: false,
                             initial_value: None,
+                            validation_values: Vec::new(),
                             occurs: None,
                             occurs_depending_on: None,
                             indexed_by: Vec::new(),
@@ -3957,6 +4085,7 @@ fn test_c2_move_corresponding() {
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
+                validation_values: Vec::new(),
                 occurs: None,
                 occurs_depending_on: None,
                 indexed_by: Vec::new(),
@@ -4052,6 +4181,7 @@ fn test_c2_add_corresponding() {
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: None,
+                        validation_values: Vec::new(),
                         occurs: None,
                         occurs_depending_on: None,
                         indexed_by: Vec::new(),
@@ -4070,6 +4200,7 @@ fn test_c2_add_corresponding() {
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
+                validation_values: Vec::new(),
                 occurs: None,
                 occurs_depending_on: None,
                 indexed_by: Vec::new(),
@@ -4096,6 +4227,7 @@ fn test_c2_add_corresponding() {
                         scale_adjustment: 0,
                         is_external: false,
                         initial_value: None,
+                        validation_values: Vec::new(),
                         occurs: None,
                         occurs_depending_on: None,
                         indexed_by: Vec::new(),
@@ -4114,6 +4246,7 @@ fn test_c2_add_corresponding() {
                 scale_adjustment: 0,
                 is_external: false,
                 initial_value: None,
+                validation_values: Vec::new(),
                 occurs: None,
                 occurs_depending_on: None,
                 indexed_by: Vec::new(),
@@ -6957,6 +7090,110 @@ PROCEDURE DIVISION.
     assert!(
         !stdout.contains("UNREACHED"),
         "execution should not continue after failed VALIDATE"
+    );
+}
+
+#[test]
+fn test_validate_rejects_value_clause_mismatch() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VALVALUE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-CODE PIC X VALUE \"A\".
+PROCEDURE DIVISION.
+    MOVE \"B\" TO WS-CODE.
+    VALIDATE WS-CODE.
+    DISPLAY \"UNREACHED\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_ne!(code, 0, "VALIDATE should reject VALUE mismatch");
+    assert!(
+        stderr.contains("EC-DATA-INCOMPATIBLE") || stderr.contains("COBOL EXCEPTION"),
+        "stderr should report validation exception, got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("UNREACHED"),
+        "execution should not continue after failed VALIDATE"
+    );
+}
+
+#[test]
+fn test_validate_accepts_88_condition_value() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VAL88OK.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-FLAG PIC X VALUE \"Y\".
+   88 VALID-FLAG VALUE \"Y\" \"N\".
+PROCEDURE DIVISION.
+    MOVE \"N\" TO WS-FLAG.
+    VALIDATE WS-FLAG.
+    DISPLAY \"OK\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "OK");
+}
+
+#[test]
+fn test_validate_rejects_outside_88_condition_range() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VAL88BAD.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-CODE PIC 9 VALUE 1.
+   88 VALID-CODE VALUE 1 THRU 3.
+PROCEDURE DIVISION.
+    MOVE 9 TO WS-CODE.
+    VALIDATE WS-CODE.
+    DISPLAY \"UNREACHED\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_ne!(code, 0, "VALIDATE should reject value outside 88 range");
+    assert!(
+        stderr.contains("EC-DATA-INCOMPATIBLE") || stderr.contains("COBOL EXCEPTION"),
+        "stderr should report validation exception, got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("UNREACHED"),
+        "execution should not continue after failed VALIDATE"
+    );
+}
+
+#[test]
+fn test_validate_group_rejects_child_value_mismatch() {
+    let src = "\
+IDENTIFICATION DIVISION.
+PROGRAM-ID. VALGROUP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-GROUP.
+   05 WS-CODE PIC X VALUE \"A\".
+   05 WS-NUM PIC 9 VALUE 1.
+PROCEDURE DIVISION.
+    MOVE \"B\" TO WS-CODE.
+    VALIDATE WS-GROUP.
+    DISPLAY \"UNREACHED\".
+    STOP RUN.
+";
+    let (stdout, stderr, code) = compile_and_run_no_sema(src);
+    assert_ne!(
+        code, 0,
+        "VALIDATE on a group should reject child VALUE mismatch"
+    );
+    assert!(
+        stderr.contains("EC-DATA-INCOMPATIBLE") || stderr.contains("COBOL EXCEPTION"),
+        "stderr should report validation exception, got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("UNREACHED"),
+        "execution should not continue after failed group VALIDATE"
     );
 }
 

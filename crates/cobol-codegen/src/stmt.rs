@@ -3083,47 +3083,74 @@ pub(crate) fn emit_statement_with_ctx(
                         Some("_fs == 0"),
                     );
                     out.push_str(&format!("{pad}}}\n"));
-                } else {
+                } else if has_declaratives {
+                    out.push_str(&format!("{pad}{{\n"));
                     if let Some(boundary_error) = &boundary_error {
-                        out.push_str(&format!("{pad}if (!({boundary_error})) {{\n"));
-                        out.push_str(&format!("{pad}    {write_call};\n"));
-                        emit_successful_write_followups(
-                            out,
-                            advancing.as_ref(),
-                            at_eop,
-                            not_at_eop,
-                            data_items,
-                            paragraphs,
-                            fs_map,
-                            has_declaratives,
-                            indent + 1,
-                            None,
-                        );
-                        out.push_str(&format!("{pad}}}\n"));
+                        out.push_str(&format!(
+                            "{pad}    uint32_t _fs = ({boundary_error}) ? 44 : {write_call};\n"
+                        ));
                     } else {
-                        if has_linage_counter(data_items)
-                            || !at_eop.is_empty()
-                            || !not_at_eop.is_empty()
-                        {
-                            out.push_str(&format!("{pad}{{\n"));
-                            out.push_str(&format!("{pad}    {write_call};\n"));
-                            emit_successful_write_followups(
-                                out,
-                                advancing.as_ref(),
-                                at_eop,
-                                not_at_eop,
-                                data_items,
-                                paragraphs,
-                                fs_map,
-                                has_declaratives,
-                                indent + 1,
-                                None,
-                            );
-                            out.push_str(&format!("{pad}}}\n"));
-                        } else {
-                            out.push_str(&format!("{pad}{write_call};\n"));
-                        }
+                        out.push_str(&format!("{pad}    uint32_t _fs = {write_call};\n"));
                     }
+                    emit_file_status_update(
+                        out,
+                        &c_file,
+                        "_fs",
+                        fs_map,
+                        true,
+                        &format!("FILE_MODE_{c_file}"),
+                        &format!("{pad}    "),
+                    );
+                    emit_successful_write_followups(
+                        out,
+                        advancing.as_ref(),
+                        at_eop,
+                        not_at_eop,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                        Some("_fs == 0"),
+                    );
+                    out.push_str(&format!("{pad}}}\n"));
+                } else if let Some(boundary_error) = &boundary_error {
+                    out.push_str(&format!("{pad}if (!({boundary_error})) {{\n"));
+                    out.push_str(&format!("{pad}    {write_call};\n"));
+                    emit_successful_write_followups(
+                        out,
+                        advancing.as_ref(),
+                        at_eop,
+                        not_at_eop,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                        None,
+                    );
+                    out.push_str(&format!("{pad}}}\n"));
+                } else if has_linage_counter(data_items)
+                    || !at_eop.is_empty()
+                    || !not_at_eop.is_empty()
+                {
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!("{pad}    {write_call};\n"));
+                    emit_successful_write_followups(
+                        out,
+                        advancing.as_ref(),
+                        at_eop,
+                        not_at_eop,
+                        data_items,
+                        paragraphs,
+                        fs_map,
+                        has_declaratives,
+                        indent + 1,
+                        None,
+                    );
+                    out.push_str(&format!("{pad}}}\n"));
+                } else {
+                    out.push_str(&format!("{pad}{write_call};\n"));
                 }
             }
             if needs_write_conv {
@@ -5871,27 +5898,19 @@ fn emit_report_generate_line(
         return false;
     };
 
-    let mut fields: Vec<&HirDataItem> = members
-        .iter()
-        .filter(|member| {
-            member.screen_info.as_ref().is_some_and(|si| {
-                si.value.is_some() || si.source.is_some() || si.using_field.is_some()
-            })
-        })
-        .collect();
+    let mut fields = Vec::new();
+    for member in members {
+        collect_report_fields(&mut fields, member, None, None);
+    }
     if fields.is_empty() {
         return false;
     }
 
-    fields.sort_by_key(|field| {
-        let si = field.screen_info.as_ref().expect("screen_info checked");
-        (si.line.unwrap_or(1), si.column.unwrap_or(1))
-    });
+    fields.sort_by_key(|si| (si.line.unwrap_or(1), si.column.unwrap_or(1)));
 
     let mut current_line = 1_u32;
     let mut current_col = 1_u32;
-    for field in fields {
-        let si = field.screen_info.as_ref().expect("screen_info checked");
+    for si in fields {
         let line = si.line.unwrap_or(1);
         let column = si.column.unwrap_or(current_col);
         while current_line < line {
@@ -5903,11 +5922,52 @@ fn emit_report_generate_line(
             emit_report_spaces(out, column - current_col, pad);
             current_col = column;
         }
-        let width = emit_report_field(out, si, data_items, pad);
+        let width = emit_report_field(out, &si, data_items, pad);
         current_col = current_col.saturating_add(width.max(1));
     }
     out.push_str(&format!("{pad}cobol_display_newline();\n"));
     true
+}
+
+fn collect_report_fields(
+    fields: &mut Vec<cobol_hir::HirScreenInfo>,
+    item: &HirDataItem,
+    inherited_line: Option<u32>,
+    inherited_column: Option<u32>,
+) {
+    let merged = item
+        .screen_info
+        .as_ref()
+        .map(|si| cobol_hir::HirScreenInfo {
+            line: si.line.or(inherited_line),
+            column: si.column.or(inherited_column),
+            blank_screen: si.blank_screen,
+            blank_line: si.blank_line,
+            highlight: si.highlight,
+            reverse_video: si.reverse_video,
+            source: si.source.clone(),
+            using_field: si.using_field.clone(),
+            value: si.value.clone(),
+            picture: si.picture.clone(),
+        });
+
+    let next_line = merged.as_ref().and_then(|si| si.line).or(inherited_line);
+    let next_column = merged
+        .as_ref()
+        .and_then(|si| si.column)
+        .or(inherited_column);
+
+    if let Some(si) = merged {
+        if si.value.is_some() || si.source.is_some() || si.using_field.is_some() {
+            fields.push(si);
+        }
+    }
+
+    if let HirType::Group { members, .. } = &item.data_type {
+        for member in members {
+            collect_report_fields(fields, member, next_line, next_column);
+        }
+    }
 }
 
 fn emit_report_spaces(out: &mut String, count: u32, pad: &str) {
@@ -11983,14 +12043,119 @@ fn emit_validate_statement(out: &mut String, target: &str, data_items: &[HirData
         return;
     };
 
+    emit_validate_item_recursive(out, target, &c_target, item, data_items, pad);
+}
+
+fn emit_validate_item_recursive(
+    out: &mut String,
+    target_name: &str,
+    c_target: &str,
+    item: &HirDataItem,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
     let picture = item.picture.as_deref().unwrap_or("");
     let escaped_pic = escape_c_string(picture);
     let pic_len = picture.len();
-    let target_name = escape_c_string(target);
+    let escaped_target_name = escape_c_string(target_name);
     let (ptr_expr, len_expr, kind) = validate_storage_args(&c_target, item, data_items);
     out.push_str(&format!(
-        "{pad}if (cobol_validate_item(\"{target_name}\", {ptr_expr}, {len_expr}, {kind}, (const uint8_t*)\"{escaped_pic}\", {pic_len}) != 0) {{ cobol_raise(\"EC-DATA-INCOMPATIBLE\"); }} /* VALIDATE */\n"
+        "{pad}if (cobol_validate_item(\"{escaped_target_name}\", {ptr_expr}, {len_expr}, {kind}, (const uint8_t*)\"{escaped_pic}\", {pic_len}) != 0) {{ cobol_raise(\"EC-DATA-INCOMPATIBLE\"); }} /* VALIDATE */\n"
     ));
+    emit_validate_value_constraints(out, &c_target, item, data_items, pad);
+
+    if let HirType::Group { members, .. } = &item.data_type {
+        for member in members {
+            if member.redefines.is_some() || member.renames.is_some() {
+                continue;
+            }
+            let member_c_name = format!("{c_target}__{}", sanitize_name(&member.name));
+            let member_target_name = format!("{target_name}.{}", member.name);
+            emit_validate_item_recursive(
+                out,
+                &member_target_name,
+                &member_c_name,
+                member,
+                data_items,
+                pad,
+            );
+        }
+    }
+}
+
+fn emit_validate_value_constraints(
+    out: &mut String,
+    c_target: &str,
+    item: &HirDataItem,
+    data_items: &[HirDataItem],
+    pad: &str,
+) {
+    if item.validation_values.is_empty() {
+        return;
+    }
+
+    let is_alpha = matches!(item.data_type, HirType::Alphanumeric { .. });
+    let is_numeric = matches!(
+        item.data_type,
+        HirType::Numeric { .. } | HirType::Comp3 { .. } | HirType::Binary { .. } | HirType::Index
+    ) || display_numeric_c_expr_metadata(c_target, data_items).is_some();
+
+    let mut checks = Vec::new();
+    for value in &item.validation_values {
+        match value {
+            cobol_hir::HirValidationValue::Single(lit) if is_alpha => {
+                if let Some((literal, len)) = validate_string_literal(lit) {
+                    checks.push(format!(
+                        "cobol_compare_alphanumeric((const uint8_t*){c_target}, {}, (const uint8_t*)\"{literal}\", {len}) == 0",
+                        data_item_byte_size(&item.data_type)
+                    ));
+                }
+            }
+            cobol_hir::HirValidationValue::Single(lit) if is_numeric => {
+                if let Some(value) = validate_integral_literal(lit) {
+                    let expr = emit_numeric_expr_for_var(c_target, data_items);
+                    checks.push(format!("({expr}) == {value}"));
+                }
+            }
+            cobol_hir::HirValidationValue::Range { from, to } if is_numeric => {
+                if let (Some(from), Some(to)) = (
+                    validate_integral_literal(from),
+                    validate_integral_literal(to),
+                ) {
+                    let expr = emit_numeric_expr_for_var(c_target, data_items);
+                    checks.push(format!("(({expr}) >= {from} && ({expr}) <= {to})"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if checks.is_empty() {
+        return;
+    }
+
+    out.push_str(&format!(
+        "{pad}if (!({})) {{ cobol_raise(\"EC-DATA-INCOMPATIBLE\"); }} /* VALIDATE VALUE */\n",
+        checks.join(" || ")
+    ));
+}
+
+fn validate_string_literal(lit: &HirLiteral) -> Option<(String, usize)> {
+    match lit {
+        HirLiteral::String(value) => Some((escape_c_string(value), value.len())),
+        HirLiteral::Space => Some((" ".to_string(), 1)),
+        HirLiteral::Quote => Some(("\\\"".to_string(), 1)),
+        _ => None,
+    }
+}
+
+fn validate_integral_literal(lit: &HirLiteral) -> Option<i64> {
+    match lit {
+        HirLiteral::Integer(value) => Some(*value),
+        HirLiteral::Zero => Some(0),
+        HirLiteral::String(value) => value.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 fn validate_storage_args(

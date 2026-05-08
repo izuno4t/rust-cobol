@@ -379,6 +379,7 @@ pub struct HirDataItem {
     pub scale_adjustment: i32,
     pub is_external: bool,
     pub initial_value: Option<HirLiteral>,
+    pub validation_values: Vec<HirValidationValue>,
     /// OCCURS clause: number of repetitions (None = scalar).
     pub occurs: Option<u32>,
     /// OCCURS DEPENDING ON data item, when present.
@@ -394,6 +395,12 @@ pub struct HirDataItem {
     /// JUSTIFIED RIGHT clause.
     pub justified: bool,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirValidationValue {
+    Single(HirLiteral),
+    Range { from: HirLiteral, to: HirLiteral },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,6 +433,7 @@ impl HirDataItem {
             scale_adjustment: 0,
             is_external: false,
             initial_value: None,
+            validation_values: Vec::new(),
             occurs: None,
             occurs_depending_on: None,
             indexed_by: Vec::new(),

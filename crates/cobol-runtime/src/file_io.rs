@@ -2228,7 +2228,7 @@ mod tests {
 
         let status = unsafe {
             cobol_file_open_indexed(
-                105,
+                5105,
                 path_bytes.as_ptr(),
                 path_bytes.len() as u32,
                 FileAccessMode::Sequential,
@@ -2239,23 +2239,23 @@ mod tests {
             )
         };
         assert_eq!(status, FS_OK);
-        assert_eq!(cobol_file_set_variable(105), FS_OK);
+        assert_eq!(cobol_file_set_variable(5105), FS_OK);
 
         let long = *b"01ABCDEF";
         let short = *b"02XYZ";
         assert_eq!(
-            unsafe { cobol_file_write(105, long.as_ptr(), long.len() as u32) },
+            unsafe { cobol_file_write(5105, long.as_ptr(), long.len() as u32) },
             FS_OK
         );
         assert_eq!(
-            unsafe { cobol_file_write(105, short.as_ptr(), short.len() as u32) },
+            unsafe { cobol_file_write(5105, short.as_ptr(), short.len() as u32) },
             FS_OK
         );
-        assert_eq!(cobol_file_close(105), FS_OK);
+        assert_eq!(cobol_file_close(5105), FS_OK);
 
         let status = unsafe {
             cobol_file_open_indexed(
-                106,
+                5106,
                 path_bytes.as_ptr(),
                 path_bytes.len() as u32,
                 FileAccessMode::Sequential,
@@ -2266,23 +2266,23 @@ mod tests {
             )
         };
         assert_eq!(status, FS_OK);
-        assert_eq!(cobol_file_set_variable(106), FS_OK);
+        assert_eq!(cobol_file_set_variable(5106), FS_OK);
 
         let mut buf = [0u8; 8];
         assert_eq!(
-            unsafe { cobol_file_read_next(106, buf.as_mut_ptr(), 8) },
+            unsafe { cobol_file_read_next(5106, buf.as_mut_ptr(), 8) },
             FS_OK
         );
-        assert_eq!(cobol_file_current_record_length(106), 8);
+        assert_eq!(cobol_file_current_record_length(5106), 8);
         assert_eq!(&buf, b"01ABCDEF");
 
         assert_eq!(
-            unsafe { cobol_file_read_next(106, buf.as_mut_ptr(), 8) },
+            unsafe { cobol_file_read_next(5106, buf.as_mut_ptr(), 8) },
             FS_OK
         );
-        assert_eq!(cobol_file_current_record_length(106), 5);
+        assert_eq!(cobol_file_current_record_length(5106), 5);
         assert_eq!(&buf[..5], b"02XYZ");
-        assert_eq!(cobol_file_close(106), FS_OK);
+        assert_eq!(cobol_file_close(5106), FS_OK);
     }
 
     #[test]

@@ -39,7 +39,8 @@ use crate::hir::{
     HirPerformTest, HirProgram, HirReceiveMode, HirRefMod, HirReplacingKind, HirScreenInfo,
     HirSearchWhen, HirSendOption, HirSignClause, HirSignPosition, HirSortKey, HirSortOrder,
     HirStartRelation, HirStatement, HirStringSource, HirTallyingKind, HirTransferTarget, HirType,
-    HirUnaryOp, HirUnstringDelimiter, HirUnstringTarget, HirVaryingAfter, HirWriteAdvancing,
+    HirUnaryOp, HirUnstringDelimiter, HirUnstringTarget, HirValidationValue, HirVaryingAfter,
+    HirWriteAdvancing,
 };
 
 #[derive(Debug, Clone)]
@@ -917,6 +918,7 @@ fn lower_data_item_with_usage(
         let data_type = determine_hir_type_with_usage(item, inherited_usage, inherited_sign);
         let effective_sign = item.sign_clause.as_ref().or(inherited_sign);
         let initial_value = item.value.as_ref().map(lower_value_clause);
+        let validation_values = validation_values_for_item(item);
         let occurs = item.occurs.as_ref().map(|o| o.max);
         let occurs_depending_on = item
             .occurs
@@ -944,6 +946,7 @@ fn lower_data_item_with_usage(
             scale_adjustment: picture_scale_adjustment(item),
             is_external: inherited_external || item.is_external,
             initial_value,
+            validation_values,
             occurs,
             occurs_depending_on,
             indexed_by: indexed_by.clone(),
@@ -989,6 +992,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
     if let Some(name) = &item.name {
         let data_type = determine_hir_type(item);
         let initial_value = item.value.as_ref().map(lower_value_clause);
+        let validation_values = validation_values_for_item(item);
         let occurs = item.occurs.as_ref().map(|o| o.max);
         let occurs_depending_on = item
             .occurs
@@ -1012,6 +1016,7 @@ fn lower_screen_data_item(item: &DataItem, out: &mut Vec<HirDataItem>) {
             scale_adjustment: picture_scale_adjustment(item),
             is_external: false,
             initial_value,
+            validation_values,
             occurs,
             occurs_depending_on,
             indexed_by: Vec::new(),
@@ -1062,6 +1067,34 @@ fn screen_info_for_item(item: &DataItem, include_children: bool) -> Option<HirSc
     })
 }
 
+fn validation_values_for_item(item: &DataItem) -> Vec<HirValidationValue> {
+    let mut values = Vec::new();
+    if let Some(value) = item.value.as_ref() {
+        values.push(HirValidationValue::Single(lower_value_clause(value)));
+    }
+    for child in &item.children {
+        if child.level != 88 {
+            continue;
+        }
+        for condition_value in &child.condition_values {
+            for value in &condition_value.values {
+                match value {
+                    cobol_ast::data_div::ConditionValueItem::Single(lit) => {
+                        values.push(HirValidationValue::Single(lower_literal(lit)));
+                    }
+                    cobol_ast::data_div::ConditionValueItem::Range { from, to } => {
+                        values.push(HirValidationValue::Range {
+                            from: lower_literal(from),
+                            to: lower_literal(to),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    values
+}
+
 fn determine_hir_type(item: &DataItem) -> HirType {
     determine_hir_type_with_usage(item, None, None)
 }
@@ -1089,6 +1122,7 @@ fn determine_hir_type_with_usage(
             let data_type = determine_hir_type_with_usage(child, child_usage, child_sign);
             let effective_sign = child.sign_clause.as_ref().or(child_sign);
             let initial_value = child.value.as_ref().map(lower_value_clause);
+            let validation_values = validation_values_for_item(child);
             let occurs = child.occurs.as_ref().map(|o| o.max);
             let occurs_depending_on = child
                 .occurs
@@ -1113,6 +1147,7 @@ fn determine_hir_type_with_usage(
                 scale_adjustment: picture_scale_adjustment(child),
                 is_external: child.is_external,
                 initial_value,
+                validation_values,
                 occurs,
                 occurs_depending_on,
                 indexed_by: indexed_by_child,
